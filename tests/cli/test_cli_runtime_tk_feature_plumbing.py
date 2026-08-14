@@ -1494,7 +1494,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         package="nativepkg",
         module="nativepkg._native",
         package_dir=tmp_path / "nativepkg",
-        path=tmp_path / "nativepkg" / "_native.so",
+        path=tmp_path / "nativepkg" / "_native.molt.a",
         manifest_path=tmp_path / "nativepkg" / "extension_manifest.json",
         extension_sha256="0" * 64,
         manifest_sha256="1" * 64,
@@ -1502,6 +1502,9 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         abi_tag="molt_abi1",
         target_triple="x86_64-unknown-linux-gnu",
         platform_tag="x86_64_unknown_linux_gnu",
+        runtime_linkage="static_link",
+        artifact_kind="static_archive",
+        link_arguments=(),
     )
     native_plan = cli._ExternalPackageNativeArtifactPlan(artifacts=(artifact,))
     _stub_backend_binary_ensure(monkeypatch, tmp_path)

@@ -34,6 +34,10 @@ for import_root in (ROOT, SRC):
         sys.path.insert(0, str(import_root))
 
 from tools.command_execution import bind_repository_imports  # noqa: E402
+from tools.toolchain_content_path import (  # noqa: E402
+    CONTENT_PATH_STRATEGIES,
+    resolve_content_path,
+)
 
 bind_repository_imports(__file__)
 
@@ -184,6 +188,42 @@ class ProofPlan:
     resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
+
+    def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
+        """Expand declared toolchains through the canonical dependency graph."""
+
+        policies = {policy.name: policy for policy in self.toolchain_policies}
+        closed: list[str] = []
+        visiting: set[str] = set()
+
+        def add(name: str) -> None:
+            if name in visiting:
+                raise ValueError(f"toolchain dependency cycle at {name!r}")
+            try:
+                policy = policies[name]
+            except KeyError as exc:
+                raise ValueError(f"unknown toolchain dependency {name!r}") from exc
+            if name in closed:
+                return
+            closed.append(name)
+            visiting.add(name)
+            dependencies = policy.data.get("dependencies", [])
+            if not isinstance(dependencies, list):
+                raise ValueError(f"{name}: malformed toolchain dependencies")
+            for dependency in dependencies:
+                if not isinstance(dependency, str) or not dependency:
+                    raise ValueError(f"{name}: malformed toolchain dependency")
+                add(dependency)
+            visiting.remove(name)
+
+        for name in names:
+            add(name)
+        return tuple(closed)
+
+    def required_toolchains(self, command: ProofCommand) -> tuple[str, ...]:
+        """Return the complete process/tool identity closure for one command."""
+
+        return self.toolchain_closure(command.toolchains)
 
     def timeout_envelope(self, family_name: str) -> TimeoutEnvelope:
         """Project the bounded DAG schedule when every partition hits its timeout."""
@@ -404,6 +444,7 @@ class ProofPlan:
             errors.append("toolchain policies must have non-empty names")
         if len(policy_names) != len(set(policy_names)):
             errors.append("toolchain policy names must be unique")
+        dependency_graph: dict[str, tuple[str, ...]] = {}
         for policy in self.toolchain_policies:
             for field in REQUIRED_TOOLCHAIN_FIELDS:
                 if field not in policy.data:
@@ -454,6 +495,39 @@ class ProofPlan:
                 errors.append(
                     f"{policy.name}: content_path_command must be a non-empty string list"
                 )
+            content_path_strategy = policy.data.get(
+                "content_path_strategy", "executable-path"
+            )
+            if content_path_strategy not in CONTENT_PATH_STRATEGIES:
+                errors.append(
+                    f"{policy.name}: unknown content_path_strategy "
+                    f"{content_path_strategy!r}"
+                )
+            elif (
+                content_path_strategy != "executable-path"
+                and content_path_command is None
+            ):
+                errors.append(
+                    f"{policy.name}: content_path_strategy requires "
+                    "content_path_command"
+                )
+            dependencies = policy.data.get("dependencies", [])
+            if (
+                not isinstance(dependencies, list)
+                or not all(isinstance(item, str) and item for item in dependencies)
+                or len(dependencies) != len(set(dependencies))
+            ):
+                errors.append(
+                    f"{policy.name}: dependencies must be a unique string list"
+                )
+                dependency_graph[policy.name] = ()
+            else:
+                dependency_graph[policy.name] = tuple(dependencies)
+                for dependency in dependencies:
+                    if dependency not in policy_names:
+                        errors.append(
+                            f"{policy.name}: unknown toolchain dependency {dependency!r}"
+                        )
             linker_process_helpers = policy.data.get("linker_process_helpers")
             if linker_process_helpers is not None:
                 if not isinstance(linker_process_helpers, dict):
@@ -522,6 +596,24 @@ class ProofPlan:
                         errors.append(
                             f"{policy.name}: setup evidence token missing from {relative}"
                         )
+        visited_dependencies: set[str] = set()
+        visiting_dependencies: set[str] = set()
+
+        def visit_toolchain_dependencies(name: str) -> None:
+            if name in visiting_dependencies:
+                errors.append(f"toolchain dependency cycle includes {name!r}")
+                return
+            if name in visited_dependencies:
+                return
+            visiting_dependencies.add(name)
+            for dependency in dependency_graph.get(name, ()):
+                if dependency in dependency_graph:
+                    visit_toolchain_dependencies(dependency)
+            visiting_dependencies.remove(name)
+            visited_dependencies.add(name)
+
+        for policy_name in policy_names:
+            visit_toolchain_dependencies(policy_name)
         cell_ids = [cell.id for cell in self.matrix_cells]
         if not cell_ids or any(not cell_id for cell_id in cell_ids):
             errors.append("matrix_cell IDs must be non-empty")
@@ -1634,17 +1726,17 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 timeout=5,
                 env=cargo_subprocess_environment(content_path_command, os.environ)[0],
             )
-            candidates = tuple(
-                line.strip() for line in resolved.stdout.splitlines() if line.strip()
-            )
-            if resolved.returncode != 0 or len(candidates) != 1:
+            if resolved.returncode != 0:
                 raise OSError("toolchain content resolver failed")
-            candidate = candidates[0]
-            candidate_path = Path(candidate)
-            if not candidate_path.is_absolute():
-                candidate_path = probe_directory / candidate_path
-            content_path = candidate_path.resolve(strict=True)
-        except (IndexError, OSError, subprocess.TimeoutExpired):
+            content_path = resolve_content_path(
+                launcher_path,
+                resolved.stdout,
+                strategy=str(
+                    policy.data.get("content_path_strategy", "executable-path")
+                ),
+                probe_cwd=probe_directory,
+            )
+        except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):
             content_path = Path("unavailable")
     executable_sha256 = content_hash(content_path)
     try:
@@ -1750,8 +1842,8 @@ def _cache_disposition(command: ProofCommand) -> str:
     return "unknown"
 
 
-def _required_toolchains(command: ProofCommand) -> tuple[str, ...]:
-    return command.toolchains
+def _required_toolchains(plan: ProofPlan, command: ProofCommand) -> tuple[str, ...]:
+    return plan.required_toolchains(command)
 
 
 def _topological_commands(
@@ -2108,7 +2200,7 @@ def execute_commands(
         _source_commit=_source_commit,
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
-        _required_toolchains=_required_toolchains,
+        _required_toolchains=lambda command: _required_toolchains(plan, command),
         _run_command=_run_command,
         _cache_disposition=_cache_disposition,
         _base_command_record=_base_command_record,
@@ -2318,7 +2410,7 @@ def verify_receipts(
                 )
             )
             if isinstance(toolchains, dict):
-                for name in _required_toolchains(command):
+                for name in _required_toolchains(plan, command):
                     if name not in toolchains:
                         errors.append(
                             f"{command_id}: required {name} toolchain hash is missing"

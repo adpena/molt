@@ -1498,82 +1498,6 @@ def _validate_external_package_native_artifact(
     )
 
 
-def _peek_external_artifact_provided_capsules(
-    *,
-    artifact_path: Path,
-    package_dir: Path,
-) -> tuple[str, ...]:
-    manifest_path = _find_external_extension_manifest(
-        artifact_path=artifact_path,
-        package_dir=package_dir,
-    )
-    if manifest_path is None:
-        return ()
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ()
-    if not isinstance(manifest, dict):
-        return ()
-    return _manifest_str_tuple(manifest, "provided_capsules")
-
-
-def _peek_external_artifact_python_exports(
-    *,
-    package: str,
-    artifact_path: Path,
-    package_dir: Path,
-) -> tuple[str, ...]:
-    manifest_path = _find_external_extension_manifest(
-        artifact_path=artifact_path,
-        package_dir=package_dir,
-    )
-    if manifest_path is None:
-        return ()
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ()
-    if not isinstance(manifest, dict):
-        return ()
-    errors: list[str] = []
-    return _manifest_dotted_name_tuple(
-        manifest,
-        "python_exports",
-        package=package,
-        errors=errors,
-    )
-
-
-def _peek_external_artifact_callable_export_names(
-    *,
-    package: str,
-    artifact_path: Path,
-    package_dir: Path,
-) -> tuple[str, ...]:
-    manifest_path = _find_external_extension_manifest(
-        artifact_path=artifact_path,
-        package_dir=package_dir,
-    )
-    if manifest_path is None:
-        return ()
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ()
-    if not isinstance(manifest, dict):
-        return ()
-    errors: list[str] = []
-    return tuple(
-        export.qualified_name
-        for export in _manifest_callable_exports(
-            manifest,
-            package=package,
-            errors=errors,
-        )
-    )
-
-
 def _load_external_artifact_manifest(
     *,
     artifact_path: Path,
@@ -1891,7 +1815,6 @@ def _resolve_external_package_native_artifact_plan(
                         module_name=artifact.module,
                         required_modules=required,
                     )
-                    and not required.intersection(artifact.python_exports)
                     and not required.intersection(provider_names)
                 ):
                     continue

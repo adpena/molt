@@ -12,6 +12,7 @@ from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
     resolve_source_extension_link_arguments,
     source_extension_link_requirements,
+    validate_source_extension_link_arguments,
 )
 
 
@@ -64,11 +65,17 @@ def test_link_requirements_fold_and_publish_checksummed_static_inputs(
     "argument",
     (
         "-o",
+        "-oowned.wasm",
         "--output=owned.wasm",
         "/OUT:owned.exe",
         "-shared",
         "@response.rsp",
+        "-Wl,@response.rsp",
         "-Lunsealed",
+        "-Wl,--library-path=unsealed",
+        "-dynamiclib",
+        "/DEFAULTLIB:../unsealed.lib",
+        "-Wl,-Tunsealed.ld",
         "-Wl,--version-script=unsealed.map",
     ),
 )
@@ -140,6 +147,35 @@ def test_manifest_parser_rejects_package_escape() -> None:
 
     assert parsed is None
     assert any("must be package-relative" in error for error in errors)
+
+
+def test_link_requirement_publication_rejects_source_root_escape(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    outside = tmp_path / "outside.a"
+    outside.write_bytes(b"outside")
+
+    with pytest.raises(ValueError, match="escapes declared source roots"):
+        source_extension_link_requirements(
+            (str(outside),),
+            target_triple="wasm32-wasip1",
+            path_roots=(source_root,),
+            publish_root=tmp_path / "publish",
+        )
+
+
+def test_final_link_validation_preserves_resolved_static_input_paths(
+    tmp_path: Path,
+) -> None:
+    staged = tmp_path / "staged" / "dependency.a"
+    staged.parent.mkdir()
+    staged.write_bytes(b"dependency")
+
+    assert validate_source_extension_link_arguments(
+        (str(staged.resolve()), "-lm", "/DEFAULTLIB:kernel32.lib")
+    ) == (str(staged.resolve()), "-lm", "/DEFAULTLIB:kernel32.lib")
 
 
 def test_resolve_and_materialize_verify_bytes_and_rewrite_only_owned_operands(

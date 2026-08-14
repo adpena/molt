@@ -42,6 +42,7 @@
     "tools/fuzz_compiler.py",
     "tools/proof_plan.py",
     "tools/proof_executor.py",
+    "tools/toolchain_content_path.py",
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
@@ -111,7 +112,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "1c85e4bddbc0d347f0b914a0e0a54de170e768d0db572f82d668cca2ea0e9395",
+  "authority_sha256": "c0bf9916b7e5235f41c7d409d9fbb4b287de9836defc3b3f88708473c61be137",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -4692,6 +4693,10 @@
         "which",
         "cargo"
       ],
+      "dependencies": [
+        "rustc",
+        "git"
+      ],
       "executable": "cargo",
       "fingerprint_domain": "rustup",
       "name": "cargo",
@@ -4705,6 +4710,23 @@
         "--version"
       ],
       "version_pattern": "^cargo 1\\.96\\.1\\b"
+    },
+    {
+      "content_path_command": [
+        "git",
+        "--exec-path"
+      ],
+      "content_path_strategy": "git-exec-path",
+      "executable": "git",
+      "name": "git",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+      ],
+      "setup_value": "2.x",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^git version 2\\."
     },
     {
       "content_path_command": [

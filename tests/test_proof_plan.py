@@ -14,6 +14,7 @@ import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
+from tools.toolchain_content_path import resolve_content_path
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
@@ -399,6 +400,83 @@ def test_linker_process_helper_policy_requires_unique_basenames() -> None:
     )
     errors = replace(PLAN, toolchain_policies=policies).validate()
     assert any("linker helper key must be a basename" in error for error in errors)
+
+
+def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
+    cargo = next(policy for policy in PLAN.toolchain_policies if policy.name == "cargo")
+
+    assert cargo.data["dependencies"] == ["rustc", "git"]
+    assert PLAN.toolchain_closure(["cargo"]) == ("cargo", "rustc", "git")
+    cargo_command = next(
+        command for command in PLAN.commands if command.argv[:2] == ("cargo", "build")
+    )
+    assert PLAN.required_toolchains(cargo_command) == (
+        *cargo_command.toolchains,
+        "git",
+    )
+
+
+def test_git_content_path_strategy_captures_windows_runtime_image(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "Git" / "cmd" / "git.exe"
+    runtime = tmp_path / "Git" / "mingw64" / "bin" / "git.exe"
+    exec_path = tmp_path / "Git" / "mingw64" / "libexec" / "git-core"
+    launcher.parent.mkdir(parents=True)
+    runtime.parent.mkdir(parents=True)
+    exec_path.mkdir(parents=True)
+    launcher.write_bytes(b"launcher")
+    runtime.write_bytes(b"runtime")
+
+    assert resolve_content_path(
+        launcher,
+        str(exec_path),
+        strategy="git-exec-path",
+        probe_cwd=tmp_path,
+        platform_name="win32",
+    ) == runtime.resolve()
+
+
+@pytest.mark.parametrize("platform_name", ["linux", "darwin"])
+def test_git_content_path_strategy_uses_posix_launcher(
+    tmp_path: Path, platform_name: str
+) -> None:
+    launcher = tmp_path / "bin" / "git"
+    exec_path = tmp_path / "libexec" / "git-core"
+    launcher.parent.mkdir(parents=True)
+    exec_path.mkdir(parents=True)
+    launcher.write_bytes(b"git")
+
+    assert resolve_content_path(
+        launcher,
+        str(exec_path),
+        strategy="git-exec-path",
+        probe_cwd=tmp_path,
+        platform_name=platform_name,
+    ) == launcher.resolve()
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "expected"),
+    [
+        (["missing-toolchain"], "unknown toolchain dependency"),
+        (["cargo"], "toolchain dependency cycle"),
+    ],
+)
+def test_toolchain_dependency_graph_fails_closed(
+    dependencies: list[str], expected: str
+) -> None:
+    policies = tuple(
+        replace(policy, data={**policy.data, "dependencies": dependencies})
+        if policy.name == "cargo"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+
+    assert any(
+        expected in error
+        for error in replace(PLAN, toolchain_policies=policies).validate()
+    )
 
 
 def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> None:

@@ -62,6 +62,9 @@ def resolve_source_extension_target_plan(
     elif normalized == "wasm":
         target_triple = "wasm32-wasip1"
         compiler_target_triple = target_triple
+    elif normalized == "wasm-freestanding":
+        target_triple = "wasm32-unknown-unknown"
+        compiler_target_triple = target_triple
     else:
         target_triple = normalized
         compiler_target_triple = target_triple

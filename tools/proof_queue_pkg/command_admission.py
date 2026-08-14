@@ -392,6 +392,7 @@ def _proof_command_registry() -> dict[str, object]:
             for name, toolchains in sorted(console_tools.items())
         },
         "policy_executables": policy_executables,
+        "plan": plan,
         "entrypoints": entrypoints,
         "entrypoint_variants": entrypoint_variants,
     }
@@ -405,6 +406,14 @@ def _registered_console_toolchains(name: str) -> tuple[str, ...] | None:
     return tuple(value) if isinstance(value, tuple) else None
 
 
+def _toolchain_dependency_closure(names: Sequence[str]) -> list[str]:
+    registry = _proof_command_registry()
+    plan = registry["plan"]
+    if not isinstance(plan, proof_plan.ProofPlan):
+        raise TypeError("proof command registry has no canonical proof plan")
+    return list(plan.toolchain_closure(str(name) for name in names))
+
+
 def _command_registration(
     argv: Sequence[str], *, has_python: bool, has_uv: bool
 ) -> tuple[str, list[str], list[str]]:
@@ -416,7 +425,7 @@ def _command_registration(
         command_ids = exact_match["ids"]
         declared = exact_match["toolchains"]
         assert isinstance(command_ids, list) and isinstance(declared, tuple)
-        toolchains = [str(name) for name in declared]
+        toolchains = _toolchain_dependency_closure([str(name) for name in declared])
         if not toolchains:
             raise ValueError(
                 f"proof-plan commands {command_ids!r} have no toolchain authority"
@@ -456,7 +465,7 @@ def _command_registration(
             if console is not None:
                 for name in console:
                     add(name)
-        return "python", toolchains, []
+        return "python", _toolchain_dependency_closure(toolchains), []
 
     if not argv:
         raise ValueError("proof command has no executable registration")
@@ -471,12 +480,11 @@ def _command_registration(
         )
     add(policy_name)
     if policy_name == "cargo":
-        add("rustc")
         if len(argv) > 1 and argv[1] == "deny":
             add("cargo-deny")
         elif len(argv) > 1 and argv[1] == "audit":
             add("cargo-audit")
-    return "toolchain", toolchains, []
+    return "toolchain", _toolchain_dependency_closure(toolchains), []
 
 
 _CARGO_LEAF_SUBCOMMANDS = frozenset(

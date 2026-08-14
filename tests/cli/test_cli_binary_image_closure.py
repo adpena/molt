@@ -506,6 +506,7 @@ def test_frontend_binary_image_analysis_labels_external_native_known_modules(
                 platform_tag="wasm32-wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
+                link_arguments=(),
                 python_exports=("scipy.ndimage.distance_transform_edt",),
             ),
         )
@@ -684,13 +685,17 @@ def test_backend_ir_analysis_cache_reuses_identical_ir_payload(
     shutil.rmtree(build_state, ignore_errors=True)
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(build_state))
 
-    first = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
-        project_root=tmp_path,
-        ir=ir,
+    first = (
+        cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+            project_root=tmp_path,
+            ir=ir,
+        )
     )
-    second = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
-        project_root=tmp_path,
-        ir=ir,
+    second = (
+        cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+            project_root=tmp_path,
+            ir=ir,
+        )
     )
 
     assert first.cache_hit is False
