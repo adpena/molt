@@ -1680,6 +1680,179 @@ fn handle_call_func_op(
 }
 
 #[cfg(feature = "native-backend")]
+fn native_callable_cranelift_type(
+    machine_type: molt_ir::native_callable_abi::NativeCallableMachineType,
+    pointer_type: types::Type,
+) -> types::Type {
+    use molt_ir::native_callable_abi::NativeCallableMachineType;
+    match machine_type {
+        NativeCallableMachineType::MoltValue | NativeCallableMachineType::U64 => types::I64,
+        NativeCallableMachineType::Pointer => pointer_type,
+        NativeCallableMachineType::I32 => types::I32,
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn declare_native_callable_symbol(
+    module: &mut ObjectModule,
+    builder: &mut FunctionBuilder<'_>,
+    symbol: &str,
+    signature: &molt_ir::native_callable_abi::NativeCallableMachineSignature,
+) -> FuncRef {
+    let pointer_type = module.target_config().pointer_type();
+    let mut cranelift_signature = module.make_signature();
+    cranelift_signature.params.extend(
+        signature
+            .params
+            .iter()
+            .copied()
+            .map(|machine_type| native_callable_cranelift_type(machine_type, pointer_type))
+            .map(AbiParam::new),
+    );
+    cranelift_signature.returns.extend(
+        signature
+            .results
+            .iter()
+            .copied()
+            .map(|machine_type| native_callable_cranelift_type(machine_type, pointer_type))
+            .map(AbiParam::new),
+    );
+    let function = module
+        .declare_function(symbol, Linkage::Import, &cranelift_signature)
+        .unwrap_or_else(|error| {
+            panic!(
+                "native callable direct symbol `{symbol}` declaration conflicts with its canonical ABI signature: {error}"
+            )
+        });
+    module.declare_func_in_func(function, builder.func)
+}
+
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn emit_native_forward_f32_call(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    symbol: &str,
+    signature: &molt_ir::native_callable_abi::NativeCallableMachineSignature,
+    input_bits: Value,
+) -> Value {
+    let pointer_type = module.target_config().pointer_type();
+    let direct_symbol = declare_native_callable_symbol(module, builder, symbol, signature);
+    let bytes_as_ptr = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_bytes_as_ptr",
+        &[types::I64, pointer_type],
+        &[pointer_type],
+    );
+    let scratch_alloc = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_scratch_alloc",
+        &[types::I64],
+        &[types::I64],
+    );
+    let scratch_free = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_scratch_free",
+        &[types::I64, types::I64],
+        &[],
+    );
+    let bytes_from = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_bytes_from",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    );
+
+    let length_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().stack_store(zero, length_slot, 0);
+    let length_ptr = builder.ins().stack_addr(pointer_type, length_slot, 0);
+    let input_call = builder.ins().call(bytes_as_ptr, &[input_bits, length_ptr]);
+    let input_ptr = builder.inst_results(input_call)[0];
+    let input_len = builder.ins().stack_load(types::I64, length_slot, 0);
+
+    let have_input = builder.create_block();
+    let have_output = builder.create_block();
+    let convert_output = builder.create_block();
+    let cleanup_output = builder.create_block();
+    builder.append_block_param(cleanup_output, types::I64);
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+
+    let input_valid = builder.ins().icmp_imm(IntCC::NotEqual, input_ptr, 0);
+    builder
+        .ins()
+        .brif(input_valid, have_input, &[], done, &[BlockArg::from(zero)]);
+
+    switch_to_block_materialized(builder, have_input);
+    seal_block_once(builder, sealed_blocks, have_input);
+    let output_call = builder.ins().call(scratch_alloc, &[input_len]);
+    let output_ptr = builder.inst_results(output_call)[0];
+    let output_valid = builder.ins().icmp_imm(IntCC::NotEqual, output_ptr, 0);
+    builder.ins().brif(
+        output_valid,
+        have_output,
+        &[],
+        done,
+        &[BlockArg::from(zero)],
+    );
+
+    switch_to_block_materialized(builder, have_output);
+    seal_block_once(builder, sealed_blocks, have_output);
+    let output_native_ptr = if pointer_type == types::I64 {
+        output_ptr
+    } else {
+        builder.ins().ireduce(pointer_type, output_ptr)
+    };
+    let native_call = builder
+        .ins()
+        .call(direct_symbol, &[input_ptr, input_len, output_native_ptr]);
+    let native_status = builder.inst_results(native_call)[0];
+    let native_ok = builder.ins().icmp_imm(IntCC::Equal, native_status, 0);
+    builder.ins().brif(
+        native_ok,
+        convert_output,
+        &[],
+        cleanup_output,
+        &[BlockArg::from(zero)],
+    );
+
+    switch_to_block_materialized(builder, convert_output);
+    seal_block_once(builder, sealed_blocks, convert_output);
+    let result_call = builder
+        .ins()
+        .call(bytes_from, &[output_native_ptr, input_len]);
+    let result_bits = builder.inst_results(result_call)[0];
+    jump_block(builder, cleanup_output, &[result_bits]);
+
+    switch_to_block_materialized(builder, cleanup_output);
+    seal_block_once(builder, sealed_blocks, cleanup_output);
+    let result_bits = builder.block_params(cleanup_output)[0];
+    builder.ins().call(scratch_free, &[output_ptr, input_len]);
+    jump_block(builder, done, &[result_bits]);
+
+    switch_to_block_materialized(builder, done);
+    seal_block_once(builder, sealed_blocks, done);
+    builder.block_params(done)[0]
+}
+
+#[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_invoke_ffi_op(
     op: &OpIR,
@@ -1718,33 +1891,127 @@ fn handle_invoke_ffi_op(
             nbc,
         )
     };
-    // Native callable exports carry the same executable `molt_invoke_ffi_ic`
-    // object-call dispatch the WASM backend uses (see
-    // `wasm/op_loop/call_ops/dynamic.rs`): `module_attr` binding resolves the
-    // imported callable object into `args[0]` and invokes it through the runtime
-    // FFI inline cache. `object_call_v1` forwards its positional payload; the
-    // fixed-arity `object_callargs_v1` receives an already-built callargs object
-    // as `args[1]`. Direct-symbol ABIs (`forward_f32`/`pyinit_module`) require a
-    // native import surface that is not part of this dispatch and fail closed
-    // with a precise diagnostic rather than a fake or fall-through.
+    // `module_attr` exports resolve a callable object and share the runtime FFI
+    // inline-cache path with WASM. `direct_symbol` exports instead declare an
+    // object-file import with the canonical machine signature owned by
+    // `molt-ir`; the final native linker resolves that relocation from the
+    // checksummed source-extension archive selected during admission.
     let module_attr_dispatch = if let Some(export_name) = op.native_callable_export.as_deref() {
         let binding = op.native_callable_binding.as_deref().unwrap_or("<missing>");
         let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
-        if binding != "module_attr" {
+        let abi_contract = molt_ir::native_callable_abi::parse_native_callable_abi(abi)
+            .unwrap_or_else(|| {
+                panic!("native callable export `{export_name}` declares unknown ABI `{abi}`")
+            });
+        if binding == "direct_symbol" {
             let symbol = op
                 .native_callable_symbol
                 .as_deref()
-                .unwrap_or("<module-attr>");
-            panic!(
-                "native callable export `{export_name}` uses binding `{binding}` (abi={abi} symbol={symbol}); native ABI dispatch supports only `module_attr` object-call exports"
-            );
-        }
-        let abi_contract = molt_ir::native_callable_abi::parse_native_callable_abi(abi)
-            .unwrap_or_else(|| {
-                panic!(
-                    "native callable module_attr export `{export_name}` declares unknown ABI `{abi}`"
-                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "native callable export `{export_name}` uses direct_symbol without native_callable_symbol"
+                    )
+                });
+            if symbol.is_empty() {
+                panic!("native callable export `{export_name}` has an empty direct symbol");
+            }
+            let args_names = op.args.as_ref().unwrap_or_else(|| {
+                panic!("native callable export `{export_name}` invoke_ffi is missing args")
             });
+            let arity = args_names.len();
+            if let Some(expected) = abi_contract.fixed_arity()
+                && arity != expected
+            {
+                panic!(
+                    "native callable export `{export_name}` declares `{}` with arity {arity}; expected exactly {expected} ABI payload argument(s)",
+                    abi_contract.token()
+                );
+            }
+            let machine_signature = abi_contract
+                .native_machine_signature(arity)
+                .expect("validated native callable arity must have a machine signature");
+            let result = match abi_contract {
+                molt_ir::native_callable_abi::NativeCallableAbi::ForwardF32V1 => {
+                    let input_bits = *var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args_names[0],
+                        representation_plan,
+                    )
+                    .expect("native forward_f32 payload not found");
+                    emit_native_forward_f32_call(
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        sealed_blocks,
+                        symbol,
+                        &machine_signature,
+                        input_bits,
+                    )
+                }
+                molt_ir::native_callable_abi::NativeCallableAbi::PyinitModuleV1 => {
+                    let pointer_type = module.target_config().pointer_type();
+                    let direct_symbol =
+                        declare_native_callable_symbol(module, builder, symbol, &machine_signature);
+                    let call = builder.ins().call(direct_symbol, &[]);
+                    let pointer = builder.inst_results(call)[0];
+                    if pointer_type == types::I64 {
+                        pointer
+                    } else {
+                        builder.ins().uextend(types::I64, pointer)
+                    }
+                }
+                molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallV1
+                | molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallargsV1 => {
+                    let mut args = Vec::with_capacity(args_names.len());
+                    for name in args_names {
+                        args.push(
+                            *var_get_boxed_overflow_safe(
+                                &mut *module,
+                                &mut *import_ids,
+                                &mut *builder,
+                                &mut *import_refs,
+                                &mut *sealed_blocks,
+                                vars,
+                                name,
+                                representation_plan,
+                            )
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "native callable export `{export_name}` payload `{name}` not found"
+                                )
+                            }),
+                        );
+                    }
+                    let direct_symbol =
+                        declare_native_callable_symbol(module, builder, symbol, &machine_signature);
+                    let call = builder.ins().call(direct_symbol, &args);
+                    builder.inst_results(call)[0]
+                }
+            };
+            if let Some(out) = op.out.as_ref() {
+                def_var_from_boxed_transport(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out,
+                    result,
+                );
+            }
+            return;
+        }
+        if binding != "module_attr" {
+            panic!("native callable export `{export_name}` uses unsupported binding `{binding}`");
+        }
         if abi_contract.requires_direct_symbol_binding() {
             panic!(
                 "native callable module_attr export `{export_name}` cannot use direct-symbol memory ABI `{}`",

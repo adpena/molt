@@ -34,6 +34,20 @@ pub struct NativeCallableWasmSignature {
     pub results: &'static [&'static str],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeCallableMachineType {
+    MoltValue,
+    Pointer,
+    U64,
+    I32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCallableMachineSignature {
+    pub params: Vec<NativeCallableMachineType>,
+    pub results: Vec<NativeCallableMachineType>,
+}
+
 const OBJECT_CALL_BROWSER_PARAMS: &[&str] = &["molt.value..."];
 const OBJECT_CALLARGS_BROWSER_PARAMS: &[&str] = &["molt.callargs"];
 const FORWARD_F32_BROWSER_PARAMS: &[&str] = &["bytes.float32"];
@@ -110,6 +124,38 @@ impl NativeCallableAbi {
             },
         }
     }
+
+    pub fn native_machine_signature(
+        self,
+        payload_arity: usize,
+    ) -> Option<NativeCallableMachineSignature> {
+        if self
+            .fixed_arity()
+            .is_some_and(|expected| expected != payload_arity)
+        {
+            return None;
+        }
+        let (params, results) = match self {
+            Self::ObjectCallV1 => (
+                vec![NativeCallableMachineType::MoltValue; payload_arity],
+                vec![NativeCallableMachineType::MoltValue],
+            ),
+            Self::ObjectCallargsV1 => (
+                vec![NativeCallableMachineType::MoltValue],
+                vec![NativeCallableMachineType::MoltValue],
+            ),
+            Self::ForwardF32V1 => (
+                vec![
+                    NativeCallableMachineType::Pointer,
+                    NativeCallableMachineType::U64,
+                    NativeCallableMachineType::Pointer,
+                ],
+                vec![NativeCallableMachineType::I32],
+            ),
+            Self::PyinitModuleV1 => (Vec::new(), vec![NativeCallableMachineType::Pointer]),
+        };
+        Some(NativeCallableMachineSignature { params, results })
+    }
 }
 
 pub fn parse_native_callable_abi(abi: &str) -> Option<NativeCallableAbi> {
@@ -145,6 +191,14 @@ mod tests {
         assert_eq!(object_call.browser_signature().result, "molt.value");
         assert_eq!(object_call.wasm_signature().params, ["i64..."]);
         assert_eq!(object_call.wasm_signature().results, ["i64"]);
+        assert_eq!(
+            object_call.native_machine_signature(3).unwrap().params,
+            [
+                super::NativeCallableMachineType::MoltValue,
+                super::NativeCallableMachineType::MoltValue,
+                super::NativeCallableMachineType::MoltValue,
+            ]
+        );
 
         let object_callargs =
             parse_native_callable_abi(NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1).unwrap();
@@ -162,6 +216,7 @@ mod tests {
         assert_eq!(object_callargs.browser_signature().result, "molt.value");
         assert_eq!(object_callargs.wasm_signature().params, ["i64"]);
         assert_eq!(object_callargs.wasm_signature().results, ["i64"]);
+        assert!(object_callargs.native_machine_signature(2).is_none());
 
         let forward_f32 = parse_native_callable_abi(NATIVE_CALLABLE_ABI_FORWARD_F32_V1).unwrap();
         assert_eq!(forward_f32, NativeCallableAbi::ForwardF32V1);
@@ -172,6 +227,14 @@ mod tests {
         assert_eq!(forward_f32.browser_signature().result, "bytes.float32");
         assert_eq!(forward_f32.wasm_signature().params, ["i32", "i64", "i32"]);
         assert_eq!(forward_f32.wasm_signature().results, ["i32"]);
+        assert_eq!(
+            forward_f32.native_machine_signature(1).unwrap().params,
+            [
+                super::NativeCallableMachineType::Pointer,
+                super::NativeCallableMachineType::U64,
+                super::NativeCallableMachineType::Pointer,
+            ]
+        );
 
         let pyinit_module =
             parse_native_callable_abi(NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1).unwrap();
@@ -186,5 +249,9 @@ mod tests {
         );
         assert!(pyinit_module.wasm_signature().params.is_empty());
         assert_eq!(pyinit_module.wasm_signature().results, ["i32"]);
+        assert_eq!(
+            pyinit_module.native_machine_signature(0).unwrap().results,
+            [super::NativeCallableMachineType::Pointer]
+        );
     }
 }
