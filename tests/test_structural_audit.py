@@ -633,7 +633,7 @@ def test_cfg_test_module_does_not_create_kitchen_sink_file(tmp_path: Path):
     src.mkdir(parents=True)
     tests_body = "\n".join("    // fixture line" for _ in range(420))
     (src / "fixtures.rs").write_text(
-        f"pub fn production() {{}}\n#[cfg(test)]\nmod tests {{\n{tests_body}\n}}\n",
+        f"pub fn production() {{}}\n#[cfg(test)]\nmod publication_race_tests {{\n{tests_body}\n}}\n",
         encoding="utf-8",
     )
 
