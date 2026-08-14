@@ -28,6 +28,7 @@ const MAX_DIAGNOSTIC_BYTES: usize = 2048;
 pub enum ClosureMode {
     Leaf,
     DeclaredTree,
+    InventoryTree,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

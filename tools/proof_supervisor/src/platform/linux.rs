@@ -353,7 +353,9 @@ unsafe fn supervise(
                     }
                 };
                 let mut reason = None;
-                if image.class == ImageClass::Unknown {
+                if image.class == ImageClass::Unknown
+                    && policy.policy.mode != ClosureMode::InventoryTree
+                {
                     reason = Some(format!(
                         "unadmitted executable image {} in process {pid}",
                         image.path.display()

@@ -245,7 +245,9 @@ unsafe fn supervise(
                 let mut reason = None;
                 if policy.policy.mode == ClosureMode::Leaf && pid != root_pid {
                     reason = Some(format!("leaf closure observed descendant process {pid}"));
-                } else if image.class == ImageClass::Unknown {
+                } else if image.class == ImageClass::Unknown
+                    && policy.policy.mode != ClosureMode::InventoryTree
+                {
                     reason = Some(format!(
                         "unadmitted executable image {} in process {pid}",
                         image.path.display()

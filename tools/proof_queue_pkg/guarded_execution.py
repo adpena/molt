@@ -214,6 +214,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 exact,
                 cwd=cwd,
                 env=execution_env,
+                supervisor_binary=supervisor_binary,
             )
         )
         child_policy = execution_custody.child_policy(envelope, policy_identities)

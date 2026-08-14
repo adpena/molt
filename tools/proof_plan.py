@@ -34,10 +34,7 @@ for import_root in (ROOT, SRC):
         sys.path.insert(0, str(import_root))
 
 from tools.command_execution import bind_repository_imports  # noqa: E402
-from tools.toolchain_content_path import (  # noqa: E402
-    CONTENT_PATH_STRATEGIES,
-    resolve_content_path,
-)
+from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
 
 bind_repository_imports(__file__)
 
@@ -495,21 +492,21 @@ class ProofPlan:
                 errors.append(
                     f"{policy.name}: content_path_command must be a non-empty string list"
                 )
-            content_path_strategy = policy.data.get(
-                "content_path_strategy", "executable-path"
-            )
-            if content_path_strategy not in CONTENT_PATH_STRATEGIES:
-                errors.append(
-                    f"{policy.name}: unknown content_path_strategy "
-                    f"{content_path_strategy!r}"
+            process_image_probes = policy.data.get("process_image_probes", [])
+            if (
+                not isinstance(process_image_probes, list)
+                or not all(
+                    isinstance(probe, list)
+                    and probe
+                    and all(isinstance(item, str) and item for item in probe)
+                    for probe in process_image_probes
                 )
-            elif (
-                content_path_strategy != "executable-path"
-                and content_path_command is None
+                or len({tuple(probe) for probe in process_image_probes})
+                != len(process_image_probes)
             ):
                 errors.append(
-                    f"{policy.name}: content_path_strategy requires "
-                    "content_path_command"
+                    f"{policy.name}: process_image_probes must be unique "
+                    "non-empty string lists"
                 )
             dependencies = policy.data.get("dependencies", [])
             if (
@@ -1728,12 +1725,8 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             )
             if resolved.returncode != 0:
                 raise OSError("toolchain content resolver failed")
-            content_path = resolve_content_path(
-                launcher_path,
+            content_path = resolve_single_file_path(
                 resolved.stdout,
-                strategy=str(
-                    policy.data.get("content_path_strategy", "executable-path")
-                ),
                 probe_cwd=probe_directory,
             )
         except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):

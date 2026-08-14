@@ -32,7 +32,14 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
         [command, policy_flag, policy, receipt_flag, receipt]
             if command == "run" && policy_flag == "--policy" && receipt_flag == "--receipt" =>
         {
-            run_policy(Path::new(policy), Path::new(receipt))
+            run_policy(Path::new(policy), Path::new(receipt), false)
+        }
+        [command, policy_flag, policy, receipt_flag, receipt]
+            if command == "inventory"
+                && policy_flag == "--policy"
+                && receipt_flag == "--receipt" =>
+        {
+            run_policy(Path::new(policy), Path::new(receipt), true)
         }
         [command, policy_flag, policy, receipt_flag, receipt]
             if command == "verify" && policy_flag == "--policy" && receipt_flag == "--receipt" =>
@@ -47,6 +54,15 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
         }
         [command, fixture] if command == "fixture-child" && fixture == "spawn-self" => {
             let status = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args(["fixture-child", "exit", "0"])
+                .status()
+                .map_err(|error| error.to_string())?;
+            Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
+        }
+        [command, fixture, auxiliary]
+            if command == "fixture-child" && fixture == "spawn-and-wait" =>
+        {
+            let status = Command::new(auxiliary)
                 .args(["fixture-child", "exit", "0"])
                 .status()
                 .map_err(|error| error.to_string())?;
@@ -116,7 +132,7 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
             std::thread::sleep(std::time::Duration::from_secs(60));
             Ok(0)
         }
-        _ => Err("usage: capability <leaf|declared-tree> | run --policy FILE --receipt FILE | verify --policy FILE --receipt FILE".to_owned()),
+        _ => Err("usage: capability <leaf|declared-tree|inventory-tree> | run --policy FILE --receipt FILE | inventory --policy FILE --receipt FILE | verify --policy FILE --receipt FILE".to_owned()),
     }
 }
 
@@ -226,16 +242,24 @@ fn parse_mode(value: &str) -> Result<ClosureMode, String> {
     match value {
         "leaf" => Ok(ClosureMode::Leaf),
         "declared-tree" => Ok(ClosureMode::DeclaredTree),
-        _ => Err("mode must be leaf or declared-tree".to_owned()),
+        "inventory-tree" => Ok(ClosureMode::InventoryTree),
+        _ => Err("mode must be leaf, declared-tree, or inventory-tree".to_owned()),
     }
 }
 
-fn run_policy(policy_path: &Path, receipt_path: &Path) -> Result<u8, String> {
+fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Result<u8, String> {
     let bytes = fs::read(policy_path)
         .map_err(|error| format!("cannot read policy {}: {error}", policy_path.display()))?;
     let raw: Policy =
         serde_json::from_slice(&bytes).map_err(|error| format!("invalid policy: {error}"))?;
     let policy = raw.validate()?;
+    if (policy.policy.mode == ClosureMode::InventoryTree) != inventory {
+        return Err(if inventory {
+            "inventory command requires inventory-tree policy mode".to_owned()
+        } else {
+            "inventory-tree policy must use the inventory command".to_owned()
+        });
+    }
     let mut events = EventJournal::create(receipt_path)?;
     let mut receipt = platform::run(&policy, &mut events);
     let evidence = events.publish()?;

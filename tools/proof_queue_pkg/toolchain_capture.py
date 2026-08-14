@@ -104,7 +104,9 @@ def capture_rust_link_process_images(
     with tempfile.TemporaryDirectory(prefix="molt-rust-link-capture-") as raw_root:
         root = Path(raw_root).resolve()
         source = root / "main.rs"
-        source.write_text("fn main() {}\n#[test]\nfn proof_link_test() {}\n", encoding="utf-8")
+        source.write_text(
+            "fn main() {}\n#[test]\nfn proof_link_test() {}\n", encoding="utf-8"
+        )
         output = root / ("probe.exe" if os.name == "nt" else "probe")
         if cargo is not None:
             manifest = root / "Cargo.toml"
@@ -149,9 +151,7 @@ def capture_rust_link_process_images(
                             ):
                                 feature_names.add(local)
                                 selected_features.append(local)
-                        cargo_profile_args.extend(
-                            (value, ",".join(selected_features))
-                        )
+                        cargo_profile_args.extend((value, ",".join(selected_features)))
                     index += 2
                     continue
                 if value.startswith("--profile="):
@@ -198,7 +198,7 @@ def capture_rust_link_process_images(
                     rustc_link_args.append(value)
                 index += 1
             feature_table = "".join(
-                f'{json.dumps(name)}=[]\n' for name in sorted(feature_names)
+                f"{json.dumps(name)}=[]\n" for name in sorted(feature_names)
             )
             profile_table = "".join(
                 f'\n[profile.{name}]\ninherits="release"\n'
@@ -377,7 +377,9 @@ def revalidate_rust_link_process_images(
         ).encode()
     ).hexdigest()
     if telemetry.get("command_semantics_sha256") != command_semantics_sha256:
-        raise ValueError("Rust linker command semantics changed while live custody armed")
+        raise ValueError(
+            "Rust linker command semantics changed while live custody armed"
+        )
 
     raw_images = selected_identity.get("process_images")
     if not isinstance(raw_images, list):
@@ -504,6 +506,9 @@ def compact_toolchains(toolchains: Mapping[str, object]) -> dict[str, object]:
             process_images = raw.get("process_images")
             if isinstance(process_images, list):
                 summary["process_images"] = process_images
+            process_image_inventories = raw.get("process_image_inventories")
+            if isinstance(process_image_inventories, list):
+                summary["process_image_inventories"] = process_image_inventories
             link_selection = raw.get("link_selection")
             if isinstance(link_selection, Mapping):
                 summary["link_selection"] = dict(link_selection)
@@ -548,7 +553,9 @@ def load_capture(
     return payload
 
 
-def _rehash(row: Mapping[str, object]) -> tuple[str, str | None, int | None, str | None]:
+def _rehash(
+    row: Mapping[str, object],
+) -> tuple[str, str | None, int | None, str | None]:
     raw_path = row.get("path")
     expected = row.get("sha256")
     if not isinstance(raw_path, str) or not isinstance(expected, str):

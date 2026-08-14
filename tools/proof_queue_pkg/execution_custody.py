@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from tools.proof_queue_pkg import process_image_capture
+
 CHILD_POLICY_ENV = "MOLT_PROOF_CHILD_CUSTODY_JSON"
 CHILD_ENDPOINT_ENV = "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT"
 CHILD_TOKEN_ENV = "MOLT_PROOF_CHILD_CUSTODY_TOKEN"
@@ -361,7 +363,9 @@ class LiveCustodyMonitor:
                         ctypes.get_last_error(),
                         f"ReadDirectoryChangesW wait failed for {spec.root}",
                     )
-                if not get_result(handle, ctypes.byref(overlapped), ctypes.byref(returned), False):
+                if not get_result(
+                    handle, ctypes.byref(overlapped), ctypes.byref(returned), False
+                ):
                     error = ctypes.get_last_error()
                     if self._stop.is_set() and error == 995:
                         return
@@ -452,9 +456,7 @@ class LiveCustodyMonitor:
                 spec, directory = owner
                 candidate = directory / name if name else directory
                 self._record_event(spec, f"inotify:{event_mask:#x}", candidate)
-                if event_mask & 0x40000000 and event_mask & (
-                    0x00000100 | 0x00000080
-                ):
+                if event_mask & 0x40000000 and event_mask & (0x00000100 | 0x00000080):
                     if candidate.is_dir():
                         new_wd = add(fd, os.fsencode(candidate), mask)
                         if new_wd < 0:
@@ -524,11 +526,7 @@ class LiveCustodyMonitor:
                 flags = int(event_flags[index])
                 path = Path(os.fsdecode(event_paths[index]))
                 if flags & (
-                    0x00000001
-                    | 0x00000002
-                    | 0x00000004
-                    | 0x00000008
-                    | 0x00000020
+                    0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000020
                 ):
                     self._record_error(
                         f"FSEvents history was incomplete for {path}: flags={flags:#x}"
@@ -639,9 +637,7 @@ class LiveCustodyMonitor:
                 core_foundation.CFRelease(value)
 
 
-def _identity_paths(
-    payload: object, *, broad_roots: Sequence[Path] = ()
-) -> list[Path]:
+def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> list[Path]:
     paths: list[Path] = []
     broad = tuple(root.resolve(strict=True) for root in broad_roots)
     path_keys = {
@@ -740,30 +736,22 @@ def child_policy(
         for name, identity in toolchains.items():
             if not isinstance(identity, Mapping):
                 continue
-            candidates: list[tuple[object, object]] = []
-            if name == "python":
-                candidates.append(
-                    (identity.get("executable"), identity.get("executable_sha256"))
-                )
-            else:
-                candidates.extend(
-                    [
-                        (identity.get("path"), identity.get("launcher_sha256")),
-                        (
-                            identity.get("content_path"),
-                            identity.get("executable_sha256"),
-                        ),
-                    ]
-                )
-            for raw_path, digest in candidates:
-                if not isinstance(raw_path, str) or not isinstance(digest, str):
-                    continue
-                path = Path(raw_path)
-                if not path.is_file():
-                    continue
+            for image in process_image_capture.toolchain_images(str(name), identity):
+                path = Path(str(image["path"]))
                 allowed.append(
-                    {"toolchain": str(name), "path": _norm(path), "sha256": digest}
+                    {
+                        "toolchain": str(name),
+                        "path": _norm(path),
+                        "sha256": str(image["sha256"]),
+                    }
                 )
+    allowed = [
+        dict(row)
+        for row in {
+            (row["toolchain"], row["path"], row["sha256"]): row for row in allowed
+        }.values()
+    ]
+    allowed.sort(key=lambda row: (row["toolchain"], row["path"], row["sha256"]))
     return {
         "schema": "molt.proof-child-custody.v1",
         "descendants": descendants,
@@ -903,7 +891,9 @@ class ChildCustodyEventServer:
                         if runtime not in self.allowed_runtimes:
                             raise ValueError("child custody runtime handshake mismatch")
                         if connection_id == 0 and runtime != self.expected_runtime:
-                            raise ValueError("root child custody runtime handshake mismatch")
+                            raise ValueError(
+                                "root child custody runtime handshake mismatch"
+                            )
                         saw_start = True
                         connection.sendall(
                             (
@@ -917,7 +907,9 @@ class ChildCustodyEventServer:
                         )
                     elif event == "hook-end":
                         if saw_end:
-                            raise ValueError("duplicate child custody terminal handshake")
+                            raise ValueError(
+                                "duplicate child custody terminal handshake"
+                            )
                         saw_end = True
                         payload["connection_id"] = connection_id
                         with self._lock:
@@ -925,7 +917,10 @@ class ChildCustodyEventServer:
                         break
                     elif event == "spawn-intent":
                         sequence = payload.get("sequence")
-                        if not isinstance(sequence, int) or sequence != last_sequence + 1:
+                        if (
+                            not isinstance(sequence, int)
+                            or sequence != last_sequence + 1
+                        ):
                             raise ValueError("child custody sequence is not monotonic")
                         last_sequence = sequence
                         decision = self._decide_child(payload)
@@ -964,9 +959,7 @@ class ChildCustodyEventServer:
                             "admitted": False,
                         }
                     else:
-                        raise ValueError(
-                            f"unknown child custody event {event!r}"
-                        )
+                        raise ValueError(f"unknown child custody event {event!r}")
                     payload["connection_id"] = connection_id
                     with self._lock:
                         self._events.append(payload)
@@ -1076,9 +1069,7 @@ class ChildCustodyEventServer:
             else bool(starts) and len(starts) == len(ends)
         )
         broker_complete = (
-            self._state == "DRAINED"
-            and not errors
-            and runtime_handshake_complete
+            self._state == "DRAINED" and not errors and runtime_handshake_complete
         )
         material = {"events": events, "errors": errors, "state": self._state}
         return {
@@ -1298,9 +1289,9 @@ def _resolve_child_executable(
                 raw_extensions = os.fsdecode(raw_extensions)
         extensions = [
             extension
-            for extension in str(
-                raw_extensions or ".COM;.EXE;.BAT;.CMD"
-            ).split(os.pathsep)
+            for extension in str(raw_extensions or ".COM;.EXE;.BAT;.CMD").split(
+                os.pathsep
+            )
             if extension
         ]
     for entry in path_entries:
@@ -1354,7 +1345,9 @@ def install_python_child_custody() -> None:
         host, port_raw = endpoint.rsplit(":", 1)
         channel = socket.create_connection((host, int(port_raw)), timeout=10.0)
     except (OSError, ValueError) as exc:
-        raise RuntimeError(f"proof child custody channel connection failed: {exc}") from exc
+        raise RuntimeError(
+            f"proof child custody channel connection failed: {exc}"
+        ) from exc
     channel.settimeout(None)
     _child_channel = channel
     _child_channel_reader = channel.makefile("rb")
@@ -1432,6 +1425,7 @@ def install_python_child_custody() -> None:
             raise PermissionError(
                 f"opaque process creation is forbidden in proof custody: {event}"
             )
+
     sys.addaudithook(audit)
     # The bootstrap loaded this authority by a private file-module name.  Remove
     # every alias to that module before returning to payload code so the proof
