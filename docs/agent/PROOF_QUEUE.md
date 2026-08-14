@@ -10,13 +10,17 @@ The executable is intentionally only a stable source-checkout entrypoint. The
 canonical implementation lives in `tools/proof_queue_pkg/`: `state` owns the
 SQLite schema, paths, rows, notes, DAG, and serialized mutex facts; `custody`
 owns process identity and queue-owned process control; `scheduling` owns atomic
-admission and leases; `diagnostics` classifies logs; `evidence` owns notebook
-and JSON projections; `policy` owns command/toolchain admission; `runner` owns
-guarded execution; `commands` orchestrates CLI operations; and `pact` owns the
-named scientific witness lanes. Pact imports are lazy so status/help and normal
-queue work do not load NumPy/SciPy witness tooling. New behavior belongs in its
-owning module; `tools/proof_queue.py` must not become a compatibility facade or
-re-export internal implementation symbols.
+admission and leases; `diagnostic_engine` preserves classifier order while the
+`diagnostic_*_rules` modules own their queue/build/link/runtime rule families;
+`diagnostic_evidence`, `diagnostic_model`, `diagnostic_audit`, and
+`diagnostic_reporting` own live evidence, shared values, audit/frontier logic,
+and human rendering respectively; `evidence` owns notebook and JSON projections;
+`policy` owns command/toolchain admission; `runner` owns guarded execution;
+`commands` orchestrates CLI operations; and `pact` owns the named scientific
+witness lanes. Pact imports are lazy so status/help and normal queue work do not
+load NumPy/SciPy witness tooling. New behavior belongs in its owning module;
+`tools/proof_queue.py` must not become a compatibility facade or re-export
+internal implementation symbols.
 
 ## When To Use It
 
@@ -609,8 +613,8 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose R
 
 `status` also prints the first diagnostic for recent failed rows. If a repeated
 failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
-rule to `tools/proof_queue_pkg/diagnostics.py` before that pattern becomes tribal
-knowledge.
+rule to the owning `tools/proof_queue_pkg/diagnostic_*_rules.py` family before
+that pattern becomes tribal knowledge.
 `audit` also reports `audit-weak-proof-metadata` for rows that fell back to
 generic resource/contention authority, have no scopes, or carry suspicious
 reasons from broken shell quoting. Treat those rows as weak evidence and rerun
