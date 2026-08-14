@@ -217,7 +217,7 @@ def _guarded_run(
     *,
     prefix: str,
     env: dict[str, str],
-    timeout: float,
+    timeout_default: float,
     cwd: str | None = None,
 ) -> tuple[str, str, int, bool]:
     """Run a child under the shared harness memory guard.
@@ -228,6 +228,11 @@ def _guarded_run(
     """
     from tools import harness_memory_guard
 
+    timeout = harness_memory_guard.timeout_from_env(
+        prefix,
+        env,
+        default=timeout_default,
+    )
     try:
         proc = harness_memory_guard.guarded_completed_process(
             cmd,
@@ -285,17 +290,6 @@ def _build_cmd(
     if extra_build_args:
         cmd.extend(extra_build_args)
     return cmd
-
-
-def _build_timeout(env_key: str, default: float) -> float:
-    raw = os.environ.get(env_key, "").strip()
-    try:
-        v = float(raw)
-        if v > 0:
-            return v
-    except ValueError:
-        pass
-    return default
 
 
 def _scratch_dir(backend: str, file_path: str) -> Path:
@@ -367,12 +361,11 @@ class WasmAdapter:
             capabilities,
             extra_build_args=["--linked", "--require-linked"],
         )
-        build_timeout = _build_timeout("MOLT_COMPAT_WASM_BUILD_TIMEOUT", 600.0)
         b_out, b_err, b_rc, b_to = _guarded_run(
             cmd,
-            prefix="MOLT_COMPAT_WASM",
+            prefix="MOLT_COMPAT_WASM_BUILD",
             env=env,
-            timeout=build_timeout,
+            timeout_default=600.0,
             cwd=str(_REPO_ROOT),
         )
         linked = out_dir / "output_linked.wasm"
@@ -388,12 +381,11 @@ class WasmAdapter:
             )
         run_env = dict(env)
         manifest = wasm_runtime_manifest_path(linked)
-        run_timeout = _build_timeout("MOLT_COMPAT_WASM_RUN_TIMEOUT", 60.0)
         r_out, r_err, r_rc, r_to = _guarded_run(
             [shutil.which("node") or "node", str(_RUN_WASM_JS), str(manifest)],
-            prefix="MOLT_COMPAT_WASM",
+            prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
-            timeout=run_timeout,
+            timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
         r_err = _strip_node_noise(r_err)
@@ -464,12 +456,11 @@ class LlvmAdapter:
             capabilities,
             extra_build_args=["--emit", "bin", "--output", str(output_binary)],
         )
-        build_timeout = _build_timeout("MOLT_COMPAT_LLVM_BUILD_TIMEOUT", 900.0)
         b_out, b_err, b_rc, b_to = _guarded_run(
             cmd,
-            prefix="MOLT_COMPAT_LLVM",
+            prefix="MOLT_COMPAT_LLVM_BUILD",
             env=env,
-            timeout=build_timeout,
+            timeout_default=900.0,
             cwd=str(_REPO_ROOT),
         )
         binary = output_binary
@@ -483,12 +474,11 @@ class LlvmAdapter:
                 build_failed=True,
                 detail="llvm build produced no binary",
             )
-        run_timeout = _build_timeout("MOLT_COMPAT_LLVM_RUN_TIMEOUT", 60.0)
         r_out, r_err, r_rc, r_to = _guarded_run(
             [str(binary)],
-            prefix="MOLT_COMPAT_LLVM",
+            prefix="MOLT_COMPAT_LLVM_RUN",
             env=env,
-            timeout=run_timeout,
+            timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
         return BackendResult(
@@ -529,12 +519,11 @@ class LuauAdapter:
         env = _cross_build_env(extra_env, capabilities)
         stem = Path(file_path).stem
         cmd = _build_cmd(file_path, "luau", build_profile, out_dir, capabilities)
-        build_timeout = _build_timeout("MOLT_COMPAT_LUAU_BUILD_TIMEOUT", 600.0)
         b_out, b_err, b_rc, b_to = _guarded_run(
             cmd,
-            prefix="MOLT_COMPAT_LUAU",
+            prefix="MOLT_COMPAT_LUAU_BUILD",
             env=env,
-            timeout=build_timeout,
+            timeout_default=600.0,
             cwd=str(_REPO_ROOT),
         )
         luau_out = out_dir / f"{stem}.luau"
@@ -551,12 +540,11 @@ class LuauAdapter:
                 build_failed=True,
                 detail="luau build produced no .luau source",
             )
-        run_timeout = _build_timeout("MOLT_COMPAT_LUAU_RUN_TIMEOUT", 60.0)
         r_out, r_err, r_rc, r_to = _guarded_run(
             [shutil.which("lune") or "lune", "run", str(luau_out)],
-            prefix="MOLT_COMPAT_LUAU",
+            prefix="MOLT_COMPAT_LUAU_RUN",
             env=env,
-            timeout=run_timeout,
+            timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
         return BackendResult(
