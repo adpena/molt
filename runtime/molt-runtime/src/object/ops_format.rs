@@ -52,13 +52,13 @@ pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
 }
 
 /// Thin adapter over the single float-format authority
-/// (`super::float_repr::repr_float`), which reproduces CPython's
+/// (`molt_runtime_core::float_repr::repr_float`), which reproduces CPython's
 /// `repr(float)` / `str(float)` bit-for-bit (shortest round-tripping decimal,
 /// CPython's fixed-vs-scientific threshold, `e%+.02d` exponent, `.0` for
 /// integer-valued floats, `nan`/`inf`/`-inf`/`-0.0`). There is no separate
 /// hand-rolled formatting or scientific-notation lane in this module.
 fn format_float(f: f64) -> String {
-    super::float_repr::repr_float(f)
+    molt_runtime_core::float_repr::repr_float(f)
 }
 
 fn format_complex_float(f: f64) -> String {

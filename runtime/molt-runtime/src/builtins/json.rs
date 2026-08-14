@@ -1397,11 +1397,7 @@ fn json_write_indent(out: &mut String, indent_text: Option<&str>, depth: usize) 
 
 fn json_float_token(value: f64, allow_nan: bool) -> Result<String, JsonEncodeError> {
     if value.is_finite() {
-        let s = format!("{value}");
-        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-            return Ok(format!("{s}.0"));
-        }
-        return Ok(s);
+        return Ok(molt_runtime_core::float_repr::repr_float(value));
     }
     if !allow_nan {
         return Err(JsonEncodeError::Value(
@@ -1414,6 +1410,45 @@ fn json_float_token(value: f64, allow_nan: bool) -> Result<String, JsonEncodeErr
         Ok("Infinity".to_string())
     } else {
         Ok("-Infinity".to_string())
+    }
+}
+
+#[cfg(test)]
+mod float_text_tests {
+    use super::{JsonEncodeError, json_float_token};
+
+    #[test]
+    fn json_finite_float_tokens_use_canonical_cpython_repr() {
+        let cases = [
+            (1e16, "1e+16"),
+            (1e-5, "1e-05"),
+            (1e100, "1e+100"),
+            (5e-324, "5e-324"),
+            (137839762462415.62, "137839762462415.62"),
+            (-0.0, "-0.0"),
+        ];
+        for (value, expected) in cases {
+            match json_float_token(value, true) {
+                Ok(actual) => assert_eq!(actual, expected),
+                Err(_) => panic!("finite float token unexpectedly failed for {value:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn json_nonfinite_policy_remains_json_specific() {
+        assert!(matches!(
+            json_float_token(f64::NAN, true),
+            Ok(token) if token == "NaN"
+        ));
+        assert!(matches!(
+            json_float_token(f64::INFINITY, true),
+            Ok(token) if token == "Infinity"
+        ));
+        assert!(matches!(
+            json_float_token(f64::NEG_INFINITY, false),
+            Err(JsonEncodeError::Value(_))
+        ));
     }
 }
 

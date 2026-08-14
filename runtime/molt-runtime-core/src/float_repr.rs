@@ -24,7 +24,8 @@
 //! * `nan`, `inf`, `-inf`, and the sign of `-0.0` are preserved.
 //!
 //! In Python 3, `float.__str__` is `float.__repr__`, so this single function is
-//! the authority for both `repr(float)` and `str(float)`.
+//! the authority for runtime `repr`/`str`, finite serializer tokens, and ABI
+//! projections.
 //!
 //! ## Why we do not use Rust's `f64::to_string()`
 //!
