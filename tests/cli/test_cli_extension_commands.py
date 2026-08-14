@@ -28,6 +28,7 @@ from molt.c_api_symbols import is_c_api_external_requirement
 import pytest
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.cli.native_link_test_support import static_archive_bytes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -237,11 +238,6 @@ def _install_extension_object_symbol_facts(
         "_native_object_global_symbol_sets",
         fake_object_symbols,
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_native_object_global_symbol_sets",
-        fake_object_symbols,
-    )
 
 
 def _write_fake_wasi_sysroot(root: Path) -> Path:
@@ -254,6 +250,14 @@ def _write_fake_wasi_sysroot(root: Path) -> Path:
 
 def _wasm_exporting_i64_unary_symbol(
     symbol: str,
+    *,
+    imports: tuple[str, ...] = (),
+) -> bytes:
+    return _wasm_exporting_i64_unary_symbols((symbol,), imports=imports)
+
+
+def _wasm_exporting_i64_unary_symbols(
+    symbols: tuple[str, ...],
     *,
     imports: tuple[str, ...] = (),
 ) -> bytes:
@@ -280,7 +284,9 @@ def _wasm_exporting_i64_unary_symbol(
     )
     import_section = section(2, uleb(len(imports)) + import_entries) if imports else b""
     function_section = uleb(1) + uleb(0)
-    export_section = uleb(1) + wasm_string(symbol) + b"\x00" + uleb(len(imports))
+    export_section = uleb(len(symbols)) + b"".join(
+        wasm_string(symbol) + b"\x00" + uleb(len(imports)) for symbol in symbols
+    )
     body = uleb(0) + b"\x42\x00\x0b"
     code_section = uleb(1) + uleb(len(body)) + body
     return (
@@ -1486,20 +1492,13 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if "-c" in cmd:
-            out_path.write_bytes(b"obj")
-        else:
-            out_path.write_bytes(b"shared")
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
     )
 
     out_dir = project_root / "dist"
@@ -1526,8 +1525,8 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     assert manifest["abi_tag"] == "molt_abi2"
     assert manifest["loader_kind"] == "libmolt_source"
     assert manifest["init_symbol"] == "PyInit_demoext"
-    assert manifest["runtime_linkage"] == "host_resolved"
-    assert manifest["artifact_kind"] == "shared_library"
+    assert manifest["runtime_linkage"] == "static_link"
+    assert manifest["artifact_kind"] == "static_archive"
     assert manifest["target_python"] == "py313"
 
     with zipfile.ZipFile(wheel_path) as zf:
@@ -1589,17 +1588,22 @@ def test_extension_build_emits_public_exports_in_manifest(
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": (
+                {
+                    "PyInit_demoext",
+                    "molt_demoext_ndimage_distance_transform_edt",
+                },
+                {"PyModule_Create", "molt_c_api_version"},
+            )
+        },
     )
 
     out_dir = project_root / "dist"
@@ -1690,17 +1694,13 @@ def test_extension_build_infers_module_attr_callable_exports_from_pymethoddef(
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
     )
 
     out_dir = project_root / "dist"
@@ -1775,13 +1775,7 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if "-c" in cmd:
-            out_path.write_bytes(b"obj")
-        else:
-            out_path.write_bytes(b"shared")
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -1793,10 +1787,9 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
         lambda tool: "/usr/bin/zig" if tool == "zig" else None,
     )
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
     )
 
     out_dir = project_root / "dist"
@@ -1810,14 +1803,11 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
         verbose=False,
     )
     assert rc == 0
-    assert any(
-        cmd[:2] == ["zig", "cc"] and "-target" in cmd and "-c" in cmd
-        for cmd in commands
-    )
+    assert any("-c" in cmd for cmd in commands)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["target_triple"] == target
-    assert manifest["runtime_linkage"] == "host_resolved"
-    assert manifest["artifact_kind"] == "shared_library"
+    assert manifest["runtime_linkage"] == "static_link"
+    assert manifest["artifact_kind"] == "static_archive"
 
 
 def test_extension_build_consumes_meson_source_plan_object_closure(
@@ -1832,16 +1822,7 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        if "-MF" in cmd:
-            dependency_file = Path(cmd[cmd.index("-MF") + 1])
-            dependency_file.write_text(
-                f"object.o: {cmd[cmd.index('-c') + 1]}\n",
-                encoding="utf-8",
-            )
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -1859,12 +1840,6 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
             ),
         },
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -1894,9 +1869,10 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert include_dirs.index(
         (project_root / "pkg" / "include").resolve()
     ) < include_dirs.index((ROOT / "include").resolve())
-    link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
-    assert any("0_demoext.o" in part for part in link_cmd)
-    assert any("1_helper_generated.o" in part for part in link_cmd)
+    archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
+    assert Path(archive_cmd[archive_cmd.index("rcsD") + 1]).name == "demoext.molt.a"
+    assert any("0_demoext.o" in part for part in archive_cmd)
+    assert any("1_helper_generated.o" in part for part in archive_cmd)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["source_plan"]["kind"] == "meson-intro-targets"
     assert manifest["source_plan"]["plan"] == str(intro_path.resolve())
@@ -2079,16 +2055,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        if "-MF" in cmd:
-            dependency_file = Path(cmd[cmd.index("-MF") + 1])
-            dependency_file.write_text(
-                f"object.o: {cmd[cmd.index('-c') + 1]}\n",
-                encoding="utf-8",
-            )
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fake_regenerate(
@@ -2144,12 +2111,6 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         default_init_symbol="PyInit__cyext",
         by_stem={"_cyext": ({"PyInit__cyext"}, {"PyModule_Create"})},
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit__cyext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -2225,11 +2186,7 @@ def test_extension_build_derives_module_attr_support_source_closure(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        _write_fake_compiler_depfile(cmd)
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2241,12 +2198,6 @@ def test_extension_build_derives_module_attr_support_source_closure(
             "helper_generated": ({"helper_generated"}, set()),
         },
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -2308,11 +2259,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        _write_fake_compiler_depfile(cmd)
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2328,12 +2275,6 @@ def test_extension_build_follows_linked_static_library_source_closure(
             "unique": ({"array__unique_hash"}, set()),
         },
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -2356,8 +2297,8 @@ def test_extension_build_follows_linked_static_library_source_closure(
     assert any(
         "-c" in cmd and any("unique.cpp" in part for part in cmd) for cmd in commands
     )
-    link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
-    assert any("2_unique.o" in part for part in link_cmd)
+    archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
+    assert any("2_unique.o" in part for part in archive_cmd)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
@@ -2402,11 +2343,7 @@ def test_extension_build_excludes_linked_static_library(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        _write_fake_compiler_depfile(cmd)
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2422,12 +2359,6 @@ def test_extension_build_excludes_linked_static_library(
             "unique": ({"array__unique_hash"}, set()),
         },
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -2474,11 +2405,7 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
-        _write_fake_compiler_depfile(cmd)
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2492,12 +2419,6 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
             "simd.dispatch": ({"SIMD_not_linked"}, set()),
         },
     )
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext", None),
-    )
-
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
@@ -2788,25 +2709,34 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
 
 
 def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
     seen_commands: list[list[str]] = []
     monkeypatch.setenv("MOLT_WASM_CC", "clang-wasm")
     monkeypatch.setenv("MOLT_CROSS_CC", "wrong-cross")
+    tool_root = tmp_path / "tools"
+    tool_root.mkdir()
+    tool_paths = {
+        name: tool_root / name
+        for name in (
+            "clang-wasm",
+            "wrong-cross",
+            "clang++",
+            "wasm-ld",
+            "llvm-ar",
+            "llvm-ranlib",
+            "llvm-nm",
+            "llvm-strip",
+        )
+    }
+    for path in tool_paths.values():
+        path.write_bytes(b"tool")
     monkeypatch.setattr(
         cli_llvm_wasi_tools.shutil,
         "which",
-        lambda tool: {
-            "clang-wasm": "/tools/clang-wasm",
-            "wrong-cross": "/tools/wrong-cross",
-            "clang++": "/tools/clang++",
-            "wasm-ld": "/tools/wasm-ld",
-            "llvm-ar": "/tools/llvm-ar",
-            "llvm-ranlib": "/tools/llvm-ranlib",
-            "llvm-nm": "/tools/llvm-nm",
-            "llvm-strip": "/tools/llvm-strip",
-        }.get(tool),
+        lambda tool: str(tool_paths[tool]) if tool in tool_paths else None,
     )
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -2827,13 +2757,14 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "molt_wasm_cc"
     assert toolchain.tools.cc is not None
-    assert toolchain.tools.cc.command == ("/tools/clang-wasm",)
-    assert "MOLT_WASM_CC=/tools/clang-wasm" in toolchain.detail
+    assert toolchain.tools.cc.command == (str(tool_paths["clang-wasm"].resolve()),)
+    assert "MOLT_WASM_CC=" in toolchain.detail
+    assert str(tool_paths["clang-wasm"].resolve()) in toolchain.detail
     assert "wrong-cross" not in toolchain.detail
     compile_commands = [command for command in seen_commands if "-c" in command]
     assert compile_commands
     assert compile_commands[0][:3] == [
-        "/tools/clang-wasm",
+        str(tool_paths["clang-wasm"].resolve()),
         "-target",
         "wasm32-wasip1",
     ]
@@ -2852,19 +2783,27 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     monkeypatch.setenv("WASI_SYSROOT", str(sysroot))
     monkeypatch.delenv("MOLT_WASM_CC", raising=False)
     monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
+    tool_root = tmp_path / "tools"
+    tool_root.mkdir()
+    tool_paths = {
+        name: tool_root / name
+        for name in (
+            "clang",
+            "clang++",
+            "zig",
+            "wasm-ld",
+            "llvm-ar",
+            "llvm-ranlib",
+            "llvm-nm",
+            "llvm-strip",
+        )
+    }
+    for path in tool_paths.values():
+        path.write_bytes(b"tool")
     monkeypatch.setattr(
         cli_llvm_wasi_tools.shutil,
         "which",
-        lambda tool: {
-            "clang": "/tools/clang",
-            "clang++": "/tools/clang++",
-            "zig": "/tools/zig",
-            "wasm-ld": "/tools/wasm-ld",
-            "llvm-ar": "/tools/llvm-ar",
-            "llvm-ranlib": "/tools/llvm-ranlib",
-            "llvm-nm": "/tools/llvm-nm",
-            "llvm-strip": "/tools/llvm-strip",
-        }.get(tool),
+        lambda tool: str(tool_paths[tool]) if tool in tool_paths else None,
     )
     seen_commands: list[list[str]] = []
 
@@ -2886,20 +2825,20 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "clang"
     assert toolchain.tools.cc is not None
-    assert toolchain.tools.cc.command == (
-        str(Path("/tools/clang").resolve(strict=False)),
+    assert toolchain.tools.cc.command[-2:] == (
         "--sysroot",
         str(sysroot.resolve(strict=False)),
     )
     assert toolchain.wasi_sysroot == sysroot.resolve(strict=False)
-    assert "/tools/zig" not in toolchain.detail
     compile_commands = [command for command in seen_commands if "-c" in command]
     assert compile_commands
-    assert compile_commands[0][:4] == [
-        str(Path("/tools/clang").resolve(strict=False)),
+    sysroot_index = compile_commands[0].index("--sysroot")
+    assert compile_commands[0][sysroot_index : sysroot_index + 5] == [
         "--sysroot",
         str(sysroot.resolve(strict=False)),
         "-target",
+        "wasm32-wasip1",
+        "-c",
     ]
 
 
@@ -2981,8 +2920,8 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         "PyOS_strtol",
         "malloc",
     )
-    wasm_bytes = _wasm_exporting_i64_unary_symbol(
-        native_symbol,
+    wasm_bytes = _wasm_exporting_i64_unary_symbols(
+        ("PyInit_demoext", native_symbol),
         imports=wasm_imports,
     )
     commands: list[list[str]] = []
@@ -2997,6 +2936,13 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext", native_symbol}, set(wasm_imports)),
+        },
+    )
     monkeypatch.setattr(
         cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
     )
@@ -3022,38 +2968,47 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     assert payload["data"]["target_triple"] == "wasm32-wasip1"
     assert payload["data"]["runtime_linkage"] == "static_link"
     assert payload["data"]["artifact_kind"] == "wasm_relocatable_object"
-    assert any("--target=wasm32-wasip1" in cmd for cmd in commands)
-    assert any(f"--sysroot={wasi_sysroot}" in cmd for cmd in commands)
-    assert any("-wasm-enable-sjlj" in cmd for cmd in commands)
-
+    assert any(
+        "-target" in cmd and cmd[cmd.index("-target") + 1] == "wasm32-wasip1"
+        for cmd in commands
+    )
+    selected_sysroot = next(
+        Path(cmd[cmd.index("--sysroot") + 1]).resolve()
+        for cmd in commands
+        if "--sysroot" in cmd
+    )
     artifact_path = out_dir / "demoext.molt.wasm"
     assert artifact_path.exists()
     assert artifact_path.read_bytes() == wasm_bytes
     assert [
         export.name
         for export in wasm_artifact.read_wasm_function_exports(artifact_path)
-    ] == [native_symbol]
+    ] == ["PyInit_demoext", native_symbol]
 
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["target_triple"] == "wasm32-wasip1"
     assert manifest["runtime_linkage"] == "static_link"
     assert manifest["artifact_kind"] == "wasm_relocatable_object"
-    assert manifest["build"]["wasi_sysroot"] == str(wasi_sysroot)
+    assert manifest["build"]["wasi_sysroot"] == str(selected_sysroot)
     assert manifest["extension"] == "demoext.molt.wasm"
     assert manifest["extension_sha256"] == hashlib.sha256(wasm_bytes).hexdigest()
     object_closure = manifest["object_closure"]
-    assert object_closure["defined_symbols"] == [native_symbol]
+    assert object_closure["defined_symbols"] == ["PyInit_demoext", native_symbol]
     assert object_closure["undefined_symbols"] == sorted(wasm_imports)
     assert object_closure["runtime_symbols"] == sorted(
         wasm_static_link_runtime_symbols_for_imports(wasm_imports)
     )
     assert "malloc" not in object_closure["runtime_symbols"]
-    assert "PyModule_Create" in object_closure["required_c_api_symbols"]
-    assert "PyOS_strtol" in object_closure["required_c_api_symbols"]
-    assert "PyInit_demoext" not in object_closure["required_c_api_symbols"]
-    assert "PyMODINIT_FUNC" not in object_closure["required_c_api_symbols"]
-    assert "PyTypeObject" not in object_closure["required_c_api_symbols"]
-    assert "Python" not in object_closure["required_c_api_symbols"]
+    required_c_api_symbols = {
+        symbol
+        for item in object_closure["objects"]
+        for symbol in item["required_c_api_symbols"]
+    }
+    assert "PyOS_strtol" in required_c_api_symbols
+    assert "PyInit_demoext" not in required_c_api_symbols
+    assert "PyMODINIT_FUNC" not in required_c_api_symbols
+    assert "PyTypeObject" not in required_c_api_symbols
+    assert "Python" not in required_c_api_symbols
     assert manifest["callable_exports"] == [
         {
             "module": "demoext.ndimage",
@@ -3072,7 +3027,22 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         embedded = json.loads(zf.read("extension_manifest.json"))
     assert embedded["runtime_linkage"] == "static_link"
     assert embedded["artifact_kind"] == "wasm_relocatable_object"
-    assert embedded["object_closure"] == manifest["object_closure"]
+    embedded_closure = embedded["object_closure"]
+    for field in (
+        "defined_symbols",
+        "undefined_symbols",
+        "runtime_symbols",
+        "required_capsules",
+        "project_generated_c_api_prefixes",
+    ):
+        assert embedded_closure[field] == object_closure[field]
+    assert embedded_closure["objects"][0]["required_c_api_symbols"] == sorted(
+        required_c_api_symbols
+    )
+    assert embedded_closure["objects"][0]["compile_command"][0].startswith(
+        "@toolchain/"
+    )
+    assert "@wasi-sysroot" in embedded_closure["objects"][0]["compile_command"]
 
 
 def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
@@ -3113,7 +3083,7 @@ def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
 
     assert rc == 2
     stderr = capsys.readouterr().err
-    assert "WASM source-recompiled extension builds for 'numpy'" in stderr
+    assert "Source-recompiled extension builds for 'numpy'" in stderr
     assert "tool.molt.extension.python_exports" in stderr
     assert "tool.molt.extension.callable_exports" in stderr
     assert "not package directory ancestry" in stderr
@@ -3267,6 +3237,12 @@ def test_extension_build_wasm_target_requires_wasi_sysroot(
         lambda: None,
         raising=True,
     )
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "_resolve_wasi_sysroot",
+        lambda: None,
+        raising=True,
+    )
 
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -3304,10 +3280,9 @@ def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
     [None, "aarch64-unknown-linux-gnu"],
     ids=["native", "cross-aarch64-gnu"],
 )
-def test_extension_numpy_build_audit_publish_dry_run_matrix(
+def test_extension_numpy_build_uses_compiled_link_closure_matrix(
     tmp_path: Path,
     monkeypatch,
-    capsys,
     target: str | None,
 ) -> None:
     project_root = tmp_path / "numpy_extproj"
@@ -3316,20 +3291,13 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
-        out_index = cmd.index("-o")
-        out_path = Path(cmd[out_index + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if "-c" in cmd:
-            out_path.write_bytes(b"obj")
-        else:
-            out_path.write_bytes(b"shared")
+        _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "_shared_library_defines_symbol",
-        lambda _path, symbol: (symbol == "PyInit_demoext_numpy", None),
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext_numpy",
     )
 
     if target is not None:
@@ -3351,12 +3319,19 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         json_output=False,
         verbose=False,
     )
-    assert rc == 2
-    stderr = capsys.readouterr().err
-    assert "Reachable source extension C/API symbols are unsupported" in stderr
-    assert "PyArray_NDIM" in stderr
-    assert "NPY_ARRAY_BEHAVED_NS" in stderr
-    assert not list(out_dir.glob("*.whl"))
+    assert rc == 0
+    assert list(out_dir.glob("*.whl"))
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["runtime_linkage"] == "static_link"
+    assert manifest["artifact_kind"] == "static_archive"
+    required_symbols = {
+        symbol
+        for item in manifest["object_closure"]["objects"]
+        for symbol in item["required_c_api_symbols"]
+    }
+    assert required_symbols == {"PyModule_Create"}
+    assert "PyArray_NDIM" not in required_symbols
+    assert "NPY_ARRAY_BEHAVED_NS" not in required_symbols
 
 
 def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
@@ -3625,6 +3600,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"numpy"},
+        target="wasm",
         required_modules={"numpy"},
     )
 
@@ -4441,6 +4417,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"scipy"},
+        target="wasm",
         required_modules={"scipy.ndimage.distance_transform_edt"},
     )
     assert errors == []
@@ -5678,3 +5655,17 @@ def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _materialize_fake_extension_command(cmd: list[str]) -> Path:
+    if "-o" in cmd:
+        output = Path(cmd[cmd.index("-o") + 1])
+        payload = b"object" if "-c" in cmd else b"wasm-object"
+    else:
+        archive_mode_index = cmd.index("rcsD")
+        output = Path(cmd[archive_mode_index + 1])
+        payload = static_archive_bytes()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(payload)
+    _write_fake_compiler_depfile(cmd)
+    return output

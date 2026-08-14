@@ -7,6 +7,10 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from molt.cli.source_extension_link_requirements import (
+    parse_source_extension_link_requirements,
+)
+
 _BUILD_SEQUENCE_FIELDS = (
     "compiler",
     "extra_compile_args",
@@ -61,8 +65,10 @@ def _manifest_sequence(
     )
     strings = authorities.get("strings") if isinstance(authorities, Mapping) else None
     encoded = sequences.get(reference) if isinstance(sequences, Mapping) else None
-    if not isinstance(reference, str) or not isinstance(strings, list) or not isinstance(
-        encoded, list
+    if (
+        not isinstance(reference, str)
+        or not isinstance(strings, list)
+        or not isinstance(encoded, list)
     ):
         raise ValueError(f"{field} references an invalid sequence authority")
     string_values = [value for value in strings if isinstance(value, str) and value]
@@ -121,7 +127,12 @@ def _manifest_dependencies(
                 raise ValueError("inline dependencies authority is invalid")
             path = item.get("path")
             sha256 = item.get("sha256")
-            if not isinstance(path, str) or not path or not isinstance(sha256, str) or not sha256:
+            if (
+                not isinstance(path, str)
+                or not path
+                or not isinstance(sha256, str)
+                or not sha256
+            ):
                 raise ValueError("inline dependencies authority is invalid")
             dependencies.append({"path": path, "sha256": sha256})
         return dependencies
@@ -273,6 +284,25 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
 
 
 def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> None:
+    target_triple = manifest.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple:
+        raise ValueError("compact extension manifest has no target triple")
+    link_requirements, link_requirement_errors = (
+        parse_source_extension_link_requirements(
+            manifest,
+            expected_target_triple=target_triple,
+        )
+    )
+    if link_requirement_errors:
+        raise ValueError(
+            "compact extension manifest link requirements are invalid: "
+            + "; ".join(link_requirement_errors)
+        )
+    assert link_requirements is not None
+    if manifest.get("link_requirements") != link_requirements.manifest_payload():
+        raise ValueError(
+            "compact extension manifest link requirements are not canonical"
+        )
     authorities = manifest.get("build_authorities")
     strings = authorities.get("strings") if isinstance(authorities, Mapping) else None
     sequences = (

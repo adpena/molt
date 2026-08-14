@@ -44,6 +44,9 @@ from molt.cli.external_link_providers import (  # noqa: E402
     wasm_external_link_provider_symbols,
 )
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.source_extension_link_requirements import (  # noqa: E402
+    source_extension_link_requirements,
+)
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
@@ -3758,6 +3761,7 @@ def _run_wasm_ld_with_custodied_inputs(
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
     native_objects: Sequence[Path] = (),
+    native_link_arguments: Sequence[str] = (),
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
@@ -3782,6 +3786,10 @@ def _run_wasm_ld_with_custodied_inputs(
             return 1
     try:
         native_objects = _resolve_native_link_inputs(tuple(native_objects))
+        native_link_arguments = source_extension_link_requirements(
+            native_link_arguments,
+            target_triple="wasm32-wasip1",
+        ).arguments
     except ValueError as exc:
         print(f"Wasm link failed: {exc}", file=sys.stderr)
         return 1
@@ -4152,6 +4160,7 @@ def _run_wasm_ld_with_custodied_inputs(
         str(link_runtime_path),
     ]
     cmd.extend(str(native_object) for native_object in linked_native_inputs)
+    cmd.extend(native_link_arguments)
 
     split_linked_app_path: Path | None = None
     split_app_cmd: list[str] | None = None
@@ -4230,6 +4239,7 @@ def _run_wasm_ld_with_custodied_inputs(
             str(split_linked_app_path),
             str(rewritten_path),
             *split_app_link_args,
+            *native_link_arguments,
         ]
         operation_counts["split_app_data_base_bytes"] = split_app_data_base
 
@@ -5076,6 +5086,7 @@ def _run_wasm_ld(
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
     native_objects: Sequence[Path] = (),
+    native_link_arguments: Sequence[str] = (),
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
@@ -5164,6 +5175,7 @@ def _run_wasm_ld(
                 split_output_dir=split_output_dir,
                 deploy_runtime_override=deploy_runtime_snapshot,
                 native_objects=native_snapshots,
+                native_link_arguments=native_link_arguments,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_file=phase_timings_file,
                 wasm_facts_scanner=wasm_facts_scanner,
@@ -5230,6 +5242,13 @@ def main() -> int:
         help="Validated external static package WASM object/archive input",
     )
     parser.add_argument(
+        "--native-link-arg",
+        action="append",
+        default=[],
+        dest="native_link_arguments",
+        help="Validated external source-extension final wasm link argument",
+    )
+    parser.add_argument(
         "--preserve-debug-sections",
         action="store_true",
         help="Preserve name and DWARF sections while still removing final-link metadata",
@@ -5289,6 +5308,7 @@ def main() -> int:
         split_output_dir=args.split_output_dir,
         deploy_runtime_override=generation.shared if args.split_runtime else None,
         native_objects=tuple(args.native_objects),
+        native_link_arguments=tuple(args.native_link_arguments),
         preserve_debug_sections=args.preserve_debug_sections,
         phase_timings_file=args.phase_timings_file,
         wasm_facts_scanner=args.wasm_facts_scanner,
