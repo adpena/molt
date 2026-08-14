@@ -1930,8 +1930,8 @@ fn handle_invoke_ffi_op(
             let machine_signature = abi_contract
                 .native_machine_signature(arity)
                 .expect("validated native callable arity must have a machine signature");
-            let result = match abi_contract {
-                molt_ir::native_callable_abi::NativeCallableAbi::ForwardF32V1 => {
+            let result = match abi_contract.lowering() {
+                molt_ir::native_callable_abi::NativeCallableLowering::ForwardF32 => {
                     let input_bits = *var_get_boxed_overflow_safe(
                         &mut *module,
                         &mut *import_ids,
@@ -1954,7 +1954,7 @@ fn handle_invoke_ffi_op(
                         input_bits,
                     )
                 }
-                molt_ir::native_callable_abi::NativeCallableAbi::PyinitModuleV1 => {
+                molt_ir::native_callable_abi::NativeCallableLowering::PyinitModule => {
                     let pointer_type = module.target_config().pointer_type();
                     let direct_symbol =
                         declare_native_callable_symbol(module, builder, symbol, &machine_signature);
@@ -1966,8 +1966,8 @@ fn handle_invoke_ffi_op(
                         builder.ins().uextend(types::I64, pointer)
                     }
                 }
-                molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallV1
-                | molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallargsV1 => {
+                molt_ir::native_callable_abi::NativeCallableLowering::ObjectValues
+                | molt_ir::native_callable_abi::NativeCallableLowering::ObjectCallargs => {
                     let mut args = Vec::with_capacity(args_names.len());
                     for name in args_names {
                         args.push(
@@ -2038,10 +2038,7 @@ fn handle_invoke_ffi_op(
     // `object_callargs_v1` module_attr exports pass the callargs object through
     // `args[1]` directly; every other lane materializes positional args into a
     // fresh callargs builder.
-    let prebuilt_callargs = if matches!(
-        module_attr_dispatch,
-        Some(molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallargsV1)
-    ) {
+    let prebuilt_callargs = if module_attr_dispatch.is_some_and(|abi| abi.uses_callargs()) {
         let export_name = op.native_callable_export.as_deref().unwrap_or("<export>");
         if args_names.len() != 2 {
             panic!(

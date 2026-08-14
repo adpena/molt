@@ -388,6 +388,20 @@ fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
         };
         validate_clean_symbol(symbol, "invoke_ffi native_callable_symbol")?;
     }
+    let Some(args) = op.args.as_ref() else {
+        return Err(format!(
+            "invoke_ffi native callable export `{export_name}` requires an args payload"
+        ));
+    };
+    if let Some(fixed_payload_arity) = parsed_abi.fixed_arity() {
+        let expected = fixed_payload_arity + usize::from(binding == "module_attr");
+        if args.len() != expected {
+            return Err(format!(
+                "invoke_ffi native callable export `{export_name}` with ABI `{abi}` has {} argument(s), expected {expected}",
+                args.len()
+            ));
+        }
+    }
     Ok(())
 }
 

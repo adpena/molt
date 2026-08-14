@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use wasm_encoder::{EntityType, ValType};
 
 use crate::native_callable_abi::{
-    NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, parse_native_callable_abi,
+    NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, NativeCallableWasmType,
+    parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, TypeSectionExt, static_func_type_idx};
@@ -120,9 +121,7 @@ impl NativeCallableRequest {
                     "native callable export `{export_name}` declares unknown ABI `{abi}`; known ABIs: {NATIVE_CALLABLE_ABI_CHOICES}"
                 )
             });
-            if parsed == NativeCallableAbi::ForwardF32V1
-                || parsed == NativeCallableAbi::PyinitModuleV1
-            {
+            if parsed.requires_direct_symbol_binding() {
                 panic!(
                     "native callable export `{export_name}` uses module_attr with direct-symbol-only ABI `{}`",
                     parsed.token()
@@ -172,7 +171,6 @@ impl WasmBackend {
         let requests = native_callable_requests(ir);
         let mut imports = WasmNativeCallableImports::default();
         let mut dynamic_type_indices = BTreeMap::new();
-        let mut dynamic_fixed_type_indices = BTreeMap::new();
         let mut symbol_imports: BTreeMap<String, NativeSymbolImport> = BTreeMap::new();
 
         for request in requests.values() {
@@ -180,7 +178,6 @@ impl WasmBackend {
                 &mut self.types,
                 &mut next_type_idx,
                 &mut dynamic_type_indices,
-                &mut dynamic_fixed_type_indices,
                 request.abi_contract,
                 request.arity,
             );
@@ -274,116 +271,44 @@ fn native_callable_requests(ir: &SimpleIR) -> BTreeMap<String, NativeCallableReq
 fn native_callable_type_idx(
     types: &mut wasm_encoder::TypeSection,
     next_type_idx: &mut u32,
-    dynamic_type_indices: &mut BTreeMap<usize, u32>,
-    dynamic_fixed_type_indices: &mut BTreeMap<NativeCallableAbi, u32>,
+    dynamic_type_indices: &mut BTreeMap<(NativeCallableAbi, usize), u32>,
     abi: NativeCallableAbi,
     arity: usize,
 ) -> u32 {
-    match abi {
-        NativeCallableAbi::ObjectCallV1 => {
-            i64_params_to_i64_result_type_idx(types, next_type_idx, dynamic_type_indices, arity)
-        }
-        NativeCallableAbi::ObjectCallargsV1 => static_native_callable_type_idx(abi),
-        NativeCallableAbi::ForwardF32V1 => static_native_callable_type_idx(abi),
-        NativeCallableAbi::PyinitModuleV1 => {
-            exact_native_callable_type_idx(types, next_type_idx, dynamic_fixed_type_indices, abi)
-        }
-    }
-}
-
-fn static_native_callable_type_idx(abi: NativeCallableAbi) -> u32 {
-    static_native_callable_type_idx_opt(abi).unwrap_or_else(|| {
-        let signature = abi.wasm_signature();
-        panic!(
-            "native callable ABI {} has no static WASM type {:?} -> {:?}",
-            abi.token(),
-            signature.params,
-            signature.results
-        )
-    })
-}
-
-fn static_native_callable_type_idx_opt(abi: NativeCallableAbi) -> Option<u32> {
-    let signature = abi.wasm_signature();
+    let signature = abi
+        .wasm_machine_signature(arity)
+        .expect("validated native callable arity must have a WASM machine signature");
     let params = signature
         .params
         .iter()
-        .map(|value| wasm_val_type(value, abi))
+        .copied()
+        .map(wasm_val_type)
         .collect::<Vec<_>>();
     let results = signature
         .results
         .iter()
-        .map(|value| wasm_val_type(value, abi))
+        .copied()
+        .map(wasm_val_type)
         .collect::<Vec<_>>();
-    static_func_type_idx(&params, &results)
-}
-
-fn exact_native_callable_type_idx(
-    types: &mut wasm_encoder::TypeSection,
-    next_type_idx: &mut u32,
-    dynamic_fixed_type_indices: &mut BTreeMap<NativeCallableAbi, u32>,
-    abi: NativeCallableAbi,
-) -> u32 {
-    if let Some(type_idx) = static_native_callable_type_idx_opt(abi) {
+    if let Some(type_idx) = static_func_type_idx(&params, &results) {
         return type_idx;
     }
-    if let Some(type_idx) = dynamic_fixed_type_indices.get(&abi) {
+    let key = (abi, arity);
+    if let Some(type_idx) = dynamic_type_indices.get(&key) {
         return *type_idx;
     }
-    let signature = abi.wasm_signature();
-    let params = signature
-        .params
-        .iter()
-        .map(|value| wasm_val_type(value, abi))
-        .collect::<Vec<_>>();
-    let results = signature
-        .results
-        .iter()
-        .map(|value| wasm_val_type(value, abi))
-        .collect::<Vec<_>>();
     let type_idx = *next_type_idx;
     types.function(params, results);
     *next_type_idx += 1;
-    dynamic_fixed_type_indices.insert(abi, type_idx);
+    dynamic_type_indices.insert(key, type_idx);
     type_idx
 }
 
-fn wasm_val_type(value: &str, abi: NativeCallableAbi) -> ValType {
+fn wasm_val_type(value: NativeCallableWasmType) -> ValType {
     match value {
-        "i32" => ValType::I32,
-        "i64" => ValType::I64,
-        "f32" => ValType::F32,
-        "f64" => ValType::F64,
-        _ => panic!(
-            "native callable ABI {} declares unsupported WASM value type `{value}`",
-            abi.token()
-        ),
+        NativeCallableWasmType::I32 => ValType::I32,
+        NativeCallableWasmType::I64 => ValType::I64,
+        NativeCallableWasmType::F32 => ValType::F32,
+        NativeCallableWasmType::F64 => ValType::F64,
     }
-}
-
-fn i64_params_to_i64_result_type_idx(
-    types: &mut wasm_encoder::TypeSection,
-    next_type_idx: &mut u32,
-    dynamic_type_indices: &mut BTreeMap<usize, u32>,
-    arity: usize,
-) -> u32 {
-    if let Some(type_idx) = static_boxed_object_call_type_idx(arity) {
-        return type_idx;
-    }
-    if let Some(type_idx) = dynamic_type_indices.get(&arity) {
-        return *type_idx;
-    }
-    let type_idx = *next_type_idx;
-    types.function(
-        std::iter::repeat_n(ValType::I64, arity),
-        std::iter::once(ValType::I64),
-    );
-    *next_type_idx += 1;
-    dynamic_type_indices.insert(arity, type_idx);
-    type_idx
-}
-
-fn static_boxed_object_call_type_idx(arity: usize) -> Option<u32> {
-    let params = vec![ValType::I64; arity];
-    static_func_type_idx(&params, &[ValType::I64])
 }

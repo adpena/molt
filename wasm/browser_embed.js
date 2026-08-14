@@ -6,6 +6,7 @@ import {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
+import { nativeCallableBrowserSignature } from './native_callable_abi_generated.js';
 
 const ENOSYS = 38;
 const EINVAL = 22;
@@ -87,27 +88,6 @@ const requireIntegerField = (
     throw new Error(`${path}.${name} must be an integer`);
   }
   return value;
-};
-
-const NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = 'molt.object_call_v1';
-const NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 = 'molt.object_callargs_v1';
-const NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = 'molt.forward_f32_v1';
-const NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1 = 'molt.pyinit_module_v1';
-
-const nativeCallableBrowserSignature = (abi) => {
-  if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
-    return { params: ['molt.value...'], result: 'molt.value' };
-  }
-  if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1) {
-    return { params: ['molt.callargs'], result: 'molt.value' };
-  }
-  if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
-    return { params: ['bytes.float32'], result: 'bytes.float32' };
-  }
-  if (abi === NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1) {
-    return { params: [], result: 'molt.pyobject_ptr' };
-  }
-  throw new Error(`unsupported browser native callable ABI: ${abi}`);
 };
 
 const requireNativeCallableSignature = (symbol, abi, rawSignature) => {

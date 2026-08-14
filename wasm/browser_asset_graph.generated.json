@@ -31,16 +31,24 @@
           "line": 2,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 9,
+          "request": "./native_callable_abi_generated.js",
+          "target": "native_callable_abi_generated.js"
         }
       ],
       "references": [
         "browser_gpu_dispatch.js",
         "browser_target_features.js",
         "callable_table_abi_generated.js",
-        "loader_bridge.js"
+        "loader_bridge.js",
+        "native_callable_abi_generated.js"
       ],
       "role": "browser",
-      "sha256": "502d1f81226b50bd497162e53cc31dc22a98510c4137337ffb2d586f714c2e9a",
+      "sha256": "76eef8e4cc82725c76735c5e591abca60d6c46d4c2437e2dced02349bc0f9ba1",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -176,6 +184,15 @@
       "references": [],
       "role": "browser",
       "sha256": "1790828ada67d454de67ed7e07d65448cf0d84d434ad2774e5427d20a7905002",
+      "source_type": "module"
+    },
+    "native_callable_abi_generated.js": {
+      "authority": "native-callable-abi",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "browser",
+      "sha256": "4ae557312d5db2c0e6b4b444882bb40d101e73bd0189dc322d35618747b408a5",
       "source_type": "module"
     },
     "run_wasm.js": {

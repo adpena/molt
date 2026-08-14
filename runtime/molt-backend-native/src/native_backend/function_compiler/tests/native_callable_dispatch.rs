@@ -17,6 +17,10 @@
 //!   3. malformed arity and missing-symbol inputs still fail closed.
 
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The runtime object-call symbol every executable native callable dispatch
 /// must reference. Its ASCII name appears in the emitted object symbol table
@@ -80,6 +84,78 @@ fn native_callable_program(
 
 fn object_contains(bytes: &[u8], needle: &[u8]) -> bool {
     bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+struct RemoveTemp(PathBuf);
+
+impl Drop for RemoveTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn native_link_temp_dir() -> (PathBuf, RemoveTemp) {
+    let path = std::env::temp_dir().join(format!(
+        "molt-native-callable-link-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&path).expect("create native callable link temp dir");
+    (path.clone(), RemoveTemp(path))
+}
+
+fn real_rustc() -> Option<PathBuf> {
+    let rustc = std::env::var_os("RUSTC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let available = Command::new(&rustc)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if available {
+        return Some(rustc);
+    }
+    if std::env::var_os("CI").is_some()
+        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS").is_some()
+        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_CALLABLE_EXECUTION_TESTS").is_some()
+    {
+        panic!("real native final-link proof is required but rustc is unavailable");
+    }
+    eprintln!(
+        "SKIP real native final-link proof: rustc is unavailable; set \
+         MOLT_REQUIRE_REAL_NATIVE_LINK_TESTS=1 to make this a hard failure"
+    );
+    None
+}
+
+fn run_checked(command: &mut Command, purpose: &str) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{purpose}: failed to start: {error}"));
+    assert!(
+        output.status.success(),
+        "{purpose}: status={}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn native_provider_archive_path(temp: &Path) -> PathBuf {
+    if cfg!(windows) {
+        temp.join("native_callable_provider.lib")
+    } else {
+        temp.join("libnative_callable_provider.a")
+    }
+}
+
+fn rustc_link_arg(path: &Path) -> OsString {
+    let mut argument = OsString::from("link-arg=");
+    argument.push(path);
+    argument
 }
 
 #[test]
@@ -166,6 +242,99 @@ fn native_direct_symbol_object_call_emits_relocation() {
 
     let output = SimpleBackend::new().compile(ir);
     assert!(object_contains(&output.bytes, symbol.as_bytes()));
+}
+
+#[test]
+fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
+    const SYMBOL: &str = "molt_native_object_call_execution_probe";
+    const SENTINEL: u64 = 0x45A1_7E57_D15C_A11E;
+    let Some(rustc) = real_rustc() else {
+        return;
+    };
+    let ir = native_callable_program(
+        "native_probe.execute",
+        "direct_symbol",
+        "molt.object_call_v1",
+        Some(SYMBOL),
+        &["payload"],
+    );
+    let output = SimpleBackend::new().compile(ir);
+    let (temp, _remove_temp) = native_link_temp_dir();
+    let app_object = temp.join("native_callable_app.o");
+    let provider_source = temp.join("provider.rs");
+    let provider_archive = native_provider_archive_path(&temp);
+    let harness_source = temp.join("harness.rs");
+    let executable = temp.join(if cfg!(windows) {
+        "native_callable_execution.exe"
+    } else {
+        "native_callable_execution"
+    });
+    fs::write(&app_object, output.bytes).expect("write Cranelift app object");
+    fs::write(
+        &provider_source,
+        format!(
+            r#"#![no_std]
+#[no_mangle]
+pub static molt_generated_object_abi_5fce853bad8ac502_gil_v2: u8 = 0;
+static EXCEPTION_PENDING: u8 = 0;
+#[no_mangle]
+pub extern "C" fn molt_dec_ref(_: u64) {{}}
+#[no_mangle]
+pub extern "C" fn molt_dec_ref_obj(_: u64) {{}}
+#[no_mangle]
+pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+}}
+#[no_mangle]
+pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
+#[no_mangle]
+pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
+"#
+        ),
+    )
+    .expect("write native callable provider source");
+    run_checked(
+        Command::new(&rustc)
+            .arg("--edition=2021")
+            .arg("--crate-name=native_callable_provider")
+            .arg("--crate-type=rlib")
+            .arg("-Cpanic=abort")
+            .arg(&provider_source)
+            .arg("-o")
+            .arg(&provider_archive),
+        "compile native callable provider static archive",
+    );
+    fs::write(
+        &harness_source,
+        format!(
+            "extern \"C\" {{ fn native_callable_dispatch() -> u64; }}\n\
+             fn main() {{ let actual = unsafe {{ native_callable_dispatch() }}; \
+             assert_eq!(actual, {SENTINEL}u64, \"direct-symbol ABI returned {{actual:#x}}\"); }}\n"
+        ),
+    )
+    .expect("write native callable execution harness");
+    run_checked(
+        Command::new(&rustc)
+            .arg("--edition=2021")
+            .arg(&harness_source)
+            .arg("-C")
+            .arg(rustc_link_arg(&app_object))
+            .arg("-C")
+            .arg(rustc_link_arg(&provider_archive))
+            .arg("-o")
+            .arg(&executable),
+        "final-link Cranelift object with native callable provider archive",
+    );
+    run_checked(
+        &mut Command::new(&executable),
+        "execute final-linked native callable binary",
+    );
 }
 
 #[test]

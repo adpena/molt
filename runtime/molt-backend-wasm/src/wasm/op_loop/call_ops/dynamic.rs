@@ -6,7 +6,7 @@ use super::site::{
 };
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use crate::native_callable_abi::NativeCallableAbi;
+use crate::native_callable_abi::NativeCallableLowering;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm::module_abi::WasmNativeCallableImport;
@@ -333,9 +333,10 @@ pub(super) fn emit_dynamic_call_op(
                                 "native callable module_attr export `{export_name}` declares unknown ABI `{abi}`"
                             )
                         });
-                    if abi_contract == NativeCallableAbi::ForwardF32V1 {
+                    if abi_contract.requires_direct_symbol_binding() {
                         panic!(
-                            "native callable module_attr export `{export_name}` cannot use forward_f32 memory ABI"
+                            "native callable module_attr export `{export_name}` cannot use direct-symbol-only ABI `{}`",
+                            abi_contract.token()
                         );
                     }
                     let args_names = op.args.as_ref().unwrap();
@@ -348,7 +349,7 @@ pub(super) fn emit_dynamic_call_op(
                     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                     let func_bits = locals[&args_names[0]];
                     let out = locals[op.out.as_ref().unwrap()];
-                    let callargs_local = if abi_contract == NativeCallableAbi::ObjectCallargsV1 {
+                    let callargs_local = if abi_contract.uses_callargs() {
                         if args_names.len() != 2 {
                             panic!(
                                 "native callable module_attr export `{export_name}` object_callargs ABI expects function handle plus one callargs payload"
@@ -408,8 +409,8 @@ pub(super) fn emit_dynamic_call_op(
                 );
                 retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 let out = locals[op.out.as_ref().unwrap()];
-                if native_import.abi_contract == NativeCallableAbi::ForwardF32V1 {
-                    emit_forward_f32_native_call(
+                match native_import.abi_contract.lowering() {
+                    NativeCallableLowering::ForwardF32 => emit_forward_f32_native_call(
                         func,
                         import_ids,
                         reloc_enabled,
@@ -417,18 +418,21 @@ pub(super) fn emit_dynamic_call_op(
                         args_names,
                         out,
                         native_import,
-                    );
-                } else if native_import.abi_contract == NativeCallableAbi::PyinitModuleV1 {
-                    emit_call(func, reloc_enabled, native_import.function_index);
-                    func.instruction(&Instruction::I64ExtendI32U);
-                    func.instruction(&Instruction::LocalSet(out));
-                } else {
-                    for arg_name in args_names {
-                        let arg = locals[arg_name];
-                        func.instruction(&Instruction::LocalGet(arg));
+                    ),
+                    NativeCallableLowering::PyinitModule => {
+                        emit_call(func, reloc_enabled, native_import.function_index);
+                        func.instruction(&Instruction::I64ExtendI32U);
+                        func.instruction(&Instruction::LocalSet(out));
                     }
-                    emit_call(func, reloc_enabled, native_import.function_index);
-                    func.instruction(&Instruction::LocalSet(out));
+                    NativeCallableLowering::ObjectValues
+                    | NativeCallableLowering::ObjectCallargs => {
+                        for arg_name in args_names {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                        }
+                        emit_call(func, reloc_enabled, native_import.function_index);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                 }
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
