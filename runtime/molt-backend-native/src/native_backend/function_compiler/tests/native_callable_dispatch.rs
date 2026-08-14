@@ -12,9 +12,9 @@
 //! Cranelift object bytes) and prove:
 //!   1. module_attr object_call / object_callargs exports compile and emit a
 //!      `molt_invoke_ffi_ic` relocation (the executable dispatch symbol);
-//!   2. direct-symbol / memory ABIs, which need a native import surface this
-//!      dispatch does not provide, still FAIL CLOSED with a precise diagnostic
-//!      (never a fake, fall-through, or silent no-op).
+//!   2. direct-symbol object, memory, and PyInit ABIs emit relocations to the
+//!      manifest-owned symbols with the same ABI contracts as WASM;
+//!   3. malformed arity and missing-symbol inputs still fail closed.
 
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 
@@ -154,17 +154,97 @@ fn native_module_attr_object_callargs_rejects_extra_payload() {
 }
 
 #[test]
-#[should_panic(expected = "native ABI dispatch supports only `module_attr` object-call exports")]
-fn native_direct_symbol_native_callable_fails_closed() {
-    // direct_symbol binding needs a native import surface this dispatch does not
-    // provide; it must fail closed with a precise diagnostic, never fall through
-    // to a fake or a silent no-op (POISON guard).
+fn native_direct_symbol_object_call_emits_relocation() {
+    let symbol = "molt_native_object_call_probe";
+    let ir = native_callable_program(
+        "scipy.ndimage.distance_transform_edt",
+        "direct_symbol",
+        "molt.object_call_v1",
+        Some(symbol),
+        &["payload"],
+    );
+
+    let output = SimpleBackend::new().compile(ir);
+    assert!(object_contains(&output.bytes, symbol.as_bytes()));
+}
+
+#[test]
+fn native_direct_symbol_forward_f32_emits_relocation_and_bytes_bridge() {
+    let symbol = "molt_native_forward_f32_probe";
     let ir = native_callable_program(
         "scipy.ndimage.distance_transform_edt",
         "direct_symbol",
         "molt.forward_f32_v1",
-        Some("molt_scipy_ndimage_distance_transform_edt"),
+        Some(symbol),
         &["payload"],
+    );
+
+    let output = SimpleBackend::new().compile(ir);
+    for expected in [
+        symbol.as_bytes(),
+        b"molt_bytes_as_ptr",
+        b"molt_scratch_alloc",
+        b"molt_scratch_free",
+        b"molt_bytes_from",
+    ] {
+        assert!(
+            object_contains(&output.bytes, expected),
+            "native forward_f32 object is missing relocation {}",
+            String::from_utf8_lossy(expected)
+        );
+    }
+}
+
+#[test]
+fn native_direct_symbol_pyinit_emits_relocation() {
+    let symbol = "PyInit__native_probe";
+    let ir = native_callable_program(
+        "native_probe._native_probe",
+        "direct_symbol",
+        "molt.pyinit_module_v1",
+        Some(symbol),
+        &[],
+    );
+
+    let output = SimpleBackend::new().compile(ir);
+    assert!(object_contains(&output.bytes, symbol.as_bytes()));
+}
+
+#[test]
+#[should_panic(expected = "molt.forward_f32_v1")]
+fn native_direct_symbol_forward_f32_rejects_arity_drift() {
+    let ir = native_callable_program(
+        "native_probe.forward",
+        "direct_symbol",
+        "molt.forward_f32_v1",
+        Some("molt_native_forward_f32_probe"),
+        &["payload", "extra"],
+    );
+    let _ = SimpleBackend::new().compile(ir);
+}
+
+#[test]
+#[should_panic(expected = "direct_symbol requires native_callable_symbol")]
+fn native_direct_symbol_rejects_missing_symbol() {
+    let ir = native_callable_program(
+        "native_probe._native_probe",
+        "direct_symbol",
+        "molt.pyinit_module_v1",
+        None,
+        &[],
+    );
+    let _ = SimpleBackend::new().compile(ir);
+}
+
+#[test]
+#[should_panic(expected = "invoke_ffi native_callable_symbol must be nonempty and printable")]
+fn native_direct_symbol_rejects_empty_symbol() {
+    let ir = native_callable_program(
+        "native_probe._native_probe",
+        "direct_symbol",
+        "molt.pyinit_module_v1",
+        Some(""),
+        &[],
     );
     let _ = SimpleBackend::new().compile(ir);
 }
