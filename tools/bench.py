@@ -22,7 +22,6 @@ BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 DEFAULT_BASELINE_PATH = BENCH_RESULTS_DIR / "baseline.json"
 DEFAULT_BATCH_BUILD_TIMEOUT_S = 600.0
-MAX_FAILURE_DETAIL_RECORDS = 32
 MAX_FAILURE_MESSAGE_CHARS = 4000
 
 
@@ -79,11 +78,13 @@ from batch_compile_client import (  # noqa: E402
     BatchCompileProtocolError,
     BatchCompileServerClient,
 )
-from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
+import bench_reporting  # noqa: E402
+
+MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 import perf_authority  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
@@ -2079,213 +2080,25 @@ def _bench_one(
     return data
 
 
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-
-
-def load_json(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def compare_baseline(current: dict, baseline: dict, max_regression: float) -> list[str]:
-    metadata_errors = comparable_run_metadata_errors(current, baseline)
-    if metadata_errors:
-        return [
-            "incompatible benchmark baseline: "
-            + "; ".join(metadata_errors)
-            + "; regenerate the baseline with matching benchmark timing settings"
-        ]
-
-    regressions = []
-    baseline_bench = baseline.get("benchmarks", {})
-    for name, stats in current.get("benchmarks", {}).items():
-        current_ratio = stats.get("molt_cpython_ratio")
-        base_ratio = baseline_bench.get(name, {}).get("molt_cpython_ratio")
-        if current_ratio is None or base_ratio is None:
-            continue
-        if current_ratio > base_ratio * (1 + max_regression):
-            regressions.append(
-                f"{name}: ratio {current_ratio:.4f} > {base_ratio:.4f} * {1 + max_regression:.2f}"
-            )
-    return regressions
-
-
-def _summary_path_for_json(json_out: Path, explicit: Path | None) -> Path:
-    if explicit is not None:
-        return explicit
-    if json_out.name == "results.json":
-        return json_out.with_name("summary.md")
-    return json_out.with_name(f"{json_out.stem}_summary.md")
-
-
-def _failure_details_path_for_json(json_out: Path) -> Path:
-    if json_out.name == "results.json":
-        return json_out.with_name("molt_failure_details.jsonl")
-    return json_out.with_name(f"{json_out.stem}_molt_failure_details.jsonl")
-
-
-def _bench_custody_artifacts(
-    *,
-    json_out: Path,
-    summary_out: Path,
-    artifact_root: Path,
-    failure_details_path: Path,
-) -> dict[str, str]:
-    memory_guard_root = artifact_root / "memory_guard"
-    return {
-        "results_json": str(json_out),
-        "summary_md": str(summary_out),
-        "molt_failure_details_jsonl": str(failure_details_path),
-        "harness_command_profile_jsonl": str(memory_guard_root / "commands.jsonl"),
-        "repo_process_sentinel_jsonl": str(memory_guard_root / "bench_sentinel.jsonl"),
-        "backend_daemon_cleanup_jsonl": str(
-            memory_guard_root / "backend_daemon_cleanup.jsonl"
-        ),
-    }
+write_json = bench_reporting.write_json
+load_json = bench_reporting.load_json
+compare_baseline = bench_reporting.compare_baseline
+_summary_path_for_json = bench_reporting.summary_path_for_json
+_failure_details_path_for_json = bench_reporting.failure_details_path_for_json
+_bench_custody_artifacts = bench_reporting.bench_custody_artifacts
+_write_failure_details_jsonl = bench_reporting.write_failure_details_jsonl
+_format_summary_seconds = bench_reporting.format_summary_seconds
+_render_bench_summary_markdown = bench_reporting.render_bench_summary_markdown
 
 
 def _molt_failure_detail_records(
     benchmarks: dict[str, object],
 ) -> dict[str, object]:
-    records: list[dict[str, object]] = []
-    total = 0
-    for benchmark_name, raw_stats in sorted(benchmarks.items()):
-        if not isinstance(raw_stats, dict):
-            continue
-        raw_failure = raw_stats.get("molt_failure")
-        if not isinstance(raw_failure, dict):
-            continue
-        total += 1
-        if len(records) >= MAX_FAILURE_DETAIL_RECORDS:
-            continue
-        records.append(
-            {
-                "benchmark": benchmark_name,
-                "phase": raw_failure.get("phase"),
-                "status": raw_failure.get("status"),
-                "detail": raw_failure.get("detail"),
-                "returncode": raw_failure.get("returncode"),
-                "timed_out": raw_failure.get("timed_out"),
-                "elapsed_s": raw_failure.get("elapsed_s"),
-                "message": _bounded_failure_text(raw_failure.get("message")),
-                "guard_violation": raw_failure.get("guard_violation"),
-                "signal": raw_failure.get("signal"),
-                "orphaned_process_groups": raw_failure.get("orphaned_process_groups"),
-                "log_refs": raw_failure.get("log_refs", []),
-            }
-        )
-    return {
-        "schema_version": 1,
-        "total": total,
-        "truncated": total > len(records),
-        "max_records": MAX_FAILURE_DETAIL_RECORDS,
-        "records": records,
-    }
-
-
-def _write_failure_details_jsonl(
-    path: Path,
-    failure_details: dict[str, object],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    records = failure_details.get("records", [])
-    if not isinstance(records, list):
-        records = []
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            if isinstance(record, dict):
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
-
-
-def _format_summary_seconds(value: object) -> str:
-    if not isinstance(value, (int, float)):
-        return "-"
-    return f"{float(value):.4f}"
-
-
-def _render_bench_summary_markdown(payload: dict[str, object]) -> str:
-    custody_artifacts = payload.get("custody_artifacts")
-    if not isinstance(custody_artifacts, dict):
-        custody_artifacts = {}
-    failure_details = payload.get("molt_failure_details")
-    if not isinstance(failure_details, dict):
-        failure_details = {"records": [], "total": 0, "truncated": False}
-    records = failure_details.get("records", [])
-    if not isinstance(records, list):
-        records = []
-
-    lines: list[str] = []
-    lines.append("# Molt Benchmark Summary")
-    lines.append("")
-    lines.append(f"Generated: {payload.get('created_at', '')}")
-    if custody_artifacts.get("results_json"):
-        lines.append(f"JSON: `{custody_artifacts['results_json']}`")
-    lines.append("")
-    lines.append(
-        "| Benchmark | Molt Status | CPython s | Molt s | Molt/CPython | Failure |"
+    return bench_reporting.molt_failure_detail_records(
+        benchmarks,
+        bounded_failure_text=_bounded_failure_text,
+        max_records=MAX_FAILURE_DETAIL_RECORDS,
     )
-    lines.append("| --- | --- | ---: | ---: | ---: | --- |")
-    benchmarks = payload.get("benchmarks")
-    if isinstance(benchmarks, dict):
-        for name, raw_stats in sorted(benchmarks.items()):
-            if not isinstance(raw_stats, dict):
-                continue
-            failure = raw_stats.get("molt_failure")
-            failure_text = "-"
-            if isinstance(failure, dict):
-                detail = failure.get("detail")
-                failure_text = str(failure.get("status", "failed"))
-                if detail:
-                    failure_text = f"{failure_text} ({detail})"
-            lines.append(
-                "| "
-                f"{name} | {raw_stats.get('molt_status', 'unknown')} | "
-                f"{_format_summary_seconds(raw_stats.get('cpython_time_s'))} | "
-                f"{_format_summary_seconds(raw_stats.get('molt_time_s'))} | "
-                f"{_format_summary_seconds(raw_stats.get('molt_cpython_ratio'))} | "
-                f"{failure_text} |"
-            )
-
-    lines.append("")
-    lines.append("## Custody Artifacts")
-    for key in (
-        "molt_failure_details_jsonl",
-        "harness_command_profile_jsonl",
-        "repo_process_sentinel_jsonl",
-        "backend_daemon_cleanup_jsonl",
-    ):
-        value = custody_artifacts.get(key)
-        if value:
-            lines.append(f"- `{key}`: `{value}`")
-
-    if records:
-        lines.append("")
-        lines.append("## Molt Failure Details")
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            detail = record.get("detail")
-            detail_text = f" detail=`{detail}`" if detail else ""
-            lines.append(
-                f"- `{record.get('benchmark')}` phase=`{record.get('phase')}` "
-                f"status=`{record.get('status')}`{detail_text}"
-            )
-            log_refs = record.get("log_refs")
-            if isinstance(log_refs, list):
-                for ref in log_refs[:4]:
-                    if isinstance(ref, dict) and ref.get("path"):
-                        lines.append(
-                            f"  - {ref.get('kind', 'log')}: `{ref.get('path')}`"
-                        )
-        if failure_details.get("truncated"):
-            lines.append(
-                f"- Failure detail list truncated at {MAX_FAILURE_DETAIL_RECORDS} records."
-            )
-
-    lines.append("")
-    lines.append("Generated by `tools/bench.py`.")
-    return "\n".join(lines) + "\n"
 
 
 def main():
