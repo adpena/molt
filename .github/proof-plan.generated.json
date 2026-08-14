@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "93e5beae3b98b43838afad710872d324ef68704f3f9d9805dc2dbcdde6d11b68",
+  "authority_sha256": "f88e8346df5aecfad26c0b035a1ff6dea37fa3b34e6c1a4c07ddf0fce73bae94",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -517,6 +517,7 @@
         "tests/test_molt_queue_cli.py",
         "tests/test_dx_run_context.py",
         "tests/test_memory_guard_wiring.py",
+        "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_*.py",
         "tests/tools/test_guarded_exec.py",
         "tests/tools/test_memory_guard_spawn_callback.py",
@@ -1015,6 +1016,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
@@ -1055,6 +1057,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
@@ -1095,6 +1098,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
@@ -3592,6 +3596,7 @@
       "local.rust-toolchain.0": "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.source-extension-package-sets.0": "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py",
+      "local.source-extension-package-sets.1": "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python3 tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.1": "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
@@ -4094,11 +4099,13 @@
       },
       {
         "command_ids": [
-          "local.source-extension-package-sets.0"
+          "local.source-extension-package-sets.0",
+          "local.source-extension-package-sets.1"
         ],
         "description": "Versioned source-extension package sets: one typed registry owns variant identity, manifests, toolchain custody, link requirements, seal validation, profiling, and Pact roots.",
         "gates": [
-          "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py"
+          "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py",
+          "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'"
         ],
         "globs": [
           "config/source_extension_package_sets.toml",
