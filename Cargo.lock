@@ -3104,6 +3104,8 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]

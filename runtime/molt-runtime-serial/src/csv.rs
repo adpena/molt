@@ -542,19 +542,9 @@ fn split_csv_lines(text: &str) -> Vec<String> {
 // CSV writer helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Python-compatible float repr: shortest round-trip, handles nan/inf.
-fn repr_float(f: f64) -> String {
-    if f.is_nan() {
-        return "nan".to_string();
-    }
-    if f.is_infinite() {
-        return if f > 0.0 {
-            "inf".to_string()
-        } else {
-            "-inf".to_string()
-        };
-    }
-    format!("{f:?}")
+#[inline]
+fn render_float_field(value: f64) -> String {
+    molt_runtime_core::float_repr::repr_float(value)
 }
 
 /// Convert a MoltObject to its CSV text representation.
@@ -578,10 +568,32 @@ fn render_field_text(_py: &PyToken, bits: u64) -> String {
         return i.to_string();
     }
     if let Some(f) = to_f64(obj) {
-        return repr_float(f);
+        return render_float_field(f);
     }
     // Delegate to runtime `str()` semantics for all other objects.
     format_obj_str(_py, obj)
+}
+
+#[cfg(test)]
+mod float_text_tests {
+    use super::render_float_field;
+
+    #[test]
+    fn csv_float_text_uses_canonical_cpython_repr() {
+        let cases = [
+            (1e16, "1e+16"),
+            (1e-5, "1e-05"),
+            (1e100, "1e+100"),
+            (5e-324, "5e-324"),
+            (137839762462415.62, "137839762462415.62"),
+            (-0.0, "-0.0"),
+            (f64::NAN, "nan"),
+            (f64::INFINITY, "inf"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(render_float_field(value), expected);
+        }
+    }
 }
 
 /// Returns (is_none, is_number) for quoting-mode decisions.

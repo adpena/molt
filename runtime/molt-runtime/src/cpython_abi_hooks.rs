@@ -1335,10 +1335,10 @@ unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> OwnedH
 }
 
 /// Route the ABI's `repr(float)` / `str(float)` through the runtime's single
-/// float-format authority (`crate::object::float_repr::repr_float`), so the
+/// float-format authority (`molt_runtime_core::float_repr::repr_float`), so the
 /// C-API path produces byte-identical output to native `repr(float)`.
 unsafe extern "C" fn hook_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
-    let s = crate::object::float_repr::repr_float(value);
+    let s = molt_runtime_core::float_repr::repr_float(value);
     let bytes = s.as_bytes();
     if bytes.len() <= cap && !out.is_null() {
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
