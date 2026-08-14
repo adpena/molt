@@ -19,7 +19,7 @@ from typing import Any, cast
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
 
-from molt.cli import commands
+from molt.cli import extension_commands
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.atomic_io import (
     _atomic_copy_file,
@@ -1326,7 +1326,7 @@ def _build_extension(
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        rc = commands.extension_build(
+        rc = extension_commands.extension_build(
             project=str(source_root),
             out_dir=str(output_root),
             module=module,
@@ -1876,9 +1876,7 @@ def _producer_location_roots(
                     continue
                 raw_path = tool.get("path")
                 if isinstance(raw_path, str) and raw_path:
-                    tool_paths[str(role)] = (
-                        Path(raw_path).expanduser().resolve().parent
-                    )
+                    tool_paths[str(role)] = Path(raw_path).expanduser().resolve().parent
             tool_parents = set(tool_paths.values())
             if len(tool_parents) == 1:
                 parent = next(iter(tool_parents))

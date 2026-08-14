@@ -11,7 +11,7 @@ from pathlib import Path
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
-from molt.cli import commands as cli_commands
+from molt.cli import extension_commands as cli_commands
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
@@ -50,12 +50,18 @@ def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
     sysroot = sdk / "share" / "wasi-sysroot"
     sysroot.mkdir(parents=True)
     (sysroot / "VERSION").write_text("llvm-version: 22.1.0\n", encoding="utf-8")
-    linker = sdk / "bin" / ("wasm-ld.exe" if cli_wasm_toolchain.os.name == "nt" else "wasm-ld")
+    linker = (
+        sdk
+        / "bin"
+        / ("wasm-ld.exe" if cli_wasm_toolchain.os.name == "nt" else "wasm-ld")
+    )
     linker.parent.mkdir()
     linker.write_bytes(b"linker")
     monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
     monkeypatch.setattr(cli_wasm_toolchain.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.7")
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.7"
+    )
 
     identity = cli_wasm_toolchain.resolve_wasm_linker()
 
@@ -75,7 +81,9 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     linker.write_bytes(b"linker")
     monkeypatch.setenv("MOLT_WASM_LD", str(linker))
     monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
-    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "21.1.8")
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "21.1.8"
+    )
 
     with pytest.raises(
         cli_wasm_toolchain.WasmLinkerContractError,
@@ -98,7 +106,9 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
         os.link(driver, alias)
     monkeypatch.setenv("MOLT_WASM_LD", str(alias))
     monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: None)
-    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.8")
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.8"
+    )
 
     identity = cli_wasm_toolchain.resolve_wasm_linker()
 
@@ -524,7 +534,10 @@ def _write_meson_source_plan_project(
                     "name": "_simd.dispatch.h_baseline",
                     "type": "static library",
                     "filename": str(
-                        project_root / "build" / "pkg" / "lib_simd.dispatch.h_baseline.a"
+                        project_root
+                        / "build"
+                        / "pkg"
+                        / "lib_simd.dispatch.h_baseline.a"
                     ),
                     "defined_in": str(project_root / "meson.build"),
                     "build_by_default": True,
@@ -1435,7 +1448,9 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "vsnprintf(str, size, format, ap)" in shim
     assert "int molt_capi_write_string(const char *text, FILE *stream)" in shim
     assert "fwrite(text, 1, length, stream) == length ? 0 : EOF" in shim
-    assert "fn molt_capi_write_string(text: *const c_char, stream: *mut CFile)" in platform
+    assert (
+        "fn molt_capi_write_string(text: *const c_char, stream: *mut CFile)" in platform
+    )
     assert "molt_capi_write_string(text, stream)" in platform
     for operation in ("malloc", "calloc", "realloc", "free"):
         assert f"molt_capi_{operation}" in shim
@@ -1521,8 +1536,13 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         assert manifest["extension"] in names
 
 
-def test_default_molt_c_api_version_fallback_tracks_current_contract(tmp_path: Path) -> None:
-    assert _default_molt_c_api_version(tmp_path / "missing-root") == _CURRENT_MOLT_C_API_VERSION
+def test_default_molt_c_api_version_fallback_tracks_current_contract(
+    tmp_path: Path,
+) -> None:
+    assert (
+        _default_molt_c_api_version(tmp_path / "missing-root")
+        == _CURRENT_MOLT_C_API_VERSION
+    )
 
     root = tmp_path / "bad-root"
     (root / "include" / "molt").mkdir(parents=True)
@@ -2080,8 +2100,9 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         cython_version: str,
         python_exe: str | None = None,
         package_roots: object = (),
+        ninja_command: object = (),
     ) -> tuple[cli_commands._source_extension_cython.CythonRegeneration, None]:
-        del include_dirs, cython_version, python_exe
+        del include_dirs, cython_version, python_exe, ninja_command
         observed_package_roots.append(
             tuple(Path(path).resolve() for path in package_roots)
         )
@@ -2089,7 +2110,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         regenerated_c.parent.mkdir(parents=True, exist_ok=True)
         regenerated_c.write_text(
             "#include <Python.h>\n"
-            "static PyModuleDef module = {PyModuleDef_HEAD_INIT, \"_cyext\", NULL, -1, NULL};\n"
+            'static PyModuleDef module = {PyModuleDef_HEAD_INIT, "_cyext", NULL, -1, NULL};\n'
             "PyMODINIT_FUNC PyInit__cyext(void) { return PyModule_Create(&module); }\n",
             encoding="utf-8",
         )
@@ -2140,18 +2161,14 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     )
 
     assert rc == 0
-    assert observed_package_roots == [
-        (project_root.resolve(), build_root.resolve())
-    ]
+    assert observed_package_roots == [(project_root.resolve(), build_root.resolve())]
     regenerated_compile_command = next(
         cmd
         for cmd in commands
         if "-c" in cmd
         and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
     )
-    profile_args = (
-        cli_commands._source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS
-    )
+    profile_args = cli_commands._source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS
     assert all(arg in regenerated_compile_command for arg in profile_args)
     assert regenerated_compile_command.index(profile_args[0]) < (
         regenerated_compile_command.index("-DPLAN_UNIT=1")
@@ -2337,8 +2354,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
     )
     assert str(skipped_generated_source) in captured.err
     assert any(
-        "-c" in cmd and any("unique.cpp" in part for part in cmd)
-        for cmd in commands
+        "-c" in cmd and any("unique.cpp" in part for part in cmd) for cmd in commands
     )
     link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
     assert any("2_unique.o" in part for part in link_cmd)
@@ -2349,12 +2365,12 @@ def test_extension_build_follows_linked_static_library_source_closure(
         str(skipped_generated_source)
     ]
     assert manifest["build"]["source_plan_skipped_generated_source_count"] == 1
-    assert str((project_root / "pkg" / "unique.cpp").resolve()) in (
-        manifest["source_plan"]["sources"]
+    assert (
+        str((project_root / "pkg" / "unique.cpp").resolve())
+        in (manifest["source_plan"]["sources"])
     )
     object_sources = {
-        Path(obj["source"]).resolve()
-        for obj in manifest["object_closure"]["objects"]
+        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
     }
     assert (project_root / "pkg" / "unique.cpp").resolve() in object_sources
     defined_symbols = {
@@ -2429,12 +2445,12 @@ def test_extension_build_excludes_linked_static_library(
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     object_sources = {
-        Path(obj["source"]).resolve()
-        for obj in manifest["object_closure"]["objects"]
+        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
     }
     assert (project_root / "pkg" / "unique.cpp").resolve() not in object_sources
-    assert str((project_root / "pkg" / "unique.cpp").resolve()) not in (
-        manifest["source_plan"]["sources"]
+    assert (
+        str((project_root / "pkg" / "unique.cpp").resolve())
+        not in (manifest["source_plan"]["sources"])
     )
     # Its symbol is now undefined in this closure (resolved from the primary at
     # final link), not redundantly defined here.
@@ -2503,15 +2519,20 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 2
-    assert str(
-        (project_root / "build" / "generated" / "loops_arithmetic.dispatch.c").resolve()
-    ) in manifest["source_plan"]["generated_sources"]
-    assert str(
-        (project_root / "build" / "generated" / "simd.dispatch.c").resolve()
-    ) not in manifest["source_plan"]["generated_sources"]
+    assert (
+        str(
+            (
+                project_root / "build" / "generated" / "loops_arithmetic.dispatch.c"
+            ).resolve()
+        )
+        in manifest["source_plan"]["generated_sources"]
+    )
+    assert (
+        str((project_root / "build" / "generated" / "simd.dispatch.c").resolve())
+        not in manifest["source_plan"]["generated_sources"]
+    )
     object_sources = {
-        Path(obj["source"]).resolve()
-        for obj in manifest["object_closure"]["objects"]
+        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
     }
     assert (
         project_root / "build" / "generated" / "loops_arithmetic.dispatch.c"
@@ -3857,7 +3878,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
     source_path = source_dir / "npy_static_data.c"
     source_path.write_text(
         "static int PyInit__multiarray_umath(PyObject *module) {\n"
-        "    IMPORT_GLOBAL(\"numpy._core._exceptions\", ComplexWarning, warning_obj);\n"
+        '    IMPORT_GLOBAL("numpy._core._exceptions", ComplexWarning, warning_obj);\n'
         "    return 0;\n"
         "}\n",
         encoding="utf-8",
@@ -4047,12 +4068,9 @@ def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
         "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
     ):
         sealed_manifest_path = sealed_root / manifest_rel
-        sealed_manifest = json.loads(
-            sealed_manifest_path.read_text(encoding="utf-8")
-        )
+        sealed_manifest = json.loads(sealed_manifest_path.read_text(encoding="utf-8"))
         sealed_sources = {
-            item["source"]
-            for item in sealed_manifest["object_closure"]["objects"]
+            item["source"] for item in sealed_manifest["object_closure"]["objects"]
         }
         assert sealed_sources == expected_sources
         assert all(not Path(source).is_absolute() for source in sealed_sources)
@@ -4866,7 +4884,7 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "    view.ndim = 2;",
                 "    view.shape = shape;",
                 "    view.strides = NULL;",
-                "    view.format = \"B\";",
+                '    view.format = "B";',
                 "    from_buffer = PyMemoryView_FromBuffer(&view);",
                 "    if (from_buffer == NULL) {",
                 "        return -1;",
@@ -4886,7 +4904,7 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "    view.ndim = 0;",
                 "    view.shape = NULL;",
                 "    view.strides = NULL;",
-                "    view.format = \"d\";",
+                '    view.format = "d";',
                 "    from_buffer = PyMemoryView_FromBuffer(&view);",
                 "    if (from_buffer == NULL) {",
                 "        return -1;",
@@ -5069,7 +5087,9 @@ def test_python_header_source_compat_descriptors_fail_closed() -> None:
     header = (ROOT / "include" / "molt" / "Python.h").read_text(encoding="utf-8")
 
     assert "requires --abi-tier cpython-abi" in header
-    assert "_molt_type_wrap_single_arg_builtin(\"property\", getter_callable)" not in header
+    assert (
+        '_molt_type_wrap_single_arg_builtin("property", getter_callable)' not in header
+    )
     assert "Py_INCREF(Py_None);\n    return Py_None;" not in header
 
 
@@ -5102,7 +5122,9 @@ def test_source_compat_tier_does_not_ship_numpy_overlay() -> None:
         ROOT / "include" / "__ufunc_api.c",
     )
     for path in forbidden_overlay_paths:
-        assert not path.exists(), f"Molt must not ship package-owned NumPy overlay: {path}"
+        assert not path.exists(), (
+            f"Molt must not ship package-owned NumPy overlay: {path}"
+        )
 
 
 def test_source_compat_tier_does_not_shadow_package_numpy_headers(
@@ -5214,8 +5236,12 @@ def test_datetime_header_overlay_is_not_a_fail_open_stub() -> None:
     """
     header = (ROOT / "include" / "datetime.h").read_text(encoding="utf-8")
     # The fail-open stub markers must be gone.
-    assert "_molt_reserved" not in header, "PyDateTime_CAPI is still the 4-byte placeholder stub"
-    assert "return 0;" not in header, "a *_Check still unconditionally returns 0 (fail-open)"
+    assert "_molt_reserved" not in header, (
+        "PyDateTime_CAPI is still the 4-byte placeholder stub"
+    )
+    assert "return 0;" not in header, (
+        "a *_Check still unconditionally returns 0 (fail-open)"
+    )
     # The 15-field CPython 3.12 PyDateTime_CAPI must be present, in order.
     for field in (
         "DateType",
@@ -5239,9 +5265,17 @@ def test_datetime_header_overlay_is_not_a_fail_open_stub() -> None:
     assert '"datetime.datetime_CAPI"' in header
     assert "PyCapsule_Import(PyDateTime_CAPSULE_NAME" in header
     # Every check tests the real type via the capsule, and PyTime_Check exists.
-    for check in ("PyDate_Check", "PyDateTime_Check", "PyTime_Check", "PyDelta_Check", "PyTZInfo_Check"):
+    for check in (
+        "PyDate_Check",
+        "PyDateTime_Check",
+        "PyTime_Check",
+        "PyDelta_Check",
+        "PyTZInfo_Check",
+    ):
         assert check in header, f"{check} is missing from the overlay datetime.h"
-    assert "PyObject_TypeCheck(op, PyDateTimeAPI->" in header, "checks must be real PyObject_TypeCheck"
+    assert "PyObject_TypeCheck(op, PyDateTimeAPI->" in header, (
+        "checks must be real PyObject_TypeCheck"
+    )
 
 
 def test_datetime_header_overlay_capi_struct_and_checks_compile(tmp_path: Path) -> None:
@@ -5462,57 +5496,55 @@ def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> Non
 
     abi_authority = ROOT / "runtime" / "molt-cpython-abi" / "include"
     source = tmp_path / "l7_integer_header_smoke.c"
-    smoke_source = (
-        "\n".join(
-            [
-                "#include <Python.h>",
-                "int probe(PyObject *value, PyLongObject *long_value, void *out) {",
-                "    char *end = NULL;",
-                "    unsigned char bytes[2] = {0};",
-                "    char packed[8] = {0};",
-                "    Py_complex ca = {3.0, 4.0};",
-                "    Py_complex cb = {1.0, -2.0};",
-                "    PyObject *parsed = PyLong_FromString(\"0x_FF\", &end, 0);",
-                "    size_t size = PyLong_AsSize_t(value);",
-                "    size_t bits = _PyLong_NumBits(value);",
-                "    int compact = PyUnstable_Long_IsCompact(long_value);",
-                "    Py_ssize_t compact_value = PyUnstable_Long_CompactValue(long_value);",
-                "    int converted = _PyLong_Size_t_Converter(value, out);",
-                "    converted += _PyLong_UnsignedShort_Converter(value, out);",
-                "    converted += _PyLong_UnsignedInt_Converter(value, out);",
-                "    converted += _PyLong_UnsignedLong_Converter(value, out);",
-                "    converted += _PyLong_UnsignedLongLong_Converter(value, out);",
-                "    converted += _PyLong_AsByteArray(long_value, bytes, 2, 1, 1);",
-                "    converted += PyFloat_Pack2(1.0, packed, 0);",
-                "    converted += PyFloat_Pack4(1.0, packed, 1);",
-                "    converted += PyFloat_Pack8(1.0, packed, 0);",
-                "    converted += (int)PyFloat_Unpack2(packed, 0);",
-                "    converted += (int)PyFloat_Unpack4(packed, 1);",
-                "    converted += (int)PyFloat_Unpack8(packed, 0);",
-                "    ca = _Py_c_sum(ca, cb);",
-                "    ca = _Py_c_diff(ca, cb);",
-                "    ca = _Py_c_neg(ca);",
-                "    ca = _Py_c_prod(ca, cb);",
-                "    ca = _Py_c_quot(ca, cb);",
-                "    ca = _Py_c_pow(ca, cb);",
-                "    converted += (int)_Py_c_abs(ca);",
-                "    converted += (int)PyFloat_GetMax() + (int)PyFloat_GetMin();",
-                "    if (Py_True != (PyObject *)&_Py_TrueStruct || Py_False != (PyObject *)&_Py_FalseStruct) return -2;",
-                "    Py_XDECREF(parsed);",
-                "    Py_XDECREF(PyLong_GetInfo());",
-                "    Py_XDECREF(PyFloat_GetInfo());",
-                "    return converted + compact + (int)compact_value + (int)size + (int)bits;",
-                "}",
-                "",
-            ]
-        )
+    smoke_source = "\n".join(
+        [
+            "#include <Python.h>",
+            "int probe(PyObject *value, PyLongObject *long_value, void *out) {",
+            "    char *end = NULL;",
+            "    unsigned char bytes[2] = {0};",
+            "    char packed[8] = {0};",
+            "    Py_complex ca = {3.0, 4.0};",
+            "    Py_complex cb = {1.0, -2.0};",
+            '    PyObject *parsed = PyLong_FromString("0x_FF", &end, 0);',
+            "    size_t size = PyLong_AsSize_t(value);",
+            "    size_t bits = _PyLong_NumBits(value);",
+            "    int compact = PyUnstable_Long_IsCompact(long_value);",
+            "    Py_ssize_t compact_value = PyUnstable_Long_CompactValue(long_value);",
+            "    int converted = _PyLong_Size_t_Converter(value, out);",
+            "    converted += _PyLong_UnsignedShort_Converter(value, out);",
+            "    converted += _PyLong_UnsignedInt_Converter(value, out);",
+            "    converted += _PyLong_UnsignedLong_Converter(value, out);",
+            "    converted += _PyLong_UnsignedLongLong_Converter(value, out);",
+            "    converted += _PyLong_AsByteArray(long_value, bytes, 2, 1, 1);",
+            "    converted += PyFloat_Pack2(1.0, packed, 0);",
+            "    converted += PyFloat_Pack4(1.0, packed, 1);",
+            "    converted += PyFloat_Pack8(1.0, packed, 0);",
+            "    converted += (int)PyFloat_Unpack2(packed, 0);",
+            "    converted += (int)PyFloat_Unpack4(packed, 1);",
+            "    converted += (int)PyFloat_Unpack8(packed, 0);",
+            "    ca = _Py_c_sum(ca, cb);",
+            "    ca = _Py_c_diff(ca, cb);",
+            "    ca = _Py_c_neg(ca);",
+            "    ca = _Py_c_prod(ca, cb);",
+            "    ca = _Py_c_quot(ca, cb);",
+            "    ca = _Py_c_pow(ca, cb);",
+            "    converted += (int)_Py_c_abs(ca);",
+            "    converted += (int)PyFloat_GetMax() + (int)PyFloat_GetMin();",
+            "    if (Py_True != (PyObject *)&_Py_TrueStruct || Py_False != (PyObject *)&_Py_FalseStruct) return -2;",
+            "    Py_XDECREF(parsed);",
+            "    Py_XDECREF(PyLong_GetInfo());",
+            "    Py_XDECREF(PyFloat_GetInfo());",
+            "    return converted + compact + (int)compact_value + (int)size + (int)bits;",
+            "}",
+            "",
+        ]
     )
     for include_root, header in (
         (abi_authority, "Python.h"),
         (ROOT / "include", "molt/Python.h"),
     ):
         source.write_text(
-            smoke_source.replace("#include <Python.h>", f"#include <{header}>") ,
+            smoke_source.replace("#include <Python.h>", f"#include <{header}>"),
             encoding="utf-8",
         )
         result = run_cli_test_process(

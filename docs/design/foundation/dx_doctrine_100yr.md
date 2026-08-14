@@ -78,11 +78,11 @@ This is the release-gating definition of "just works." The audit's verdict is **
 
 **The Layer-0 contract (binding):**
 
-1. **No config file is ever required.** ✅ Already true — `run_script` (`commands.py:601-651`) uses `_find_project_root`, not `_require_molt_root`; missing `molt.toml`/`pyproject.toml` is treated as empty config (`build_inputs.py:1067-1086`). *Defend this forever:* the presence of a config file must only ever *refine*, never *enable*, basic operation. (Report B, P2.)
+1. **No config file is ever required.** ✅ Already true — `script_commands.run_script` uses `_find_project_root`, not `_require_molt_root`; missing `molt.toml`/`pyproject.toml` is treated as empty config (`build_inputs.py:1067-1086`). *Defend this forever:* the presence of a config file must only ever *refine*, never *enable*, basic operation. (Report B, P2.)
 
 2. **No flag is ever required.** ✅ Already true. All ~70 `MOLT_*` env vars have defaults; a beginner confronts zero.
 
-3. **It must *feel* like `python foo.py`.** ⚠️ **The binding gap.** Today `molt run` is build-then-run with a *visible* multi-line build step to stderr (`commands.py:296`), and the first invocation triggers a one-time Rust runtime `cargo build` (`runtime_build.py:381`) — a multi-second-to-minutes cold start that a `python` user never sees. **Binding requirement R0.1:** the default `molt run` output on the happy path is **silent on success** except the program's own output — build progress goes to a spinner that erases itself, or behind `--verbose`. The cold runtime build emits *one* honest line ("First run: building molt runtime (one-time, ~Ns)…") and never again. The model to match is `cargo run`'s quiet success, not a compiler log.
+3. **It must *feel* like `python foo.py`.** ⚠️ **The binding gap.** Today `molt run` is build-then-run with a *visible* multi-line build step to stderr (`script_commands.run_script` → `_run_wrapper_build`), and the first invocation triggers a one-time Rust runtime `cargo build` (`runtime_build.py:381`) — a multi-second-to-minutes cold start that a `python` user never sees. **Binding requirement R0.1:** the default `molt run` output on the happy path is **silent on success** except the program's own output — build progress goes to a spinner that erases itself, or behind `--verbose`. The cold runtime build emits *one* honest line ("First run: building molt runtime (one-time, ~Ns)…") and never again. The model to match is `cargo run`'s quiet success, not a compiler log.
 
 4. **The onboarding docs must demonstrate the contract.** ⚠️ **Release-gating documentation defect.** `cli-reference.md:9` promises the clean `molt run app.py`, but `README.md:42-49` and `getting-started.md:42-49` show *only* the verbose `uv run --python 3.12 python3 -m molt.cli build examples/hello.py` form. A beginner following the README never experiences the advertised path. **Binding requirement R0.2:** the README "5-Minute Quickstart" leads with `molt run hello.py` as line one. The verbose form is demoted to a "from source / contributor" appendix. *This is the single cheapest, highest-leverage fix in the entire document.*
 
@@ -224,7 +224,7 @@ Governed entirely by R1.1 (kill the silent `build`/`run` divergence) + R1.2 (pro
 
 ### 4.4 stdlib-profile (`full` | `micro`)
 
-Today a real footgun: defaults are scattered (`__init__.py:902` `micro`, `commands.py:1184,1267` `micro`, dispatch fallback `entrypoint_dispatch.py:243-287`), and the 40-line comment at `entrypoint_dispatch.py:247-262` documents that env-only `MOLT_STDLIB_PROFILE=full` can desync from a `micro` staticlib and cause **link failures**. This is a direct violation of D5 (one authority) — the env var is a second reader that disagrees with the flag/default reader.
+The former footgun is now structurally closed: `config_resolution.resolve_stdlib_profile` owns the single default and precedence order; `entrypoint_dispatch` resolves it once; `build` re-exports that concrete value to `MOLT_STDLIB_PROFILE` for the module-graph reader; and `quality_commands._normalize_internal_batch_stdlib_profile` consumes the same `DEFAULT_STDLIB_PROFILE`. The retained dispatch comment documents why an env-only `full` closure paired with a `micro` staticlib must remain unexpressible.
 
 **Decision (binding):** `stdlib-profile` is resolved **only** through the one config authority (flag → `[tool.molt.<cmd>]` → `[tool.molt]` → single default), and `MOLT_STDLIB_PROFILE` becomes (at most) a documented alias that flows *into* that resolver — never a second independent reader. The single default is consolidated to one constant. `molt config` reports the resolved value and its source. This is the template for migrating *all* ~70 `MOLT_*` env vars off the parallel authority and under D5.
 
@@ -235,7 +235,7 @@ Today a real footgun: defaults are scattered (`__init__.py:902` `micro`, `comman
 **Is molt's DX today conducive to the operator vision — amateur "just works" + power-user composability? Verdict: the foundations are unusually strong and the doctrine is *recoverable without re-architecture*, but it is NOT yet conducive on two release-gating axes.**
 
 **(a) Amateur "just works" — PARTIAL: strong bones, weak first contact.**
-- *Conducive:* no mandatory flags or config files (`commands.py:601-651`, `build_inputs.py:1067-1086`); `dev`/`release` only; ~40 advanced flags hidden from `--help` (`arg_helpers.py:235-255`); zero required env vars; friendly OS-specific toolchain remediation (`doctor`/`setup`); **best-in-class early structured errors** for the constructs that matter (`compat.py` + allowlist at `call_dispatch_named.py:40-98`).
+- *Conducive:* no mandatory flags or config files (`script_commands.run_script`, `build_inputs.py:1067-1086`); `dev`/`release` only; ~40 advanced flags hidden from `--help` (`arg_helpers.py:235-255`); zero required env vars; friendly OS-specific toolchain remediation (`doctor`/`setup`); **best-in-class early structured errors** for the constructs that matter (`compat.py` + allowlist at `call_dispatch_named.py:40-98`).
 - *Not conducive (release-gating):* (1) `molt run` is a *visible* build with a one-time Rust `cargo build` cold start, not quiet like `python foo.py` (R0.1); (2) the primary onboarding docs (`README.md:42-49`, `getting-started.md:42-49`) showcase the verbose `uv run python3 -m molt.cli …` form and **never** the clean `molt run` that `cli-reference.md:9` promises (R0.2). Secondary: `build`/`run` default-profile divergence (R1.1); long-tail bare `NotImplementedError` (§3.4).
 
 **(b) Power-user composable extensibility — ABSENT for the compiler.**
@@ -257,7 +257,7 @@ Ordered by leverage (impact × fit). Each phase names the molt files to refactor
 ### Phase 0 — Honest first contact (release-gating, days, near-zero risk)
 The cheapest, highest-leverage fixes. Refactor:
 - **`README.md`, `docs/getting-started.md`** — lead the quickstart with `molt run hello.py`; demote `uv run … -m molt.cli build …` to a contributor appendix. **(R0.2.)**
-- **`src/molt/cli/commands.py`** (`_run_wrapper_build` ~line 700, build diagnostics ~296) — make happy-path `molt run` quiet on success; spinner that erases; one honest line for the one-time runtime build. **(R0.1.)**
+- **`src/molt/cli/script_commands.py`** (`run_script`) — make happy-path `molt run` quiet on success; spinner that erases; one honest line for the one-time runtime build. **(R0.1.)**
 - **`src/molt/cli/runtime_build.py`** (`_ensure_runtime_lib`, lines 381/1339) — the cold-build message is the *single* "First run…" line, never repeated.
 - **`src/molt/cli/arg_helpers.py:216-232`** (`_BUILD_ESSENTIAL_FLAGS`) — demote `--backend` out of the essential set. **(D1.)**
 
@@ -270,7 +270,7 @@ Eliminate the silent surprises and the second error dialect. Refactor:
 ### Phase 2 — One authority, named profiles (months)
 Unify config and promote the profile primitive. Refactor:
 - **`src/molt/cli/cargo_profiles.py`** + **`src/molt/cli/entrypoint_parser.py`** (the seven `choices=["dev","release"]` sites) + **`src/molt/cli/config_resolution.py`** — expose `dev-fast`/`release-fast`/`release-output` as user-visible built-in named profiles; add `[tool.molt.profile.<name>]` with `inherit` + per-knob override; migrate `MOLT_*_CARGO_PROFILE` to flow *into* the one resolver. **(R1.2.)**
-- **`src/molt/cli/entrypoint_dispatch.py:243-287, 247-262`** + **`__init__.py:902`** + **`commands.py:1184,1267`** — consolidate `stdlib_profile` to a single default and a single resolver reader; make `MOLT_STDLIB_PROFILE` an alias into it, not a second authority. **(§4.4, D5.)**
+- ✅ **`src/molt/cli/config_resolution.py`** + **`entrypoint_dispatch.py`** + **`quality_commands.py`** + **`__init__.py::build`** — `stdlib_profile` now has one default and one resolver; `MOLT_STDLIB_PROFILE` is an output of that resolver for downstream closure construction, not a competing input authority. **(§4.4, D5.)**
 - **`src/molt/cli/config_resolution.py`** + `molt config` (`entrypoint_dispatch.py:957`) — `molt config --json` reports each value's **provenance** (default vs file vs env vs flag). **(D5, A6.)**
 - **`src/molt/cli/capability_spec.py`** / `config_resolution.py:43-48` — add ruff-style `extend-capabilities`. **(R1.3.)**
 

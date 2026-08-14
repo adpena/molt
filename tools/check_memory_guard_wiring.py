@@ -558,14 +558,19 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "CLI shared command runtime must route subprocesses through process_guard",
     ),
     TokenContract(
-        "src/molt/cli/commands.py",
-        (
-            "memory_guard_prefix",
-            "MOLT_BUILD",
-            "MOLT_BENCH",
-            "MOLT_DIFF",
-        ),
-        "CLI build/test/bench/diff commands must pass family guard prefixes",
+        "src/molt/cli/extension_commands.py",
+        ("memory_guard_prefix", "MOLT_BUILD"),
+        "CLI extension builds must pass the build-family guard prefix",
+    ),
+    TokenContract(
+        "src/molt/cli/quality_commands.py",
+        ("memory_guard_prefix", "MOLT_BENCH", "MOLT_DIFF"),
+        "CLI quality commands must pass test, bench, and diff guard prefixes",
+    ),
+    TokenContract(
+        "src/molt/cli/script_commands.py",
+        ("memory_guard_prefix", "_DIFF_MEMORY_GUARD_PREFIX"),
+        "CLI script commands must pass run and diff family guard prefixes",
     ),
     TokenContract(
         "src/molt/cli/setup_readiness.py",

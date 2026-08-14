@@ -401,7 +401,7 @@ def _append_diagnostics(
                 ),
                 scopes=(
                     "src/molt/cli/source_extension_cython.py",
-                    "src/molt/cli/commands.py",
+                    "src/molt/cli/extension_commands.py",
                     "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
                 ),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),

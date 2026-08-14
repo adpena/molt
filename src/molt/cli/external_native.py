@@ -19,6 +19,7 @@ from molt._wasm_abi_generated import (
     wasm_runtime_export_name,
 )
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
+from molt.cli.backend_cache import _native_archive_global_symbol_sets
 from molt.c_api_symbols import c_api_primitive_class
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.c_api_symbols import is_c_api_symbol
@@ -54,6 +55,10 @@ from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
     source_extension_manifest_runtime_python_imports,
+)
+from molt.cli.source_extension_link_requirements import (
+    parse_source_extension_link_requirements,
+    resolve_source_extension_link_arguments,
 )
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
@@ -1134,6 +1139,49 @@ def _validate_direct_symbol_callable_export_custody(
     return []
 
 
+def _validate_static_archive_object_closure(
+    *,
+    package: str,
+    artifact_path: Path,
+    manifest: Mapping[str, Any],
+    artifact_kind: str,
+) -> list[str]:
+    if artifact_kind != "static_archive":
+        return []
+    symbol_sets = _native_archive_global_symbol_sets(artifact_path)
+    if symbol_sets is None:
+        return [
+            f"{package}: cannot read static archive symbol closure for "
+            f"{artifact_path.name}"
+        ]
+    actual_defined, actual_undefined = symbol_sets
+    actual_external_undefined = actual_undefined - actual_defined
+    declared_defined = set(_manifest_object_closure_defined_symbols(manifest))
+    declared_undefined = set(
+        _manifest_object_closure_external_undefined_symbols(manifest)
+    )
+    errors: list[str] = []
+    if actual_defined != declared_defined:
+        missing = sorted(actual_defined - declared_defined)
+        stale = sorted(declared_defined - actual_defined)
+        errors.append(
+            f"{package}: static archive defined-symbol closure differs from "
+            "object_closure.defined_symbols"
+            + (f"; missing={', '.join(missing[:16])}" if missing else "")
+            + (f"; stale={', '.join(stale[:16])}" if stale else "")
+        )
+    if actual_external_undefined != declared_undefined:
+        missing = sorted(actual_external_undefined - declared_undefined)
+        stale = sorted(declared_undefined - actual_external_undefined)
+        errors.append(
+            f"{package}: static archive unresolved-symbol closure differs from "
+            "object_closure.undefined_symbols"
+            + (f"; missing={', '.join(missing[:16])}" if missing else "")
+            + (f"; stale={', '.join(stale[:16])}" if stale else "")
+        )
+    return errors
+
+
 def _validate_external_package_native_artifact(
     *,
     package: str,
@@ -1213,6 +1261,25 @@ def _validate_external_package_native_artifact(
     target_triple = _required_manifest_str(manifest, "target_triple", errors)
     platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
     abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
+    link_requirements, link_requirement_errors = (
+        parse_source_extension_link_requirements(
+            manifest,
+            expected_target_triple=target_triple,
+        )
+    )
+    errors.extend(f"{package}: {error}" for error in link_requirement_errors)
+    link_arguments: tuple[str, ...] = ()
+    if link_requirements is not None:
+        resolved_link_arguments, resolution_errors = (
+            resolve_source_extension_link_arguments(
+                link_requirements,
+                package_root=package_dir,
+                manifest_dir=manifest_path.parent,
+            )
+        )
+        errors.extend(f"{package}: {error}" for error in resolution_errors)
+        if resolved_link_arguments is not None:
+            link_arguments = resolved_link_arguments
     provided_capsules = _manifest_str_tuple(manifest, "provided_capsules")
     required_capsules = _manifest_object_closure_required_capsules(manifest)
     capsule_requirement_errors = _validate_manifest_source_capsule_requirements(
@@ -1299,6 +1366,14 @@ def _validate_external_package_native_artifact(
             runtime_linkage=runtime_linkage,
             artifact_kind=artifact_kind,
             callable_exports=callable_exports,
+        )
+    )
+    errors.extend(
+        _validate_static_archive_object_closure(
+            package=package,
+            artifact_path=artifact_path,
+            manifest=manifest,
+            artifact_kind=artifact_kind,
         )
     )
     if errors:
@@ -1406,6 +1481,7 @@ def _validate_external_package_native_artifact(
             init_symbol=init_symbol,
             runtime_linkage=runtime_linkage,
             artifact_kind=artifact_kind,
+            link_arguments=link_arguments,
             support_file_sha256=support_file_sha256,
             provided_capsules=provided_capsules,
             required_capsules=required_capsules,
@@ -2368,6 +2444,7 @@ def _stage_external_package_native_artifacts_for_build(
                 init_symbol=artifact.init_symbol,
                 runtime_linkage=artifact.runtime_linkage,
                 artifact_kind=artifact.artifact_kind,
+                link_arguments=artifact.link_arguments,
                 support_file_sha256=artifact.support_file_sha256,
                 provided_capsules=artifact.provided_capsules,
                 required_capsules=artifact.required_capsules,
@@ -2409,13 +2486,13 @@ def _external_native_artifact_output_custody_error(
         linkage_mismatches = [
             f"{artifact.module}={artifact.runtime_linkage}/{artifact.artifact_kind}"
             for artifact in native_artifact_plan.artifacts
-            if artifact.runtime_linkage != "host_resolved"
-            or artifact.artifact_kind != "shared_library"
+            if artifact.runtime_linkage != "static_link"
+            or artifact.artifact_kind != "static_archive"
         ]
         if linkage_mismatches:
             return (
                 "External static package native binary output requires "
-                "host_resolved shared_library artifacts: "
+                "static_link static_archive artifacts: "
                 + ", ".join(linkage_mismatches)
             )
         return None
@@ -2442,8 +2519,9 @@ def _external_native_artifact_output_custody_error(
         sorted({artifact.package for artifact in native_artifact_plan.artifacts})
     )
     return (
-        "External static packages require native binary output with host_resolved "
-        "shared artifacts, or linked WASM output with wasm32 static_link artifacts. "
+        "External static packages require native binary output with target-matched "
+        "static_link archives, or linked WASM output with wasm32 static_link "
+        "artifacts. "
         f"Unsupported target/emit combination: target={target}, "
         f"emit={output_layout.emit_mode}, packages={packages}."
     )
