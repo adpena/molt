@@ -6,11 +6,18 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from tools.proof_queue_pkg import command_envelope, custody, state
+from tools.proof_queue_pkg import (
+    command_admission,
+    custody,
+    execution_environment,
+    state,
+)
 
 
 def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
-    semantic_error = command_envelope.environment_override_policy_error(env_overrides)
+    semantic_error = execution_environment.environment_override_policy_error(
+        env_overrides
+    )
     if semantic_error is not None:
         return f"proof queue refuses invalid environment override: {semantic_error}"
     try:
@@ -159,11 +166,11 @@ def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
 def _proof_command_policy_error(command: list[str]) -> str | None:
     if not command:
         return None
-    secret_error = command_envelope.command_secret_policy_error(command)
+    secret_error = execution_environment.command_secret_policy_error(command)
     if secret_error is not None:
         return f"proof queue refuses secret-bearing command: {secret_error}"
     try:
-        envelope = command_envelope.envelope_for_command(command)
+        envelope = command_admission.envelope_for_command(command)
     except ValueError as exc:
         return f"proof queue refuses an untyped command envelope: {exc}"
     basename = _command_basename(command[0])
@@ -189,9 +196,9 @@ def _proof_command_policy_error(command: list[str]) -> str | None:
     missing = []
     if "--active" not in prefix:
         missing.append("--active")
-    if command_envelope._uv_option_values(prefix, "--project") != ["."]:
+    if command_admission._uv_option_values(prefix, "--project") != ["."]:
         missing.append("--project .")
-    if command_envelope._uv_option_values(prefix, "--python") != ["3.12"]:
+    if command_admission._uv_option_values(prefix, "--python") != ["3.12"]:
         missing.append("--python 3.12")
     if "--no-sync" not in prefix:
         missing.append("--no-sync")

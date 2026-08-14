@@ -161,6 +161,14 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
     ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
         strict=False
     )
+    state_root = tmp_path / "proof-control" / "memory_guard"
+    assert active_guard_marker_dir(
+        repo_root,
+        {
+            "MOLT_EXT_ROOT": str(artifact_root),
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
+        },
+    ) == (state_root / "active").resolve(strict=False)
 
 
 def test_parse_process_table_reads_process_group_ids() -> None:

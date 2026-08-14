@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from tools import lane_maturity
-from tools.proof_queue_pkg import command_envelope, evidence, state
+from tools.proof_queue_pkg import command_admission, evidence, state
 
 
 def _lane_maturity_admission(
@@ -310,7 +310,7 @@ def _insert_run(
             logical_id,
             reason,
             json.dumps(command),
-            json.dumps(command_envelope.admission_envelope(command), sort_keys=True),
+            json.dumps(command_admission.admission_envelope(command), sort_keys=True),
             json.dumps(
                 state._unattested_receipt_context(
                     status="not-executed",
@@ -383,7 +383,9 @@ def _admit_run(
                 logical_id,
                 reason,
                 json.dumps(command),
-                json.dumps(command_envelope.admission_envelope(command), sort_keys=True),
+                json.dumps(
+                    command_admission.admission_envelope(command), sort_keys=True
+                ),
                 json.dumps(
                     state._unattested_receipt_context(
                         status="not-executed",

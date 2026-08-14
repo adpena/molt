@@ -28,6 +28,7 @@ import pytest
 
 from tools import proof_plan
 from molt import scientific_stack_versions as scientific_versions
+from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt.cli.source_build_environment import canonical_source_marker_environment
 from molt.cli.source_extension_set_identity import _source_extension_set_identity
@@ -39,7 +40,11 @@ from molt.scientific_stack_versions import (
 )
 from tools.proof_queue_pkg import (
     cli,
-    command_envelope,
+    command_admission,
+    command_identity,
+    execution_environment,
+    guarded_execution,
+    supervisor_custody,
     custody,
     custody_cas,
     execution_custody,
@@ -70,7 +75,7 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
     build = (
-        Path(command_envelope.__file__).resolve().parents[1]
+        Path(command_admission.__file__).resolve().parents[1]
         / "proof_supervisor"
         / "build.py"
     )
@@ -124,7 +129,7 @@ def _synthetic_v3_custody(
     }
     policy_path = directory / "synthetic-supervisor-policy.json"
     receipt_path = directory / "synthetic-supervisor-receipt.json"
-    command_envelope._atomic_json(policy_path, policy)
+    supervisor_custody._atomic_json(policy_path, policy)
     run_custody_subject_process(
         [
             str(binary),
@@ -137,7 +142,7 @@ def _synthetic_v3_custody(
         check=True,
     )
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    event_artifact = command_envelope._publish_supervisor_event_artifact(
+    event_artifact = supervisor_custody._publish_supervisor_event_artifact(
         receipt_path=receipt_path,
         receipt=receipt,
         cas_root=directory / "custody-cas",
@@ -155,11 +160,11 @@ def _synthetic_v3_custody(
     }
     supervisor = {
         "schema": "molt.proof-process-supervision.v1",
-        "binary": command_envelope._file_identity(binary),
+        "binary": command_identity._file_identity(binary),
         "binary_artifact": binary_artifact,
-        "policy": command_envelope._file_identity(policy_path),
+        "policy": command_identity._file_identity(policy_path),
         "receipt": receipt,
-        "receipt_file": command_envelope._file_identity(receipt_path),
+        "receipt_file": command_identity._file_identity(receipt_path),
         "event_artifact": event_artifact,
         "supervisor_returncode": 0,
     }
@@ -176,7 +181,7 @@ def _synthetic_live_custody(directory: Path) -> dict[str, object]:
         "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
         "stable": True,
     }
-    raw["identity_sha256"] = command_envelope._canonical_payload_sha256(
+    raw["identity_sha256"] = supervisor_custody._canonical_payload_sha256(
         {
             "events": raw["events"],
             "errors": raw["errors"],
@@ -184,7 +189,7 @@ def _synthetic_live_custody(directory: Path) -> dict[str, object]:
             "lifecycle": raw["lifecycle"],
         }
     )
-    return command_envelope._publish_live_custody_receipt(
+    return supervisor_custody._publish_live_custody_receipt(
         raw, cas_root=directory / "custody-cas"
     )
 
@@ -254,16 +259,16 @@ def _terminalize_synthetic_run(
         receipt_context["platform_process_custody"] = {
             "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
             "prelaunch": platform_images,
-            "prelaunch_sha256": command_envelope._canonical_payload_sha256(
+            "prelaunch_sha256": supervisor_custody._canonical_payload_sha256(
                 platform_images
             ),
-            "postcompletion_sha256": command_envelope._canonical_payload_sha256(
+            "postcompletion_sha256": supervisor_custody._canonical_payload_sha256(
                 platform_images
             ),
             "identical": True,
         }
         receipt_context["terminal_evidence_sha256"] = (
-            command_envelope.terminal_evidence_sha256(
+            supervisor_custody.terminal_evidence_sha256(
                 receipt_context,
                 run_id=run_id,
                 returncode=returncode,
@@ -295,8 +300,8 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
     stdout_path.write_bytes(b"synthetic proof output\n")
     stderr_path.write_bytes(b"")
     transcript = {
-        "stdout": command_envelope._transcript_identity(stdout_path),
-        "stderr": command_envelope._transcript_identity(stderr_path),
+        "stdout": command_identity._transcript_identity(stdout_path),
+        "stderr": command_identity._transcript_identity(stderr_path),
     }
     transcript["identity_sha256"] = hashlib.sha256(
         json.dumps(
@@ -356,20 +361,22 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
                 "passed_names": [],
                 "identity_sha256": "e" * 64,
                 "canonical_values_sha256": (
-                    command_envelope._canonical_environment_sha256({})
+                    execution_environment._canonical_environment_sha256({})
                 ),
             },
             "postcompletion_identity_sha256": "e" * 64,
             "identical": True,
             "executable_inputs": {
                 "prelaunch": {},
-                "postcompletion_sha256": command_envelope._canonical_payload_sha256({}),
+                "postcompletion_sha256": supervisor_custody._canonical_payload_sha256(
+                    {}
+                ),
                 "identical": True,
             },
         },
         "custody_authorities": {
             "prelaunch": [],
-            "postcompletion_sha256": command_envelope._canonical_payload_sha256([]),
+            "postcompletion_sha256": supervisor_custody._canonical_payload_sha256([]),
             "identical": True,
         },
         "derived_root_custody": {"prelaunch": [], "policy_roots": []},
@@ -383,7 +390,7 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
         },
     }
     receipt_context["execution_custody_sha256"] = (
-        command_envelope.execution_custody_sha256(
+        supervisor_custody.execution_custody_sha256(
             receipt_context,
             run_id=request["run_id"],
             returncode=returncode,
@@ -392,7 +399,7 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
     result_path.write_text(
         json.dumps(
             {
-                "schema": command_envelope.EXECUTION_SCHEMA,
+                "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": request["run_id"],
                 "execution_nonce": request["execution_nonce"],
                 "envelope": request["envelope"],
@@ -497,8 +504,8 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
 def test_proof_command_envelope_is_typed_and_command_derived_cross_platform(
     command: list[str], kind: str, python_kind: str | None
 ) -> None:
-    envelope = command_envelope.envelope_for_command(command)
-    assert envelope["schema"] == command_envelope.ENVELOPE_SCHEMA
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["schema"] == command_admission.ENVELOPE_SCHEMA
     assert envelope["kind"] == kind
     assert envelope["argv"] == command
     python = envelope["python"]
@@ -512,7 +519,7 @@ def test_proof_command_envelope_is_typed_and_command_derived_cross_platform(
     ["-3", "-3.12", "-3.12-32", "-3.12-64", "-V:3.12", "-V:PythonCore/3.12"],
 )
 def test_windows_py_selector_authority_is_complete(selector: str) -> None:
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         ["py.exe", selector, "-m", "pytest"]
     )
     assert envelope["python"]["selector"] == selector
@@ -553,8 +560,8 @@ def test_opaque_or_ambiguous_commands_are_rejected_before_execution(
     command: list[str],
 ) -> None:
     with pytest.raises(ValueError):
-        command_envelope.envelope_for_command(command)
-    rejected = command_envelope.admission_envelope(command)
+        command_admission.envelope_for_command(command)
+    rejected = command_admission.admission_envelope(command)
     assert rejected["kind"] == "rejected"
     assert rejected["python"] is None
     assert rejected["toolchains"] == []
@@ -562,7 +569,7 @@ def test_opaque_or_ambiguous_commands_are_rejected_before_execution(
 
 def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -> None:
     command = policy._canonical_cargo_proof_command(["test", "-p", "molt-ir"])
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     assert envelope["kind"] == "python"
     assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc"]
     assert envelope["python"]["prefix"] == command[: command.index("python")]
@@ -571,7 +578,7 @@ def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -
 
 def test_guarded_exec_delegation_is_exact_and_generic_binary_is_typed() -> None:
     with pytest.raises(ValueError, match="unknown proof executable kind"):
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             [
                 "python",
                 "tools/guarded_exec.py",
@@ -587,9 +594,9 @@ def test_guarded_exec_delegation_is_exact_and_generic_binary_is_typed() -> None:
         "node",
         "--version",
     ]
-    disguised = command_envelope.envelope_for_command(disguised_command)
+    disguised = command_admission.envelope_for_command(disguised_command)
     with pytest.raises(ValueError, match="relative guarded_exec path is not canonical"):
-        command_envelope._bind_delegated_command(
+        command_identity._bind_delegated_command(
             disguised,
             list(disguised_command),
             cwd=state.ROOT,
@@ -599,7 +606,7 @@ def test_guarded_exec_delegation_is_exact_and_generic_binary_is_typed() -> None:
 
 def test_guarded_exec_rejects_opaque_delegated_shell() -> None:
     with pytest.raises(ValueError, match="opaque shell wrappers"):
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             [
                 "python",
                 "tools/guarded_exec.py",
@@ -619,7 +626,7 @@ def test_guarded_exec_rejects_two_delegation_layers() -> None:
             "nested guarded_exec delegation is limited to one typed layer"
         ),
     ):
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             [
                 "python",
                 "tools/guarded_exec.py",
@@ -643,9 +650,9 @@ def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -
         node,
         "--version",
     ]
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     exact = list(command)
-    guarded_exec, delegated = command_envelope._bind_delegated_command(
+    guarded_exec, delegated = command_identity._bind_delegated_command(
         envelope,
         exact,
         cwd=state.ROOT,
@@ -653,10 +660,10 @@ def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -
     )
     assert exact[1] == str((state.ROOT / "tools" / "guarded_exec.py").resolve())
     assert os.path.normcase(exact[3]) == os.path.normcase(os.path.abspath(node))
-    assert guarded_exec is not None and command_envelope._content_identity_available(
+    assert guarded_exec is not None and command_identity._content_identity_available(
         guarded_exec
     )
-    assert delegated is not None and command_envelope._content_identity_available(
+    assert delegated is not None and command_identity._content_identity_available(
         delegated
     )
 
@@ -675,18 +682,18 @@ def test_guarded_exec_spellings_share_one_recursive_binding_authority(
     else:
         target = ["tools/guarded_exec.py"]
     command = [sys.executable, *target, "--", node, "--version"]
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     assert envelope["guarded_exec"]["mode"] == (
         "module" if mode == "module" else "script"
     )
-    exact = command_envelope._exact_command(envelope, cwd=state.ROOT, env=os.environ)
-    guarded, delegated = command_envelope._bind_delegated_command(
+    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=os.environ)
+    guarded, delegated = command_identity._bind_delegated_command(
         envelope, exact, cwd=state.ROOT, env=os.environ
     )
     assert str(canonical) in exact
     assert os.path.normcase(exact[-2]) == os.path.normcase(os.path.abspath(node))
-    assert command_envelope._content_identity_available(guarded or {})
-    assert command_envelope._content_identity_available(delegated or {})
+    assert command_identity._content_identity_available(guarded or {})
+    assert command_identity._content_identity_available(delegated or {})
 
 
 @pytest.mark.parametrize(
@@ -701,7 +708,7 @@ def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
     command: list[str],
 ) -> None:
     with pytest.raises(ValueError):
-        command_envelope.envelope_for_command(command)
+        command_admission.envelope_for_command(command)
 
 
 def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
@@ -718,7 +725,7 @@ def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
         "pytest",
         "tests/tools/test_proof_queue.py",
     ]
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     assert envelope["python"] == {
         "kind": "uv-console-script",
         "prefix": command[: command.index("pytest")],
@@ -741,21 +748,21 @@ def test_uv_input_escape_options_are_rejected_by_one_semantics_authority(
     option: str,
 ) -> None:
     with pytest.raises(ValueError, match="non-hermetic"):
-        command_envelope.envelope_for_command(["uv", "run", option, "python", "-V"])
+        command_admission.envelope_for_command(["uv", "run", option, "python", "-V"])
 
 
 def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
     with pytest.raises(ValueError, match="unknown proof executable kind"):
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             ["C:/artifacts/native-proof.exe", "--self-test"]
         )
 
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 88
+    assert len(plan.commands) == 89
     for command in plan.commands:
-        envelope = command_envelope.envelope_for_command(command.argv)
+        envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
         assert envelope["toolchains"] == list(command.toolchains)
@@ -778,13 +785,13 @@ def test_proof_plan_entrypoint_near_match_cannot_downgrade_toolchains(
     with pytest.raises(
         ValueError, match="near-match would discard toolchain authority"
     ):
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             [command.argv[0], target, *command.argv[2:], "--lean-only"]
         )
 
 
 def test_non_exact_python_is_a_constructional_no_descendants_leaf() -> None:
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         [sys.executable, "-c", "print('leaf')"]
     )
     assert envelope["process_closure"] == {
@@ -807,7 +814,7 @@ def test_non_exact_python_is_a_constructional_no_descendants_leaf() -> None:
 def test_registered_process_spawning_toolchain_owns_declared_closure(
     command: list[str],
 ) -> None:
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     assert envelope["process_closure"] == {
         "kind": "registered-toolchain",
         "descendants": "declared-toolchains",
@@ -826,10 +833,10 @@ def test_supervisor_admits_exact_platform_image_without_directory_authority(
         "windows-console-broker", broker, root_exit_disposition="terminate"
     )
 
-    root_role, images = command_envelope._supervisor_fixed_images(
+    root_role, images = supervisor_custody._supervisor_fixed_images(
         {}, {}, [str(root)], [platform_image]
     )
-    derived = command_envelope._supervisor_derived_roots(
+    derived = supervisor_custody._supervisor_derived_roots(
         descendants="declared-toolchains", env={}
     )
 
@@ -857,7 +864,7 @@ def test_supervisor_admits_exact_platform_image_without_directory_authority(
 def test_registered_toolchain_capability_queries_remain_true_leaves(
     command: list[str],
 ) -> None:
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     assert envelope["process_closure"]["descendants"] == "forbidden"
 
 
@@ -872,9 +879,9 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None
         "--target",
         "wasm32-wasip1",
     ]
-    assert command_envelope._rust_target(command, {}) == "wasm32-wasip1"
+    assert command_identity._rust_target(command, {}) == "wasm32-wasip1"
     with pytest.raises(ValueError, match="ambiguous"):
-        command_envelope._rust_target(
+        command_identity._rust_target(
             command, {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"}
         )
 
@@ -885,7 +892,7 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None
 def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
     executable: str, toolchain: str
 ) -> None:
-    envelope = command_envelope.envelope_for_command([executable, "--version"])
+    envelope = command_admission.envelope_for_command([executable, "--version"])
     assert envelope["kind"] == "toolchain"
     assert envelope["toolchains"] == [toolchain]
     assert envelope["proof_plan_command_ids"] == []
@@ -915,19 +922,19 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "-m",
         "pytest",
     ]
-    envelope = command_envelope.envelope_for_command(command)
-    prefix, effective, overlays = command_envelope._canonical_uv_prefix(
+    envelope = command_admission.envelope_for_command(command)
+    prefix, effective, overlays = command_admission._canonical_uv_prefix(
         envelope, cwd=tmp_path
     )
     exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
-    probe = command_envelope._python_probe_command(
+    probe = command_identity._python_probe_command(
         envelope, exact, source_root=effective
     )
     assert probe is not None
     assert overlays == [requirements.resolve()]
     assert probe[: len(prefix)] == exact[: len(prefix)]
     assert probe[-4] == "python"
-    assert probe[-3] == str(command_envelope._PYTHON_IDENTITY_PROBE)
+    assert probe[-3] == str(command_admission._PYTHON_IDENTITY_PROBE)
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -936,20 +943,20 @@ def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
     root = tmp_path / "source"
     root.mkdir()
     (root / "runtime").mkdir()
-    inside = command_envelope.envelope_for_command(
+    inside = command_admission.envelope_for_command(
         ["uv", "run", "--directory", "runtime", "--project", ".", "python", "-V"]
     )
-    effective, overlays = command_envelope._execution_source_paths(inside, cwd=root)
+    effective, overlays = command_admission._execution_source_paths(inside, cwd=root)
     assert effective == (root / "runtime").resolve()
     assert overlays == []
 
     outside = tmp_path / "outside"
     outside.mkdir()
-    escaped = command_envelope.envelope_for_command(
+    escaped = command_admission.envelope_for_command(
         ["uv", "run", "--directory", str(outside), "python", "-V"]
     )
     with pytest.raises(ValueError, match="escapes admitted source root"):
-        command_envelope._execution_source_paths(escaped, cwd=root)
+        command_admission._execution_source_paths(escaped, cwd=root)
 
 
 def test_uv_symlinked_source_selector_cannot_escape_admitted_root(
@@ -964,11 +971,11 @@ def test_uv_symlinked_source_selector_cannot_escape_admitted_root(
         link.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         ["uv", "run", "--directory", "linked", "python", "-V"]
     )
     with pytest.raises(ValueError, match="escapes admitted source root"):
-        command_envelope._canonical_uv_prefix(envelope, cwd=root)
+        command_admission._canonical_uv_prefix(envelope, cwd=root)
 
 
 def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
@@ -981,7 +988,7 @@ def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
     requirements.write_text(
         "pytest==8.4.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
     )
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         [
             "uv",
             "run",
@@ -994,10 +1001,10 @@ def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
             "-V",
         ]
     )
-    effective, overlays = command_envelope._execution_source_paths(envelope, cwd=root)
+    effective, overlays = command_admission._execution_source_paths(envelope, cwd=root)
     assert effective == runtime.resolve()
     assert overlays == [requirements.resolve()]
-    identity = command_envelope._file_identity(overlays[0])
+    identity = command_identity._file_identity(overlays[0])
     assert identity["size_bytes"] == len(requirements.read_bytes())
     assert len(identity["sha256"]) == 64
 
@@ -1019,7 +1026,7 @@ def test_uv_requirements_custody_rejects_unlocked_or_nested_inputs(
 ) -> None:
     path = tmp_path / "proof.txt"
     path.write_text(requirement + "\n", encoding="utf-8")
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         [
             "uv",
             "run",
@@ -1031,11 +1038,11 @@ def test_uv_requirements_custody_rejects_unlocked_or_nested_inputs(
         ]
     )
     with pytest.raises(ValueError, match="exact name==version"):
-        command_envelope._execution_source_paths(envelope, cwd=tmp_path)
+        command_admission._execution_source_paths(envelope, cwd=tmp_path)
 
 
 def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
-    envelope = command_envelope.envelope_for_command(
+    envelope = command_admission.envelope_for_command(
         [
             "uv",
             "run",
@@ -1065,7 +1072,7 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
         )
     )
     with pytest.raises(ValueError, match="violates canonical policy"):
-        command_envelope._validate_toolchain_identity(
+        command_identity._validate_toolchain_identity(
             plan,
             "python",
             {
@@ -1085,14 +1092,14 @@ def test_environment_selected_executable_inputs_are_content_bound(
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": str(wrapper),
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": str(wrapper),
     }
-    before = command_envelope._execution_environment_executable_identities(
+    before = execution_environment._execution_environment_executable_identities(
         environment, cwd=tmp_path
     )
     assert before["RUSTC_WRAPPER"]["argument_count"] == 1
     assert set(before) == set(environment)
     assert before["RUSTC_WRAPPER"]["executable"]["path"] == str(wrapper.resolve())
     wrapper.write_bytes(wrapper.read_bytes() + b"custody-mutation")
-    after = command_envelope._execution_environment_executable_identities(
+    after = execution_environment._execution_environment_executable_identities(
         environment, cwd=tmp_path
     )
     assert (
@@ -1112,7 +1119,7 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
     }
 
     monkeypatch.setattr(
-        command_envelope,
+        command_identity,
         "_which_in_command_environment",
         lambda *_args, **_kwargs: Path(sys.executable).resolve(),
     )
@@ -1126,9 +1133,9 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
             return subprocess.CompletedProcess(argv, 0, json.dumps(runtime_payload), "")
         return subprocess.CompletedProcess(argv, 0, "v24.16.0", "")
 
-    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
+    monkeypatch.setattr(command_identity, "_run_captured", fake_run)
     plan = proof_plan.ProofPlan.load()
-    identity = command_envelope._tool_identity(
+    identity = command_identity._tool_identity(
         plan,
         "node",
         {"python": None},
@@ -1136,7 +1143,7 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
         cwd=Path.cwd(),
         env={},
     )
-    command_envelope._validate_toolchain_identity(plan, "node", identity)
+    command_identity._validate_toolchain_identity(plan, "node", identity)
     assert identity["runtime"] == runtime_payload
     assert re.fullmatch(r"[0-9a-f]{64}", identity["runtime_sha256"])
 
@@ -1187,10 +1194,10 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
             )
         return subprocess.CompletedProcess(argv, 0, "Quint 0.32.0", "")
 
-    monkeypatch.setattr(command_envelope, "_which_in_command_environment", fake_which)
-    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
+    monkeypatch.setattr(command_identity, "_which_in_command_environment", fake_which)
+    monkeypatch.setattr(command_identity, "_run_captured", fake_run)
     plan = proof_plan.ProofPlan.load()
-    before = command_envelope._tool_identity(
+    before = command_identity._tool_identity(
         plan,
         "quint",
         {"python": None},
@@ -1202,7 +1209,7 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     assert before["node_package"]["package"]["file_count"] == 2
     entry.write_text("console.log('mutated')\n", encoding="utf-8")
     observed.clear()
-    after = command_envelope._tool_identity(
+    after = command_identity._tool_identity(
         plan,
         "quint",
         {"python": None},
@@ -1229,12 +1236,14 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         "UV_CACHE_DIR": "C:\\uv-cache",
         "UNRELATED_SECRET_TOKEN": "must-not-appear",
     }
-    normalized, policies = command_envelope.normalize_cargo_environment(base)
-    execution_env, contract = command_envelope._deterministic_execution_environment(
-        normalized, override_names=[]
+    normalized, policies = normalize_cargo_environment(base)
+    execution_env, contract = (
+        execution_environment._deterministic_execution_environment(
+            normalized, override_names=[]
+        )
     )
     fingerprint_key = b"k" * 32
-    authority = command_envelope._execution_environment_authority(
+    authority = execution_environment._execution_environment_authority(
         execution_env,
         applied_cargo_policies=policies,
         fingerprint_key=fingerprint_key,
@@ -1257,7 +1266,7 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
     assert "UV_INDEX_URL" not in variables
     assert variables["UV_CACHE_DIR"]["redacted"] is True
     changed_env = {**execution_env, "RUSTUP_TOOLCHAIN": "nightly"}
-    changed = command_envelope._execution_environment_authority(
+    changed = execution_environment._execution_environment_authority(
         changed_env,
         applied_cargo_policies=policies,
         fingerprint_key=fingerprint_key,
@@ -1277,6 +1286,7 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         ("PYTHONBREAKPOINT", "untracked.debugger"),
         ("PYTEST_ADDOPTS", "-p malicious"),
         ("UV_INDEX_URL", "https://example.invalid/simple"),
+        ("MOLT_MEMORY_GUARD_STATE_ROOT", "C:/unowned/control"),
         ("MOLT_API_TOKEN", "super-secret-value"),
         ("MOLT_ENDPOINT", "https://user:password@example.invalid"),
         ("MOLT_ENDPOINT", "https://bearer-token@example.invalid"),
@@ -1285,7 +1295,10 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
 def test_environment_override_policy_rejects_unbound_or_secret_behavior(
     name: str, value: str
 ) -> None:
-    assert command_envelope.environment_override_policy_error({name: value}) is not None
+    assert (
+        execution_environment.environment_override_policy_error({name: value})
+        is not None
+    )
 
 
 def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed() -> (
@@ -1300,7 +1313,7 @@ def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed(
         "UNCLASSIFIED_BEHAVIOR": "active",
         "MOLT_AUTH_TOKEN": "secret",
     }
-    selected, contract = command_envelope._deterministic_execution_environment(
+    selected, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=["MOLT_TRACE_IMPORT_STAGE"]
     )
     assert selected == {"PATH": "C:/tools", "MOLT_TRACE_IMPORT_STAGE": "1"}
@@ -1313,7 +1326,7 @@ def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed(
         "PYTHONPATH",
         "UNCLASSIFIED_BEHAVIOR",
     ]
-    authority = command_envelope._execution_environment_authority(
+    authority = execution_environment._execution_environment_authority(
         selected,
         applied_cargo_policies=(),
         fingerprint_key=b"z" * 32,
@@ -1327,7 +1340,7 @@ def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed(
 
 
 def test_environment_override_policy_rejects_case_ambiguous_names() -> None:
-    error = command_envelope.environment_override_policy_error(
+    error = execution_environment.environment_override_policy_error(
         {"MOLT_TRACE_CAPI": "1", "molt_trace_capi": "0"}
     )
     assert error is not None
@@ -1395,7 +1408,7 @@ def test_secret_input_is_rejected_before_database_log_or_evidence_projection(
         command=command,
         resource_family="python-tests",
         contention_key="secret-rejection",
-        scopes=["tools/proof_queue_pkg/command_envelope.py"],
+        scopes=["tools/proof_queue_pkg/guarded_execution.py"],
         env_overrides=env_overrides,
         initial_notes=["secret rejection fixture"],
     )
@@ -1452,7 +1465,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         clean = run_custody_subject_process(
             [
                 str(executable),
-                str(command_envelope._PYTHON_IDENTITY_PROBE),
+                str(command_admission._PYTHON_IDENTITY_PROBE),
                 str(tmp_path),
                 str(workers),
             ],
@@ -1489,7 +1502,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     changed_runtime = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1518,7 +1531,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     escaped = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1542,7 +1555,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     completed = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1560,7 +1573,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     missing_inventory = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1622,7 +1635,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     owned = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1655,7 +1668,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     escaped = run_custody_subject_process(
         [
             str(executable),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(tmp_path),
             "1",
         ],
@@ -1702,7 +1715,7 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
     completed = run_custody_subject_process(
         [
             str(custody_python),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(project),
             "1",
         ],
@@ -1754,7 +1767,7 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
     direct = run_custody_subject_process(
         [
             str(custody_python),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(project),
             "1",
         ],
@@ -1795,7 +1808,7 @@ def test_python_probe_rejects_source_metadata_symlink_escape(
     completed = run_custody_subject_process(
         [
             str(custody_python),
-            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(command_admission._PYTHON_IDENTITY_PROBE),
             str(project),
             "1",
         ],
@@ -1842,12 +1855,12 @@ def _execute_request(
     *,
     resource_family: str = "python-tests",
 ) -> tuple[int, dict[str, object]]:
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     request = result.with_suffix(".request.json")
     request.write_text(
         json.dumps(
             {
-                "schema": command_envelope.EXECUTION_SCHEMA,
+                "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "unit-run",
                 "execution_nonce": "a" * 64,
                 "env_override_names": [],
@@ -1861,7 +1874,7 @@ def _execute_request(
         ),
         encoding="utf-8",
     )
-    rc = command_envelope.execute_guarded_request(request)
+    rc = guarded_execution.execute_guarded_request(request)
     return rc, json.loads(result.read_text(encoding="utf-8"))
 
 
@@ -1869,7 +1882,7 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
     tmp_path: Path,
 ) -> None:
     command = [sys.executable, "-c", "pass"]
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     row = {"command_envelope_json": json.dumps(envelope)}
     log = tmp_path / "run.log"
     stale_paths = [
@@ -1918,7 +1931,7 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
     summary = tmp_path / "guard.json"
     guarded_command = [
         sys.executable,
-        "command_envelope.py",
+        "guarded_execution.py",
         "--request",
         "request.json",
     ]
@@ -2003,13 +2016,13 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
     stdout_path.write_bytes(b"1 passed in 0.01s\n")
     stderr_path.write_bytes(b"")
     transcript = {
-        "stdout": command_envelope._transcript_identity(stdout_path),
-        "stderr": command_envelope._transcript_identity(stderr_path),
+        "stdout": command_identity._transcript_identity(stdout_path),
+        "stderr": command_identity._transcript_identity(stderr_path),
     }
     transcript["identity_sha256"] = hashlib.sha256(
         json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    envelope = command_envelope.envelope_for_command([sys.executable, "-c", "pass"])
+    envelope = command_admission.envelope_for_command([sys.executable, "-c", "pass"])
     synthetic_toolchains, compact_custody, v3 = _synthetic_v3_custody(
         tmp_path,
         {"python": {"identity_sha256": "b" * 64}},
@@ -2039,7 +2052,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
                 "passed_names": ["MOLT_TEST_VALUE"],
                 "identity_sha256": "e" * 64,
                 "canonical_values_sha256": (
-                    command_envelope._canonical_environment_sha256(
+                    execution_environment._canonical_environment_sha256(
                         {"MOLT_TEST_VALUE": "alpha"}
                     )
                 ),
@@ -2048,19 +2061,21 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
             "identical": True,
             "executable_inputs": {
                 "prelaunch": {},
-                "postcompletion_sha256": command_envelope._canonical_payload_sha256({}),
+                "postcompletion_sha256": supervisor_custody._canonical_payload_sha256(
+                    {}
+                ),
                 "identical": True,
             },
         },
         "custody_authorities": {
             "prelaunch": [],
-            "postcompletion_sha256": command_envelope._canonical_payload_sha256([]),
+            "postcompletion_sha256": supervisor_custody._canonical_payload_sha256([]),
             "identical": True,
         },
         "derived_root_custody": {"prelaunch": [], "policy_roots": []},
         "source_custody": {"row_cwd": supervisor_policy["cwd"]},
     }
-    context["execution_custody_sha256"] = command_envelope.execution_custody_sha256(
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
         context, run_id="run-one", returncode=0
     )
     runner._validated_execution_context(
@@ -2072,8 +2087,8 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
         returncode=0,
     )
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "substituted"
-    command_envelope._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_envelope._file_identity(supervisor_policy_path)
+    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
+    v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
     with pytest.raises(ValueError, match="policy binding is invalid"):
         runner._validated_execution_context(
             context,
@@ -2084,8 +2099,8 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
             returncode=0,
         )
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "alpha"
-    command_envelope._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_envelope._file_identity(supervisor_policy_path)
+    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
+    v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
     event_artifact = v3["supervisor"]["event_artifact"]
     event_artifact["count"] = int(event_artifact["count"]) + 1
     with pytest.raises(ValueError, match="event artifact binding is invalid"):
@@ -2124,7 +2139,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
 def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -> None:
     transcript = tmp_path / "stdout.bin"
     transcript.write_bytes(b"alpha\n12 passed, 2 skipped in 1.00s\nomega\n")
-    identity = command_envelope._transcript_identity(transcript)
+    identity = command_identity._transcript_identity(transcript)
     assert identity["test_counts"] == {"passed": 12, "skipped": 2}
     assert identity["structured_test_output"] is True
     assert identity["sha256"] == hashlib.sha256(transcript.read_bytes()).hexdigest()
@@ -2334,7 +2349,7 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
 
 
 def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> None:
-    invocation = command_envelope.parse_python_invocation(
+    invocation = command_admission.parse_python_invocation(
         [
             "python",
             "-S",
@@ -2361,12 +2376,12 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
     assert invocation.arguments == ("--payload-flag",)
     envelope = {"python": {"kind": "direct"}}
     exact = [sys.executable, "-S", "-E", "-I", "-c", "pass", "argument"]
-    rewritten = command_envelope._python_bootstrap_command(envelope, exact)
+    rewritten = command_admission._python_bootstrap_command(envelope, exact)
     assert rewritten[:4] == [sys.executable, "-S", "-E", "-I"]
     assert Path(rewritten[4]).name == "python_custody_bootstrap.py"
     assert rewritten[5:] == ["command", "0", "pass", "argument"]
 
-    py_rewritten = command_envelope._python_bootstrap_command(
+    py_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "py-launcher", "selector": "-3.12"}},
         ["py.exe", "-3.12", "-I", "-m", "sample_package", "argument"],
     )
@@ -2374,7 +2389,7 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
     assert Path(py_rewritten[3]).name == "python_custody_bootstrap.py"
     assert py_rewritten[4:] == ["module", "0", "sample_package", "argument"]
 
-    uv_rewritten = command_envelope._python_bootstrap_command(
+    uv_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
         ["uv.exe", "run", "python", "-S", "-c", "pass", "argument"],
     )
@@ -2393,7 +2408,9 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
 def test_python_bootstrap_command_and_stdin_argv_semantics(
     mode: str, target: str | None, expected_argv0: str
 ) -> None:
-    bootstrap = Path(command_envelope.__file__).with_name("python_custody_bootstrap.py")
+    bootstrap = Path(command_admission.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
     command = [sys.executable, str(bootstrap), mode, "0"]
     if target is not None:
         command.append(target)
@@ -2429,7 +2446,9 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     (package / "__main__.py").write_text(probe, encoding="utf-8")
     script = tmp_path / "script.py"
     script.write_text(probe, encoding="utf-8")
-    bootstrap = Path(command_envelope.__file__).with_name("python_custody_bootstrap.py")
+    bootstrap = Path(command_admission.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
     clean_env = {
         key: value
         for key, value in os.environ.items()
@@ -2491,7 +2510,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
     test_file = tmp_path / "test_owned.py"
     test_file.write_text("def test_owned():\n    assert True\n", encoding="utf-8")
     envelope = {"python": {"kind": "direct"}}
-    rewritten = command_envelope._python_bootstrap_command(
+    rewritten = command_admission._python_bootstrap_command(
         envelope,
         [sys.executable, "-m", "pytest", "-q", str(test_file)],
     )
@@ -2507,7 +2526,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
     )
     assert completed.returncode == 0, completed.stderr
     assert not (tmp_path / ".pytest_cache").exists()
-    already_disabled = command_envelope._python_bootstrap_command(
+    already_disabled = command_admission._python_bootstrap_command(
         envelope,
         [
             sys.executable,
@@ -2757,12 +2776,12 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
         "-c",
         "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
     ]
-    envelope = command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     request = result.with_suffix(".request.json")
     request.write_text(
         json.dumps(
             {
-                "schema": command_envelope.EXECUTION_SCHEMA,
+                "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "timeout-unit-run",
                 "execution_nonce": "b" * 64,
                 "env_override_names": [],
@@ -2777,13 +2796,13 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        command_envelope,
+        command_identity,
         "_python_identity",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             subprocess.TimeoutExpired("python-probe", 0.01)
         ),
     )
-    assert command_envelope.execute_guarded_request(request) == 2
+    assert guarded_execution.execute_guarded_request(request) == 2
     record = json.loads(result.read_text(encoding="utf-8"))
     assert record["phase"] == "failed"
     assert record["command_started"] is False
@@ -2822,9 +2841,9 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
             return subprocess.CompletedProcess(argv, 0, str(Path(sys.executable)), "")
         return subprocess.CompletedProcess(argv, 0, "cargo 1.96.1", "")
 
-    monkeypatch.setattr(command_envelope, "_which_in_command_environment", fake_which)
-    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
-    identity = command_envelope._tool_identity(
+    monkeypatch.setattr(command_identity, "_which_in_command_environment", fake_which)
+    monkeypatch.setattr(command_identity, "_run_captured", fake_run)
+    identity = command_identity._tool_identity(
         proof_plan.ProofPlan.load(),
         "cargo",
         {"python": None},
@@ -2845,14 +2864,14 @@ def test_unavailable_executable_and_requirements_hashes_are_never_evidence(
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
     monkeypatch.setattr(
-        command_envelope,
+        command_identity,
         "_hash_file",
         lambda _path: "unavailable:PermissionError",
     )
-    executable = command_envelope._executable_identity(Path(sys.executable))
-    overlay = command_envelope._file_identity(requirements)
-    assert command_envelope._content_identity_available(executable) is False
-    assert command_envelope._content_identity_available(overlay) is False
+    executable = command_identity._executable_identity(Path(sys.executable))
+    overlay = command_identity._file_identity(requirements)
+    assert command_identity._content_identity_available(executable) is False
+    assert command_identity._content_identity_available(overlay) is False
 
 
 def test_proof_queue_durable_state_uses_external_custody_root(
@@ -2889,12 +2908,12 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
     request.write_text(
         json.dumps(
             {
-                "schema": command_envelope.EXECUTION_SCHEMA,
+                "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "source-output-unit-run",
                 "execution_nonce": "c" * 64,
                 "env_override_names": [],
                 "command": command,
-                "envelope": command_envelope.envelope_for_command(command),
+                "envelope": command_admission.envelope_for_command(command),
                 "cwd": str(repo),
                 "resource_family": "python-tests",
                 "result_path": str(result),
@@ -2904,12 +2923,12 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        command_envelope,
+        supervisor_custody,
         "_provision_proof_supervisor",
         lambda **_kwargs: pytest.fail("supervisor provisioned before boundary check"),
     )
     with pytest.raises(ValueError, match="outputs must be outside effective source"):
-        command_envelope.execute_guarded_request(request)
+        guarded_execution.execute_guarded_request(request)
     assert not result.exists()
     assert not result.with_suffix(".supervisor-policy.json").exists()
     assert not result.with_suffix(".supervisor-receipt.json").exists()
@@ -3007,7 +3026,7 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
     conn.close()
 
     envelope = json.loads(row["command_envelope_json"])
-    assert envelope["schema"] == command_envelope.ENVELOPE_SCHEMA
+    assert envelope["schema"] == command_admission.ENVELOPE_SCHEMA
     assert envelope["python"]["kind"] == "uv"
     assert json.loads(row["receipt_context_json"])["status"] == "legacy-unattested"
     assert payload["command_envelope"] == envelope
@@ -3069,7 +3088,7 @@ def test_connect_never_rewrites_queued_or_terminal_admission_envelopes(
         calls += 1
         return {"schema": "drifted-plan"}
 
-    monkeypatch.setattr(command_envelope, "admission_envelope", drifted)
+    monkeypatch.setattr(command_admission, "admission_envelope", drifted)
     reopened = state._connect(db)
     after = {
         row[0]: row[1]
@@ -3114,7 +3133,7 @@ def test_terminal_export_rejects_row_envelope_drift_from_digested_receipt(
     assert row is not None
     substituted = dict(row)
     substituted["command_envelope_json"] = json.dumps(
-        command_envelope.envelope_for_command(
+        command_admission.envelope_for_command(
             [sys.executable, "-c", "print('substituted')"]
         ),
         sort_keys=True,
@@ -5110,7 +5129,7 @@ def test_proof_queue_diagnoses_unadmitted_native_image_before_custody_noise(
         cwd=state.ROOT,
         resource_family="python",
         contention_key="python-proof",
-        scopes=["tools/proof_queue_pkg/command_envelope.py"],
+        scopes=["tools/proof_queue_pkg/guarded_execution.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
@@ -7380,7 +7399,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert notebook.exists()
     assert '"proof_receipt":' not in notebook.read_text(encoding="utf-8")
     authority = json.loads(rows[0]["command_envelope_json"])
-    assert authority == command_envelope.envelope_for_command(command)
+    assert authority == command_admission.envelope_for_command(command)
     assert json.loads(rows[0]["receipt_context_json"]) == {
         "schema": state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA,
         "status": "not-executed",
@@ -7437,7 +7456,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "guard_receipt": {"sha256": "e" * 64},
     }
     receipt_context["terminal_evidence_sha256"] = (
-        command_envelope.terminal_evidence_sha256(
+        supervisor_custody.terminal_evidence_sha256(
             receipt_context,
             run_id=run_id,
             returncode=0,
@@ -12248,7 +12267,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     ]
     stack = resolve_scientific_stack()
     requirements = state.ROOT / pact._PACT_WITNESS_REQUIREMENTS
-    command_envelope._validate_requirements_file(requirements)
+    command_admission._validate_requirements_file(requirements)
     requirements_text = requirements.read_text(encoding="utf-8")
     assert stack.numpy_requirement in requirements_text
     assert stack.scipy_requirement in requirements_text
