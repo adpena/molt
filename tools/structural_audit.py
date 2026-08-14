@@ -561,8 +561,8 @@ def _rust_region_name(text: str, start: int, kind: str) -> str:
     return m.group(1) if m else kind
 
 
-def _is_cfg_test_module(text: str, start: int, kind: str, name: str) -> bool:
-    if kind != "mod" or name != "tests":
+def _is_cfg_test_module(text: str, start: int, kind: str, _name: str) -> bool:
+    if kind != "mod":
         return False
     return "#[cfg(test)]" in text[max(0, start - 300) : start]
 
