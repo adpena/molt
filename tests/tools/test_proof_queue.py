@@ -56,7 +56,11 @@ from tools.proof_queue_pkg import (
     state,
     toolchain_capture,
 )
-from tools.proof_queue_pkg import diagnostics as diagnostics_module
+from tools.proof_queue_pkg import (
+    diagnostic_engine as diagnostics_module,
+    diagnostic_evidence,
+    diagnostic_reporting,
+)
 from tools.proof_queue_pkg import evidence as evidence_module
 
 _TEST_GIT_SNAPSHOT = {
@@ -4363,7 +4367,7 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
-        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostic_evidence.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -4439,7 +4443,7 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
-        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostic_evidence.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -4525,7 +4529,7 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
     log_path.write_text("proof_queue run_id=active-run\n.\n", encoding="utf-8")
     stale = (
         time.time()
-        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostic_evidence.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -4597,7 +4601,7 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     )
     stale = (
         time.time()
-        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostic_evidence.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -4696,7 +4700,7 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -4782,7 +4786,7 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -4924,7 +4928,7 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -5325,7 +5329,7 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -5417,7 +5421,7 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -5493,7 +5497,7 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -5578,7 +5582,7 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
         encoding="utf-8",
     )
     stale = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
@@ -6044,7 +6048,7 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     stale_mtime = (
-        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostic_evidence.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
     conn = state._connect(db)
     for run_id, guard_pid in (("target-run", 99_001), ("sibling-run", 99_002)):
@@ -7126,7 +7130,7 @@ def test_proof_queue_queued_missing_log_is_not_running_evidence(
     row = _rows(db)[0]
     Path(row["log_path"]).unlink()
 
-    assert diagnostics_module._active_log_status(row) == [
+    assert diagnostic_reporting._active_log_status(row) == [
         f"  log={Path(row['log_path'])} (queued; proof command not launched yet)"
     ]
     capsys.readouterr()

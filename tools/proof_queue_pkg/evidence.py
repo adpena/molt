@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from tools.proof_queue_pkg import (
     command_admission,
-    diagnostics,
+    diagnostic_engine,
     state,
     supervisor_custody,
 )
@@ -49,7 +49,7 @@ def _run_payload_with_notes(
             "parent_kind_counts": state._edge_kind_counts(run_edges["parents"]),
             "child_kind_counts": state._edge_kind_counts(run_edges["children"]),
         }
-        item["diagnostics"] = diagnostics._run_diagnostics(row)
+        item["diagnostics"] = diagnostic_engine._run_diagnostics(row)
     return payload
 
 

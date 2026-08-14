@@ -30,7 +30,7 @@ from tools.proof_queue_pkg import (
     state,
     toolchain_capture,
 )
-from tools.proof_queue_pkg import diagnostics as diagnostic_engine
+from tools.proof_queue_pkg import diagnostic_engine, diagnostic_model
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -652,11 +652,11 @@ def _wait_for_guard_completion_or_stale(
                     )
                 return str(row["status"]), row["returncode"], elapsed
             diagnostics = diagnostic_engine._run_diagnostics(row)
-            if not diagnostic_engine._diagnostics_have_terminal_stale_signal(
+            if not diagnostic_model._diagnostics_have_terminal_stale_signal(
                 diagnostics
             ):
                 continue
-            diagnostic_summary = diagnostic_engine._format_diagnostic_summary(
+            diagnostic_summary = diagnostic_model._format_diagnostic_summary(
                 diagnostics
             )
             print(
@@ -669,7 +669,7 @@ def _wait_for_guard_completion_or_stale(
                 evidence = diagnostics[0].get("evidence")
                 if isinstance(evidence, str) and evidence.strip():
                     print(f"evidence={evidence}", file=log, flush=True)
-                artifacts = diagnostic_engine._diagnostic_artifacts(diagnostics)
+                artifacts = diagnostic_model._diagnostic_artifacts(diagnostics)
                 if artifacts:
                     print(f"artifacts={', '.join(artifacts)}", file=log, flush=True)
             guard_rc = custody._terminate_queue_owned_guard_process(

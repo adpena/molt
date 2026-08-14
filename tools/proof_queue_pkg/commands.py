@@ -18,7 +18,12 @@ from tools.proof_queue_pkg import (
     scheduling,
     state,
 )
-from tools.proof_queue_pkg import diagnostics as diagnostic_engine
+from tools.proof_queue_pkg import (
+    diagnostic_audit,
+    diagnostic_engine,
+    diagnostic_model,
+    diagnostic_reporting,
+)
 
 
 def _cmd_exec(args: argparse.Namespace) -> int:
@@ -496,7 +501,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if not active:
         print("- none")
     for row in active:
-        elapsed = f" elapsed={diagnostic_engine._elapsed_since(row['started_at'], row['elapsed_s'])}"
+        elapsed = f" elapsed={diagnostic_model._elapsed_since(row['started_at'], row['elapsed_s'])}"
         print(f"- {row['status']}{elapsed} {row['run_id']} {row['reason']}")
         note_summary = state._format_note_summary(notes_by_run.get(row["run_id"], []))
         if note_summary:
@@ -506,8 +511,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
-        diagnostic_engine._print_status_diagnostics(row)
-        for line in diagnostic_engine._active_log_status(row):
+        diagnostic_reporting._print_status_diagnostics(row)
+        for line in diagnostic_reporting._active_log_status(row):
             print(line)
     print("recent:")
     if not recent:
@@ -526,7 +531,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
-        diagnostic_engine._print_status_diagnostics(row)
+        diagnostic_reporting._print_status_diagnostics(row)
     return 0
 
 
@@ -587,7 +592,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 )
             continue
         if row["status"] == "dispatched":
-            dispatch_age = diagnostic_engine._running_age_seconds(
+            dispatch_age = diagnostic_model._running_age_seconds(
                 state._row_value(row, "started_at")
             )
             if (
@@ -624,7 +629,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 diagnostics = diagnostic_engine._run_diagnostics(
                     state._row_by_run_id(conn, str(row["run_id"])) or row
                 )
-                diagnostic_summary = diagnostic_engine._format_diagnostic_summary(
+                diagnostic_summary = diagnostic_model._format_diagnostic_summary(
                     diagnostics
                 )
                 if diagnostic_summary is None:
@@ -644,7 +649,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         guard_alive = pid is not None and custody._guard_process_live(
             int(pid), recorded_identity_text
         )
-        running_age = diagnostic_engine._running_age_seconds(
+        running_age = diagnostic_model._running_age_seconds(
             state._row_value(row, "started_at")
         )
         age_exceeded = (
@@ -655,7 +660,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         if (
             guard_alive
             and not age_exceeded
-            and not diagnostic_engine._diagnostics_have_terminal_stale_signal(
+            and not diagnostic_model._diagnostics_have_terminal_stale_signal(
                 diagnostics
             )
         ):
@@ -668,7 +673,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
             finished_at=state._utc_now(),
         )
         pruned += 1
-        diagnostic_summary = diagnostic_engine._format_diagnostic_summary(diagnostics)
+        diagnostic_summary = diagnostic_model._format_diagnostic_summary(diagnostics)
         if diagnostic_summary is None:
             if not guard_alive and pid is not None and custody._pid_alive(int(pid)):
                 # PID is alive but no longer the recorded guard: Windows recycled
@@ -693,7 +698,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
             evidence = diagnostics[0].get("evidence")
             if isinstance(evidence, str) and evidence.strip():
                 line += f" evidence={state._shorten(evidence, 220)}"
-        artifacts = diagnostic_engine._diagnostic_artifacts(diagnostics)
+        artifacts = diagnostic_model._diagnostic_artifacts(diagnostics)
         if not artifacts:
             artifacts = [str(row["summary_json"]), str(row["log_path"])]
         print(f"{line} artifacts={', '.join(artifacts)}")
@@ -736,7 +741,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     conn = state._connect(state._db_path(args))
     conn.row_factory = sqlite3.Row
     scheduling._refresh_blocked_queued_runs(args, conn)
-    rows = diagnostic_engine._audit_rows(conn, args)
+    rows = diagnostic_audit._audit_rows(conn, args)
     run_ids = [str(row["run_id"]) for row in rows]
     notes_by_run = state._notes_for_run_ids(conn, run_ids)
     edges_by_run = state._edges_for_run_ids(conn, run_ids)
@@ -756,7 +761,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         if len(keyed_run_ids) <= 1:
             continue
         issues.append(
-            diagnostic_engine._audit_issue(
+            diagnostic_audit._audit_issue(
                 signal_id="queue-contention-duplicate",
                 severity="error",
                 summary=f"Multiple active rows share contention key {key!r}.",
@@ -776,7 +781,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         superseded_terminal_row = (
             status not in state.RUNNING
             and not args.all
-            and diagnostic_engine._frontier_superseded(dag)
+            and diagnostic_audit._frontier_superseded(dag)
         )
         if superseded_terminal_row:
             superseded_archaeology_runs += 1
@@ -791,7 +796,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                 receipt_context = None
         if status not in state.RUNNING and receipt_context is None:
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-proof-receipt-state-missing",
                     severity="error",
                     run_id=run_id,
@@ -809,7 +814,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             and receipt_context.get("status") == "legacy-unattested"
         ):
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-legacy-unattested-proof-receipt",
                     severity="error",
                     run_id=run_id,
@@ -828,7 +833,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             and receipt_context.get("schema") == state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA
         ):
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-passed-proof-receipt-unattested",
                     severity="error",
                     run_id=run_id,
@@ -855,12 +860,12 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                 and not superseded_terminal_row
             ):
                 issues.append(
-                    diagnostic_engine._audit_issue(
+                    diagnostic_audit._audit_issue(
                         signal_id="audit-unclassified-failure",
                         severity="error",
                         run_id=run_id,
                         summary="Failed proof row has no deterministic diagnostic.",
-                        evidence=diagnostic_engine._format_diagnostic_summary(
+                        evidence=diagnostic_model._format_diagnostic_summary(
                             diagnostics
                         )
                         or "",
@@ -873,19 +878,19 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             elif diagnostics:
                 classified_failed_runs += 1
                 if not superseded_terminal_row:
-                    frontier = diagnostic_engine._frontier_failure(row, diagnostics)
+                    frontier = diagnostic_audit._frontier_failure(row, diagnostics)
                     if frontier is not None:
                         frontier_failures.append(frontier)
 
         for item in diagnostics:
             signal_id = str(item["signal_id"])
             severity = str(item["severity"])
-            audit_severity = diagnostic_engine._audit_severity_for_diagnostic(
+            audit_severity = diagnostic_audit._audit_severity_for_diagnostic(
                 row, signal_id
             )
             if audit_severity is not None:
                 issues.append(
-                    diagnostic_engine._audit_issue(
+                    diagnostic_audit._audit_issue(
                         signal_id=f"audit-{signal_id}",
                         severity=audit_severity,
                         run_id=run_id,
@@ -899,7 +904,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                 )
             elif severity == "unknown" and signal_id != "unclassified-failed-proof":
                 issues.append(
-                    diagnostic_engine._audit_issue(
+                    diagnostic_audit._audit_issue(
                         signal_id="audit-unknown-diagnostic",
                         severity="error",
                         run_id=run_id,
@@ -925,7 +930,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             metadata_defects.append(f"suspicious reason={reason!r}")
         if metadata_defects:
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-weak-proof-metadata",
                     severity="warning",
                     run_id=run_id,
@@ -940,7 +945,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             )
         if not notes:
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-missing-proof-note",
                     severity="warning",
                     run_id=run_id,
@@ -959,7 +964,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             notebook_path = evidence._notebooks_root(args) / f"{run_id}.py"
             if not notebook_path.exists():
                 issues.append(
-                    diagnostic_engine._audit_issue(
+                    diagnostic_audit._audit_issue(
                         signal_id="audit-notebook-missing",
                         severity="warning",
                         run_id=run_id,
@@ -978,7 +983,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         pid = row["guard_pid"]
         if pid is None or not custody._pid_alive(int(pid)):
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-dead-running-guard",
                     severity="error",
                     run_id=run_id,
@@ -996,7 +1001,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             if row["status"] == "queued":
                 continue
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-active-log-missing",
                     severity="error",
                     run_id=run_id,
@@ -1012,7 +1017,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         age_s = max(0.0, time.time() - stat.st_mtime)
         if age_s > args.stale_log_seconds:
             issues.append(
-                diagnostic_engine._audit_issue(
+                diagnostic_audit._audit_issue(
                     signal_id="audit-active-log-stale",
                     severity="warning",
                     run_id=run_id,
@@ -1020,7 +1025,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         "Running proof row has not updated its log within the "
                         "stale-log window."
                     ),
-                    evidence=f"last_log_age={diagnostic_engine._format_duration(age_s)}",
+                    evidence=f"last_log_age={diagnostic_model._format_duration(age_s)}",
                     next_action=(
                         "Inspect the queue log and memory-guard summary; avoid "
                         "interactive interrupts and prefer bounded timeout or "
@@ -1148,7 +1153,7 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
         conn,
         run_ids=[args.run_id] if args.run_id else None,
     )
-    row = diagnostic_engine._diagnose_row(conn, args)
+    row = diagnostic_audit._diagnose_row(conn, args)
     diagnostics = diagnostic_engine._run_diagnostics(row)
     payload = evidence._row_to_payload(row)
     payload["diagnostics"] = diagnostics
@@ -1179,7 +1184,7 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
         note_id = state._insert_note(
             conn,
             run_id=row["run_id"],
-            body=diagnostic_engine._diagnosis_note_body(row, diagnostics),
+            body=diagnostic_reporting._diagnosis_note_body(row, diagnostics),
             kind=args.kind,
             author=args.author,
         )
