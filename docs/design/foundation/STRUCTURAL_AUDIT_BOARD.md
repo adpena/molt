@@ -32,7 +32,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 8085 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-runtime/src/c_api/tests.rs` | 6268 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-cpython-abi/src/bridge.rs` | 6242 lines (ceiling 4000) |
-| medium | large_source_file | `tools/wasm_link.py` | 5301 lines (ceiling 2500) |
+| medium | large_source_file | `tools/wasm_link.py` | 5321 lines (ceiling 2500) |
 | medium | python_stub_surface | `src/molt/stdlib/numbers.py:48` | 41 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/asyncio/transports.py:24` | 23 Python stub/NotImplemented surface(s) |
 | medium | rust_stub_surface | `runtime/molt-runtime/src/object/ops/subscript.rs:208` | 7 Rust stub/NotImplemented surface(s) |
@@ -60,33 +60,32 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (23)
+### large_source_file (22)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 8085 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6268 lines (ceiling 4000) | `runtime/molt-runtime/src/c_api/tests.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6242 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/bridge.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 5301 lines (ceiling 2500) | `tools/wasm_link.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 5321 lines (ceiling 2500) | `tools/wasm_link.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 5877 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 5586 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/object.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4609 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4577 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/typeobj.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4313 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 4131 lines (ceiling 4000) | `runtime/molt-passes/src/tir/cache.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 3210 lines (ceiling 2500) | `tools/memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2956 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2955 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2951 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2926 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2896 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2672 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2663 lines (ceiling 2500) | `tools/proof_plan.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2651 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2625 lines (ceiling 2500) | `tools/perf_scoreboard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2600 lines (ceiling 2500) | `tools/harness_memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2578 lines (ceiling 2500) | `tools/proof_plan.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2569 lines (ceiling 2500) | `src/molt/cli/external_native.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2553 lines (ceiling 2500) | `src/molt/frontend/visitors/call_dispatch_named.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2546 lines (ceiling 2500) | `tools/bench.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2540 lines (ceiling 2500) | `tools/op_kinds/validate.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2528 lines (ceiling 2500) | `src/molt/cli/external_native.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 
 ### python_stub_surface (306)
 
