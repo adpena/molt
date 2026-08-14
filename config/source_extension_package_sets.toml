@@ -1,0 +1,127 @@
+schema_version = 1
+
+[[packages]]
+name = "numpy"
+version = "2.5.1"
+
+[packages.source]
+kind = "git"
+commit = "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
+
+[[packages.sets]]
+name = "pact-witness"
+seal_name = "pact_numpy_multiarray_sealed_for_witness"
+build_dependency_group = "source-build-numpy"
+use_pkg_config = false
+required_config_tools = []
+required_installed_files = [
+  "numpy/__config__.py",
+  "numpy/__init__.py",
+  "numpy/_core/include/numpy/__multiarray_api.h",
+  "numpy/_core/include/numpy/__ufunc_api.h",
+  "numpy/_core/include/numpy/_numpyconfig.h",
+  "numpy/_core/include/numpy/arrayobject.h",
+  "numpy/_core/include/numpy/numpyconfig.h",
+  "numpy/version.py",
+]
+meson_setup_args = [
+  "-Dblas=none",
+  "-Dlapack=none",
+  "-Dallow-noblas=true",
+  "-Ddisable-optimization=false",
+  "--buildtype=release",
+]
+
+[[packages.sets.variants]]
+cpython = "3.12"
+abi_tier = "cpython-abi"
+target_triple = "wasm32-wasip1"
+expected_identity_sha256 = "f5249691fa583a51229056a7dee957ac626809843a581e31cbf55c3e1a886441"
+
+[[packages.sets.extensions]]
+module = "numpy._core._multiarray_umath"
+target = "_multiarray_umath"
+python_exports = ["numpy"]
+capabilities = ["module.extension.exec"]
+provided_capsules = [
+  "numpy.core._multiarray_umath._ARRAY_API",
+  "numpy.core._multiarray_umath._UFUNC_API",
+]
+exclude_linked_static_libraries = []
+
+[[packages.sets.extensions]]
+module = "numpy.linalg._umath_linalg"
+target = "_umath_linalg"
+python_exports = ["numpy.linalg._umath_linalg"]
+capabilities = ["module.extension.exec"]
+provided_capsules = []
+exclude_linked_static_libraries = ["npymath"]
+
+[[packages]]
+name = "scipy"
+version = "1.18.0"
+
+[packages.source]
+kind = "git"
+commit = "54ef5423f2e4376230ec3bfda6912a07a50958e3"
+
+[[packages.sets]]
+name = "pact-witness"
+seal_name = "pact_scipy_witness"
+build_dependency_group = "source-build-scipy"
+use_pkg_config = true
+required_config_tools = [
+  "numpy-config",
+  "pkg-config",
+  "pybind11-config",
+  "pythran-config",
+]
+required_installed_files = [
+  "scipy/__config__.py",
+  "scipy/__init__.py",
+  "scipy/version.py",
+]
+meson_setup_args = [
+  "-Dblas=none",
+  "-Dlapack=none",
+  "-D_without-fortran=true",
+  "-Duse-pythran=true",
+]
+
+[[packages.sets.variants]]
+cpython = "3.12"
+abi_tier = "cpython-abi"
+target_triple = "wasm32-wasip1"
+expected_identity_sha256 = "3e823c696a380373028d4953bdefe7e4c4ceed9ff356f812a8230ae6ef82219c"
+
+[[packages.sets.extensions]]
+module = "scipy.ndimage._nd_image"
+target = "_nd_image"
+python_exports = ["scipy"]
+capabilities = ["module.extension.exec"]
+provided_capsules = []
+exclude_linked_static_libraries = []
+
+[[packages.sets.extensions]]
+module = "scipy.ndimage._ni_label"
+target = "_ni_label"
+python_exports = ["scipy.ndimage._ni_label"]
+capabilities = ["module.extension.exec"]
+provided_capsules = []
+exclude_linked_static_libraries = []
+
+[[packages.sets.extensions]]
+module = "scipy.ndimage._rank_filter_1d"
+target = "_rank_filter_1d"
+python_exports = ["scipy.ndimage._rank_filter_1d"]
+capabilities = ["module.extension.exec"]
+provided_capsules = []
+exclude_linked_static_libraries = []
+
+[[packages.sets.extensions]]
+module = "scipy._lib._ccallback_c"
+target = "_ccallback_c"
+python_exports = ["scipy._lib._ccallback_c"]
+capabilities = ["module.extension.exec"]
+provided_capsules = []
+exclude_linked_static_libraries = []

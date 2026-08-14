@@ -6,6 +6,7 @@ from pathlib import Path
 
 from molt.cli import backend_cache
 from molt.cli import llvm_wasi_tools
+from molt.cli import source_extension_target
 from molt.cli import source_extension_toolchain
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 import pytest
@@ -445,9 +446,15 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
         detail="complete",
     )
 
+    target_plan = source_extension_target.resolve_source_extension_target_plan(
+        "wasm",
+        host_target_triple="x86_64-unknown-linux-gnu",
+        host_platform="linux",
+        host_arch="x86_64",
+    )
     commands = source_extension_toolchain._source_extension_c_commands(
         toolchain=toolchain,
-        target_triple="wasm32-wasip1",
+        target_plan=target_plan,
     )
 
     assert set(commands) == {"ar", "c", "cpp", "ld", "nm", "ranlib", "strip"}
@@ -456,6 +463,90 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
     assert commands["nm"] == ("llvm-nm",)
     assert commands["ranlib"] == ("llvm-ranlib",)
     assert commands["ld"] == ("wasm-ld",)
+
+    with pytest.raises(ValueError, match="target conflicts"):
+        source_extension_toolchain._compiler_command_with_target(
+            ("clang", "--target=wasm32-unknown-unknown"),
+            target_plan.target_triple,
+        )
+
+
+def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sysroot = (tmp_path / "wasi-sysroot").resolve()
+    sysroot.mkdir()
+    compiler = (
+        "/tools/clang",
+        "--target=wasm32-wasip1",
+        "--sysroot",
+        str(sysroot),
+    )
+
+    def tool(
+        role: llvm_wasi_tools.LlvmToolRole,
+        command: tuple[str, ...],
+    ) -> llvm_wasi_tools.ResolvedLlvmTool:
+        return llvm_wasi_tools.ResolvedLlvmTool(
+            role=role,
+            command=command,
+            path=Path(command[0]),
+            version="22.1.8",
+            sha256="a" * 64,
+        )
+
+    def family(
+        *,
+        explicit_commands: dict[llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
+    ) -> llvm_wasi_tools.LlvmWasiToolFamily:
+        return llvm_wasi_tools.LlvmWasiToolFamily(
+            cc=tool("cc", explicit_commands["cc"]),
+            cxx=tool("cxx", ("/tools/clang++",)),
+            wasm_ld=tool("wasm_ld", ("/tools/wasm-ld",)),
+            ar=tool("ar", ("/tools/llvm-ar",)),
+            ranlib=tool("ranlib", ("/tools/llvm-ranlib",)),
+            nm=tool("nm", ("/tools/llvm-nm",)),
+            strip=tool("strip", ("/tools/llvm-strip",)),
+        )
+
+    monkeypatch.setattr(
+        source_extension_toolchain,
+        "resolve_explicit_tool_command",
+        lambda _raw, *, label: compiler,
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain,
+        "normalize_wasi_sysroot",
+        lambda raw: Path(raw).resolve(),
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain,
+        "resolve_llvm_wasi_tool_family",
+        family,
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain,
+        "_probe_wasm_source_extension_compiler",
+        lambda _command, *, target_plan: None,
+    )
+    target_plan = source_extension_target.resolve_source_extension_target_plan(
+        "wasm",
+        host_target_triple="x86_64-unknown-linux-gnu",
+        host_platform="linux",
+        host_arch="x86_64",
+    )
+
+    resolved = source_extension_toolchain._resolve_env_wasm_compiler(
+        env_name="MOLT_WASM_CC",
+        raw_command="configured-clang",
+        target_plan=target_plan,
+    )
+
+    assert resolved.ok is True
+    assert resolved.wasi_sysroot == sysroot
+    assert resolved.tools.cc is not None
+    assert resolved.tools.cc.command == compiler
 
 
 def test_backend_symbol_reader_consumes_canonical_nm_authority(

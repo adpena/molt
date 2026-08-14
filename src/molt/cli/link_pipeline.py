@@ -366,10 +366,8 @@ def _prepare_native_link(
     external_static_archives = tuple(
         artifact.staged_path for artifact in staged_external_native_artifacts
     )
-    external_link_arguments = tuple(
-        argument
-        for artifact in staged_external_native_artifacts
-        for argument in artifact.link_arguments
+    external_link_requirements = tuple(
+        artifact.link_requirements for artifact in staged_external_native_artifacts
     )
     stub_path = artifacts_root / "main_stub.c"
     _write_text_if_changed(stub_path, main_c_content)
@@ -399,7 +397,7 @@ def _prepare_native_link(
             source_fingerprint=runtime_source_fingerprint,
             stdlib_obj_path=link_stdlib_obj,
             external_static_archives=external_static_archives,
-            external_link_arguments=external_link_arguments,
+            external_link_requirements=external_link_requirements,
             bolt_requested=bolt_requested,
         )
     except RuntimeError as exc:

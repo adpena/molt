@@ -928,6 +928,7 @@ def _receipt_for(
         "node": "v24.16.0",
         "rustc": "rustc 1.96.1",
         "cargo": "cargo 1.96.1",
+        "git": "git version 2.53.0",
         "clang": "clang version 22.1.8",
         "llvm-config": "22.1.8",
         "mlir-opt": "LLVM version 22.1.8",
@@ -939,7 +940,7 @@ def _receipt_for(
     }
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
     toolchains: dict[str, dict[str, str]] = {}
-    for name in command.toolchains:
+    for name in PLAN.required_toolchains(command):
         path = f"/toolchain/{name}"
         launcher_path = f"{path}/launcher"
         content_path = f"{path}/content"

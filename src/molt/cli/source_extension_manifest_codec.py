@@ -16,7 +16,6 @@ _BUILD_SEQUENCE_FIELDS = (
     "extra_compile_args",
     "include_dirs",
     "linker",
-    "extra_link_args",
 )
 _OBJECT_SEQUENCE_FIELDS = (
     "defined_symbols",

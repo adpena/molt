@@ -29,8 +29,9 @@ Flags (implemented):
 - `--project <path>` (default: cwd)
 - `--out-dir <path>` (default: `dist/`)
 - `--molt-abi <ver>` (default: `[tool.molt.extension].molt_c_api_version` or `MOLT_C_API_VERSION`)
-- `--target <native|wasm|wasm32-*|triple>` (`wasm` emits a wasm32 static-link
-  `.molt.wasm` artifact instead of a host shared library)
+- `--target <native|wasm|wasm-freestanding|triple>` selects the typed target
+  plan. Native targets emit deterministic `.molt.a` static archives; wasm32
+  targets emit relocatable `.molt.wasm` objects.
 - `--capabilities <file|list|profiles>` (override extension capability metadata)
 - `--deterministic/--no-deterministic`
 - `--json` / `--verbose`
@@ -42,6 +43,9 @@ Outputs:
   artifact whose sidecar declares `runtime_linkage = "static_link"`,
   `artifact_kind = "wasm_relocatable_object"`, and `object_closure` symbol
   custody.
+- For native targets, a deterministic `.molt.a` static archive whose sidecar
+  declares `runtime_linkage = "static_link"`, `artifact_kind = "static_archive"`,
+  the exact target triple, object closure, and explicit link requirements.
 
 ### 2.2 `molt extension audit`
 Purpose: verify that an extension declares capabilities and matches the expected ABI.
@@ -75,8 +79,8 @@ Flags:
   submodules are initialized at their pinned commits and then verified.
 - `--build-root <path>` must be absent or empty, preventing metadata from a
   prior Meson configuration from entering the transaction.
-- `--target wasm` and `--abi-tier cpython-abi` select the verified cross-build
-  contract.
+- `--target native|wasm|wasm-freestanding|<triple>` and
+  `--abi-tier cpython-abi` select a complete CPython/ABI/target variant.
 - `--json` emits the machine-readable publication result.
 
 Each configured set names one project dependency group. Before acquiring the
@@ -111,7 +115,10 @@ generator commands, builds every configured module deterministically through
 Meson's real installed Python files, and publishes only after the exact set is
 complete. The destination is version-keyed under
 the canonical Molt custody root at
-`package-seals/<package>/<version>/<seal-name>`. Publication is a
+`package-seals/<package>/<version>/variants/cpython-<version>/<abi-tier>/`
+`<target-triple>/<seal-name>`. The set manifest independently attests the same
+CPython/ABI/target coordinate, and every extension sidecar contains an explicit
+link-requirement object even when its argument/input lists are empty. Publication is a
 same-volume directory replacement with rollback of the prior complete root;
 partial sets are never visible.
 
@@ -160,7 +167,9 @@ metadata.
 
 1. Resolve `libmolt` headers and link flags.
 2. Compile C/C++ sources with pinned flags for reproducibility.
-3. For native targets, link a host shared library against `libmolt`.
+3. For native targets, fold the extension objects into a deterministic
+   `.molt.a` archive. The final application link consumes it through the typed
+   ELF archive-group, COFF `/WHOLEARCHIVE`, or Mach-O `-force_load` plan.
 4. For wasm targets, emit a wasm32 static-link `.molt.wasm` object, read its
    function exports/imports, and reject missing declared `direct_symbol`
    callable exports.
@@ -175,6 +184,11 @@ metadata.
    after a broad NumPy/SciPy compile.
 5. Run symbol audit and ABI tag validation.
 6. Emit wheel + standalone artifact + `extension_manifest.json`.
+
+Final-link requirements are a closed typed set: checksummed static inputs,
+bare system providers, and explicitly admitted semantic options. Output modes,
+tool selection, search/sysroot paths, response files, secondary outputs, and
+unsealed scripts are not representable.
 
 ---
 

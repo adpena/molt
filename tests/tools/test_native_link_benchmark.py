@@ -550,7 +550,7 @@ def test_link_benchmark_cannot_reconstruct_link_or_publication_policy() -> None:
     assert 'inputs["runtime_link_manifest"]' in source
     assert "native_link_dependency_manifest_path(" in source
     assert "external_static_archives=external_archives" in source
-    assert "external_link_arguments=external_link_arguments" in source
+    assert "external_link_requirements=external_link_requirements" in source
     assert "--export-runtime-symbols" not in source
     for forbidden in (
         "--gc-sections",
@@ -587,11 +587,11 @@ def test_parser_preserves_external_static_link_contract() -> None:
             "app",
             "--external-static-archive",
             "libextension.a",
-            "--external-link-argument=-Wl,--undefined=PyInit_extension",
+            "--external-link-requirements-manifest=extension-manifest.json",
             "--json-out",
             "report.json",
         )
     )
 
     assert args.external_static_archive == ["libextension.a"]
-    assert args.external_link_argument == ["-Wl,--undefined=PyInit_extension"]
+    assert args.external_link_requirements_manifest == ["extension-manifest.json"]
