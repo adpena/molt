@@ -34,7 +34,7 @@ from molt.cli.source_extension_link_requirements import (
     materialize_source_extension_link_requirements,
     parse_source_extension_link_requirements,
 )
-from molt.cli.target_python import _parse_target_python_version
+from molt.target_python import _parse_target_python_version
 from molt.wasm_artifact import read_wasm_function_exports
 
 

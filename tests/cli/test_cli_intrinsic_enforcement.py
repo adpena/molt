@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
-from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _write_module(tmp_path: Path, name: str, source: str) -> Path:

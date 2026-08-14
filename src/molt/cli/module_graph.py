@@ -35,7 +35,7 @@ from molt.cli.models import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.source_extensions import source_extension_manifest_source_path
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,

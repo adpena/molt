@@ -13,7 +13,7 @@ import molt.cli.module_graph as module_graph
 import molt.cli.module_import_scanner as module_import_scanner
 import molt.cli.python_import_resolution as python_import_resolution
 import molt.stdlib_intrinsic_policy as stdlib_intrinsic_policy
-from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
     PythonImportPolicy,

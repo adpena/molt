@@ -9,7 +9,7 @@ from pathlib import Path
 
 from molt.cli import module_source as _module_source
 from molt.cli.models import ImportScanMode
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,

@@ -13,7 +13,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.output import fail as _fail
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
 
 _INTRINSIC_CALL_NAMES = _stdlib_intrinsic_policy.INTRINSIC_CALL_NAMES

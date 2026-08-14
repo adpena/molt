@@ -68,7 +68,7 @@ ROOT = _find_repo_root()
 
 # --- Source paths ---------------------------------------------------------
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
-TARGET_PYTHON_PY = ROOT / "src" / "molt" / "cli" / "target_python.py"
+TARGET_PYTHON_PY = ROOT / "src" / "molt" / "target_python.py"
 TYPE_IDS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "type_ids.rs"
 EXCEPTIONS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "builtins" / "exceptions.rs"
 STDLIB_UNION_PY = ROOT / "tools" / "stdlib_module_union.py"

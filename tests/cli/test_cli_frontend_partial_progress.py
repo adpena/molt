@@ -25,7 +25,7 @@ from molt.cli import module_cache as MC
 from molt.cli.models import _ModuleGraphMetadata
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _build_module_source_catalog
-from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _clear_path_caches() -> None:

@@ -2422,7 +2422,7 @@ globs = [
   "runtime/molt-runtime/src/object/type_ids.rs",
   "runtime/molt-runtime/src/builtins/exceptions.rs",
   # #4 supported target-Python version triple.
-  "src/molt/cli/target_python.py",
+  "src/molt/target_python.py",
   "tools/stdlib_module_union.py",
   "tools/gen_stdlib_module_union.py",
   # The gate itself + its mutation-proof teeth.

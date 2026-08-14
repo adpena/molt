@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.cli.target_python import TargetPythonVersion, _parse_target_python_version
+from molt.target_python import TargetPythonVersion, _parse_target_python_version
 
 
 class PythonInterpreterError(RuntimeError):

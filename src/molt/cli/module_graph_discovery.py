@@ -12,7 +12,7 @@ from molt.cli import module_graph_cache as _module_graph_cache
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.models import ImportScanMode, _ImportAdmissionPolicy
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )

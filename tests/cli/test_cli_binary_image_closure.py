@@ -21,7 +21,7 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
 )
-from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 
 

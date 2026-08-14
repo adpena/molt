@@ -592,7 +592,7 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
 def test_changed_target_python_is_not_reused_from_shared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli.target_python import TargetPythonVersion
+    from molt.target_python import TargetPythonVersion
 
     project_root = tmp_path / "proj"
     project_root.mkdir()
