@@ -874,6 +874,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     }
     if args.stdlib_object:
         inputs["stdlib"] = Path(args.stdlib_object).expanduser().resolve(strict=True)
+    external_archives = tuple(
+        Path(path).expanduser().resolve(strict=True)
+        for path in args.external_static_archive
+    )
+    for index, archive in enumerate(external_archives):
+        inputs[f"external_archive_{index}"] = archive
     inputs["runtime_link_manifest"] = native_link_dependency_manifest_path(
         inputs["runtime"]
     ).resolve(strict=True)
@@ -902,7 +908,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             source_root=ROOT,
             source_fingerprint=source_fingerprint,
             stdlib_obj_path=inputs.get("stdlib"),
-            export_molt_runtime_symbols=args.export_runtime_symbols,
+            external_static_archives=external_archives,
             bolt_requested=args.bolt,
         )
 
@@ -1130,7 +1136,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--bolt-timeout", type=float, default=600.0)
     parser.add_argument("--bolt", action="store_true")
     parser.add_argument("--bolt-training-command")
-    parser.add_argument("--export-runtime-symbols", action="store_true")
+    parser.add_argument(
+        "--external-static-archive",
+        action="append",
+        default=[],
+        help="Checksummed source-extension archive included in the measured final link",
+    )
     parser.add_argument("--compare", help="drift-compatible baseline report")
     parser.add_argument(
         "--variant",

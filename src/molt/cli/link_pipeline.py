@@ -363,6 +363,14 @@ def _prepare_native_link(
             )
         ),
     )
+    external_static_archives = tuple(
+        artifact.staged_path for artifact in staged_external_native_artifacts
+    )
+    external_link_arguments = tuple(
+        argument
+        for artifact in staged_external_native_artifacts
+        for argument in artifact.link_arguments
+    )
     stub_path = artifacts_root / "main_stub.c"
     _write_text_if_changed(stub_path, main_c_content)
 
@@ -390,7 +398,8 @@ def _prepare_native_link(
             source_root=molt_root,
             source_fingerprint=runtime_source_fingerprint,
             stdlib_obj_path=link_stdlib_obj,
-            export_molt_runtime_symbols=bool(staged_external_native_artifacts),
+            external_static_archives=external_static_archives,
+            external_link_arguments=external_link_arguments,
             bolt_requested=bolt_requested,
         )
     except RuntimeError as exc:
@@ -432,6 +441,7 @@ def _prepare_native_link(
             artifact.staged_path,
             artifact.staged_manifest_path,
             *artifact.staged_support_paths,
+            *artifact.staged_link_input_paths,
         )
     ]
     link_tool_facts = native_link_cache_tool_facts(link_plan)

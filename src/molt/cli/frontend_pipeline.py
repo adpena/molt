@@ -783,6 +783,7 @@ def _prepare_frontend_stage_state(
         _resolve_external_package_native_artifact_plan(
             external_module_roots=import_admission_policy.external_roots,
             admitted_packages=import_admission_policy.admitted_external_packages,
+            target=target,
             required_modules=(
                 set(prepared_module_graph.module_graph)
                 | set(prepared_module_graph.explicit_imports)

@@ -22,7 +22,6 @@ def test_bool_singletons_need_no_final_link_aliases() -> None:
 
 
 def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
-    monkeypatch.setattr(native_link_command.sys, "platform", platform)
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
@@ -36,7 +35,8 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
     output_obj = tmp_path / "app.o"
     stub_path = tmp_path / "main.c"
     runtime_lib = tmp_path / "libmolt_runtime.a"
-    for path in (output_obj, stub_path, runtime_lib):
+    external_archive = tmp_path / "libextension.a"
+    for path in (output_obj, stub_path, runtime_lib, external_archive):
         path.write_bytes(b"x")
     plan = native_link_command._build_native_link_plan(
         output_obj=output_obj,
@@ -48,7 +48,8 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         profile="dev",
         source_root=tmp_path,
         source_fingerprint={},
-        export_molt_runtime_symbols=True,
+        external_static_archives=(external_archive,),
+        host_platform=platform,
     )
     return list(plan.command)
 
@@ -60,8 +61,7 @@ def test_darwin_native_artifact_link_aliases_singletons_to_same_storage(
     for canonical, storage in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES:
         assert f"-Wl,-alias,_{storage},_{canonical}" in command
     exports = (tmp_path / ".molt_exports.exp").read_text(encoding="utf-8")
-    assert "__Py_NoneStruct\n" in exports
-    assert "_Py_None\n" in exports
+    assert exports == "_main\n"
 
 
 def test_linux_native_artifact_link_defines_canonical_singleton_aliases(

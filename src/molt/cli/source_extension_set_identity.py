@@ -73,6 +73,12 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             for key in ("source", "object", "source_sha256", "object_sha256")
             if key in item
         }
+        projected["compile_command"] = _manifest_sequence(
+            manifest, item, "compile_command"
+        )
+        projected["symbol_command"] = _manifest_sequence(
+            manifest, item, "symbol_command"
+        )
         projected["dependencies"] = _manifest_dependencies(manifest, item)
         for field in _OBJECT_SEQUENCE_FIELDS:
             if field in item or f"{field}_ref" in item:
@@ -103,6 +109,7 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             "provided_capsules",
             "runtime_python_import_modules",
             "effects",
+            "link_requirements",
         )
         if key in manifest
     }
@@ -122,10 +129,15 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
         "root_symbol": closure.get("root_symbol"),
         "init_symbol_owner": closure.get("init_symbol_owner"),
         "runtime_symbols": closure.get("runtime_symbols"),
+        "defined_symbols": closure.get("defined_symbols"),
+        "undefined_symbols": closure.get("undefined_symbols"),
         "required_c_api_symbols": closure.get("required_c_api_symbols"),
         "required_capsules": closure.get("required_capsules"),
         "project_generated_c_api_symbols": closure.get(
             "project_generated_c_api_symbols"
+        ),
+        "project_generated_c_api_prefixes": closure.get(
+            "project_generated_c_api_prefixes"
         ),
         "objects": projected_objects,
     }
@@ -211,10 +223,16 @@ def _source_extension_set_identity(
     ]
     if len(set(extension_keys)) != len(extension_keys):
         raise ValueError("extension-set identity has duplicate extension keys")
+    target_triple = set_manifest.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple:
+        raise ValueError("extension-set identity requires a target triple")
+    artifact_suffix = (
+        ".molt.wasm" if target_triple.lower().startswith("wasm32") else ".molt.a"
+    )
     sidecar_paths = [
         root.joinpath(
             *str(module).split(".")[:-1],
-            f"{target}.molt.wasm.extension_manifest.json",
+            f"{target}{artifact_suffix}.extension_manifest.json",
         )
         for module, target in extension_keys
     ]
@@ -222,7 +240,7 @@ def _source_extension_set_identity(
     inventoried_sidecars = {
         path
         for path in inventory_sha256
-        if path.endswith(".molt.wasm.extension_manifest.json")
+        if path.endswith(f"{artifact_suffix}.extension_manifest.json")
     }
     if inventoried_sidecars != expected_sidecars:
         raise ValueError(

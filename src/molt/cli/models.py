@@ -784,6 +784,7 @@ class _ExternalPackageNativeArtifact:
     runtime_linkage: str
     artifact_kind: str
     link_arguments: tuple[str, ...]
+    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
     init_symbol: str = ""
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
@@ -820,6 +821,15 @@ class _ExternalPackageNativeArtifact:
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
             "link_arguments": list(self.link_arguments),
+            "link_inputs": [
+                {
+                    "argument_index": argument_index,
+                    "path": path,
+                    "sha256": sha256,
+                    "prefix": prefix,
+                }
+                for argument_index, path, sha256, prefix in self.link_inputs
+            ],
             "support_file_sha256": [
                 {"path": rel_path, "sha256": digest}
                 for rel_path, digest in self.support_file_sha256
@@ -1325,6 +1335,8 @@ class _StagedExternalPackageNativeArtifact:
     runtime_linkage: str
     artifact_kind: str
     link_arguments: tuple[str, ...]
+    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
+    staged_link_input_paths: tuple[Path, ...] = ()
     init_symbol: str = ""
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
@@ -1354,6 +1366,18 @@ class _StagedExternalPackageNativeArtifact:
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
             "link_arguments": list(self.link_arguments),
+            "link_inputs": [
+                {
+                    "argument_index": argument_index,
+                    "path": path,
+                    "sha256": sha256,
+                    "prefix": prefix,
+                }
+                for argument_index, path, sha256, prefix in self.link_inputs
+            ],
+            "staged_link_input_paths": [
+                str(path) for path in self.staged_link_input_paths
+            ],
             "support_file_sha256": [
                 {"path": rel_path, "sha256": digest}
                 for rel_path, digest in self.support_file_sha256

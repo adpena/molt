@@ -9,7 +9,6 @@ import os
 import platform
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -26,11 +25,11 @@ from molt.cli.atomic_io import (
     _atomic_write_bytes,
     _atomic_write_json,
 )
-from molt.cli.backend_cache import _native_object_global_symbol_sets
 from molt.cli.capability_spec import (
     CapabilityInput,
     _parse_capabilities_spec,
 )
+from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.command_runtime import (
     _run_completed_command,
 )
@@ -92,64 +91,17 @@ from molt.cli.source_extension_target import (
     resolve_source_extension_target_plan,
     source_extension_artifact_path,
 )
+from molt.cli.source_extension_link_requirements import (
+    source_extension_link_requirements,
+)
 from molt.cli.wasm_toolchain import (
     normalize_wasi_sysroot,
     resolve_wasi_sysroot,
     wasi_libcxx_include_dir,
 )
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 
 _SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
-
-
-def _shared_library_defines_symbol(path: Path, symbol: str) -> tuple[bool, str | None]:
-    symbol_sets = _native_object_global_symbol_sets(path)
-    if symbol_sets is not None:
-        defined, _undefined = symbol_sets
-        if symbol in defined or f"_{symbol}" in defined:
-            return True, None
-        if defined:
-            preview = ", ".join(sorted(defined)[:8])
-            suffix = "" if len(defined) <= 8 else ", ..."
-            return (
-                False,
-                f"symbol {symbol!r} missing from shared object "
-                f"(defined: {preview}{suffix})",
-            )
-
-    failures: list[str] = []
-    export_commands = (
-        ("llvm-readobj", "--coff-exports", str(path)),
-        ("llvm-objdump", "-p", str(path)),
-        ("dumpbin", "/EXPORTS", str(path)),
-        ("objdump", "-p", str(path)),
-    )
-    for candidate in export_commands:
-        tool = candidate[0]
-        if shutil.which(tool) is None:
-            continue
-        try:
-            result = _run_completed_command(
-                list(candidate),
-                cwd=path.parent,
-                env=None,
-                capture_output=True,
-                timeout=10,
-                memory_guard_prefix="MOLT_BUILD",
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            failures.append(f"{tool}: {exc}")
-            continue
-        text = "\n".join(part for part in (result.stdout, result.stderr) if part)
-        if result.returncode == 0 and (symbol in text or f"_{symbol}" in text):
-            return True, None
-        detail = text.strip().splitlines()[:1]
-        failures.append(f"{tool}: exit {result.returncode} {' '.join(detail)}")
-    if failures:
-        return False, "unable to confirm exported init symbol: " + "; ".join(failures)
-    return (
-        False,
-        "unable to inspect exported symbols with nm/llvm-nm or export-table tools",
-    )
 
 
 def _sysroot_arg_value(args: list[str]) -> str | None:
@@ -954,7 +906,10 @@ def extension_build(
                 command="extension-build",
             )
         required_native_roles = {"c", "ar", "nm"}
-        if any(path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES for path in source_paths):
+        if any(
+            path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES
+            for path in source_paths
+        ):
             required_native_roles.add("cpp")
         missing_native_roles = sorted(required_native_roles - native_commands.keys())
         if missing_native_roles:
@@ -1111,12 +1066,10 @@ def extension_build(
             unit_compile_args = (
                 list(plan_unit.compile_args) if plan_unit is not None else compile_args
             )
-            unit_cc_cmd = (
-                _source_extension_compile_command_for_source(
-                    source_path=source_path,
-                    cc_cmd=cc_cmd,
-                    cxx_cmd=effective_tool_commands.get("cpp", ()),
-                )
+            unit_cc_cmd = _source_extension_compile_command_for_source(
+                source_path=source_path,
+                cc_cmd=cc_cmd,
+                cxx_cmd=effective_tool_commands.get("cpp", ()),
             )
             if not unit_cc_cmd:
                 return _fail(
@@ -1147,9 +1100,7 @@ def extension_build(
                         object_path.name,
                     ]
                 )
-            cmd.extend(
-                f"-D{symbol}=1" for symbol in target_plan.preprocessor_symbols
-            )
+            cmd.extend(f"-D{symbol}=1" for symbol in target_plan.preprocessor_symbols)
             if plan_unit is not None:
                 python_include_root, fallback_abi_include_roots = (
                     _source_plan_abi_include_order(
@@ -1332,9 +1283,7 @@ def extension_build(
                 command="extension-build",
             )
         assert source_plan_object_closure is not None
-        object_paths = [
-            fact.object_path for fact in source_plan_object_closure.objects
-        ]
+        object_paths = [fact.object_path for fact in source_plan_object_closure.objects]
         if loaded_source_plan is not None:
             (
                 source_c_api_requirements,
@@ -1362,7 +1311,7 @@ def extension_build(
                 return _fail(capi_error, json_output, command="extension-build")
         assert source_c_api_requirements is not None
         source_c_api_requirements = source_c_api_requirements.restrict_to_link_closure(
-            source_plan_object_closure.runtime_symbols
+            source_plan_object_closure.undefined_symbols
         )
         missing_c_api = list(source_c_api_requirements.missing_symbols)
         fail_fast_c_api = list(source_c_api_requirements.fail_fast_symbols)
@@ -1389,6 +1338,18 @@ def extension_build(
                     if loaded_source_plan is not None
                     else ()
                 ),
+                path_roots=(
+                    *(
+                        (
+                            loaded_source_plan.build_root,
+                            loaded_source_plan.source_root,
+                        )
+                        if loaded_source_plan is not None
+                        else ()
+                    ),
+                    project_root,
+                ),
+                publish_root=output_root / module_parts[0],
             )
         except ValueError as exc:
             return _fail(str(exc), json_output, command="extension-build")
@@ -1481,7 +1442,6 @@ def extension_build(
                 for symbol in fact.defined_symbols
             }
         )
-        unresolved_symbols = list(source_plan_object_closure.runtime_symbols)
         direct_symbols = sorted(
             {
                 str(export.get("symbol"))
@@ -1580,9 +1540,33 @@ def extension_build(
         build_payload["object_closure_sha256"] = (
             source_plan_object_closure.closure_sha256
         )
+        required_c_api_by_source = {
+            fact.source_path.resolve(): tuple(
+                sorted(
+                    set(
+                        source_c_api_requirements.required_by_source.get(
+                            fact.source_path.resolve(), ()
+                        )
+                    )
+                    | {
+                        symbol
+                        for symbol in fact.undefined_symbols
+                        if is_c_api_external_requirement(symbol)
+                    }
+                )
+            )
+            for fact in source_plan_object_closure.objects
+        }
         manifest_payload["object_closure"] = (
             source_plan_object_closure.manifest_payload(
-                required_c_api_by_source=source_c_api_requirements.required_by_source,
+                runtime_symbols=(
+                    wasm_static_link_runtime_symbols_for_imports(
+                        source_plan_object_closure.undefined_symbols
+                    )
+                    if wasm_static_link
+                    else source_plan_object_closure.undefined_symbols
+                ),
+                required_c_api_by_source=required_c_api_by_source,
                 required_capsules_by_source=(
                     source_c_api_requirements.required_capsules_by_source
                 ),
@@ -1664,6 +1648,13 @@ def extension_build(
         ]
         for support in support_files:
             wheel_entries.append((support.rel_path, support.source_path.read_bytes()))
+        for link_input in link_requirements.inputs:
+            wheel_entries.append(
+                (
+                    f"{module_parts[0]}/{link_input.path}",
+                    (output_root / module_parts[0] / link_input.path).read_bytes(),
+                )
+            )
         record_path = f"{dist_info}/RECORD"
         _write_extension_wheel(
             wheel_path,

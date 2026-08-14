@@ -70,6 +70,10 @@ from molt.cli.source_extension_manifest_codec import (
     _object_unit_sha256,
     _validate_compact_source_extension_manifest,
 )
+from molt.cli.source_extension_link_requirements import (
+    materialize_source_extension_link_requirements,
+    parse_source_extension_link_requirements,
+)
 from molt.cli.source_extension_set_identity import (
     _require_expected_source_extension_set_identity,
     _source_extension_reproduction_comparison,
@@ -1483,6 +1487,40 @@ def _stage_extension(
         raise SourceExtensionProducerError(
             "audited extension manifest is not an object"
         )
+    raw_target_triple = raw_manifest.get("target_triple")
+    if not isinstance(raw_target_triple, str) or not raw_target_triple:
+        raise SourceExtensionProducerError(
+            "audited extension manifest has no target-triple authority"
+        )
+    link_requirements, link_requirement_errors = (
+        parse_source_extension_link_requirements(
+            raw_manifest,
+            expected_target_triple=raw_target_triple,
+        )
+    )
+    if link_requirement_errors:
+        raise SourceExtensionProducerError(
+            "cannot publish source-extension link requirements: "
+            + "; ".join(link_requirement_errors)
+        )
+    assert link_requirements is not None
+    materialized_link_requirements, materialization_errors = (
+        materialize_source_extension_link_requirements(
+            link_requirements,
+            package_root=produced.output_root / produced.module.split(".", 1)[0],
+            manifest_dir=produced.artifact_manifest_path.parent,
+            publish_root=publish_root / produced.module.split(".", 1)[0],
+        )
+    )
+    if materialization_errors:
+        raise SourceExtensionProducerError(
+            "cannot relocate source-extension link requirements: "
+            + "; ".join(materialization_errors)
+        )
+    assert materialized_link_requirements is not None
+    raw_manifest["link_requirements"] = (
+        materialized_link_requirements.manifest_payload()
+    )
     capsule_errors = canonicalize_source_extension_manifest_required_capsules(
         raw_manifest,
         manifest_path=produced.artifact_manifest_path,
