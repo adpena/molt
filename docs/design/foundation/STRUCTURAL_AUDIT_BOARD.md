@@ -30,7 +30,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
 | medium | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 8085 lines (ceiling 4000) |
-| medium | large_source_file | `runtime/molt-runtime/src/c_api/tests.rs` | 6268 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-cpython-abi/src/bridge.rs` | 6242 lines (ceiling 4000) |
 | medium | python_stub_surface | `src/molt/stdlib/numbers.py:48` | 41 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/asyncio/transports.py:24` | 23 Python stub/NotImplemented surface(s) |
@@ -44,6 +43,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | python_stub_surface | `src/molt/stdlib/multiprocessing/_core.py:1145` | 3 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/zipfile/__init__.py:125` | 3 Python stub/NotImplemented surface(s) |
 | medium | rust_stub_surface | `runtime/molt-runtime/src/builtins/functions/compile_codeo…` | 3 Rust stub/NotImplemented surface(s) |
+| medium | rust_stub_surface | `runtime/molt-runtime/src/builtins/io_path.rs:170` | 3 Rust stub/NotImplemented surface(s) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -60,12 +60,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (14)
+### large_source_file (13)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 8085 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 6268 lines (ceiling 4000) | `runtime/molt-runtime/src/c_api/tests.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6242 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/bridge.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 5877 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 5586 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/object.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
