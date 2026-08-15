@@ -44,6 +44,7 @@ from molt.cli.external_link_providers import (  # noqa: E402
 )
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
+    render_source_extension_link_arguments as render_source_extension_link_arguments,
     source_extension_link_requirements as source_extension_link_requirements,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402

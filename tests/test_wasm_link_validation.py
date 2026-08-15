@@ -29,6 +29,14 @@ wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
 
 
+def test_split_link_pipeline_projects_typed_source_extension_requirements() -> None:
+    source = Path(wasm_link._link_pipeline.__file__).read_text(encoding="utf-8")
+
+    assert callable(wasm_link.render_source_extension_link_arguments)
+    assert 'api["render_source_extension_link_arguments"](' in source
+    assert ").arguments" not in source
+
+
 def _write_app_export_contract(
     path: Path,
     *,
