@@ -181,7 +181,6 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         &BTreeSet::from(["molt_main".to_string()]),
         &module_known_functions,
         &BTreeSet::new(),
-        &BTreeMap::new(),
         false,
         &BTreeSet::new(),
         &effective_function_arities,

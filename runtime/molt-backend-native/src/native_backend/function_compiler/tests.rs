@@ -23,12 +23,9 @@ use cranelift_codegen::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn preanalyze_for_test(
-    func_ir: &FunctionIR,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
-) -> FunctionPreanalysis {
+fn preanalyze_for_test(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let representation_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-    preanalyze_function_ir(func_ir, return_alias_summaries, &representation_plan)
+    preanalyze_function_ir(func_ir, &representation_plan)
 }
 
 fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {

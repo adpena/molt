@@ -45,6 +45,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     entry_vars: &mut BTreeMap<String, Value>,
     already_decrefed: &mut BTreeSet<String>,
     rc_skip_inc: &std::collections::HashSet<usize>,
+    rc_authority: NativeRcAuthority,
     local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
@@ -193,10 +194,13 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // Output aliases input bits — inc_ref to prevent
-                // use-after-free when the input name is dec_ref'd
-                // independently by tracking/check_exception cleanup.
-                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                // Under the terminal TIR drop authority these conversion ops
+                // are transparent aliases of the same ownership root. Legacy
+                // native value tracking still needs its historical retain so
+                // an independently cleaned textual name remains valid.
+                if rc_authority.native_value_tracking_enabled() {
+                    emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                }
                 def_var_named(&mut *builder, vars, out_name.clone(), src);
             }
         }
@@ -205,11 +209,12 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         // `rewrite_copy_aliases` whenever its result/source is a mutable-storage
         // (reassigned-local) name, so it reaches codegen and must be lowered
         // here rather than silently dropped. It shares the alias lowering:
-        // result = inc_ref'd alias of args[0]. The TIR ownership model classifies
-        // `copy`/`identity_alias`/`binding_alias` identically as
-        // `CopyLowering::TransparentAlias` (alias_analysis.rs), and WASM/Luau
-        // group it with the alias ops the same way — the inc_ref + alias here is
-        // the RC-correct, cross-backend-symmetric lowering.
+        // Generated TIR facts distinguish transparent bit-passthrough aliases
+        // from the sole alias kind that mints a new owned reference. Keep
+        // Cranelift aligned with TIR, WASM, and LIR-fast: `copy` and
+        // `identity_alias` share their source root; `binding_alias` contributes
+        // exactly +1. Legacy non-drop-inserted functions retain the old textual
+        // name model until their RC authority is migrated.
         "copy" | "identity_alias" | "binding_alias" => {
             let args_names = op.args.as_ref().expect("alias args missing");
             let src_name = args_names
@@ -310,8 +315,19 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                         representation_plan,
                     )
                     .expect("alias source not found");
-                    // Same aliasing hazard as box/unbox/cast/widen above.
-                    emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                    let kind = op.kind.as_str();
+                    if crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+                        || rc_authority.native_value_tracking_enabled()
+                    {
+                        emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                    } else {
+                        debug_assert!(
+                            crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
+                                kind
+                            ),
+                            "native alias '{kind}' lacks generated ownership classification"
+                        );
+                    }
                     def_var_named(&mut *builder, vars, out_name.clone(), src);
                 }
             }

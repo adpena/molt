@@ -60,7 +60,7 @@ fn preanalysis_treats_immediate_fresh_object_field_stores_as_direct() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(
         !analysis.has_store,
@@ -144,7 +144,7 @@ fn preanalysis_treats_immediate_heap_fixed_layout_field_stores_as_direct() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(
         !analysis.has_store,
@@ -227,7 +227,7 @@ fn preanalysis_rejects_unsized_heap_object_direct_field_stores() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(
         analysis.has_store,
@@ -278,7 +278,7 @@ fn preanalysis_classifies_fresh_heap_field_first_store_as_init() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.field_store_modes.get(&3),
@@ -341,7 +341,7 @@ fn preanalysis_keeps_heap_field_second_store_as_overwrite() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.field_store_modes.get(&3),
@@ -401,7 +401,7 @@ fn preanalysis_rejects_fresh_init_after_escape() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(
         !analysis.field_store_modes.contains_key(&4),

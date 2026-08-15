@@ -1,5 +1,175 @@
 use super::*;
 
+#[test]
+fn borrowed_parameter_return_publishes_one_owned_result() {
+    let mut func = TirFunction::new(
+        "return_borrowed_param".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let entry = func.entry_block;
+    let param = func.blocks[&entry].args[0].id;
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![param],
+    };
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+    let ops = &func.blocks[&entry].ops;
+    assert_eq!(
+        ops.iter()
+            .filter(|op| op.opcode == OpCode::IncRef && op.operands == vec![param])
+            .count(),
+        1,
+        "a +0 borrowed parameter needs exactly one callee-side return owner"
+    );
+    assert!(
+        !ops.iter()
+            .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![param])
+    );
+}
+
+#[test]
+fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
+    let mut func = TirFunction::new(
+        "return_borrowed_alias".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let entry = func.entry_block;
+    let param = func.blocks[&entry].args[0].id;
+    let alias = func.fresh_value();
+    func.value_types.insert(alias, TirType::DynBox);
+    let mut attrs = AttrDict::new();
+    attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![param],
+        results: vec![alias],
+        attrs,
+        source_span: None,
+    });
+    block.terminator = Terminator::Return {
+        values: vec![alias, alias],
+    };
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+    let ops = &func.blocks[&entry].ops;
+    assert_eq!(
+        ops.iter()
+            .filter(|op| op.opcode == OpCode::IncRef && op.operands == vec![alias])
+            .count(),
+        1,
+        "transparent aliases share one borrowed root and one publication edge"
+    );
+}
+
+#[test]
+fn fresh_and_raw_returns_do_not_gain_publication_retains() {
+    let mut fresh_func = TirFunction::new("return_fresh".into(), vec![], TirType::DynBox);
+    let fresh_entry = fresh_func.entry_block;
+    let fresh = fresh_func.fresh_value();
+    fresh_func.value_types.insert(fresh, TirType::DynBox);
+    fresh_func
+        .blocks
+        .get_mut(&fresh_entry)
+        .unwrap()
+        .ops
+        .push(op(OpCode::Call, vec![], vec![fresh]));
+    fresh_func.blocks.get_mut(&fresh_entry).unwrap().terminator = Terminator::Return {
+        values: vec![fresh],
+    };
+    let mut am = AnalysisManager::new();
+    run(&mut fresh_func, &mut am);
+    assert!(
+        !fresh_func.blocks[&fresh_entry]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::IncRef && op.operands == vec![fresh])
+    );
+
+    let mut raw_func = TirFunction::new("return_raw".into(), vec![], TirType::I64);
+    let raw_entry = raw_func.entry_block;
+    let raw = raw_func.fresh_value();
+    raw_func.value_types.insert(raw, TirType::I64);
+    let mut const_attrs = AttrDict::new();
+    const_attrs.insert("value".into(), AttrValue::Int(7));
+    raw_func
+        .blocks
+        .get_mut(&raw_entry)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![raw],
+            attrs: const_attrs,
+            source_span: None,
+        });
+    raw_func.blocks.get_mut(&raw_entry).unwrap().terminator =
+        Terminator::Return { values: vec![raw] };
+    let mut am = AnalysisManager::new();
+    run(&mut raw_func, &mut am);
+    assert!(
+        !raw_func.blocks[&raw_entry]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::IncRef)
+    );
+}
+
+#[test]
+fn borrowed_branch_input_is_owned_at_phi_edge_not_republished_at_return() {
+    let mut func = TirFunction::new(
+        "return_borrowed_phi".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let entry = func.entry_block;
+    let param = func.blocks[&entry].args[0].id;
+    let ret_block = func.fresh_block();
+    let phi = func.fresh_value();
+    func.value_types.insert(phi, TirType::DynBox);
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+        target: ret_block,
+        args: vec![param],
+    };
+    func.blocks.insert(
+        ret_block,
+        TirBlock {
+            id: ret_block,
+            args: vec![TirValue {
+                id: phi,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![phi] },
+        },
+    );
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+    assert_eq!(
+        func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::IncRef && op.operands == vec![param])
+            .count(),
+        1,
+        "the borrowed incoming edge must establish the owned phi"
+    );
+    assert!(
+        !func.blocks[&ret_block]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::IncRef && op.operands == vec![phi])
+    );
+}
+
 /// Regression (RC drop-insertion substrate, design 20): the real `accumulate`
 /// loop-slot shape from the frontend SimpleIR, run through the FULL pipeline.
 /// The loop loads its carried accumulator via `load_var`→`Copy` every

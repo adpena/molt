@@ -192,7 +192,6 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source<'a>(
     op: &'a OpIR,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
         "copy" => op.var.as_deref().or_else(|| {
@@ -212,15 +211,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source<'a>(
             .as_ref()
             .and_then(|args| args.first())
             .map(String::as_str),
-        "call" => {
-            let callee = op.s_value.as_ref()?;
-            let crate::passes::ReturnAliasSummary::Param(param_idx) =
-                *return_alias_summaries.get(callee)?;
-            op.args
-                .as_ref()
-                .and_then(|args| args.get(param_idx))
-                .map(String::as_str)
-        }
         _ => None,
     }
 }
@@ -418,7 +408,6 @@ pub(in crate::native_backend::function_compiler) fn analyze_field_store_modes(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     func_ir: &FunctionIR,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
     representation_plan: &ScalarRepresentationPlan,
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
@@ -476,7 +465,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             // Seed outputs with their definition site so unused temporaries
             // can still be released deterministically after this op.
             last_use.entry(out.clone()).or_insert(idx);
-            if let Some(src) = preanalyze_alias_source(op, return_alias_summaries) {
+            if let Some(src) = preanalyze_alias_source(op) {
                 let root = alias_roots
                     .get(src)
                     .cloned()
