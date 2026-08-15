@@ -824,11 +824,16 @@ class LocalBindingMixin(_MixinBase):
         bindings = self._plain_local_scope_exit_bindings()
         if not bindings:
             return
-        if preserve is not None and self._value_reads_plain_local_binding(
-            preserve, bindings
-        ):
-            self.emit(MoltOp(kind="INC_REF", args=[preserve], result=MoltValue("none")))
         for name, value in bindings:
+            # Returning a local transfers that binding's existing owner to the
+            # caller. Do not release it at the synthetic scope-exit boundary,
+            # and do not manufacture a second owner here. The shared TIR drop
+            # authority publishes exactly one +1 only when the returned root is
+            # genuinely borrowed (for example, a parameter).
+            if preserve is not None and self._value_reads_plain_local_binding(
+                preserve, [(name, value)]
+            ):
+                continue
             self._emit_plain_local_del_boundary(name, value)
 
     def _store_local_value(

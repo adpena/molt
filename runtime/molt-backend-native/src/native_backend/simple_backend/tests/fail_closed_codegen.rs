@@ -29,7 +29,6 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
         &defined_functions,
         &defined_functions,
         &BTreeSet::new(),
-        &BTreeMap::new(),
         false,
         &BTreeSet::new(),
         &function_arities,

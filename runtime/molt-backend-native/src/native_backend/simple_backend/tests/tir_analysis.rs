@@ -143,7 +143,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
 }
 
 #[test]
-fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
+fn native_backend_module_context_preserves_cross_batch_function_metadata() {
     let functions = vec![
         FunctionIR {
             name: "helper".to_string(),
@@ -177,50 +177,8 @@ fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
 
     assert_eq!(context.function_arities.get("helper"), Some(&2));
     assert_eq!(context.function_has_ret.get("helper"), Some(&true));
-    assert_eq!(
-        context.return_alias_summaries.get("helper"),
-        Some(&ReturnAliasSummary::Param(0))
-    );
     assert!(context.leaf_functions.contains("helper"));
     assert!(context.leaf_functions.contains("helper_poll"));
-}
-
-#[test]
-fn tir_roundtrip_preserves_store_var_return_alias_summary() {
-    let func = FunctionIR {
-        name: "helper".to_string(),
-        params: vec!["value".to_string()],
-        ops: vec![
-            OpIR {
-                kind: "store_var".to_string(),
-                var: Some("tmp".to_string()),
-                args: Some(vec!["value".to_string()]),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec!["tmp".to_string()]),
-                ..OpIR::default()
-            },
-        ],
-        param_types: Some(vec!["str".to_string()]),
-        source_file: None,
-        is_extern: false,
-        execution_context: Default::default(),
-    };
-
-    let roundtripped = roundtrip_function_through_tir(&func);
-    let summaries =
-        crate::passes::compute_return_alias_summaries(std::slice::from_ref(&roundtripped));
-
-    assert_eq!(
-        summaries.get("helper"),
-        Some(&ReturnAliasSummary::Param(0)),
-        "roundtripped params: {:?}; ops: {:?}; summaries: {:?}",
-        roundtripped.params,
-        roundtripped.ops,
-        summaries
-    );
 }
 
 #[test]

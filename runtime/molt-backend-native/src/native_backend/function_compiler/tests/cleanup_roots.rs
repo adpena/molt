@@ -49,7 +49,7 @@ fn cleanup_roots_collapse_join_alias_duplicates() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     let arg_cleanup_roots =
         cleanup_roots_for_names(&analysis.alias_roots, ["arg_alias".to_string()]);
 

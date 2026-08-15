@@ -41,7 +41,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             "molt_get_attr_special",
         ),
         ("borrow", 1, true, None, "molt_inc_ref_obj"),
-        ("identity_alias", 1, true, None, "molt_inc_ref_obj"),
         ("binding_alias", 1, true, None, "molt_inc_ref_obj"),
         ("release", 1, true, None, "molt_dec_ref_obj"),
         ("guard_tag", 2, false, None, "molt_guard_type"),
@@ -92,7 +91,8 @@ fn lower_special_get_attr_trusts_runtime_owned_result() {
     assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
 }
 
-/// Repr-identity preserved ops (`cast`, `widen`, `store_var`, `copy_var`) are the
+/// Repr-identity preserved ops (`cast`, `widen`, `store_var`, `copy_var`, and
+/// `identity_alias`) are the
 /// explicit exception to the terminal preserved-op fail-loud rule: they
 /// carry no runtime semantics and must alias operand 0 exactly, matching
 /// native/WASM identity lowering over the NaN-boxed value format.
@@ -100,7 +100,7 @@ fn lower_special_get_attr_trusts_runtime_owned_result() {
 fn lower_preserved_repr_identity_ops_pass_operand_through() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    for kind in ["cast", "widen", "store_var", "copy_var"] {
+    for kind in ["cast", "widen", "store_var", "copy_var", "identity_alias"] {
         let mut func = TirFunction::new(
             format!("preserved_{kind}_identity"),
             vec![TirType::DynBox],

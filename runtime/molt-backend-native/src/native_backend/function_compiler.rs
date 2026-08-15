@@ -31,7 +31,6 @@ impl SimpleBackend {
         defined_functions: &BTreeSet<String>,
         module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
-        return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
         emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
@@ -111,7 +110,6 @@ impl SimpleBackend {
             defined_functions,
             module_known_functions,
             closure_functions,
-            return_alias_summaries,
             emit_traces,
             leaf_functions,
             known_function_arities,
@@ -143,7 +141,6 @@ impl SimpleBackend {
         defined_functions: &BTreeSet<String>,
         module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
-        return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
         emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
@@ -198,7 +195,7 @@ impl SimpleBackend {
             scalar_slot_exclusion_unsafe,
             field_store_modes,
             drop_inserted,
-        } = preanalyze_function_ir(&func_ir, return_alias_summaries, representation_plan);
+        } = preanalyze_function_ir(&func_ir, representation_plan);
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the SimpleIR-level
         // inc/dec coalescer (`rc_coalescing`) elides matched inc_ref/dec_ref PAIRS
         // it discovers in the op stream. For drop-inserted functions the TIR drop
@@ -1016,8 +1013,7 @@ impl SimpleBackend {
                     None
                 }
             });
-            let alias_src_name =
-                preanalyze_alias_source(&ops[op_idx], return_alias_summaries).map(str::to_string);
+            let alias_src_name = preanalyze_alias_source(&ops[op_idx]).map(str::to_string);
             let mut output_is_ptr = false;
 
             let loop_reassign_old_val = fc::loops::capture_loop_reassign_old_value(
@@ -1673,13 +1669,9 @@ impl SimpleBackend {
                 // the result SSA value undefined (resolving to the None
                 // sentinel) — the same silent-miscompile class as the vec_*
                 // dispatch drop fixed in 0323ad28c. `copy` shares the
-                // args-based `identity_alias`/`binding_alias` lowering (result
-                // = inc_ref'd alias of args[0]); the TIR ownership model
-                // classifies all three as `CopyLowering::TransparentAlias`
-                // (alias_analysis.rs), so the inc_ref + alias treatment is
-                // RC-correct. WASM (wasm.rs) and Luau (luau.rs) group `copy`
-                // with the alias ops the same way; native must not be the
-                // asymmetric outlier. Keep in sync with the `copy` arm in
+                // args-based alias lowering, whose generated ownership facts
+                // distinguish transparent aliases from the owned
+                // `binding_alias` lane. Keep in sync with
                 // fc::value_transfer::handle_value_transfer_op.
                 _ if op_family == Some(fc::NativeOpFamily::ValueTransfer) => {
                     fc::value_transfer::handle_value_transfer_op(
@@ -1702,6 +1694,7 @@ impl SimpleBackend {
                         &mut entry_vars,
                         &mut already_decrefed,
                         &rc_skip_inc,
+                        rc_authority,
                         local_inc_ref_obj,
                         local_dec_ref_obj,
                         &nbc,

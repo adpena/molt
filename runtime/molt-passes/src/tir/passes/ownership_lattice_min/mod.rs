@@ -404,6 +404,23 @@ impl<'a> DropEligibility<'a> {
             .is_conditionally_valid_result_root(self.root(value))
     }
 
+    /// Whether returning `value` must publish a new owned result reference.
+    ///
+    /// Function parameters enter with the universal `+0` borrowed-argument
+    /// contract, and transparent/non-owning copies preserve that borrow. A
+    /// Return transfers one owned result to the caller, so those roots require
+    /// one retain at the callee boundary. Fresh/function-owned roots already
+    /// carry the transferable `+1`; raw, stack, and conditionally-valid carriers
+    /// must never be retained here.
+    pub(crate) fn return_requires_owned_publication(&self, value: ValueId) -> bool {
+        let root = self.root(value);
+        !self.is_raw_scalar_root(root)
+            && !self.root_facts.is_stack_value_root(root)
+            && !self.root_facts.is_conditionally_valid_result_root(root)
+            && (self.root_facts.is_borrowed_parameter_root(root)
+                || self.root_facts.is_non_owning_copy_result_root(root))
+    }
+
     pub(crate) fn is_droppable(&self, value: ValueId) -> bool {
         let root = self.root(value);
         root == value

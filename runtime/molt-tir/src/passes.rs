@@ -3,7 +3,6 @@
 //! The pass families live in child modules so each authority surface has a
 //! bounded owner while existing callers continue to route through `crate::passes`.
 
-mod alias_returns;
 mod app_callable_manifest;
 mod constant_fold;
 mod dead_functions;
@@ -29,7 +28,6 @@ mod unbound_checks;
 #[cfg(test)]
 mod tests;
 
-pub use self::alias_returns::{ReturnAliasSummary, compute_return_alias_summaries};
 pub use self::app_callable_manifest::{
     compute_app_callable_manifest, compute_app_callable_manifest_checked,
 };

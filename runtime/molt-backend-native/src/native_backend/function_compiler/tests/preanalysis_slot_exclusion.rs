@@ -30,7 +30,7 @@ fn slot_exclusion_marks_call_arg_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("x"),
         "int variable passed to call must be marked unsafe for slot exclusion"
@@ -61,7 +61,7 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("x"),
         "int variable in ret must be marked unsafe for slot exclusion"
@@ -96,7 +96,7 @@ fn slot_exclusion_marks_store_attr_value_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("val"),
         "int variable in store_attr must be marked unsafe for slot exclusion"
@@ -131,7 +131,7 @@ fn slot_exclusion_marks_refcount_ops_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("x"),
         "int variable with inc_ref must be marked unsafe for slot exclusion"
@@ -170,7 +170,7 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("x"),
         "int variable in dec_ref var field must be marked unsafe for slot exclusion"
@@ -206,7 +206,7 @@ fn slot_exclusion_marks_release_var_field_as_unsafe() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("y"),
         "int variable in release var field must be marked unsafe for slot exclusion"
@@ -279,7 +279,7 @@ fn slot_exclusion_safe_for_pure_arithmetic_loop() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         !analysis.scalar_slot_exclusion_unsafe.contains("x"),
         "pure arithmetic loop var must NOT be marked unsafe"
@@ -334,7 +334,7 @@ fn slot_exclusion_marks_store_index_on_generic_list() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         analysis.scalar_slot_exclusion_unsafe.contains("val"),
         "int value stored to generic list must be marked unsafe"
@@ -381,7 +381,7 @@ fn slot_exclusion_allows_store_index_on_list_int() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
     assert!(
         !analysis.scalar_slot_exclusion_unsafe.contains("val"),
         "int value stored to list_int must NOT be marked unsafe"

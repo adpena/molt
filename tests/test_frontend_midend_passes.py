@@ -2983,6 +2983,33 @@ def f(xs):
     assert all(op.get("value") != try_label for op in cleanup_checks)
 
 
+def test_return_transfers_local_owner_without_frontend_retain() -> None:
+    source = """
+def f(value):
+    other = object()
+    return value
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    ret_index = next(index for index, op in enumerate(ops) if op.get("kind") == "ret")
+    returned = ops[ret_index]["args"][0]
+
+    assert not any(
+        op.get("kind") == "inc_ref" and op.get("args") == [returned]
+        for op in ops[:ret_index]
+    ), "callee result ownership is published once by the shared TIR authority"
+    assert not any(
+        op.get("kind") == "del_boundary" and op.get("s_value") == "value"
+        for op in ops[:ret_index]
+    ), "the returned binding transfers its owner instead of releasing it"
+    assert any(
+        op.get("kind") == "del_boundary" and op.get("s_value") == "other"
+        for op in ops[:ret_index]
+    ), "unreturned locals still release at the same scope-exit boundary"
+
+
 def test_function_scope_exit_boundaries_reload_loop_target_slot() -> None:
     source = """
 def f(seq):
