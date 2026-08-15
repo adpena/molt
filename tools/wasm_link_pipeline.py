@@ -58,10 +58,13 @@ def run_wasm_ld_with_custodied_inputs(
             return 1
     try:
         native_objects = api["_resolve_native_link_inputs"](tuple(native_objects))
-        native_link_arguments = api["source_extension_link_requirements"](
+        native_link_requirements = api["source_extension_link_requirements"](
             native_link_arguments,
             target_triple="wasm32-wasip1",
-        ).arguments
+        )
+        native_link_arguments = api["render_source_extension_link_arguments"](
+            native_link_requirements
+        )
     except ValueError as exc:
         print(f"Wasm link failed: {exc}", file=sys.stderr)
         return 1
