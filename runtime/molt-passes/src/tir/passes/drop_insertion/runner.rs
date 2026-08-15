@@ -1641,6 +1641,64 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
+    // ── 0c. Owned return publication ────────────────────────────────────────
+    // Calls borrow every argument but return one owned result. A direct return
+    // of a parameter (or any transparent alias of it) therefore cannot merely
+    // forward the borrowed bits: the caller would later release an ownership
+    // edge that the callee never minted. Publish that edge here, at the shared
+    // TIR boundary consumed by every backend. Fresh/function-owned results
+    // transfer their existing +1 and receive no retain. Mixed block-arg phis
+    // are made uniformly owned by §5 below, so they likewise need no second
+    // return retain.
+    //
+    // This stage deliberately MERGES into the completed per-block plan. An
+    // earlier pre-plan implementation was silently overwritten by the canonical
+    // block-plan insertion below, reproducing the missing retain despite a
+    // locally correct ownership predicate.
+    //
+    // Deduplicate by alias root: Return is a single result-publication boundary
+    // even if malformed or intermediate TIR repeats the same alias in its value
+    // vector. Use the concrete returned SSA value for placement so it always
+    // dominates this terminator; the ownership predicate remains root-owned.
+    for &bid in &block_ids {
+        if !reachable.contains(&bid) {
+            continue;
+        }
+        let Some(block) = func.blocks.get(&bid) else {
+            continue;
+        };
+        let Terminator::Return { values } = &block.terminator else {
+            continue;
+        };
+        let mut retained_roots = HashSet::new();
+        let mut retained_values = Vec::new();
+        for &value in values {
+            let root = canon(value);
+            if drop_eligibility.return_requires_owned_publication(value)
+                && retained_roots.insert(root)
+            {
+                retained_values.push(value);
+            }
+        }
+        if retained_values.is_empty() {
+            continue;
+        }
+        plans
+            .get_mut(&bid)
+            .expect("reachable block plan must exist before return publication")
+            .before_term_incref
+            .extend(retained_values);
+    }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-owned-return-publication",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
+
     // ── 3. Edge-dying drops at successor entry (design §2.5 OpsOnly form) ─────
     // A value V is dropped at the START of block B when:
     //   * V is live-out of at least one predecessor P of B (i.e. P keeps it
@@ -2451,9 +2509,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
             }
         }
-        // before_term_incref IncRefs (the mixed-ownership-phi retain, §5): the
-        // BORROWED value this block forwards into a successor's owned phi gets a
-        // `+1` here, just before the terminator, on the unambiguous single arc.
+        // before_term_incref IncRefs (owned return publication, §0c, and the
+        // mixed-ownership-phi retain, §5): a BORROWED value gets a `+1` here,
+        // just before the terminator, at its ownership-transfer boundary.
         // Placed BEFORE the before_term DecRefs so a value both retained-for-a-phi
         // and dropped-on-another-arc is incref'd before the drop (net correct).
         for v in sorted_values(&plan.before_term_incref) {

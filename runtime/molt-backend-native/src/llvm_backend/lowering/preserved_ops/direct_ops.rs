@@ -1839,24 +1839,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            // RC-alias ops: `borrow`/retained aliases == `inc_ref` then ALIAS the
-            // value through (result == source operand). The native handlers
-            // (`function_compiler.rs` `inc_ref|borrow` / retained aliases) emit
-            // `molt_inc_ref_obj(src)` and `def_var(out, src)` — a plain Copy
-            // passthrough would skip the inc_ref (a refcount LEAK). `release` is
-            // the dual and is handled in its OWN arm below because its result
-            // convention differs (it does NOT alias the source — see there).
+            // RC-alias ops: `borrow` and the generated owned-alias kind mint a
+            // +1, while generated transparent aliases only forward the bits.
+            // `release` is the dual and is handled in its own arm below because
+            // its result convention differs (it never aliases the source).
             "borrow" | "identity_alias" | "binding_alias" => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
                 let src_val = self.resolve(src_id);
                 let src_bits = self.ensure_i64(src_val);
-                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(inc_fn, &[src_bits.into()], "")
-                    .unwrap();
+                if kind == "borrow"
+                    || crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+                {
+                    let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+                    self.backend
+                        .builder
+                        .build_call(inc_fn, &[src_bits.into()], "")
+                        .unwrap();
+                } else {
+                    debug_assert!(
+                        crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
+                            kind
+                        ),
+                        "LLVM alias '{kind}' lacks generated ownership classification"
+                    );
+                }
                 if let Some(&result_id) = op.results.first() {
                     let ty = self
                         .value_types

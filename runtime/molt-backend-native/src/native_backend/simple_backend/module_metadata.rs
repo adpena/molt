@@ -34,8 +34,6 @@ pub struct NativeBackendModuleContext {
     pub(in crate::native_backend::simple_backend) task_kinds: BTreeMap<String, TrampolineKind>,
     pub(in crate::native_backend::simple_backend) task_closure_sizes: BTreeMap<String, i64>,
     pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
-    pub(in crate::native_backend::simple_backend) return_alias_summaries:
-        BTreeMap<String, crate::passes::ReturnAliasSummary>,
     /// Whole-program linkage ABI authority shared by every batch worker.
     /// Provider definitions and consumer declarations must read the same row;
     /// neither may reconstruct a machine signature from its local body subset.
@@ -155,7 +153,6 @@ impl NativeBackendModuleContext {
             task_kinds: analysis.task_kinds,
             task_closure_sizes: analysis.task_closure_sizes,
             leaf_functions: analysis.leaf_functions,
-            return_alias_summaries: crate::passes::compute_return_alias_summaries(functions),
             function_linkage_abis,
         };
         if let Some(started) = started {

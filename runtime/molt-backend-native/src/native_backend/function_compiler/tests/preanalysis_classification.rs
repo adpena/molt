@@ -215,7 +215,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(analysis.has_ret);
     assert!(analysis.stateful);
@@ -269,11 +269,11 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
     };
 
     assert!(
-        preanalyze_for_test(&value_ret, &BTreeMap::new()).has_ret,
+        preanalyze_for_test(&value_ret).has_ret,
         "`ret` should mark the function as value-returning"
     );
     assert!(
-        !preanalyze_for_test(&void_ret, &BTreeMap::new()).has_ret,
+        !preanalyze_for_test(&void_ret).has_ret,
         "`ret_void` must not mark the function as value-returning"
     );
 }
@@ -322,7 +322,7 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert!(
         analysis.resume_states.contains(&216),
@@ -381,7 +381,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(analysis.label_ids, vec![12, 13]);
     assert!(analysis.resume_states.contains(&12));
@@ -432,7 +432,7 @@ fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(analysis.label_ids, vec![12]);
     assert!(analysis.resume_states.contains(&12));

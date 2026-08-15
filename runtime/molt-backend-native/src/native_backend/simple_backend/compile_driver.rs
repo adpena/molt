@@ -438,8 +438,6 @@ impl SimpleBackend {
                 .iter()
                 .map(|func| (func.name.clone(), func.params.len())),
         );
-        let local_return_alias_summaries =
-            crate::passes::compute_return_alias_summaries(&ir.functions);
         let module_context = self.module_context.clone();
         let effective_function_arities =
             merge_function_arities(module_context.as_ref(), local_function_arities);
@@ -464,19 +462,6 @@ impl SimpleBackend {
         );
         let effective_leaf_functions =
             merge_leaf_functions(module_context.as_ref(), ir_analysis.leaf_functions.clone());
-        // UNION (same rationale as merge_closure_functions): a module context
-        // built from a different function set does not carry THIS batch's own
-        // return-alias summaries; the local computation must not be dropped, or a
-        // caller in this batch loses the callee's RC-return contract. Local wins
-        // on overlap (it is recomputed over the post-optimization bodies).
-        let effective_return_alias_summaries = {
-            let mut merged = module_context
-                .as_ref()
-                .map(|context| context.return_alias_summaries.clone())
-                .unwrap_or_default();
-            merged.extend(local_return_alias_summaries);
-            merged
-        };
         let mut local_function_has_ret: BTreeMap<String, bool> = extern_function_signatures
             .iter()
             .map(|(name, signature)| (name.clone(), signature.returns_value))
@@ -515,7 +500,6 @@ impl SimpleBackend {
                 &ir_analysis.defined_functions,
                 &module_known_functions,
                 &effective_closure_functions,
-                &effective_return_alias_summaries,
                 emit_traces,
                 &effective_leaf_functions,
                 &effective_function_arities,

@@ -9,7 +9,6 @@ use super::{
 };
 use crate::TrampolineKind;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use crate::passes::ReturnAliasSummary;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::ir::types;
 use cranelift_module::Module;
@@ -114,7 +113,6 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         .iter()
         .map(|func| (func.name.clone(), func.params.len()))
         .collect();
-    let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
     let target_func = ir
         .functions
         .into_iter()
@@ -128,7 +126,6 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         &analysis.defined_functions,
         &analysis.defined_functions,
         &analysis.closure_functions,
-        &return_alias_summaries,
         false,
         &analysis.leaf_functions,
         &function_arities,

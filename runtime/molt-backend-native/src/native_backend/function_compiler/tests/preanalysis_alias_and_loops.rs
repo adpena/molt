@@ -36,7 +36,7 @@ fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.alias_roots.get("_bb4_arg0").map(String::as_str),
@@ -75,7 +75,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.alias_roots.get("alias").map(String::as_str),
@@ -120,7 +120,7 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(analysis.last_use.get("tmp_loaded"), Some(&0));
     assert_eq!(analysis.last_use.get("tmp_missing"), Some(&2));
@@ -175,7 +175,7 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.loop_body_out_vars.get(&0),
@@ -242,7 +242,7 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
         execution_context: Default::default(),
     };
 
-    let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+    let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
         analysis.loop_body_out_vars.get(&2),
