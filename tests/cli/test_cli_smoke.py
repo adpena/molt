@@ -546,6 +546,14 @@ def test_cli_doctor_json() -> None:
     assert "llvm-backend-toolchain" in names
 
 
+def test_cli_doctor_help_loads_complete_command_graph() -> None:
+    res = _run_cli(["doctor", "--help"])
+
+    assert res.returncode == 0, res.stderr
+    assert "usage: molt" in res.stdout
+    assert "doctor [-h]" in res.stdout
+
+
 def test_cli_doctor_strict_treats_warning_only_dx_advice_as_nonfatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

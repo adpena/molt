@@ -19,7 +19,7 @@ from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.dx import _memory_bounded_worker_count
-from molt.file_hashing import _content_change_time_ns
+from molt.file_hashing import content_change_time_ns
 from molt.llvm_linker_roles import lexical_executable_path
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 
@@ -160,7 +160,7 @@ class _TreeInputFile(_TreeInputCandidate):
 
 
 def _tree_input_change_time_ns(path: Path, value: os.stat_result) -> int:
-    change_time_ns = _content_change_time_ns(path, value)
+    change_time_ns = content_change_time_ns(path, value)
     if change_time_ns is None:
         raise OSError(f"runtime input ChangeTime is unavailable: {path}")
     return change_time_ns
