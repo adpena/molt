@@ -1,5 +1,6 @@
 """Purpose: CPython 3.12+ builtins semantic probe for symbol `exec`."""
-# MOLT_META: expect_fail=molt expect_fail_reason=too_dynamic_policy
+
+# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy
 import builtins
 import contextlib
 import hashlib
@@ -12,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 
-NAME = 'exec'
+NAME = "exec"
 SYMBOL = getattr(builtins, NAME)
 
 
@@ -53,7 +54,9 @@ def _normalize(value: object, depth: int = 0) -> object:
         return [_normalize(item, depth + 1) for item in value[:10]]
     if isinstance(value, (set, frozenset)):
         normalized = [_normalize(item, depth + 1) for item in value]
-        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return sorted(
+            normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str)
+        )
     if isinstance(value, BaseException):
         return {"type": type(value).__name__, "args": _normalize(value.args, depth + 1)}
     return {"type": type(value).__name__}
@@ -138,7 +141,9 @@ def _edge_matrix() -> list[dict[str, object]]:
     for args in vectors:
         try:
             result = SYMBOL(*args)
-            out.append({"args": _normalize(args), "status": "ok", "result": _normalize(result)})
+            out.append(
+                {"args": _normalize(args), "status": "ok", "result": _normalize(result)}
+            )
         except BaseException as exc:  # noqa: BLE001
             out.append(
                 {
@@ -162,7 +167,9 @@ def _category_specific() -> object:
         except BaseException as raised:  # noqa: BLE001
             chain = {
                 "raised": type(raised).__name__,
-                "cause": type(raised.__cause__).__name__ if raised.__cause__ is not None else None,
+                "cause": type(raised.__cause__).__name__
+                if raised.__cause__ is not None
+                else None,
             }
         return {
             "kind": "exception",
@@ -188,9 +195,7 @@ def _category_specific() -> object:
 def _exec_class_body_case() -> object:
     namespace: dict[str, object] = {}
     SYMBOL(
-        "class Probe:\n"
-        "    label = 'daily'\n"
-        "    score = 42\n",
+        "class Probe:\n    label = 'daily'\n    score = 42\n",
         namespace,
         namespace,
     )

@@ -26,7 +26,13 @@ boundaries, nonlocal-augassign, membership variants). -->
 **`tests/molt_diff.py`** is the differential runner. It is a self-bootstrapping harness (~2900 lines) that drives CPython + molt compile + molt run, compares stdout byte-exactly, and handles the following concerns that the fuzzer must inherit:
 
 - **Version-gated stderr comparison**: `_stderr_matches` at molt_diff.py:377 dispatches on `exception_signature` mode to compare only exception type+message, ignoring frame formatting. This is the correct oracle for stderr — the fuzzer must use the same logic, not raw equality.
-- **`# MOLT_META:` annotations**: per-file `skip=`, `platforms=`, `py=`, `min_py=`, `max_py=`, `wasm=`, `expect_fail=` fields parsed at molt_diff.py:159 control gating. Generated programs have no metadata, so the fuzzer skips all gate logic and runs everything.
+- **`# MOLT_META:` annotations**: `tools/compat/test_policy.py` owns strict,
+  token-aware parsing and coordinate projection for the canonical keys
+  `verified_subset_scope`, `expect_fail`, `expect_fail_reason`, `min_py`,
+  `max_py`, `platforms`, `architectures`, `backends`, `stdout`, `stderr`, and
+  `stdlib_profile`. Generated programs have no metadata, so the fuzzer runs
+  them under its explicitly selected coordinate rather than inventing a second
+  metadata dialect.
 - **`# MOLT_ENV:` annotations**: per-file env overrides. Generated programs never emit these — the fuzzer uses a fixed deterministic env (PYTHONHASHSEED=0, MOLT_DETERMINISTIC=1).
 - **`_molt_sys_env_for_python_exe`** at molt_diff.py:251: derives MOLT_PYTHON_VERSION + MOLT_SYS_VERSION_INFO from the CPython baseline being run. The fuzzer must call this path when using a non-default CPython (3.13, 3.14) so molt's version-gated messages align.
 - **`MOLT_DIFF_RESULTS_JSONL`** (molt_diff.py:519): per-test JSONL sink for the suite-honesty ratchet (#46). Fuzzer must write to this file so every generated failure is visible to `tools/check_suite_honesty.py`.
@@ -199,10 +205,12 @@ The existing `_shrink_program` at fuzz_compiler.py:2190 implements only top-leve
 # MOLT_FUZZ_DATE: <ISO date>
 # MOLT_FUZZ_ORACLE: <oracle-name>
 # MOLT_FUZZ_BUG_CLASS: <inferred-class>
-# MOLT_META: xfail=molt expect_fail_reason=<class>
+# MOLT_META: expect_fail=molt expect_fail_reason=<lowercase_identifier>
 ```
 
-The `xfail=molt` annotation means the file is a known-failing regression until the bug is fixed, at which point the annotation is removed and the test becomes a permanent passing regression.
+The paired `expect_fail` metadata means the file is a known-failing regression
+until the bug is fixed, at which point both keys are removed and the test becomes
+a permanent passing regression.
 
 **Deduplication**: a failure's "fingerprint" is the SHA256 of (oracle, CPython stdout, molt stdout, first 5 differing lines). Before saving, `fuzz_corpus.py` checks the fingerprint against `tests/differential/fuzzing/known_failures.jsonl`. Identical fingerprints are discarded (the failure is already tracked). New fingerprints are appended to `known_failures.jsonl`.
 

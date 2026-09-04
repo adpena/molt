@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based CPython equivalence tests.
 
 The META property: for randomly generated simple expressions, Molt and

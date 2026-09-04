@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for collection operation intrinsics.
 
 Tests algebraic invariants of sorted(), reversed(), dict.keys(),

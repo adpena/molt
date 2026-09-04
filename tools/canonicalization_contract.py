@@ -48,6 +48,11 @@ import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+try:
+    from tools import release_criterion_receipt as release_receipt
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import release_criterion_receipt as release_receipt  # type: ignore
+
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_REL = "tools/canonicalization_contract_baseline.json"
 
@@ -367,38 +372,107 @@ def ratchet_metrics(vs: list[Violation]) -> dict[str, float]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--json", action="store_true")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update-baseline", action="store_true")
     p.add_argument("--root", default=str(ROOT))
-    args = p.parse_args(argv)
-    root = Path(args.root)
+    release_receipt.add_receipt_arguments(p)
+    args = p.parse_args(raw_argv)
+    root = Path(args.root).resolve()
+    if args.receipt is not None and args.update_baseline:
+        p.error("--receipt cannot be combined with --update-baseline")
+    try:
+        receipt_destination = release_receipt.prepare_receipt_destination(
+            repo_root=root,
+            receipt_path=args.receipt,
+            source_sha=args.source_sha,
+        )
+    except ValueError as exc:
+        p.error(str(exc))
 
     vs = run_all(root)
     metrics = ratchet_metrics(vs)
 
+    baseline: dict[str, float] | None = None
+    regressed: list[tuple[str, float, float]] = []
+    improved: list[str] = []
+    if args.check or receipt_destination is not None:
+        base_path = root / BASELINE_REL
+        if not base_path.is_file():
+            print(f"ERROR: no baseline at {base_path}", file=sys.stderr)
+            return 2
+        try:
+            raw_baseline = json.loads(base_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f"ERROR: invalid baseline at {base_path}: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(raw_baseline, dict):
+            print(f"ERROR: baseline root is not an object: {base_path}", file=sys.stderr)
+            return 2
+        baseline = raw_baseline
+        regressed = [
+            (key, baseline.get(key, 0), metrics.get(key, 0))
+            for key in metrics
+            if metrics.get(key, 0) > baseline.get(key, 0)
+        ]
+        improved = sorted(
+            key for key in metrics if metrics.get(key, 0) < baseline.get(key, 0)
+        )
+
+    if receipt_destination is not None:
+        assert baseline is not None
+        status = (
+            release_receipt.STATUS_PASS
+            if not regressed
+            else release_receipt.STATUS_FAIL
+        )
+        try:
+            receipt = release_receipt.build_receipt(
+                kind=release_receipt.KIND_CANONICALIZATION_CONTRACT,
+                source_sha=receipt_destination.source_sha,
+                status=status,
+                argv=raw_argv,
+                tool_path=Path(__file__),
+                facts={
+                    "baseline_metrics": baseline,
+                    "baseline_path": BASELINE_REL,
+                    "improved_metrics": improved,
+                    "metrics": metrics,
+                    "open_violations": len(vs),
+                    "regressed_metrics": sorted(key for key, _was, _now in regressed),
+                },
+                input_paths=[root / BASELINE_REL],
+                repo_root=root,
+            )
+            release_receipt.write_receipt(receipt, receipt_destination)
+        except ValueError as exc:
+            print(f"canonicalization contract receipt: ERROR: {exc}", file=sys.stderr)
+            return 2
+
     if args.json:
         print(json.dumps({"violations": [asdict(v) for v in vs], "metrics": metrics}, indent=2))
-        return 0
+        return 1 if receipt_destination is not None and regressed else 0
 
     if args.update_baseline:
         (root / BASELINE_REL).write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"baseline re-pinned: {BASELINE_REL}")
         return 0
 
-    if args.check:
-        base_path = root / BASELINE_REL
-        baseline = json.loads(base_path.read_text(encoding="utf-8")) if base_path.exists() else {}
-        regressed = [(k, baseline.get(k, 0), metrics.get(k, 0)) for k in metrics if metrics.get(k, 0) > baseline.get(k, 0)]
+    if args.check or receipt_destination is not None:
         if regressed:
             print("CANONICALIZATION CONTRACT REGRESSED -- new layer/organization debt:")
             for k, was, now in regressed:
                 print(f"  {k}: {was} -> {now}")
             print("\nFix the violation or, if intentional, re-pin with --update-baseline.")
             return 1
-        improved = [k for k in metrics if metrics.get(k, 0) < baseline.get(k, 0)]
         print(f"canonicalization contract OK ({len(vs)} open violations; improved: {improved or 'none'})")
+        if receipt_destination is not None:
+            print(
+                "canonicalization contract receipt written: "
+                f"{receipt_destination.output_path}"
+            )
         return 0
 
     # human board

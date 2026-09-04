@@ -1,5 +1,5 @@
 """Purpose: differential coverage for exec locals/global scope semantics."""
-# MOLT_META: expect_fail=molt expect_fail_reason=too_dynamic_policy
+# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy
 
 
 def main():

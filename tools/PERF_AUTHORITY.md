@@ -27,8 +27,10 @@ native+LLVM release-fast gate above (`--set core`, `--backend native`,
 `--quiescence-poll-s 15`) and the scoreboard itself must contain classified
 release-fast cells for both native and LLVM across the full canonical core suite
 (`bench_suites.BENCHMARKS`), with backend binary identity receipts for both
-backends. E3 must include a
-`tools/parity_gate.py` receipt with the no-Tier-1-violations PASS verdict.
+backends. E3 must include the exact source-bound verified-subset receipt closure
+for every required CPython-version, OS, architecture, and native/WASM coordinate.
+Each receipt binds the coordinate-specific test projection, raw/resolved/backend
+outcomes, reference interpreter, host, toolchain, and CI execution identity.
 
 The same release gate treats E4 `status: pass` as typed structural evidence, not
 a generic JSON attachment. E4 must include the canonicalization contract JSON,

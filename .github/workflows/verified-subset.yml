@@ -1,0 +1,173 @@
+name: Verified Subset Matrix
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verified-subset-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup verified-subset planner
+        uses: ./.github/actions/setup-project
+        with:
+          sync: "true"
+          sync-frozen: "true"
+
+      - name: Resolve exact verified-subset matrix
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix="$(uv run --project . --no-sync python tools/verified_subset.py matrix)"
+          source_sha="$(git rev-parse --verify HEAD)"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
+  coordinate:
+    name: ${{ matrix.id }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      MOLT_CACHE: ${{ github.workspace }}/tmp/verified-subset/cache
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/verified-subset
+      MOLT_DIFF_ROOT: ${{ github.workspace }}/tmp/verified-subset/diff
+      MOLT_DIFF_TMPDIR: ${{ github.workspace }}/tmp/verified-subset/tmp
+      MOLT_HOME: ${{ github.workspace }}/tmp/verified-subset/home
+      MOLT_VERIFIED_SUBSET_RUNNER: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.source_sha }}
+
+      - name: Setup verified-subset build toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          node-version: ${{ matrix.backend == 'wasm' && '24.16.0' || '' }}
+          rust-toolchain: "1.96.1"
+          rust-targets: ${{ matrix.backend == 'wasm' && 'wasm32-wasip1' || '' }}
+          cache-cargo: "true"
+          cache-namespace: verified-subset-${{ matrix.backend }}
+
+      - name: Synchronize exact target Python environment
+        shell: bash
+        env:
+          TARGET_PYTHON: ${{ matrix.reference_python }}
+        run: uv sync --frozen --python "$TARGET_PYTHON"
+
+      - name: Configure adaptive Rust parallelism
+        shell: bash
+        run: uv run --project . --no-sync python tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+
+      - name: Setup canonical WebAssembly linker and WASI sysroot
+        if: matrix.backend == 'wasm'
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: wasm
+          wasi: "true"
+
+      - name: Execute exact verified-subset coordinate
+        shell: bash
+        env:
+          COORDINATE_ID: ${{ matrix.id }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          TARGET_PYTHON: ${{ matrix.reference_python }}
+        run: >-
+          uv run --project . --python "$TARGET_PYTHON" --no-sync
+          python tools/verified_subset.py run
+          --coordinate "$COORDINATE_ID"
+          --receipt "proof-receipts/${COORDINATE_ID}.json"
+          --source-sha "$SOURCE_SHA"
+
+      - name: Sign source-bound coordinate receipt with GitHub OIDC
+        if: ${{ success() }}
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-path: proof-receipts/${{ matrix.id }}.json
+
+      - name: Upload source-bound coordinate receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-subset-receipt-${{ matrix.id }}
+          path: proof-receipts/${{ matrix.id }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-receipts:
+    if: ${{ always() && needs.plan.result == 'success' }}
+    needs:
+      - plan
+      - coordinate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.source_sha }}
+
+      - name: Setup verified-subset receipt verifier
+        uses: ./.github/actions/setup-project
+        with:
+          sync: "true"
+          sync-frozen: "true"
+
+      - name: Download every coordinate receipt without merging identities
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: verified-subset-receipt-*
+          path: proof-receipts
+
+      - name: Verify GitHub OIDC provenance for every coordinate receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer="$GITHUB_REPOSITORY/.github/workflows/verified-subset.yml"
+          find proof-receipts -type f -name '*.json' -print0 \
+            | xargs -0 -n1 gh attestation verify \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$signer" \
+                --source-digest "$SOURCE_SHA" \
+                --deny-self-hosted-runners
+
+      - name: Verify exact source-bound receipt closure
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: >-
+          uv run --project . --no-sync python tools/verified_subset.py
+          verify-receipts --source-sha "$SOURCE_SHA"
+          --receipt-root proof-receipts

@@ -26,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from molt.target_python import TargetPythonVersion
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "tests"), str(_REPO_ROOT / "src")):
@@ -114,14 +115,66 @@ class _FakeAdapter:
     def __init__(self, name: str, result: compat_backends.BackendResult) -> None:
         self.name = name
         self._result = result
+        self.contexts: list[compat_backends.BackendExecutionContext] = []
 
     def availability(self) -> compat_backends.BackendAvailability:
         return compat_backends.BackendAvailability(available=True)
 
     def build_and_run(
-        self, file_path, build_profile, *, extra_env, capabilities
+        self,
+        file_path: str,
+        *,
+        context: compat_backends.BackendExecutionContext,
     ) -> compat_backends.BackendResult:
+        del file_path
+        self.contexts.append(context)
         return self._result
+
+
+def test_backend_execution_context_requires_canonical_target_authority() -> None:
+    with pytest.raises(TypeError, match="TargetPythonVersion"):
+        compat_backends.BackendExecutionContext(  # type: ignore[arg-type]
+            target_python="3.14",
+            build_profile="dev",
+            capabilities="",
+            environment={},
+        )
+    with pytest.raises(ValueError, match="must be canonical"):
+        compat_backends.BackendExecutionContext(
+            target_python=TargetPythonVersion(3, 14, 1),
+            build_profile="dev",
+            capabilities="",
+            environment={},
+        )
+
+
+@pytest.mark.parametrize("target_python", ("3.13", "3.14"))
+@pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
+def test_cross_backend_build_command_binds_target_python(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target_python: str,
+    backend: str,
+) -> None:
+    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, int(target_python.split(".")[1]), 0),
+        build_profile="release",
+        capabilities="fs.read",
+        environment={"MOLT_TRUSTED": "0"},
+    )
+
+    command = compat_backends._build_cmd(
+        "case.py",
+        backend,
+        tmp_path,
+        context,
+    )
+
+    assert command.count("--python-version") == 1
+    assert command[command.index("--python-version") + 1] == target_python
+    assert command[command.index("--build-profile") + 1] == "release"
+    assert command[command.index("--capabilities") + 1] == "fs.read"
 
 
 # ---------------------------------------------------------------------------
@@ -220,12 +273,17 @@ def install_fake_registry(monkeypatch):
         registry = {
             name: _FakeAdapter(name, result) for name, result in backend_results.items()
         }
+        native_contexts: list[compat_backends.BackendExecutionContext] = []
         # native still flows through run_molt -> stub run_molt to return the
         # native scripted result so even native is in-memory here.
         native_result = backend_results.get("native")
 
         def _fake_run_molt(file_path, build_profile, **kwargs):
             assert native_result is not None, "native result must be provided"
+            context = kwargs.get("execution_context")
+            assert isinstance(context, compat_backends.BackendExecutionContext)
+            assert context.build_profile == build_profile
+            native_contexts.append(context)
             return (
                 native_result.stdout,
                 native_result.stderr,
@@ -235,8 +293,46 @@ def install_fake_registry(monkeypatch):
         monkeypatch.setattr(molt_diff, "run_molt", _fake_run_molt)
         monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", registry)
         monkeypatch.setattr(molt_diff, "run_cpython", lambda *a, **k: cpython)
+        return registry, native_contexts
 
     return _install
+
+
+def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
+    fake_test_file: Path,
+    install_fake_registry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_test_file.write_text(
+        "# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound\nprint(42)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_TRUSTED", "1")
+    monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")
+    monkeypatch.delenv("MOLT_DIFF_TRUSTED", raising=False)
+    registry, native_contexts = install_fake_registry(
+        {
+            "native": compat_backends.BackendResult("42\n", "", 0),
+            "wasm": compat_backends.BackendResult("42\n", "", 0),
+        }
+    )
+
+    status = molt_diff.diff_test(
+        str(fake_test_file),
+        targets=("native", "wasm"),
+        target_python=f"{sys.version_info.major}.{sys.version_info.minor}",
+    )
+
+    assert status == "pass"
+    wasm_contexts = registry["wasm"].contexts
+    assert len(native_contexts) == len(wasm_contexts) == 1
+    assert native_contexts[0] == wasm_contexts[0]
+    assert native_contexts[0].target_python.short == (
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
+    assert native_contexts[0].environment["MOLT_TRUSTED"] == "0"
+    assert native_contexts[0].capabilities == "net.listen,net.outbound"
+    assert "poison.inherited" not in native_contexts[0].capabilities
 
 
 def test_all_backends_agree_with_cpython_passes(
@@ -250,6 +346,22 @@ def test_all_backends_agree_with_cpython_passes(
         cpython=("42\n", "", 0),
     )
     status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    assert status == "pass"
+
+
+def test_backend_metadata_filters_each_requested_cell_before_execution(
+    fake_test_file: Path, install_fake_registry
+) -> None:
+    fake_test_file.write_text(
+        "# MOLT_META: backends=wasm\nprint(42)\n", encoding="utf-8"
+    )
+    install_fake_registry(
+        {"wasm": compat_backends.BackendResult("42\n", "", 0)},
+        cpython=("42\n", "", 0),
+    )
+
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+
     assert status == "pass"
 
 

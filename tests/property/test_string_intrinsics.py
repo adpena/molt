@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for string operation intrinsics.
 
 Tests algebraic invariants of str.upper/lower, str.split/join,

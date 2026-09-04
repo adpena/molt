@@ -93,6 +93,7 @@ Exit 0 = green, 1 = drift / ratchet / anchor failure (violations printed).
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import os
 import re
@@ -106,6 +107,11 @@ try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
     from command_execution import CommandExecutor  # type: ignore
+
+try:
+    from tools import release_criterion_receipt as release_receipt
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import release_criterion_receipt as release_receipt  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -1503,14 +1509,67 @@ def advisory_triage(violations: list[Violation]) -> list[dict[str, str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    if "--discover" in argv:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="print the raw discovered poison-site set without running the gate",
+    )
+    release_receipt.add_receipt_arguments(parser)
+    args = parser.parse_args(raw_argv)
+    if args.discover and args.receipt is not None:
+        parser.error("--receipt cannot be combined with --discover")
+    try:
+        receipt_destination = release_receipt.prepare_receipt_destination(
+            repo_root=REPO_ROOT,
+            receipt_path=args.receipt,
+            source_sha=args.source_sha,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    if args.discover:
         # Debug aid: print the raw discovered set (not a gate pass/fail).
         for site in discover_all(REPO_ROOT):
             print(f"[{site.scan}/{site.cls}] {site.file}:{site.line}\t{site.signature}")
         return 0
 
     violations = run_gate(REPO_ROOT)
+    registry = load_registry(REGISTRY_PATH)
+    counts = {cls: 0 for cls in _VALID_CLASSES}
+    for row in registry.rows:
+        counts[row.cls] += 1
+    if receipt_destination is not None:
+        status = (
+            release_receipt.STATUS_PASS
+            if not violations
+            else release_receipt.STATUS_FAIL
+        )
+        try:
+            receipt = release_receipt.build_receipt(
+                kind=release_receipt.KIND_FAIL_CLOSED_GATE,
+                source_sha=receipt_destination.source_sha,
+                status=status,
+                argv=raw_argv,
+                tool_path=Path(__file__),
+                facts={
+                    "baseline_counts": registry.baseline,
+                    "class_counts": counts,
+                    "registered_site_count": len(registry.rows),
+                    "registry_path": REGISTRY_PATH.relative_to(REPO_ROOT).as_posix(),
+                    "violations": [
+                        {"detail": violation.detail, "kind": violation.kind}
+                        for violation in violations
+                    ],
+                },
+                input_paths=[REGISTRY_PATH],
+                repo_root=REPO_ROOT,
+            )
+            release_receipt.write_receipt(receipt, receipt_destination)
+        except ValueError as exc:
+            print(f"fail-closed receipt: ERROR: {exc}", file=sys.stderr)
+            return 2
     if violations:
         print("fail-closed gate: FAIL", file=sys.stderr)
         for v in violations:
@@ -1522,15 +1581,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    registry = load_registry(REGISTRY_PATH)
-    counts = {cls: 0 for cls in _VALID_CLASSES}
-    for row in registry.rows:
-        counts[row.cls] += 1
     summary = ", ".join(
         f"{cls}={counts[cls]}<={registry.baseline[cls]}"
         for cls in sorted(_VALID_CLASSES)
     )
     print(f"fail-closed gate: OK ({len(registry.rows)} registered sites; {summary})")
+    if receipt_destination is not None:
+        print(f"fail-closed receipt written: {receipt_destination.output_path}")
     return 0
 
 

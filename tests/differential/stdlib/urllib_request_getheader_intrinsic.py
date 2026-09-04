@@ -1,4 +1,4 @@
-# MOLT_META: wasm=no
+# MOLT_META: backends=llvm,luau,native
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
 """Purpose: urllib.request response getheader is intrinsic-backed and preserves joins."""
 

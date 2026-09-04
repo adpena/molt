@@ -38,7 +38,10 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+COMPARISON_LAW_VERSION = "molt.compat-comparison.v1"
+
 __all__ = [
+    "COMPARISON_LAW_VERSION",
     "ComparisonMode",
     "ExitLaw",
     "Outputs",

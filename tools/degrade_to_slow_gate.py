@@ -62,9 +62,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    from tools import release_criterion_receipt as release_receipt
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import release_criterion_receipt as release_receipt  # type: ignore
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -516,12 +522,51 @@ def _format_report(report: GateReport) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--json", action="store_true", help="emit a machine-readable report"
     )
-    args = parser.parse_args(argv)
+    release_receipt.add_receipt_arguments(parser)
+    args = parser.parse_args(raw_argv)
+    try:
+        receipt_destination = release_receipt.prepare_receipt_destination(
+            repo_root=REPO_ROOT,
+            receipt_path=args.receipt,
+            source_sha=args.source_sha,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     report = run_gate()
+    if receipt_destination is not None:
+        status = (
+            release_receipt.STATUS_PASS if report.ok else release_receipt.STATUS_FAIL
+        )
+        try:
+            receipt = release_receipt.build_receipt(
+                kind=release_receipt.KIND_DEGRADE_TO_SLOW_GATE,
+                source_sha=receipt_destination.source_sha,
+                status=status,
+                argv=raw_argv,
+                tool_path=Path(__file__),
+                facts={
+                    "discovered_site_count": report.discovered_site_count,
+                    "errors": report.errors,
+                    "metabug_fix_pending_baseline": (
+                        report.metabug_fix_pending_baseline
+                    ),
+                    "metabug_fix_pending_count": report.metabug_fix_pending_count,
+                    "registry_path": REGISTRY_PATH.relative_to(REPO_ROOT).as_posix(),
+                    "registry_row_count": report.registry_row_count,
+                    "warnings": report.warnings,
+                },
+                input_paths=[REGISTRY_PATH],
+                repo_root=REPO_ROOT,
+            )
+            release_receipt.write_receipt(receipt, receipt_destination)
+        except ValueError as exc:
+            print(f"degrade-to-slow receipt: ERROR: {exc}", file=sys.stderr)
+            return 2
     if args.json:
         print(
             json.dumps(
@@ -541,6 +586,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(_format_report(report))
+    if receipt_destination is not None:
+        print(
+            f"degrade-to-slow receipt written: {receipt_destination.output_path}",
+            file=sys.stderr if args.json else sys.stdout,
+        )
     return 0 if report.ok else 1
 
 

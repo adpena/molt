@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for string operations.
 
 Tests algebraic invariants of string concatenation, repetition, slicing,

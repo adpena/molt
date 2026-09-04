@@ -1,6 +1,6 @@
 # MOLT_META: min_py=3.13
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
-"""Differential coverage for CPython 3.12+ glob API surface."""
+"""Differential coverage for CPython 3.13+ glob API surface."""
 
 from __future__ import annotations
 

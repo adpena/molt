@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Generate the packaged release-target projection from its TOML authority."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import re
+import tomllib
+from typing import Any, Mapping
+
+from molt.file_publication import atomic_write_bytes
+from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = ROOT / "config" / "release_targets.toml"
+OUTPUT = ROOT / "src" / "molt" / "release_matrix.py"
+TARGET_KEYS = frozenset({"id", "runner", "platform", "arch", "rust_target", "archive"})
+PLATFORM_ARCHITECTURES = {
+    "linux": frozenset({"aarch64", "x86_64"}),
+    "macos": frozenset({"arm64", "x86_64"}),
+    "windows": frozenset({"arm64", "x86_64"}),
+}
+
+
+def _expected_rust_target(platform: str, architecture: str) -> str:
+    rust_arch = "aarch64" if architecture == "arm64" else architecture
+    suffix = {
+        "linux": "unknown-linux-gnu",
+        "macos": "apple-darwin",
+        "windows": "pc-windows-msvc",
+    }[platform]
+    return f"{rust_arch}-{suffix}"
+
+
+def _runner_matches_coordinate(
+    runner: str, *, platform: str, architecture: str
+) -> bool:
+    if platform == "linux":
+        return runner.startswith("ubuntu-") and (
+            (architecture == "aarch64") == runner.endswith("-arm")
+        )
+    if platform == "macos":
+        return runner.startswith("macos-") and (
+            (architecture == "x86_64") == runner.endswith("-intel")
+        )
+    return runner.startswith("windows-") and (
+        (architecture == "arm64") == runner.endswith("-arm")
+    )
+
+
+def _require_mapping(value: object, *, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a table")
+    return value
+
+
+def load_release_target_authority(path: Path = SOURCE) -> dict[str, object]:
+    with path.open("rb") as stream:
+        document = tomllib.load(stream)
+    if set(document) != {"schema", "target"}:
+        raise ValueError("release target authority keys are not exact")
+    if document["schema"] != "molt.release-targets.v1":
+        raise ValueError("release target authority schema is unsupported")
+    raw_targets = document["target"]
+    if not isinstance(raw_targets, list):
+        raise ValueError("release targets must be an array of tables")
+    targets: list[dict[str, str]] = []
+    for index, raw in enumerate(raw_targets):
+        target = _require_mapping(raw, label=f"release target {index}")
+        if set(target) != TARGET_KEYS or not all(
+            isinstance(target[key], str) and target[key] for key in TARGET_KEYS
+        ):
+            raise ValueError(f"release target {index} fields are not exact strings")
+        targets.append({key: str(target[key]) for key in sorted(TARGET_KEYS)})
+    ids = [target["id"] for target in targets]
+    coordinates = [(target["platform"], target["arch"]) for target in targets]
+    rust_targets = [target["rust_target"] for target in targets]
+    expected_coordinates = {
+        (platform, architecture)
+        for platform, architectures in PLATFORM_ARCHITECTURES.items()
+        for architecture in architectures
+    }
+    if (
+        not targets
+        or len(ids) != len(set(ids))
+        or len(coordinates) != len(set(coordinates))
+        or len(rust_targets) != len(set(rust_targets))
+        or set(coordinates) != expected_coordinates
+    ):
+        raise ValueError("release target matrix must contain each supported cell once")
+    for target in targets:
+        expected_id = f"{target['platform']}-{target['arch']}"
+        if (
+            target["id"] != expected_id
+            or target["archive"] != "zip"
+            or "latest" in target["runner"]
+            or "self-hosted" in target["runner"]
+            or re.fullmatch(r"[a-z0-9_]+(?:-[a-z0-9_]+)+", target["rust_target"])
+            is None
+            or target["rust_target"]
+            != _expected_rust_target(target["platform"], target["arch"])
+            or not _runner_matches_coordinate(
+                target["runner"],
+                platform=target["platform"],
+                architecture=target["arch"],
+            )
+        ):
+            raise ValueError(f"release target policy is invalid: {target['id']}")
+    return {"targets": targets}
+
+
+def render_release_matrix(authority: Mapping[str, object]) -> str:
+    targets = authority["targets"]
+    assert isinstance(targets, list)
+    versions = ", ".join(
+        json.dumps(version) for version in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    )
+    if len(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS) == 1:
+        versions += ","
+    lines = [
+        '"""Generated release OS, architecture, and Rust-target policy."""',
+        "",
+        "from __future__ import annotations",
+        "",
+        "from types import MappingProxyType",
+        "",
+        "# Generated by tools/gen_release_matrix.py from config/release_targets.toml.",
+        'PYTHON_IMPLEMENTATION = "cpython"',
+        f"SUPPORTED_CPYTHON_VERSIONS = ({versions})",
+        "MINIMUM_CPYTHON_VERSION = tuple(",
+        '    int(part) for part in SUPPORTED_CPYTHON_VERSIONS[0].split(".")',
+        ")",
+        "RELEASE_TARGETS = (",
+    ]
+    for target in targets:
+        assert isinstance(target, dict)
+        lines.append("    MappingProxyType(")
+        lines.append("        {")
+        for key in ("id", "runner", "platform", "arch", "rust_target", "archive"):
+            lines.append(f"            {json.dumps(key)}: {json.dumps(target[key])},")
+        lines.extend(("        }", "    ),"))
+    lines.extend(
+        (
+            ")",
+            "RUST_TARGET_BY_COORDINATE = MappingProxyType(",
+            "    {",
+        )
+    )
+    for target in targets:
+        assert isinstance(target, dict)
+        lines.append(
+            f"        ({json.dumps(target['platform'])}, "
+            f"{json.dumps(target['arch'])}): {json.dumps(target['rust_target'])},"
+        )
+    lines.extend(
+        (
+            "    }",
+            ")",
+            "",
+            "",
+            "def wasi_sdk_host_id(platform: str, architecture: str) -> str:",
+            '    """Project one shipped release coordinate into wasi-sdk asset spelling."""',
+            "",
+            '    normalized_architecture = "aarch64" if architecture == "arm64" else architecture',
+            '    return f"{platform}-{normalized_architecture}"',
+            "",
+            "",
+            "REQUIRED_WASI_SDK_HOST_IDS = frozenset(",
+            "    wasi_sdk_host_id(platform, architecture)",
+            "    for platform, architecture in RUST_TARGET_BY_COORDINATE",
+            ")",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    rendered = render_release_matrix(load_release_target_authority())
+    if args.check:
+        if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
+            raise SystemExit("generated release matrix is stale")
+        return 0
+    atomic_write_bytes(OUTPUT, rendered.encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

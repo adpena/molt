@@ -1,4 +1,4 @@
-# MOLT_META: wasm=no
+# MOLT_META: backends=llvm,luau,native
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read
 """Purpose: differential coverage for wsgiref simple server basic."""
 
@@ -10,6 +10,7 @@ import urllib.request
 def app(environ, start_response):
     start_response("200 OK", [("Content-Type", "text/plain")])
     return [b"ok"]
+
 
 server = make_server("127.0.0.1", 0, app)
 thread = threading.Thread(target=server.serve_forever)

@@ -8,6 +8,16 @@ import pytest
 from molt import file_hashing
 
 
+def test_sha256_primitives_share_file_hashing_authority(tmp_path: Path) -> None:
+    path = tmp_path / "content.bin"
+    path.write_bytes(b"abc")
+    expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+    assert file_hashing._sha256_bytes(b"abc") == expected
+    assert file_hashing._sha256_file_with_size(path) == (expected, 3)
+    assert file_hashing._sha256_file(path) == expected
+
+
 def test_source_fingerprint_files_are_deterministic_and_filtered(
     tmp_path: Path,
 ) -> None:
@@ -37,13 +47,13 @@ def test_content_change_time_observes_same_size_timestamp_restored_mutation(
     path = tmp_path / "content.bin"
     path.write_bytes(b"before")
     before_stat = path.stat()
-    before = file_hashing._content_change_time_ns(path, before_stat)
+    before = file_hashing.content_change_time_ns(path, before_stat)
 
     with path.open("r+b", buffering=0) as handle:
         handle.write(b"after!")
         os.fsync(handle.fileno())
     os.utime(path, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
-    after = file_hashing._content_change_time_ns(path, path.stat())
+    after = file_hashing.content_change_time_ns(path, path.stat())
 
     assert before is not None
     assert after is not None

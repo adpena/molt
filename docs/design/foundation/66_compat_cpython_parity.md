@@ -1,6 +1,6 @@
 <!-- Foundation blueprint 66. Arc: full deterministic CPython >=3.12 PARITY across ALL
 backends (native/WASM/LLVM/Luau). Author: portfolio-architect. Date: 2026-06-23.
-Status: design only / executable plan. Assigned path:
+Status: partially implemented; retained as the long-horizon completion plan. Assigned path:
 docs/design/foundation/66_compat_cpython_parity.md. This doc is the PARITY-PLANE counterpart to the
 language-semantics audit (doc 30), the stdlib/surface audit (doc 16), the
 ecosystem audit (doc 17/24), and the differential-fuzzing lane (doc 31). It does
@@ -14,8 +14,25 @@ debts. Read-only investigation + this one Write; the lead integrates. -->
 **Arc owner surface:** frontend semantics + runtime stdlib + differential harness + CI gates
 **Author:** portfolio-architect
 **Date:** 2026-06-23
-**Status:** design only / executable plan
+**Status:** partially implemented; remaining LLVM/Luau and surface-enumeration work is tracked here
 **Composes with (cite, never duplicate):** doc 16 (CPython surface/stdlib/GPU gap audit), doc 17 + 24 (ecosystem/third-party compat), doc 30 (core-language feature/op portfolio — the per-family language parity audit), doc 31 (generative differential fuzzing), doc 00 (integrated parallel build program — the tier DAG and multi-agent model), doc 14 (target × profile parity audit), doc 51 (ten-year roadmap). Spec anchors: `docs/spec/areas/compat/README.md`, `docs/spec/areas/compat/contracts/{verified_subset_contract,dynamic_execution_policy_contract,compatibility_fallback_contract}.md`, `docs/spec/areas/compat/surfaces/language/{semantic_behavior_matrix,syntactic_features_matrix,type_coverage_matrix,language_surface_matrix}.md`, `docs/spec/areas/testing/{0007-testing,0008_MINIMUM_MUST_PASS_MATRIX,0504_DIFFERENTIAL_TESTING_ORACLE}.md`, `docs/spec/STATUS.md`.
+
+---
+
+## Implementation update (2026-09-03)
+
+The native/WASM runner split described in the original investigation is closed.
+`tests/molt_diff.py` owns one multi-backend oracle; backend execution lives in
+`tools/compat/backends.py`; comparison lives in
+`tools/compat/comparison.py`; and discovery, metadata, applicability, and
+expected-failure policy live in `tools/compat/test_policy.py`.
+`tools/wasm_diff.py` was deleted. The release-facing 3.12/3.13/3.14 × release
+host × native/WASM closure is now projected by `tools/verified_subset.py` and
+requires raw, resolved, and backend outcomes per coordinate. The historical
+findings below explain the architecture that led to this state; they are not a
+current tool inventory. LLVM/Luau execution parity, systematic surface
+enumeration, and elimination of all applicable expected-failure debt remain
+open work.
 
 ---
 
@@ -68,7 +85,7 @@ This plan must advance and compose with the substantial parity machinery already
 
 **The satellite-parity guard — `tools/check_satellite_parity.py`.** A fail-closed contract that two physical copies of feature-gated stdlib modules (in-tree `#[cfg(not(feature="stdlib_X"))]` vs satellite `runtime/molt-runtime-X/`) do not behaviorally drift. Normalizes access-layer differences, compares residual line-multiset, ratchets toward zero. This is the *intra-runtime* dual-truth guard; it is the precedent and sibling for the *inter-backend* parity guard this arc generalizes.
 
-**Other existing tooling (compose, don't duplicate):** `tools/check_differential_suite_layout.py` (lane layout), `tools/check_ecosystem_compat.py` (ecosystem ratchet — the template `check_suite_honesty` was modeled on), `tools/verified_subset.py` (verified-subset manifest check/run), `tools/diff_coverage.py` + `tests/differential/COVERAGE_INDEX.yaml` (PEP/API → test map), `tools/stdlib_full_coverage_manifest.py` `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS` (by-design exec/eval/compile exclusions — partitions the fail space with the honesty manifest, no overlap), `tools/gen_compat_platform_availability.py`, `tools/cpython_regrtest.py` (G5 gate — runs CPython's own regression suite).
+**Other existing tooling (compose, don't duplicate):** `tools/check_differential_suite_layout.py` (lane layout), `tools/check_ecosystem_compat.py` (ecosystem ratchet — the template `check_suite_honesty` was modeled on), `tools/verified_subset.py` (verified-subset policy, coordinate projection, and receipt production), `tools/compat/test_policy.py` (physical-suite discovery and source-local typed metadata), `tools/diff_coverage.py` + `tests/differential/COVERAGE_INDEX.yaml` (PEP/API → test map), `tools/check_dynamic_policy.py` (by-design exec/eval/compile exclusions projected from the same source metadata), `tools/gen_compat_platform_availability.py`, and `tools/cpython_regrtest.py` (G5 gate — runs CPython's own regression suite).
 
 **The spec compat plane — `docs/spec/areas/compat/`.** Canonical status vocabulary (`missing` / `api_shape_only` / `behavior_partial` / `behavior_full` / `intentional_divergence`), dimension tags (`py312/313/314`, `native`, `wasm_wasi`, `wasm_browser`, `linux/macos/windows`), generated-vs-hand-edited file discipline. The `semantic_behavior_matrix.md` is the hand-edited datamodel-semantics truth (eval order, scoping, object model, control flow, numeric tower, explicit divergences §7).
 
@@ -199,7 +216,13 @@ The arc decomposes into six phases. Each is a *complete structural piece* (per C
 - Wire the gate into CI as a first-class job and into `0008_MINIMUM_MUST_PASS_MATRIX.md` as a new gate **G3-multi** (the existing G3 is native-only differential; G3-multi adds the per-backend ratchet check, consuming calibration produced by the nightly `molt_compat` deep run). Cold *and* warm are not relevant here (correctness, not perf), but the matrix records per-cell evidence + date (the existing manifest discipline).
 - **Calibrate the backlog as a build product, not a survey:** run `molt_compat` to seed `llvm`/`luau` dimensions and the ~1897 UNCALIBRATED stdlib tests on native — turning measured `uncalibrated` cells into measured `fail`/`pass`. Each newly seeded `fail` gets `tracking`+`root_cause`+`evidence` (the manifest lint enforces this). This is where the *true parity surface* becomes known for the first time across all four backends.
 
-**Gates:** `check_suite_honesty --check` green against the seeded matrix; manifest self-lint green (every `fail` has owner+cause+evidence; no overlap with `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`; no backend-workaround entry without an IR-limitation citation). The matrix is reproducible: a second `molt_compat` calibration run produces the same RAW statuses (determinism — doc 31 Oracle 4 spirit). **This phase makes the parity surface *measured and gated*; from here, every divergence has a red cell.**
+**Gates:** `check_suite_honesty --check` green against the seeded matrix;
+manifest self-lint green (every `fail` has owner+cause+evidence; no overlap with
+source-local `verified_subset_scope=dynamic_execution_policy` exclusions; no
+backend workaround entry without an IR-limitation citation). The matrix is
+reproducible: a second `molt_compat` calibration run produces the same RAW
+statuses (determinism — doc 31 Oracle 4 spirit). **This phase makes the parity
+surface *measured and gated*; from here, every divergence has a red cell.**
 
 ### Phase 3 — Enforce "Semantic Authority Is Shared" (close the fork class) [EXPLOIT]
 

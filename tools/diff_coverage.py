@@ -14,6 +14,11 @@ import re
 from collections import Counter
 from pathlib import Path
 
+try:
+    from tools.compat import test_policy
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    from compat import test_policy  # type: ignore[no-redef]
+
 PEP_RE = re.compile(r"pep(\d{3,4})", re.IGNORECASE)
 
 MODULE_PREFIXES = {
@@ -36,38 +41,12 @@ MODULE_PREFIXES = {
 }
 
 
-def collect_meta(file_path: Path) -> dict[str, list[str]]:
-    meta: dict[str, list[str]] = {}
-    try:
-        text = file_path.read_text()
-    except OSError:
-        return meta
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("# MOLT_META:"):
-            continue
-        payload = stripped[len("# MOLT_META:") :].strip()
-        for token in payload.split():
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            values = [v for v in value.split(",") if v]
-            if not values:
-                values = [""]
-            meta.setdefault(key, []).extend(values)
-    return meta
-
-
-def infer_pep(path: Path, meta: dict[str, list[str]]) -> list[str]:
-    if "pep" in meta:
-        return meta["pep"]
+def infer_pep(path: Path) -> list[str]:
     match = PEP_RE.search(path.name)
     return [match.group(1)] if match else []
 
 
-def infer_stdlib_module(path: Path, meta: dict[str, list[str]]) -> str | None:
-    if "stdlib" in meta:
-        return meta["stdlib"][0]
+def infer_stdlib_module(path: Path) -> str | None:
     stem = path.stem
     for prefix, module in MODULE_PREFIXES.items():
         if stem.startswith(prefix + "_") or stem == prefix:
@@ -143,14 +122,14 @@ def main() -> int:
     for file_path in sorted(root.rglob("*.py")):
         rel = file_path.relative_to(root)
         group = rel.parts[0] if rel.parts else "root"
-        meta = collect_meta(file_path)
-        peps = infer_pep(file_path, meta)
-        stdlib = infer_stdlib_module(file_path, meta)
+        meta = test_policy.parse_metadata(file_path)
+        peps = infer_pep(file_path)
+        stdlib = infer_stdlib_module(file_path)
         entries.append(
             {
                 "path": str(file_path),
                 "group": group,
-                "meta": meta,
+                "meta": meta.as_record(),
                 "peps": peps,
                 "stdlib": stdlib,
             }

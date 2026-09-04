@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for math module intrinsics.
 
 Tests algebraic invariants of math.floor, math.ceil, math.sqrt,

@@ -1,4 +1,4 @@
-# MOLT_META: wasm=no
+# MOLT_META: backends=llvm,luau,native
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
 """Purpose: intrinsic-backed http.client response message surface."""
 
