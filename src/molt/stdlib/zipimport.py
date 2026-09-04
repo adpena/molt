@@ -37,7 +37,6 @@ _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
     "molt_importlib_zip_source_exec_payload"
 )
 _MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic("molt_importlib_zip_read_entry")
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
@@ -96,8 +95,7 @@ def _source_payload_from_resolution(
 
 class zipimporter:
     def __init__(self, path: str) -> None:
-        if not _MOLT_CAPABILITIES_TRUSTED():
-            _MOLT_CAPABILITIES_REQUIRE("fs.read")
+        _MOLT_CAPABILITIES_REQUIRE("fs.read")
         archive_path = str(path)
         archive, prefix = _split_archive_path(archive_path)
         self.archive = archive

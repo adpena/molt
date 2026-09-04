@@ -9,8 +9,8 @@
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
 | Hashed executable authority inputs | 1 | 127 |
-| Local path rules | 35 | 39 |
-| Unique local commands | 73 | 86 |
+| Local path rules | 35 | 40 |
+| Unique local commands | 73 | 88 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -37,11 +37,11 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3300 s | 300 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 105 min | 5700 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3420 s | 180 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `wasm` | pr, main | yes | `github-job` | 105 min | 6000 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 7 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | 1200 s | 300 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 9 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 10 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
@@ -162,6 +162,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.op-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.heap-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.python-effects.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.host-capabilities.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.runtime-profile.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.cpython-slots.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.op-kinds.drift` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 1 |
@@ -200,9 +201,11 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
 | `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
 | `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
@@ -239,6 +242,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `bootstrap-stdlib` | 4 | 2 | no |
 | `heap-kind-lifetime-authority` | 7 | 2 | no |
 | `python-effect-capability-authority` | 6 | 3 | no |
+| `host-capability-authority` | 7 | 2 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
 | `native-callable-abi` | 19 | 5 | no |
 | `op-kind-registry` | 10 | 2 | no |

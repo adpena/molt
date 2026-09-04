@@ -491,7 +491,8 @@ pub(crate) use molt_obj_model::MoltObject;
 pub use crate::async_rt::cancellation::*;
 pub use crate::async_rt::channels::*;
 pub(crate) use crate::async_rt::channels::{
-    capability_fix_hint, has_capability, raise_capability_denied,
+    OperationId, capability_fix_hint, has_capability, operation_allowed, raise_capability_denied,
+    require_operation,
 };
 pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]

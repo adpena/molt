@@ -264,7 +264,7 @@ pub extern "C" fn molt_subprocess_run(
     env_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
 
@@ -433,7 +433,7 @@ pub extern "C" fn molt_subprocess_check_output(
     env_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
 
@@ -532,7 +532,7 @@ pub extern "C" fn molt_subprocess_check_call(
     env_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
 

@@ -87,7 +87,7 @@ def add_factgraph_parser(
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted native analysis.",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit JSON status for tooling."

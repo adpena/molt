@@ -13,7 +13,6 @@ from typing import (
 from molt.cli.atomic_io import (
     _atomic_write_text,
 )
-from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -49,7 +48,7 @@ def _initialize_runtime_artifact_state(
 ) -> _RuntimeArtifactState:
     state = _RuntimeArtifactState(
         extra_runtime_features=tuple(
-            _dedupe_preserve_order(
+            dict.fromkeys(
                 feature.strip()
                 for feature in (extra_runtime_features or ())
                 if feature and feature.strip()

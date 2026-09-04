@@ -79,7 +79,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--wasm-profile {auto,full,pure}` | WASM import profile (`auto` plans imports from observed IR). |
 | `--cache / --no-cache` | Enable/disable build cache. |
 | `--cache-dir DIR` | Override build cache directory. |
-| `--trusted / --no-trusted` | Disable capability checks. |
+| `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
 | `--sysroot PATH` | Sysroot path for native cross-compilation. |
 | `--lib-path DIR` | Additional Python package search directories (repeatable). |
@@ -140,7 +140,7 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 | `--fallback {error,bridge}` | Fallback policy for unsupported constructs. |
 | `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. |
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
-| `--trusted / --no-trusted` | Disable capability checks for trusted native analysis. |
+| `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
 | `--json` | Emit JSON command status for tooling. |
 | `--verbose` | Emit verbose backend diagnostics. |
 
@@ -174,7 +174,7 @@ molt run --module mypackage              # Run a package
 | `--rebuild` | Disable build cache. |
 | `--timing` | Emit timing summary (compile + run). |
 | `--capabilities SPEC` | Capability profiles or manifest path. |
-| `--trusted / --no-trusted` | Disable capability checks. |
+| `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
 | `--build-arg ARG` | Extra args passed to `molt build` (repeatable). |
 
 `molt run` wrapper-cache identity includes the resolved binary image scope, the
@@ -200,7 +200,7 @@ molt test --suite diff --profile release # Diff tests with release builds
 | `--suite {dev,diff,pytest}` | Test suite to run (default: `dev`). |
 | `--python-version VERSION` | Python version for diff suite (e.g. `3.13`). |
 | `--profile {dev,release}` | Build profile for Molt builds in diff suite. |
-| `--trusted / --no-trusted` | Disable capability checks. |
+| `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
 
 #### `molt bench`
 

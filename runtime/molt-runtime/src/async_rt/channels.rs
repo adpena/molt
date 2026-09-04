@@ -5,7 +5,8 @@ mod stream;
 mod websocket;
 
 pub(crate) use capabilities::{
-    capability_fix_hint, has_capability, is_trusted, raise_capability_denied,
+    capability_fix_hint, has_capability, is_trusted, operation_allowed, raise_capability_denied,
+    require_operation,
 };
 #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
 pub use channel::molt_chan_recv_blocking;
@@ -16,6 +17,7 @@ pub use channel::{
 pub use db::{molt_db_exec, molt_db_exec_obj, molt_db_query, molt_db_query_obj};
 #[cfg(molt_has_net_io)]
 pub use db::{molt_db_set_exec_hook, molt_db_set_query_hook};
+pub(crate) use molt_runtime_core::host_capabilities_generated::OperationId;
 pub use stream::*;
 pub(crate) use stream::{
     default_stream_max_queued_bytes, stream_close_local, stream_enqueue_bytes_blocking,

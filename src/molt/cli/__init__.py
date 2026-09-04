@@ -940,31 +940,14 @@ from molt.cli.compiler_metadata import (
     _git_rev,
     _rustc_version,
 )
-from molt.cli.capability_spec import (
-    CAPABILITY_PROFILES as CAPABILITY_PROFILES,
-    CAPABILITY_TOKEN_RE as CAPABILITY_TOKEN_RE,
-    CapabilityGrant as CapabilityGrant,
+from molt.capability_policy import (
     CapabilityInput,
-    CapabilityManifest,
-    CapabilitySpec as CapabilitySpec,
-    _allowed_capabilities_for_package,
-    _allowed_effects_for_package,
-    _coerce_effects_list as _coerce_effects_list,
-    _coerce_token_list as _coerce_token_list,
-    _dedupe_preserve_order,
-    _expand_capabilities as _expand_capabilities,
-    _format_capabilities_input,
-    _materialize_capabilities_arg,
-    _merge_optional_list as _merge_optional_list,
-    _parse_capabilities,
-    _parse_capabilities_spec,
-    _parse_capability_manifest_dict as _parse_capability_manifest_dict,
-    _parse_fs_block as _parse_fs_block,
-    _parse_package_grant as _parse_package_grant,
-    _parse_package_grants as _parse_package_grants,
-    _resolve_capability_manifest as _resolve_capability_manifest,
-    _split_tokens,
+    CapabilityInputResolution,
+    format_capability_input,
+    materialize_capability_input,
+    parse_capability_input,
 )
+from molt._host_capabilities_generated import MAXIMUM_BUILTIN_CAPABILITY_TIER
 from molt.cli.default_paths import (
     _default_home_str,
     _default_molt_bin,
@@ -1392,6 +1375,8 @@ def build(
         ),
     )
     env_updates: dict[str, str] = {}
+    if trusted:
+        env_updates["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     # --audit-log: propagate audit config via environment variables for the
     # build pipeline only. Several lower layers intentionally read os.environ as
     # the canonical build signal, so keep that custody but restore the caller's
@@ -1443,6 +1428,9 @@ def build(
                 capabilities=capabilities,
                 capability_manifest=capability_manifest,
                 require_signed_manifest=require_signed_manifest,
+                trusted=trusted,
+                audit_log=audit_log,
+                io_mode=io_mode,
                 respect_pythonpath=respect_pythonpath,
                 lib_paths=lib_paths or [],
                 python_version=python_version,

@@ -1250,7 +1250,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `molt run --timing examples/hello.py`: compile+run the native binary and emit build/run timing (no CPython fallback).
 - `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing (CPython required for baseline only).
 - `molt bench --script examples/hello.py`: run the bench harness on a custom script.
-- `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
+- `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: request the finite generated `full` capability tier; exact checks remain active.
 - Build cache determinism is now enforced by default in the CLI (`PYTHONHASHSEED=0`) to stabilize cache keys across invocations. Override with `MOLT_HASH_SEED=<value>` (set `MOLT_HASH_SEED=random` to opt out).
 - Lockfile verification (`uv lock --check`, `cargo metadata --locked`) is cached under `<CARGO_TARGET_DIR>/lock_checks/` when `CARGO_TARGET_DIR` is set (otherwise `target/lock_checks/`); remove those files when you need to force a full lock re-check.
 - Development profile routing: `--profile dev` maps to Cargo profile `dev-fast` by default (override with `MOLT_DEV_CARGO_PROFILE`; release uses `MOLT_RELEASE_CARGO_PROFILE`).
@@ -1413,7 +1413,7 @@ Molt uses a capability-based security model. Programs must have explicit capabil
 | `signal.*` | Signal handling | **Can affect process behavior** |
 | `thread.spawn` / `thread.shared` | Threading | **Concurrent access to shared state** |
 
-**`full` tier** (`MOLT_CAPABILITY_TIER=full` or `MOLT_TRUSTED=1`) — Adds network, process exec, database, FFI.
+**`full` tier** (`MOLT_CAPABILITY_TIER=full` or explicit `--trusted`) — Adds the finite generated network, process, database, and FFI grant set.
 
 | Capability | Description | Developer Notice |
 |-----------|-------------|-----------------|
@@ -1433,20 +1433,20 @@ Molt uses a capability-based security model. Programs must have explicit capabil
 ### Security Invariants
 - Capabilities are loaded **eagerly at runtime init**, before any user code runs
 - Environment writes from user code go to a **local mirror**, not `std::env::set_var`
-- A program **cannot escalate** its tier at runtime by modifying `MOLT_TRUSTED` or `MOLT_CAPABILITIES`
+- A program **cannot escalate** its resolved policy at runtime by modifying `MOLT_CAPABILITY_TIER` or `MOLT_CAPABILITIES`
 - `exec()`/`eval()`/`compile()` are **never supported** regardless of tier — Molt is AOT-only
 - Runtime monkeypatching and unrestricted reflection are **never supported** regardless of tier
 
 ### Environment Variables
 - `MOLT_CAPABILITY_TIER=safe|standard|full` — set capability tier (default: `standard`)
-- `MOLT_TRUSTED=1` — equivalent to `full` tier, grants everything
+- `MOLT_CAPABILITY_TIER=full` — selects the finite generated built-in grant set; it never bypasses unknown or future capabilities
 - `MOLT_CAPABILITIES=cap1,cap2,...` — additive individual capabilities on top of tier
-- `--trusted` flag on `molt run`/`molt build` — equivalent to `MOLT_TRUSTED=1`
+- `--trusted` flag on `molt run`/`molt build` — resolves the finite generated `full` tier into exact grants
 
 ### Error Messages
 When a capability is denied, the error includes a fix suggestion:
 ```
-PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full
+PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.connect or select MOLT_CAPABILITY_TIER=full
 ```
 
 ### Never Supported (by design, per Tier-0 constraints)
@@ -1458,7 +1458,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 ### Development Workflow
 - `molt run` defaults to `standard` tier — most dev workflows just work
 - `molt deploy --cloudflare` should use `safe` tier for edge security
-- `MOLT_TRUSTED=1` or `--trusted` for anything that needs network/exec
+- exact `MOLT_CAPABILITIES` grants, or the explicit finite `--trusted`/`full` tier for the complete built-in host surface
 - `MOLT_CAPABILITIES=net.connect,db.read` for fine-grained production control
 
 ## Binary Analysis & Debugging Tools (Available)

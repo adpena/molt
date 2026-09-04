@@ -9,7 +9,7 @@
 //! ABI: NaN-boxed u64 in/out.  Handle IDs are allocated from a monotonic
 //! counter and stored in thread-local maps to avoid cross-thread aliasing.
 
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::collections::HashMap;
@@ -25,24 +25,14 @@ use std::sync::{LazyLock, Mutex};
 // ── Availability guard ─────────────────────────────────────────────────────
 // All public functions are present on all platforms (WASM stubs raise OSError).
 
-/// Checks the "net" capability and emits an audit event. Returns `Err(bits)`
-/// with a PermissionError if the capability is denied.
+/// Checks one exact SSL/filesystem capability and emits an audit event.
 #[inline]
-fn require_net_capability(
+fn require_ssl_capability(
     _py: &crate::PyToken<'_>,
-    operation: &'static str,
+    operation: crate::OperationId,
     args: AuditArgs,
 ) -> Result<(), u64> {
-    let allowed = has_capability(_py, "net");
-    audit_capability_decision(operation, "net", args, allowed);
-    if !allowed {
-        return Err(raise_exception::<u64>(
-            _py,
-            "PermissionError",
-            "missing net capability for SSL operations",
-        ));
-    }
-    Ok(())
+    crate::require_operation(_py, operation, args)
 }
 
 // ── Constants (mirror CPython ssl module integer values) ──────────────────
@@ -183,10 +173,6 @@ fn ssl_runtime_profile_unavailable(_py: &PyToken<'_>) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.create_default_context", AuditArgs::None)
-        {
-            return err;
-        }
         let purpose = to_i64(obj_from_bits(purpose_bits)).unwrap_or(PURPOSE_SERVER_AUTH);
         let state = SslContextState::new_client(purpose);
         let id = next_id();
@@ -198,9 +184,6 @@ pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ssl_context_new(protocol_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.SSLContext", AuditArgs::None) {
-            return err;
-        }
         let protocol = to_i64(obj_from_bits(protocol_bits)).unwrap_or(PROTOCOL_TLS_CLIENT);
         let state = SslContextState::new_with_protocol(protocol);
         let id = next_id();
@@ -216,9 +199,9 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
     keyfile_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(
+        if let Err(err) = require_ssl_capability(
             _py,
-            "ssl.load_cert_chain",
+            crate::OperationId::SslLoadCertChain,
             string_obj_to_owned(obj_from_bits(certfile_bits))
                 .map(AuditArgs::Path)
                 .unwrap_or(AuditArgs::None),
@@ -258,9 +241,9 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
     cadata_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(
+        if let Err(err) = require_ssl_capability(
             _py,
-            "ssl.load_verify_locations",
+            crate::OperationId::SslLoadVerifyLocations,
             string_obj_to_owned(obj_from_bits(cafile_bits))
                 .map(AuditArgs::Path)
                 .unwrap_or(AuditArgs::None),
@@ -503,9 +486,14 @@ pub extern "C" fn molt_ssl_wrap_socket(
 ) -> u64 {
     use std::sync::Arc;
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(
+        let operation = if to_i64(obj_from_bits(server_side_bits)).unwrap_or(0) == 0 {
+            crate::OperationId::SslWrapClient
+        } else {
+            crate::OperationId::SslWrapServer
+        };
+        if let Err(err) = require_ssl_capability(
             _py,
-            "ssl.wrap_socket",
+            operation,
             string_obj_to_owned(obj_from_bits(server_hostname_bits))
                 .map(|h| AuditArgs::Network { host: h, port: 0 })
                 .unwrap_or(AuditArgs::None),
@@ -805,9 +793,14 @@ pub extern "C" fn molt_ssl_wrap_socket(
     _server_side_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(
+        let operation = if to_i64(obj_from_bits(_server_side_bits)).unwrap_or(0) == 0 {
+            crate::OperationId::SslWrapClient
+        } else {
+            crate::OperationId::SslWrapServer
+        };
+        if let Err(err) = require_ssl_capability(
             _py,
-            "ssl.wrap_socket",
+            operation,
             string_obj_to_owned(obj_from_bits(_server_hostname_bits))
                 .map(|h| AuditArgs::Network { host: h, port: 0 })
                 .unwrap_or(AuditArgs::None),
@@ -833,15 +826,25 @@ pub extern "C" fn molt_ssl_wrap_socket(
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.do_handshake", AuditArgs::None) {
-            return err;
-        }
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
+        let operation = {
+            let map = SOCK_REGISTRY.lock().unwrap();
+            let Some(state) = map.get(&id) else {
+                return raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle");
+            };
+            match state.inner {
+                SslSocketInner::Client(_) => crate::OperationId::SslHandshakeClient,
+                SslSocketInner::Server(_) => crate::OperationId::SslHandshakeServer,
+            }
+        };
+        if let Err(err) = require_ssl_capability(_py, operation, AuditArgs::None) {
+            return err;
+        }
         let result = (|| -> Result<(), String> {
             let mut map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
@@ -902,7 +905,9 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.do_handshake", AuditArgs::None) {
+        if let Err(err) =
+            require_ssl_capability(_py, crate::OperationId::SslHandshakeClient, AuditArgs::None)
+        {
             return err;
         }
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
@@ -919,7 +924,8 @@ pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.read", AuditArgs::None) {
+        if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslRead, AuditArgs::None)
+        {
             return err;
         }
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -957,7 +963,8 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.read", AuditArgs::None) {
+        if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslRead, AuditArgs::None)
+        {
             return err;
         }
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
@@ -974,7 +981,8 @@ pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.write", AuditArgs::None) {
+        if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslWrite, AuditArgs::None)
+        {
             return err;
         }
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -1029,7 +1037,8 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.write", AuditArgs::None) {
+        if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslWrite, AuditArgs::None)
+        {
             return err;
         }
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")

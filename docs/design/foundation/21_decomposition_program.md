@@ -181,7 +181,7 @@ core (`molt-runtime`, `molt-backend`, `molt-runtime-core`) + 18 runtime satellit
 (`-http`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`,
 `-itertools`, `-serial`, `-difflib`, `-logging`, `-crypto`, `-compression`, `-stringprep`,
 `-xml`, `-ipaddress`, `-zoneinfo`) + capability crates (`molt-gpu`, `molt-ffi`, `molt-db`,
-`molt-embed`, `molt-python`, `molt-snapshot`, `molt-tier`, `molt-harness`, `molt-worker`,
+`molt-embed`, `molt-python`, `molt-snapshot`, `molt-harness`, `molt-worker`,
 `molt-wasm-host`, `molt-obj-model`, `molt-cpython-abi`, `molt-backend-mlir`). **The satellite
 pattern is proven; the backend is the conspicuous monolith.**
 

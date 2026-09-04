@@ -161,7 +161,7 @@ def test_cross_backend_build_command_binds_target_python(
         target_python=TargetPythonVersion(3, int(target_python.split(".")[1]), 0),
         build_profile="release",
         capabilities="fs.read",
-        environment={"MOLT_TRUSTED": "0"},
+        environment={"MOLT_CAPABILITY_TIER": "none"},
     )
 
     command = compat_backends._build_cmd(
@@ -307,7 +307,7 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
         "# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound\nprint(42)\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("MOLT_TRUSTED", "1")
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")
     monkeypatch.delenv("MOLT_DIFF_TRUSTED", raising=False)
     registry, native_contexts = install_fake_registry(
@@ -330,7 +330,7 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     assert native_contexts[0].target_python.short == (
         f"{sys.version_info.major}.{sys.version_info.minor}"
     )
-    assert native_contexts[0].environment["MOLT_TRUSTED"] == "0"
+    assert native_contexts[0].environment["MOLT_CAPABILITY_TIER"] == "none"
     assert native_contexts[0].capabilities == "net.listen,net.outbound"
     assert "poison.inherited" not in native_contexts[0].capabilities
 

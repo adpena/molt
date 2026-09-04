@@ -1,5 +1,9 @@
 # Monty Integration: Resource Controls, Guardrails & Tiered Execution Design
 
+**Status:** historical design exploration. Current authority and sequencing live
+in `docs/ROADMAP_MONTY_BUFFA_INTEGRATION.md`; conflicting file names, schemas,
+defaults, and completion claims below are archival context, not instructions.
+
 ## Goal
 
 Enhance Molt with Monty-inspired resource controls, audit infrastructure, pre-emptive
@@ -288,16 +292,12 @@ sink = "structured_log"    # structured_log | null | buffered | wasm_host
 output = "stderr"          # stderr | stdout | file path
 format = "jsonl"           # jsonl | compact
 
-# NEW: Monty compatibility section — for tiered execution
-[monty]
-compatible = true
-shared_stubs = "stubs/"    # type stub directory for both Monty and Molt
-execution_tier = "auto"    # auto | interpret | compile
-tier_up_threshold = 100    # call count before AOT compilation
+# Tier selection and shared-stub location intentionally live outside this
+# permission manifest in a future typed execution-plan authority.
 ```
 
 **Migration:** The existing JSON format continues to work. The new TOML format
-is preferred and adds resource + audit + Monty sections. A `molt migrate-manifest`
+is preferred and adds resource and audit sections. A `molt migrate-manifest`
 command converts JSON → TOML.
 
 ### B2. Snapshot/Resume via WASM Asyncify

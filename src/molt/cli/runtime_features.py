@@ -8,7 +8,6 @@ from typing import Collection
 from molt._runtime_feature_gates import (
     link_affecting_features_unsupported_on_target,
 )
-from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
@@ -280,9 +279,8 @@ def runtime_fingerprint_features_for_profile(
     extra_runtime_features: Collection[str] | None = None,
 ) -> tuple[str, ...]:
     runtime_features = tuple(
-        _dedupe_preserve_order(
-            list(_runtime_cargo_features(target_triple))
-            + list(extra_runtime_features or ())
+        dict.fromkeys(
+            [*_runtime_cargo_features(target_triple), *(extra_runtime_features or ())]
         )
     )
     builtin_features = _runtime_builtin_features_for_profile(
@@ -293,15 +291,18 @@ def runtime_fingerprint_features_for_profile(
     concrete_stdlib_feature = runtime_cargo_feature_for_profile(concrete_stdlib_profile)
     if concrete_stdlib_profile == "full":
         return tuple(
-            _dedupe_preserve_order(
-                list(runtime_features) + [concrete_stdlib_feature, "default-features"]
+            dict.fromkeys(
+                [*runtime_features, concrete_stdlib_feature, "default-features"]
             )
         )
     return tuple(
-        _dedupe_preserve_order(
-            list(runtime_features)
-            + sorted(builtin_features)
-            + [concrete_stdlib_feature, "no-default-features"]
+        dict.fromkeys(
+            [
+                *runtime_features,
+                *sorted(builtin_features),
+                concrete_stdlib_feature,
+                "no-default-features",
+            ]
         )
     )
 
@@ -341,12 +342,12 @@ def _wasm_runtime_feature_plan(
     if effective_profile == "micro":
         profile_features.append("stdlib_micro")
     cargo_features = tuple(
-        _dedupe_preserve_order(
-            list(runtime_features) + profile_features + required_features + gpu_features
+        dict.fromkeys(
+            [*runtime_features, *profile_features, *required_features, *gpu_features]
         )
     )
     fingerprint_features = tuple(
-        _dedupe_preserve_order(list(cargo_features) + ["no-default-features"])
+        dict.fromkeys([*cargo_features, "no-default-features"])
     )
     return True, cargo_features, fingerprint_features
 

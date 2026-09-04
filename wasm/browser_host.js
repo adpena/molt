@@ -6,6 +6,7 @@ import {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
+import { EXPLICIT_CAPABILITY_TIER } from './host_capabilities_generated.js';
 
 const ENOSYS = 38;
 const EINVAL = 22;
@@ -2817,7 +2818,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     typeof process.env.MOLT_CAPABILITY_TIER === 'string' &&
     process.env.MOLT_CAPABILITY_TIER
       ? process.env.MOLT_CAPABILITY_TIER
-      : 'full';
+      : EXPLICIT_CAPABILITY_TIER;
   wasiEnvMap.set('MOLT_CAPABILITY_TIER', capabilityTier);
   if (Number.isFinite(state.wasmTableBase) && state.wasmTableBase > 0) {
     wasiEnvMap.set('MOLT_WASM_TABLE_BASE', String(state.wasmTableBase));
@@ -2830,6 +2831,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       wasiEnvMap.set(key, String(value));
     }
   }
+  wasiEnvMap.set('MOLT_EXECUTION_TARGET', 'browser');
   const wasiEnvEntries = Array.from(wasiEnvMap.entries(), ([key, value]) => `${key}=${value}`);
   const wasiEnvBytes = wasiEnvEntries.map((entry) => UTF8_ENCODER.encode(`${entry}\0`));
   if (traceBrowserWasi) {

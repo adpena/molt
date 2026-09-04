@@ -13,6 +13,7 @@ structured `AuditEvent` that records:
 - Operation-specific arguments (path, host/port, env key, query hash)
 - The resulting decision (allowed, denied, resource exceeded)
 - The Python module that triggered the check
+- The canonical `sha256:<64hex>` digest of the resolved runtime policy
 - A nanosecond-precision timestamp
 
 By default, audit logging is disabled via `NullSink` (zero runtime overhead).
@@ -22,14 +23,16 @@ Enable it through the capability manifest or CLI flags.
 
 ```rust
 pub trait AuditSink: Send + Sync {
-    fn emit(&self, event: &AuditEvent);
-    fn flush(&self) {}
+    fn emit(&self, event: &AuditEvent) -> std::io::Result<()>;
+    fn flush(&self) -> std::io::Result<()> { Ok(()) }
 }
 ```
 
 Sinks must be `Send + Sync` for cross-thread sharing. The thread-local sink is
-set during initialization via `set_audit_sink`. Implementations should keep
-`emit` cheap; expensive work should be batched or deferred.
+set during initialization together with the process-wide sink inherited by new
+threads. Implementations should keep `emit` cheap; expensive work should be
+batched or deferred. A configured sink's lock, write, or flush failure is fatal:
+the runtime fails closed instead of losing a security record silently.
 
 ## Built-in Sinks
 
@@ -38,7 +41,7 @@ set during initialization via `set_audit_sink`. Implementations should keep
 | `NullSink` | No-op, zero overhead | Default when audit is disabled |
 | `StderrSink` | Compact human-readable lines to stderr | Local debugging |
 | `JsonLinesSink<W>` | One JSON object per line to any `Write` | Log aggregation, compliance |
-| `BufferedSink` | Collects events in memory | Testing, batch export |
+| `BufferedSink` | Collects events in memory | Internal testing and embedder-owned batch export |
 
 ### NullSink
 
@@ -84,6 +87,7 @@ Each JSON Lines event has the following structure:
 | `args` | `object` | Operation-specific arguments (see below) |
 | `decision` | `object` | Outcome of the check (see below) |
 | `module` | `string` | Python module that triggered the check |
+| `capability_policy_digest` | `string \| null` | Canonical resolved-policy digest; null only for explicitly unsealed embedder lifecycles |
 
 ### Args Variants
 
@@ -131,14 +135,14 @@ Enable audit logging in `molt.capabilities.toml`:
 ```toml
 [audit]
 enabled = true
-sink = "jsonl"      # "null" | "stderr" | "jsonl" | "buffered"
-output = "stderr"   # Output destination for jsonl sink
+sink = "jsonl"      # "null" | "stderr" | "jsonl"
+output = "stderr"   # "stderr" | "stdout" | a project-confined file path
 ```
 
 Or via CLI:
 
 ```bash
-molt run --audit --audit-sink jsonl worker.py
+molt run --audit-log jsonl:stderr worker.py
 ```
 
 ## Example: Enabling Audit Logging for Compliance
@@ -166,8 +170,10 @@ Build and deploy:
 molt build --capability-manifest molt.capabilities.toml app.py
 ```
 
-At runtime, every capability-gated operation emits a JSON line to stderr. Route
-stderr to your log aggregator (Datadog, Splunk, CloudWatch) for retention and
+At runtime, every capability-gated operation emits a JSON line to the configured
+destination. File destinations are opened once in append mode; open, write,
+lock, and flush errors terminate execution rather than degrading to a null sink.
+Route stderr or the selected file to your log aggregator for retention and
 alerting.
 
 Sample output:
@@ -186,6 +192,6 @@ compatibility with JSON Lines parsers.
 
 ## Source Files
 
-- Trait + sinks + macro: `runtime/molt-runtime/src/audit.rs`
-- Capability integration: `runtime/molt-runtime/src/vfs/caps.rs`
-- Manifest configuration: `molt.capabilities.toml`
+- Trait + sinks + macro: `runtime/molt-runtime-audit/src/lib.rs`
+- Runtime initialization: `runtime/molt-runtime/src/object/ops_sys.rs`
+- Manifest configuration: `src/molt/capability_manifest.py`

@@ -5,19 +5,13 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 import os as _os
 
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
 class _CapabilitiesProxy:
     __slots__ = ()
 
-    def trusted(self) -> bool:
-        return bool(_MOLT_CAPABILITIES_TRUSTED())
-
     def require(self, name: str) -> None:
-        if self.trusted():
-            return
         _MOLT_CAPABILITIES_REQUIRE(name)
 
 

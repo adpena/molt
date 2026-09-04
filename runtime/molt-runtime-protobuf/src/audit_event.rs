@@ -6,6 +6,7 @@
 //!   3: capability (string)
 //!   4: decision (uint64, 0=Allowed, 1=Denied, 2=ResourceExceeded)
 //!   5: module (string)
+//!   6: capability_policy_digest (optional string)
 
 use crate::decode::{MessageDecodeError, decode_message};
 use crate::encode::{FieldValue, encode_message};
@@ -51,6 +52,13 @@ pub fn audit_event_schema() -> MessageSchema {
                 repeated: false,
                 optional: false,
             },
+            FieldDef {
+                number: 6,
+                name: "capability_policy_digest".into(),
+                wire_type: WireType::LengthDelimited,
+                repeated: false,
+                optional: true,
+            },
         ],
     }
 }
@@ -68,6 +76,8 @@ pub struct DecodedAuditEvent {
     pub decision: u64,
     /// Name of the Python module that triggered the event.
     pub module_name: String,
+    /// Digest of the complete resolved capability policy when sealed by the host.
+    pub capability_policy_digest: Option<String>,
 }
 
 /// Encode an `AuditEvent` to protobuf wire format.
@@ -77,6 +87,7 @@ pub fn encode_audit_event(
     capability: &str,
     decision: u64,
     module_name: &str,
+    capability_policy_digest: Option<&str>,
 ) -> Vec<u8> {
     let schema = audit_event_schema();
     let values = vec![
@@ -85,6 +96,12 @@ pub fn encode_audit_event(
         FieldValue::Bytes(capability.as_bytes().to_vec()),
         FieldValue::Uint64(decision),
         FieldValue::Bytes(module_name.as_bytes().to_vec()),
+        FieldValue::Bytes(
+            capability_policy_digest
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec(),
+        ),
     ];
     encode_message(&schema, &values)
         .expect("encode_audit_event: schema and values are always in sync")
@@ -95,7 +112,8 @@ pub fn decode_audit_event(data: &[u8]) -> Result<DecodedAuditEvent, MessageDecod
     let schema = audit_event_schema();
     let values = decode_message(&schema, data)?;
 
-    // values is in schema field order: [timestamp_ns, operation, capability, decision, module]
+    // values is in schema field order: timestamp, operation, capability,
+    // decision, module, optional policy digest.
     let timestamp_ns = match &values[0] {
         FieldValue::Uint64(v) => *v,
         _ => 0,
@@ -116,6 +134,12 @@ pub fn decode_audit_event(data: &[u8]) -> Result<DecodedAuditEvent, MessageDecod
         FieldValue::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
         _ => String::new(),
     };
+    let capability_policy_digest = match &values[5] {
+        FieldValue::Bytes(bytes) if !bytes.is_empty() => {
+            Some(String::from_utf8_lossy(bytes).into_owned())
+        }
+        _ => None,
+    };
 
     Ok(DecodedAuditEvent {
         timestamp_ns,
@@ -123,5 +147,6 @@ pub fn decode_audit_event(data: &[u8]) -> Result<DecodedAuditEvent, MessageDecod
         capability,
         decision,
         module_name,
+        capability_policy_digest,
     })
 }

@@ -44,42 +44,46 @@ def test_parse_audit_log_flag_accepts_all_valid_sinks():
 
 
 def test_build_slot_dir_defaults_to_repo_tmp(monkeypatch, tmp_path: Path):
-    from molt import cli
+    from molt.cli import cargo_execution
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
+    for name in ("MOLT_DIFF_TMPDIR", "TMPDIR", "TMP", "TEMP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cargo_execution, "_find_molt_root", lambda _cwd: tmp_path)
 
-    assert cli._build_slot_dir() == tmp_path / "tmp" / "molt-build-slots"
+    assert cargo_execution._build_slot_dir() == tmp_path / "tmp" / "molt-build-slots"
 
 
 def test_build_slot_dir_prefers_ext_root(monkeypatch, tmp_path: Path):
-    from molt import cli
+    from molt.cli import cargo_execution
 
     ext_root = tmp_path / "external"
+    for name in ("MOLT_DIFF_TMPDIR", "TMPDIR", "TMP", "TEMP"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
 
-    assert cli._build_slot_dir() == ext_root / "tmp" / "molt-build-slots"
+    assert cargo_execution._build_slot_dir() == ext_root / "tmp" / "molt-build-slots"
 
 
 def test_build_slot_acquires_cross_platform_lock(monkeypatch, tmp_path: Path):
-    from molt import cli
+    from molt.cli import cargo_execution
 
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "tmp"))
     monkeypatch.setenv("MOLT_MAX_CONCURRENT_BUILDS", "1")
 
-    with cli._build_slot() as slot:
+    with cargo_execution._build_slot() as slot:
         assert slot == 0
         assert (tmp_path / "tmp" / "molt-build-slots" / "slot-0.lock").exists()
 
 
 def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path):
-    from molt import cli
+    from molt.cli import build_locks
 
     state_root = tmp_path / "state"
-    monkeypatch.setattr(cli, "_build_state_root", lambda _project_root: state_root)
+    monkeypatch.setattr(build_locks, "_build_state_root", lambda _project_root: state_root)
     monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
 
-    with cli._build_lock(tmp_path, "unit"):
+    with build_locks._build_lock(tmp_path, "unit"):
         assert (state_root / "build_locks" / "unit.lock").exists()
 
 

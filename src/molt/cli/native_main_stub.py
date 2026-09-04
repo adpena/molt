@@ -4,46 +4,46 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from molt.capability_manifest import ResolvedRuntimePolicy
+
 
 def _native_main_stub_snippets(
     *,
-    trusted: bool,
-    capabilities_list: Sequence[str] | None,
-) -> tuple[str, str, str, str, str, str]:
-    trusted_snippet = ""
-    trusted_call = ""
-    if trusted:
-        trusted_snippet = """
-static void molt_set_trusted() {
+    resolved_capability_policy: ResolvedRuntimePolicy,
+) -> tuple[str, str, str, str]:
+    runtime_environment = {
+        **resolved_capability_policy.to_env_vars(),
+        "MOLT_EXECUTION_TARGET": "native",
+    }
+    windows_updates = "\n".join(
+        f"    if (_putenv_s({json.dumps(key)}, {json.dumps(value)}) != 0) "
+        "molt_capability_policy_env_failure();"
+        for key, value in sorted(runtime_environment.items())
+    )
+    posix_updates = "\n".join(
+        f"    if (setenv({json.dumps(key)}, {json.dumps(value)}, 1) != 0) "
+        "molt_capability_policy_env_failure();"
+        for key, value in sorted(runtime_environment.items())
+    )
+    policy_snippet = f"""
+static void molt_capability_policy_env_failure() {{
+    fprintf(stderr, "molt: failed to install resolved capability policy\\n");
+    _Exit(125);
+}}
+
+static void molt_set_capability_policy() {{
 #ifdef _WIN32
-    _putenv_s("MOLT_TRUSTED", "1");
+{windows_updates}
 #else
-    setenv("MOLT_TRUSTED", "1", 1);
-#endif
-}
-"""
-        trusted_call = "    molt_set_trusted();\n"
-    capabilities_snippet = ""
-    capabilities_call = ""
-    if capabilities_list is not None:
-        caps_literal = json.dumps(",".join(capabilities_list))
-        capabilities_snippet = f"""
-static void molt_set_capabilities() {{
-#ifdef _WIN32
-    _putenv_s("MOLT_CAPABILITIES", {caps_literal});
-#else
-    setenv("MOLT_CAPABILITIES", {caps_literal}, 1);
+{posix_updates}
 #endif
 }}
 """
-        capabilities_call = "    molt_set_capabilities();\n"
     module_roots_snippet = ""
     module_roots_call = ""
     return (
-        trusted_snippet,
-        trusted_call,
-        capabilities_snippet,
-        capabilities_call,
+        policy_snippet,
+        "    molt_set_capability_policy();\n",
         module_roots_snippet,
         module_roots_call,
     )
@@ -51,23 +51,19 @@ static void molt_set_capabilities() {{
 
 def _render_native_main_stub(
     *,
-    trusted: bool,
-    capabilities_list: Sequence[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
     runtime_module_roots_literals = tuple(
         json.dumps(str(path.resolve())) for path in dict.fromkeys(runtime_module_roots)
     )
     (
-        trusted_snippet,
-        trusted_call,
-        capabilities_snippet,
-        capabilities_call,
+        capability_policy_snippet,
+        capability_policy_call,
         module_roots_snippet,
         module_roots_call,
     ) = _native_main_stub_snippets(
-        trusted=trusted,
-        capabilities_list=capabilities_list,
+        resolved_capability_policy=resolved_capability_policy,
     )
     if runtime_module_roots_literals:
         roots_array = ", ".join(runtime_module_roots_literals)
@@ -223,8 +219,7 @@ extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_p
  * resolution and molt_module_ensure are in place before any import runs. */
 extern const unsigned char molt_module_registry_blob[];
 extern unsigned long long molt_module_registry_install(const unsigned char* blob);
-/* MOLT_TRUSTED_SNIPPET */
-/* MOLT_CAPABILITIES_SNIPPET */
+/* MOLT_CAPABILITY_POLICY_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
 
 static int molt_finish() {
@@ -246,8 +241,7 @@ static int molt_finish() {
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
-    /* MOLT_TRUSTED_CALL */
-    /* MOLT_CAPABILITIES_CALL */
+    /* MOLT_CAPABILITY_POLICY_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_module_registry_install(molt_module_registry_blob);
@@ -259,8 +253,7 @@ int wmain(int argc, wchar_t** argv) {
 }
 #else
 int main(int argc, char** argv) {
-    /* MOLT_TRUSTED_CALL */
-    /* MOLT_CAPABILITIES_CALL */
+    /* MOLT_CAPABILITY_POLICY_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_module_registry_install(molt_module_registry_blob);
@@ -273,17 +266,13 @@ int main(int argc, char** argv) {
 #endif
 """
     main_c_content = main_c_content.replace(
-        "/* MOLT_TRUSTED_SNIPPET */", trusted_snippet
-    )
-    main_c_content = main_c_content.replace(
-        "/* MOLT_CAPABILITIES_SNIPPET */", capabilities_snippet
+        "/* MOLT_CAPABILITY_POLICY_SNIPPET */", capability_policy_snippet
     )
     main_c_content = main_c_content.replace(
         "/* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */", module_roots_snippet
     )
-    main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
     main_c_content = main_c_content.replace(
-        "/* MOLT_CAPABILITIES_CALL */", capabilities_call
+        "/* MOLT_CAPABILITY_POLICY_CALL */", capability_policy_call
     )
     main_c_content = main_c_content.replace(
         "/* MOLT_RUNTIME_MODULE_ROOTS_CALL */", module_roots_call

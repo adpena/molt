@@ -101,9 +101,7 @@ fn bytes_like_obj_to_vec(obj: MoltObject) -> Option<Vec<u8>> {
 pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
-                .is_err()
-            {
+            if require_net_capability::<u64>(_py, crate::OperationId::NetSocketpair).is_err() {
                 return MoltObject::none().bits();
             }
             let family = if obj_from_bits(family_bits).is_none() {
@@ -240,9 +238,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
-            .is_err()
-        {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetSocketpair).is_err() {
             return MoltObject::none().bits();
         }
         let family = if obj_from_bits(_family_bits).is_none() {
@@ -322,9 +318,7 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            if require_net_capability::<u64>(_py, &["net", "net.connect", "net.bind", "net"])
-                .is_err()
-            {
+            if require_net_capability::<u64>(_py, crate::OperationId::NetResolve).is_err() {
                 return MoltObject::none().bits();
             }
             let host = match host_from_bits(_py, host_bits) {
@@ -448,7 +442,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
     _flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.connect", "net.bind", "net"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetResolve).is_err() {
             return MoltObject::none().bits();
         }
         let host = match host_from_bits(_py, _host_bits) {

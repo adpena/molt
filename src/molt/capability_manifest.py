@@ -5,7 +5,7 @@ Parses and validates capability manifests that unify:
   - Resource limits (memory, duration, allocations, operation guards)
   - IO mode (real, virtual with VFS mounts, callback)
   - Audit configuration (sink type, output destination)
-  - Monty interoperability (tiered execution, shared stubs)
+  - Deterministic host-policy propagation and integrity
 
 Usage::
 
@@ -19,61 +19,33 @@ import hashlib
 import json
 import re
 import sys
+import tomllib
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional, Union, cast
+from typing import Any, Literal, Mapping, Optional, Union, cast
 
-# tomllib is stdlib in 3.11+; fall back to tomli for 3.10.
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError as exc:
-        raise ImportError(
-            "Python < 3.11 requires the 'tomli' package: pip install tomli"
-        ) from exc
-
-
-# ---------------------------------------------------------------------------
-# Known capability tokens -- canonical registry
-# ---------------------------------------------------------------------------
-
-KNOWN_CAPABILITIES: frozenset[str] = frozenset(
-    {
-        "net",
-        "websocket.connect",
-        "websocket.listen",
-        "fs.read",
-        "fs.write",
-        "env.read",
-        "env.write",
-        "db.read",
-        "db.write",
-        "time.wall",
-        "time",
-        "random",
-    }
+from molt.capability_policy import (
+    CapabilityPolicy,
+    CapabilityResolution,
+    PackageCapabilities,
+    expand_capabilities,
+    merge_capability_policies,
+    parse_capability_policy,
+    resolve_capability_policy,
+)
+from molt._host_capabilities_generated import (
+    DEFAULT_CAPABILITY_TIER,
+    EXPLICIT_CAPABILITY_TIER,
+    capabilities_for_tier,
 )
 
-# Built-in profiles that expand to multiple capabilities.
-CAPABILITY_PROFILES: dict[str, list[str]] = {
-    "core": [],
-    "fs": ["fs.read", "fs.write"],
-    "env": ["env.read", "env.write"],
-    "net": ["net", "websocket.connect", "websocket.listen"],
-    "db": ["db.read", "db.write"],
-    "time": ["time"],
-    "random": ["random"],
-}
-
-KNOWN_EFFECTS: frozenset[str] = frozenset({"nondet", "io", "network", "fs"})
-
 VALID_IO_MODES: frozenset[str] = frozenset({"real", "virtual", "callback"})
-VALID_AUDIT_SINKS: frozenset[str] = frozenset({"null", "stderr", "jsonl", "buffered"})
-VALID_EXECUTION_TIERS: frozenset[str] = frozenset({"auto", "interpret", "compile"})
+VALID_AUDIT_SINKS: frozenset[str] = frozenset({"null", "stderr", "jsonl"})
+VALID_AUDIT_OUTPUTS: frozenset[str] = frozenset({"stderr", "stdout", "null"})
 VALID_MOUNT_TYPES: frozenset[str] = frozenset({"memory", "readonly", "readwrite"})
+AuditSink = Literal["null", "stderr", "jsonl"]
+IoMode = Literal["real", "virtual", "callback"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +147,7 @@ class AuditConfig:
     """Audit trail configuration."""
 
     enabled: bool = False
-    sink: Literal["null", "stderr", "jsonl", "buffered"] = "null"
+    sink: AuditSink = "null"
     output: str = "stderr"
 
 
@@ -183,100 +155,211 @@ class AuditConfig:
 class IoConfig:
     """IO mode and virtual filesystem mounts."""
 
-    mode: Literal["real", "virtual", "callback"] = "real"
+    mode: IoMode = "real"
     virtual_mounts: list[VirtualMount] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ResolvedVirtualMount:
+    """Immutable mount authority carried by a resolved runtime policy."""
+
+    path: str
+    type: str
+    max_size: int | None
+    source: str | None
+
+
+@dataclass(frozen=True)
+class ResolvedRuntimePolicy:
+    """Immutable execution policy shared by caches, artifacts, and runtimes."""
+
+    grants: CapabilityResolution
+    tier: str
+    max_memory: int | None
+    max_duration_ms: int | None
+    max_allocations: int | None
+    max_recursion_depth: int | None
+    operation_limits: tuple[tuple[str, int | None], ...]
+    audit_enabled: bool
+    audit_sink: str
+    audit_output: str
+    io_mode: str
+    mounts: tuple[ResolvedVirtualMount, ...]
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "schema": "molt.resolved-runtime-policy.v1",
+            "tier": self.tier,
+            "grants": self.grants.canonical_payload(),
+            "resources": {
+                "max_memory": self.max_memory,
+                "max_duration_ms": self.max_duration_ms,
+                "max_allocations": self.max_allocations,
+                "max_recursion_depth": self.max_recursion_depth,
+                "operation_limits": dict(self.operation_limits),
+            },
+            "audit": {
+                "enabled": self.audit_enabled,
+                "sink": self.audit_sink,
+                "output": self.audit_output,
+            },
+            "io": {
+                "mode": self.io_mode,
+                "mounts": [
+                    {
+                        "path": mount.path,
+                        "type": mount.type,
+                        "max_size": mount.max_size,
+                        "source": mount.source,
+                    }
+                    for mount in self.mounts
+                ],
+            },
+        }
+
+    def digest(self) -> str:
+        payload = json.dumps(
+            self.canonical_payload(),
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+    def to_env_vars(self) -> dict[str, str]:
+        env = {
+            "MOLT_CAPABILITIES": ",".join(sorted(self.grants.capabilities)),
+            "MOLT_CAPABILITY_TIER": self.tier,
+            "MOLT_CAPABILITY_POLICY_DIGEST": self.digest(),
+        }
+        for value, env_name in (
+            (self.max_memory, "MOLT_RESOURCE_MAX_MEMORY"),
+            (self.max_duration_ms, "MOLT_RESOURCE_MAX_DURATION_MS"),
+            (self.max_allocations, "MOLT_RESOURCE_MAX_ALLOCATIONS"),
+            (self.max_recursion_depth, "MOLT_RESOURCE_MAX_RECURSION_DEPTH"),
+        ):
+            if value is not None:
+                env[env_name] = str(value)
+        for field_name, value in self.operation_limits:
+            if value is not None:
+                env[f"MOLT_RESOURCE_{field_name.upper()}"] = str(value)
+        if self.audit_enabled:
+            env["MOLT_AUDIT_ENABLED"] = "1"
+            env["MOLT_AUDIT_SINK"] = self.audit_sink
+            env["MOLT_AUDIT_OUTPUT"] = self.audit_output
+        if self.io_mode != "real":
+            env["MOLT_IO_MODE"] = self.io_mode
+        return env
+
+
 @dataclass
-class PackageCapabilities:
-    """Per-package capability scoping."""
-
-    name: str
-    allow: list[str] = field(default_factory=list)
-    deny: list[str] = field(default_factory=list)
-    effects: list[str] = field(default_factory=list)
-
-
-@dataclass
-class MontyConfig:
-    """Monty interoperability settings for tiered execution."""
-
-    compatible: bool = False
-    shared_stubs: Optional[str] = None
-    execution_tier: Literal["auto", "interpret", "compile"] = "auto"
-    tier_up_threshold: int = 100
-
-
-@dataclass
-class CapabilityManifest:
+class CapabilityManifest(CapabilityPolicy):
     """Complete parsed and validated capability manifest."""
 
     version: str = "2.0"
     description: str = ""
-    # Capabilities
-    allow: list[str] = field(default_factory=list)
-    deny: list[str] = field(default_factory=list)
-    effects: list[str] = field(default_factory=list)
-    packages: dict[str, PackageCapabilities] = field(default_factory=dict)
     # Sub-configs
     resources: ResourceLimits = field(default_factory=ResourceLimits)
     audit: AuditConfig = field(default_factory=AuditConfig)
     io: IoConfig = field(default_factory=IoConfig)
-    monty: MontyConfig = field(default_factory=MontyConfig)
     signature: Optional[str] = None
 
     def expanded_allow(self) -> set[str]:
         """Return the full set of allowed capabilities after profile expansion."""
-        result: set[str] = set()
-        for cap in self.allow:
-            if cap in CAPABILITY_PROFILES:
-                result.update(CAPABILITY_PROFILES[cap])
-            else:
-                result.add(cap)
-        return result
+        expanded, _profiles = expand_capabilities(self.allow or ())
+        return set(expanded)
 
     def effective_capabilities(self) -> set[str]:
         """Return allowed minus denied capabilities."""
-        return self.expanded_allow() - set(self.deny)
+        return set(resolve_capability_policy(self).capabilities)
 
-    def to_env_vars(self) -> dict[str, str]:
-        """Convert manifest to environment variables for runtime propagation."""
+    def resolve(
+        self,
+        policy: CapabilityPolicy | None = None,
+        *,
+        tier: str = EXPLICIT_CAPABILITY_TIER,
+    ) -> ResolvedRuntimePolicy:
+        """Resolve the complete manifest envelope into immutable runtime state."""
+
         validate_manifest(self)
-        env: dict[str, str] = {}
-        effective = sorted(self.effective_capabilities())
-        env["MOLT_CAPABILITIES"] = ",".join(effective)
-        if self.resources.max_memory is not None:
-            env["MOLT_RESOURCE_MAX_MEMORY"] = str(self.resources.max_memory)
-        if self.resources.max_duration is not None:
-            env["MOLT_RESOURCE_MAX_DURATION_MS"] = str(
-                int(self.resources.max_duration * 1000)
+        tier_grants = capabilities_for_tier(tier)
+        if tier_grants is None:
+            raise ManifestError(f"unknown capability tier {tier!r}")
+        selected_policy = self if policy is None else policy
+        combined_policy = merge_capability_policies(
+            CapabilityPolicy(allow=list(tier_grants)), selected_policy
+        )
+        assert combined_policy is not None
+        grants = resolve_capability_policy(combined_policy)
+        if grants.errors:
+            raise ManifestError("; ".join(grants.errors))
+        mounts = tuple(
+            ResolvedVirtualMount(
+                path=mount.path,
+                type=mount.type,
+                max_size=mount.max_size,
+                source=mount.source,
             )
-        if self.resources.max_allocations is not None:
-            env["MOLT_RESOURCE_MAX_ALLOCATIONS"] = str(self.resources.max_allocations)
-        if self.resources.max_recursion_depth is not None:
-            env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] = str(
-                self.resources.max_recursion_depth
+            for mount in sorted(
+                self.io.virtual_mounts,
+                key=lambda item: (
+                    item.path,
+                    item.type,
+                    item.source or "",
+                    item.max_size if item.max_size is not None else -1,
+                ),
             )
-        # Per-operation result caps. These mirror the Rust ResourceLimits
-        # per-op fields one-for-one so a manifest-declared operation limit is
-        # NOT silently dropped at the env boundary (the asymmetry the runtime's
-        # single-source-of-truth ResourceLimits closes).
-        for field_name, env_name in (
-            ("max_pow_result", "MOLT_RESOURCE_MAX_POW_RESULT"),
-            ("max_repeat_result", "MOLT_RESOURCE_MAX_REPEAT_RESULT"),
-            ("max_shift_result", "MOLT_RESOURCE_MAX_SHIFT_RESULT"),
-            ("max_string_result", "MOLT_RESOURCE_MAX_STRING_RESULT"),
-        ):
-            value = getattr(self.resources, field_name)
-            if value is not None:
-                env[env_name] = str(value)
-        if self.audit.enabled:
-            env["MOLT_AUDIT_ENABLED"] = "1"
-            env["MOLT_AUDIT_SINK"] = self.audit.sink
-            env["MOLT_AUDIT_OUTPUT"] = self.audit.output
-        if self.io.mode != "real":
-            env["MOLT_IO_MODE"] = self.io.mode
-        return env
+        )
+        return ResolvedRuntimePolicy(
+            grants=grants,
+            tier=tier,
+            max_memory=self.resources.max_memory,
+            max_duration_ms=(
+                None
+                if self.resources.max_duration is None
+                else int(self.resources.max_duration * 1000)
+            ),
+            max_allocations=self.resources.max_allocations,
+            max_recursion_depth=self.resources.max_recursion_depth,
+            operation_limits=(
+                ("max_pow_result", self.resources.max_pow_result),
+                ("max_repeat_result", self.resources.max_repeat_result),
+                ("max_shift_result", self.resources.max_shift_result),
+                ("max_string_result", self.resources.max_string_result),
+            ),
+            audit_enabled=self.audit.enabled,
+            audit_sink=self.audit.sink,
+            audit_output=self.audit.output,
+            io_mode=self.io.mode,
+            mounts=mounts,
+        )
+
+    def resolved_policy_payload(
+        self,
+        policy: CapabilityPolicy | None = None,
+        *,
+        tier: str = EXPLICIT_CAPABILITY_TIER,
+    ) -> dict[str, object]:
+        """Freeze every execution-relevant policy field into one projection."""
+
+        return self.resolve(policy, tier=tier).canonical_payload()
+
+    def resolved_policy_digest(
+        self,
+        policy: CapabilityPolicy | None = None,
+        *,
+        tier: str = EXPLICIT_CAPABILITY_TIER,
+    ) -> str:
+        return self.resolve(policy, tier=tier).digest()
+
+    def to_env_vars(
+        self,
+        policy: CapabilityPolicy | None = None,
+        *,
+        tier: str = EXPLICIT_CAPABILITY_TIER,
+    ) -> dict[str, str]:
+        """Convert manifest to environment variables for runtime propagation."""
+        return self.resolve(policy, tier=tier).to_env_vars()
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +369,81 @@ class CapabilityManifest:
 
 class ManifestError(Exception):
     """Raised when a manifest is structurally invalid."""
+
+
+def resolve_runtime_policy_from_env(
+    env: Mapping[str, str],
+) -> ResolvedRuntimePolicy:
+    """Canonicalize the embedding environment into one runtime policy."""
+
+    tier = env.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER).strip().casefold()
+    explicit = [
+        token.strip()
+        for token in env.get("MOLT_CAPABILITIES", "").split(",")
+        if token.strip()
+    ]
+
+    def optional_int(name: str) -> int | None:
+        raw = env.get(name)
+        if raw is None or not raw.strip():
+            return None
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ManifestError(f"{name} must be an integer") from exc
+        if value <= 0:
+            raise ManifestError(f"{name} must be positive")
+        return value
+
+    raw_audit_enabled = env.get("MOLT_AUDIT_ENABLED", "").strip().casefold()
+    if raw_audit_enabled in {"", "0", "false", "no", "off"}:
+        audit_enabled = False
+    elif raw_audit_enabled in {"1", "true", "yes", "on"}:
+        audit_enabled = True
+    else:
+        raise ManifestError(
+            "MOLT_AUDIT_ENABLED must be one of 0, 1, false, true, no, yes, off, on"
+        )
+    audit_sink = env.get("MOLT_AUDIT_SINK", "null")
+    if audit_sink not in VALID_AUDIT_SINKS:
+        raise ManifestError(f"invalid audit sink {audit_sink!r}")
+    io_mode = env.get("MOLT_IO_MODE", "real")
+    if io_mode not in VALID_IO_MODES:
+        raise ManifestError(f"invalid I/O mode {io_mode!r}")
+    duration_ms = optional_int("MOLT_RESOURCE_MAX_DURATION_MS")
+    manifest = CapabilityManifest(
+        allow=list(dict.fromkeys(explicit)),
+        resources=ResourceLimits(
+            max_memory=optional_int("MOLT_RESOURCE_MAX_MEMORY"),
+            max_duration=None if duration_ms is None else duration_ms / 1000.0,
+            max_allocations=optional_int("MOLT_RESOURCE_MAX_ALLOCATIONS"),
+            max_recursion_depth=optional_int("MOLT_RESOURCE_MAX_RECURSION_DEPTH"),
+            max_pow_result=optional_int("MOLT_RESOURCE_MAX_POW_RESULT"),
+            max_repeat_result=optional_int("MOLT_RESOURCE_MAX_REPEAT_RESULT"),
+            max_shift_result=optional_int("MOLT_RESOURCE_MAX_SHIFT_RESULT"),
+            max_string_result=optional_int("MOLT_RESOURCE_MAX_STRING_RESULT"),
+        ),
+        audit=AuditConfig(
+            enabled=audit_enabled,
+            sink=cast(AuditSink, audit_sink),
+            output=env.get("MOLT_AUDIT_OUTPUT", "stderr"),
+        ),
+        io=IoConfig(mode=cast(IoMode, io_mode)),
+    )
+    validate_manifest(manifest)
+    return manifest.resolve(tier=tier)
+
+
+def _require_exact_keys(
+    data: dict[str, Any],
+    allowed: frozenset[str],
+    context: str,
+) -> None:
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ManifestError(
+            f"{context} contains unsupported field(s): {', '.join(unknown)}"
+        )
 
 
 def validate_manifest(manifest: CapabilityManifest) -> list[str]:
@@ -298,52 +456,23 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
 
     # Version check
     if manifest.version not in ("1.0", "2.0"):
-        warnings.append(
+        raise ManifestError(
             f"unrecognized manifest version {manifest.version!r}; "
             f"this parser supports versions 1.0 and 2.0"
         )
 
-    # Validate capability tokens
-    expanded = manifest.expanded_allow()
-    for cap in expanded:
-        if cap not in KNOWN_CAPABILITIES:
-            warnings.append(f"unknown capability {cap!r} in allow list")
-
-    for cap in manifest.deny:
-        if cap not in KNOWN_CAPABILITIES:
-            warnings.append(f"unknown capability {cap!r} in deny list")
+    resolution = resolve_capability_policy(manifest)
+    if resolution.errors:
+        raise ManifestError("; ".join(resolution.errors))
 
     # Deny items that are not in allow are not actionable
-    denied_not_allowed = set(manifest.deny) - expanded
+    expanded = manifest.expanded_allow()
+    denied, _profiles = expand_capabilities(manifest.deny)
+    denied_not_allowed = set(denied) - expanded
     for cap in sorted(denied_not_allowed):
         warnings.append(
             f"capability {cap!r} is in deny but not in allow -- has no effect"
         )
-
-    # Effect annotations
-    for eff in manifest.effects:
-        if eff not in KNOWN_EFFECTS:
-            warnings.append(f"unknown effect annotation {eff!r}")
-
-    # Per-package: allow must be subset of global allow
-    for pkg_name, pkg in manifest.packages.items():
-        pkg_expanded: set[str] = set()
-        for cap in pkg.allow:
-            if cap in CAPABILITY_PROFILES:
-                pkg_expanded.update(CAPABILITY_PROFILES[cap])
-            else:
-                pkg_expanded.add(cap)
-        extra = pkg_expanded - expanded
-        if extra:
-            raise ManifestError(
-                f"package {pkg_name!r} requests capabilities not in global allow: "
-                f"{', '.join(sorted(extra))}"
-            )
-        for eff in pkg.effects:
-            if eff not in KNOWN_EFFECTS:
-                warnings.append(
-                    f"unknown effect annotation {eff!r} in package {pkg_name!r}"
-                )
 
     # Resource limits sanity
     rl = manifest.resources
@@ -387,7 +516,6 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
             f"invalid audit.sink {manifest.audit.sink!r}; "
             f"valid sinks: {', '.join(sorted(VALID_AUDIT_SINKS))}"
         )
-    VALID_AUDIT_OUTPUTS = {"stderr", "stdout", "null"}
     if manifest.audit.output not in VALID_AUDIT_OUTPUTS:
         # If not a well-known output, treat as a file path and validate it.
         out_path = Path(manifest.audit.output)
@@ -402,26 +530,15 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
                 f"audit.output resolves to {str(resolved_out)!r} which is outside "
                 f"the project directory {str(cwd)!r}"
             )
-
-    # Monty
-    if manifest.monty.execution_tier not in VALID_EXECUTION_TIERS:
-        raise ManifestError(
-            f"invalid monty.execution_tier {manifest.monty.execution_tier!r}; "
-            f"valid tiers: {', '.join(sorted(VALID_EXECUTION_TIERS))}"
-        )
-    if manifest.monty.tier_up_threshold <= 0:
-        raise ManifestError(
-            f"monty.tier_up_threshold must be positive, got "
-            f"{manifest.monty.tier_up_threshold}"
-        )
-    if (
-        manifest.monty.execution_tier != "auto"
-        and manifest.monty.tier_up_threshold != 100
-    ):
-        warnings.append(
-            "monty.tier_up_threshold is set but execution_tier is not 'auto' "
-            "-- threshold will be ignored"
-        )
+    if manifest.audit.enabled:
+        if manifest.audit.sink == "stderr" and manifest.audit.output != "stderr":
+            raise ManifestError(
+                "audit.output must be 'stderr' when audit.sink is 'stderr'"
+            )
+        if manifest.audit.sink == "jsonl" and manifest.audit.output == "null":
+            raise ManifestError(
+                "audit.output cannot be 'null' when audit.sink is 'jsonl'"
+            )
 
     return warnings
 
@@ -433,6 +550,19 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
 
 def _parse_resources(data: dict[str, Any]) -> ResourceLimits:
     """Parse the [resources] table into a ResourceLimits dataclass."""
+    _require_exact_keys(
+        data,
+        frozenset(
+            {
+                "max_memory",
+                "max_duration",
+                "max_allocations",
+                "max_recursion_depth",
+                "operation_limits",
+            }
+        ),
+        "resources",
+    )
     rl = ResourceLimits()
 
     if "max_memory" in data:
@@ -456,6 +586,20 @@ def _parse_resources(data: dict[str, Any]) -> ResourceLimits:
 
     # Operation limits sub-table
     op = data.get("operation_limits", {})
+    if not isinstance(op, dict):
+        raise ManifestError("resources.operation_limits must be a table")
+    _require_exact_keys(
+        op,
+        frozenset(
+            {
+                "max_pow_result",
+                "max_repeat_result",
+                "max_shift_result",
+                "max_string_result",
+            }
+        ),
+        "resources.operation_limits",
+    )
     for op_field in (
         "max_pow_result",
         "max_repeat_result",
@@ -476,6 +620,11 @@ def _parse_virtual_mounts(data: dict[str, Any]) -> list[VirtualMount]:
             raise ManifestError(
                 f"virtual mount {mount_path!r} must be a table, got {type(mount_cfg).__name__}"
             )
+        _require_exact_keys(
+            mount_cfg,
+            frozenset({"type", "max_size", "source"}),
+            f"io.virtual_mounts.{mount_path}",
+        )
         mount_type = mount_cfg.get("type")
         if mount_type is None:
             raise ManifestError(
@@ -525,6 +674,7 @@ def _parse_virtual_mounts(data: dict[str, Any]) -> list[VirtualMount]:
 
 def _parse_io(data: dict[str, Any]) -> IoConfig:
     """Parse the [io] table into an IoConfig dataclass."""
+    _require_exact_keys(data, frozenset({"mode", "virtual_mounts"}), "io")
     io = IoConfig()
     if "mode" in data:
         io.mode = data["mode"]
@@ -535,6 +685,7 @@ def _parse_io(data: dict[str, Any]) -> IoConfig:
 
 def _parse_audit(data: dict[str, Any]) -> AuditConfig:
     """Parse the [audit] table into an AuditConfig dataclass."""
+    _require_exact_keys(data, frozenset({"enabled", "sink", "output"}), "audit")
     return AuditConfig(
         enabled=data.get("enabled", False),
         sink=data.get("sink", "null"),
@@ -542,72 +693,83 @@ def _parse_audit(data: dict[str, Any]) -> AuditConfig:
     )
 
 
-def _parse_monty(data: dict[str, Any]) -> MontyConfig:
-    """Parse the [monty] table into a MontyConfig dataclass."""
-    mc = MontyConfig()
-    if "compatible" in data:
-        mc.compatible = data["compatible"]
-    if "shared_stubs" in data:
-        mc.shared_stubs = data["shared_stubs"]
-    if "execution_tier" in data:
-        mc.execution_tier = data["execution_tier"]
-    if "tier_up_threshold" in data:
-        v = data["tier_up_threshold"]
-        if not isinstance(v, int):
-            raise ManifestError(
-                f"monty.tier_up_threshold must be an integer, got {type(v).__name__}"
-            )
-        mc.tier_up_threshold = v
-    return mc
-
-
 def _parse_capabilities(
     data: dict[str, Any],
-) -> tuple[list[str], list[str], list[str], dict[str, PackageCapabilities]]:
-    """Parse the [capabilities] table.
+) -> tuple[
+    list[str] | None,
+    list[str],
+    list[str] | None,
+    dict[str, PackageCapabilities],
+]:
+    """Parse the manifest's policy section through the shared authority."""
 
-    Returns (allow, deny, effects, packages).
-    """
-    allow = list(data.get("allow", []))
-    deny = list(data.get("deny", []))
-    effects = list(data.get("effects", []))
-
-    packages: dict[str, PackageCapabilities] = {}
-    for pkg_name, pkg_data in data.get("packages", {}).items():
-        if not isinstance(pkg_data, dict):
-            raise ManifestError(f"capabilities.packages.{pkg_name} must be a table")
-        packages[pkg_name] = PackageCapabilities(
-            name=pkg_name,
-            allow=list(pkg_data.get("allow", [])),
-            deny=list(pkg_data.get("deny", [])),
-            effects=list(pkg_data.get("effects", [])),
-        )
-
-    return allow, deny, effects, packages
+    policy, errors = parse_capability_policy(data)
+    if policy is None or errors:
+        raise ManifestError("; ".join(errors or ["capabilities must be a table"]))
+    return (
+        policy.allow,
+        list(policy.deny),
+        policy.effects,
+        policy.packages,
+    )
 
 
-def _parse_v2_dict(data: dict) -> CapabilityManifest:
+def _parse_v2_dict(data: dict[str, Any]) -> CapabilityManifest:
     """Parse a v2.0 manifest from an already-loaded dict (TOML or YAML)."""
+    _require_exact_keys(
+        data,
+        frozenset(
+            {"manifest", "capabilities", "resources", "io", "audit", "signature"}
+        ),
+        "manifest root",
+    )
     manifest_meta = data.get("manifest", {})
+    if not isinstance(manifest_meta, dict):
+        raise ManifestError("manifest must be a table")
+    _require_exact_keys(
+        manifest_meta,
+        frozenset({"version", "description"}),
+        "manifest",
+    )
     version = manifest_meta.get("version", "2.0")
     description = manifest_meta.get("description", "")
+    if version != "2.0":
+        raise ManifestError(
+            f"TOML/YAML capability manifests require version '2.0', got {version!r}"
+        )
+    if not isinstance(description, str):
+        raise ManifestError("manifest.description must be a string")
 
     caps_data = data.get("capabilities", {})
+    if not isinstance(caps_data, dict):
+        raise ManifestError("capabilities must be a table")
     allow, deny, effects, packages = _parse_capabilities(caps_data)
 
-    resources = _parse_resources(data.get("resources", {}))
-    io = _parse_io(data.get("io", {}))
-    audit = _parse_audit(data.get("audit", {}))
-    monty = _parse_monty(data.get("monty", {}))
-
+    resources_data = data.get("resources", {})
+    io_data = data.get("io", {})
+    audit_data = data.get("audit", {})
+    if not isinstance(resources_data, dict):
+        raise ManifestError("resources must be a table")
+    if not isinstance(io_data, dict):
+        raise ManifestError("io must be a table")
+    if not isinstance(audit_data, dict):
+        raise ManifestError("audit must be a table")
+    resources = _parse_resources(resources_data)
+    io = _parse_io(io_data)
+    audit = _parse_audit(audit_data)
     signature_raw = data.get("signature")
     signature: Optional[str] = None
     if isinstance(signature_raw, dict):
+        _require_exact_keys(signature_raw, frozenset({"value"}), "signature")
         # TOML [signature] table -- extract the value key.
         signature = signature_raw.get("value")
     elif isinstance(signature_raw, str):
         # JSON/YAML scalar key.
         signature = signature_raw
+    elif signature_raw is not None:
+        raise ManifestError("signature must be a string or table")
+    if signature is not None and not isinstance(signature, str):
+        raise ManifestError("signature.value must be a string")
 
     return CapabilityManifest(
         version=version,
@@ -619,55 +781,20 @@ def _parse_v2_dict(data: dict) -> CapabilityManifest:
         resources=resources,
         audit=audit,
         io=io,
-        monty=monty,
         signature=signature,
     )
 
 
-def _load_toml(path: Path) -> CapabilityManifest:
-    """Load a v2.0 TOML capability manifest."""
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-    return _parse_v2_dict(data)
-
-
-# ---------------------------------------------------------------------------
-# JSON loading (backward compatibility with v1.0 JSON manifests)
-# ---------------------------------------------------------------------------
-
-
-def _load_json(path: Path) -> CapabilityManifest:
-    """Load a v1.0 JSON capability manifest (backward compat)."""
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, dict):
+def _parse_json_manifest(data: dict[str, Any]) -> CapabilityManifest:
+    """Parse the v1 JSON envelope from an already-decoded snapshot."""
+    version = data.get("version", "1.0")
+    if version != "1.0":
         raise ManifestError(
-            f"JSON manifest must be an object, got {type(data).__name__}"
+            f"unrecognized manifest version {version!r}; JSON capability manifests require version '1.0'"
         )
-
-    allow = list(data.get("allow", []))
-    deny = list(data.get("deny", []))
-    effects = list(data.get("effects", []))
-
-    # JSON format uses "fs.read" / "fs.write" path lists to imply capabilities.
-    fs_section = data.get("fs", {})
-    if fs_section.get("read"):
-        if "fs.read" not in allow:
-            allow.append("fs.read")
-    if fs_section.get("write"):
-        if "fs.write" not in allow:
-            allow.append("fs.write")
-
-    packages: dict[str, PackageCapabilities] = {}
-    for pkg_name, pkg_data in data.get("packages", {}).items():
-        if isinstance(pkg_data, dict):
-            packages[pkg_name] = PackageCapabilities(
-                name=pkg_name,
-                allow=list(pkg_data.get("allow", [])),
-                deny=list(pkg_data.get("deny", [])),
-                effects=list(pkg_data.get("effects", [])),
-            )
+    policy, errors = parse_capability_policy(data)
+    if policy is None or errors:
+        raise ManifestError("; ".join(errors or ["JSON manifest must be an object"]))
 
     signature_raw = data.get("signature")
     signature: Optional[str] = None
@@ -675,38 +802,13 @@ def _load_json(path: Path) -> CapabilityManifest:
         signature = signature_raw
 
     return CapabilityManifest(
-        version="1.0",
-        allow=allow,
-        deny=deny,
-        effects=effects,
-        packages=packages,
+        version=version,
+        allow=policy.allow,
+        deny=list(policy.deny),
+        effects=policy.effects,
+        packages=policy.packages,
         signature=signature,
     )
-
-
-def _load_yaml(path: Path) -> CapabilityManifest:
-    """Load a v2.0 YAML capability manifest.
-
-    Requires PyYAML (``pip install pyyaml``). The YAML structure mirrors
-    the TOML format exactly — same keys, same nesting.
-    """
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise ImportError(
-            "YAML manifests require the 'pyyaml' package: pip install pyyaml"
-        ) from exc
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    if not isinstance(data, dict):
-        raise ManifestError(
-            f"YAML manifest must be a mapping, got {type(data).__name__}"
-        )
-
-    # YAML uses the same structure as TOML — reuse the TOML parser internals.
-    return _parse_v2_dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -714,11 +816,9 @@ def _load_yaml(path: Path) -> CapabilityManifest:
 # ---------------------------------------------------------------------------
 
 
-def _parse_and_strip_signature(text: str, suffix: str) -> dict[str, Any]:
-    """Parse a manifest file and return the data dict with 'signature' removed.
+def _parse_manifest_snapshot(text: str, suffix: str) -> dict[str, Any]:
+    """Parse one immutable manifest text snapshot structurally."""
 
-    Uses structural parsing for all formats — never regex on raw text.
-    """
     if suffix == ".toml":
         data = tomllib.loads(text)
     elif suffix == ".json":
@@ -735,8 +835,24 @@ def _parse_and_strip_signature(text: str, suffix: str) -> dict[str, Any]:
         raise ManifestError(f"unsupported manifest format: {suffix!r}")
     if not isinstance(data, dict):
         raise ManifestError("manifest root must be a mapping")
-    data.pop("signature", None)
-    return data
+    return cast(dict[str, Any], data)
+
+
+def _read_manifest_snapshot(manifest_path: Path) -> dict[str, Any]:
+    try:
+        text = manifest_path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ManifestError("manifest must be valid UTF-8") from exc
+    return _parse_manifest_snapshot(text, manifest_path.suffix.casefold())
+
+
+def _manifest_hash_from_snapshot(data: dict[str, Any]) -> str:
+    unsigned = dict(data)
+    unsigned.pop("signature", None)
+    canonical = json.dumps(
+        unsigned, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def compute_manifest_hash(manifest_path: Path) -> str:
@@ -757,12 +873,7 @@ def compute_manifest_hash(manifest_path: Path) -> str:
     str
         Hex-encoded SHA-256 digest of the canonical JSON representation.
     """
-    text = manifest_path.read_text(encoding="utf-8")
-    data = _parse_and_strip_signature(text, manifest_path.suffix.lower())
-    canonical = json.dumps(
-        data, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return _manifest_hash_from_snapshot(_read_manifest_snapshot(manifest_path))
 
 
 class SignatureStatus:
@@ -789,8 +900,10 @@ class SignatureStatus:
         return f"SignatureStatus({self.status!r})"
 
 
-def verify_manifest_signature(
-    manifest_path: Path, manifest: CapabilityManifest
+def _verify_manifest_signature_snapshot(
+    manifest_path: Path,
+    manifest: CapabilityManifest,
+    data: dict[str, Any],
 ) -> SignatureStatus:
     """Verify the cryptographic signature embedded in a manifest.
 
@@ -837,7 +950,7 @@ def verify_manifest_signature(
             f"invalid signature digest: expected 64 lowercase hex characters, "
             f"got {stored_digest!r}"
         )
-    expected_digest = compute_manifest_hash(manifest_path)
+    expected_digest = _manifest_hash_from_snapshot(data)
 
     if stored_digest != expected_digest:
         raise ManifestError(
@@ -846,6 +959,23 @@ def verify_manifest_signature(
             f"the manifest file may have been tampered with"
         )
     return SignatureStatus(SignatureStatus.VERIFIED)
+
+
+def verify_manifest_signature(
+    manifest_path: Path, manifest: CapabilityManifest
+) -> SignatureStatus:
+    """Verify a manifest against one fresh on-disk snapshot.
+
+    ``load_manifest`` uses the private snapshot form so parsing and integrity
+    verification are bound to the same bytes. This public verifier intentionally
+    reads a new snapshot because callers supply an independently parsed object.
+    """
+
+    return _verify_manifest_signature_snapshot(
+        manifest_path,
+        manifest,
+        _read_manifest_snapshot(manifest_path),
+    )
 
 
 def sign_manifest(manifest_path: Path) -> str:
@@ -869,7 +999,7 @@ def sign_manifest(manifest_path: Path) -> str:
     p = Path(manifest_path)
     if not p.exists():
         raise FileNotFoundError(f"manifest file not found: {p}")
-    digest = compute_manifest_hash(p)
+    digest = _manifest_hash_from_snapshot(_read_manifest_snapshot(p))
     return f"sha256:{digest}"
 
 
@@ -916,13 +1046,12 @@ def load_manifest(
     if not p.exists():
         raise FileNotFoundError(f"manifest file not found: {p}")
 
-    suffix = p.suffix.lower()
-    if suffix == ".toml":
-        manifest = _load_toml(p)
+    suffix = p.suffix.casefold()
+    data = _read_manifest_snapshot(p)
+    if suffix == ".toml" or suffix in (".yaml", ".yml"):
+        manifest = _parse_v2_dict(data)
     elif suffix == ".json":
-        manifest = _load_json(p)
-    elif suffix in (".yaml", ".yml"):
-        manifest = _load_yaml(p)
+        manifest = _parse_json_manifest(data)
     else:
         raise ManifestError(
             f"unsupported manifest format {suffix!r}; expected .toml, .json, .yaml, or .yml"
@@ -934,7 +1063,7 @@ def load_manifest(
         warnings.warn(w, stacklevel=2)
 
     # Verify manifest integrity if a signature is present.
-    sig_status = verify_manifest_signature(p, manifest)
+    sig_status = _verify_manifest_signature_snapshot(p, manifest, data)
     if require_signed and sig_status.is_unsigned:
         raise ManifestError(
             f"manifest {p} is unsigned but --require-signed-manifest was specified"
@@ -1038,11 +1167,6 @@ enabled = true
 sink = "jsonl"
 output = "logs/molt.jsonl"
 
-[monty]
-compatible = true
-shared_stubs = "stubs/"
-execution_tier = "auto"
-tier_up_threshold = 50
 """
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
         f.write(toml_content)
@@ -1073,10 +1197,6 @@ tier_up_threshold = 50
         _assert(m.audit.enabled is True, "audit enabled")
         _assert(m.audit.sink == "jsonl", "audit sink")
         _assert(m.audit.output == "logs/molt.jsonl", "audit output")
-        _assert(m.monty.compatible is True, "monty compatible")
-        _assert(m.monty.shared_stubs == "stubs/", "monty shared_stubs")
-        _assert(m.monty.execution_tier == "auto", "monty execution_tier")
-        _assert(m.monty.tier_up_threshold == 50, "monty tier_up_threshold")
     finally:
         os.unlink(toml_path)
 
@@ -1100,6 +1220,7 @@ tier_up_threshold = 50
     try:
         m = load_manifest(json_path)
         _assert(m.version == "1.0", "json version")
+        assert m.allow is not None
         _assert("net" in m.allow, "json allow net")
         _assert("fs.read" in m.allow, "json fs.read inferred from fs section")
         _assert("mypkg" in m.packages, "json package")
@@ -1110,13 +1231,15 @@ tier_up_threshold = 50
     print("Testing capability expansion...")
     m = CapabilityManifest(allow=["net", "fs.read"], deny=["websocket.listen"])
     expanded = m.expanded_allow()
-    _assert("net" in expanded, "net profile expands to net")
+    _assert("net.connect" in expanded, "net profile expands to connect")
+    _assert("net.listen" in expanded, "net profile expands to listen")
+    _assert("net.poll" in expanded, "net profile expands to polling")
     _assert("websocket.connect" in expanded, "net profile expands to websocket.connect")
     _assert("websocket.listen" in expanded, "net profile expands to websocket.listen")
     _assert("fs.read" in expanded, "fs.read passthrough")
     effective = m.effective_capabilities()
     _assert("websocket.listen" not in effective, "websocket.listen denied")
-    _assert("net" in effective, "net still effective")
+    _assert("net.connect" in effective, "exact connect grant remains effective")
 
     # -- validate_manifest warnings --
     print("Testing validation warnings...")
@@ -1142,11 +1265,6 @@ tier_up_threshold = 50
 
     m = CapabilityManifest(io=IoConfig(mode=cast(Any, "invalid")))
     _assert_raises(ManifestError, lambda: validate_manifest(m), "invalid io mode")
-
-    m = CapabilityManifest(monty=MontyConfig(tier_up_threshold=-5))
-    _assert_raises(
-        ManifestError, lambda: validate_manifest(m), "negative tier_up_threshold"
-    )
 
     # -- File not found --
     print("Testing error cases...")
@@ -1178,7 +1296,6 @@ tier_up_threshold = 50
         _assert(m.resources.max_memory is None, "default resources unset")
         _assert(m.io.mode == "real", "default io mode")
         _assert(m.audit.enabled is False, "default audit disabled")
-        _assert(m.monty.compatible is False, "default monty disabled")
     finally:
         os.unlink(minimal_path)
 

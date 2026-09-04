@@ -407,6 +407,9 @@ fn seed_key_from_bigint(seed: &BigInt) -> Vec<u32> {
 
 /// Seed from system time via getrandom — used when seed is None.
 fn seed_from_os(_py: &PyToken) -> Option<Vec<u32>> {
+    if !require_random_entropy(_py) {
+        return None;
+    }
     let mut buf = [0u8; 32];
     fill_os_random(&mut buf)
         .map_err(|_| {
@@ -551,10 +554,7 @@ pub extern "C" fn molt_random_new() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let key = match seed_from_os(_py) {
             Some(k) => k,
-            None => {
-                // Fallback: single-word 0 seed
-                vec![0u32]
-            }
+            None => return MoltObject::none().bits(),
         };
         let rng = MersenneTwisterRng::new_from_seed_key(&key);
         let id = next_random_handle();

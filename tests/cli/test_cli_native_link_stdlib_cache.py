@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
+from molt.capability_manifest import CapabilityManifest
 from molt.cli import link_pipeline as cli_link_pipeline
 from tests.cli.native_link_test_support import (
     SOURCE_FINGERPRINT,
@@ -84,8 +85,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -155,8 +155,7 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,

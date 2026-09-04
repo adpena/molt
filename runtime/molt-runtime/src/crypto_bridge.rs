@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The crypto crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::audit::AuditArgs;
 use crate::builtins::containers::dict_len as _dict_len;
 use crate::builtins::numbers::{
     index_bigint_from_obj as _index_bigint_from_obj, index_i64_from_obj as _index_i64_from_obj,
@@ -302,6 +303,14 @@ pub extern "C" fn __molt_crypto_seq_snapshot(
 // ---------------------------------------------------------------------------
 // OS randomness
 // ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_crypto_require_random_entropy() -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::require_operation::<u64>(_py, crate::OperationId::RandomEntropy, AuditArgs::None)
+            .is_ok() as i32
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {

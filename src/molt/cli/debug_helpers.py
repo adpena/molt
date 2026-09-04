@@ -14,7 +14,7 @@ from contextlib import redirect_stdout
 from typing import Any, Mapping, cast
 
 from molt.cli import script_commands as _script_commands
-from molt.cli.capability_spec import _split_tokens
+from molt.capability_policy import split_capability_tokens
 from molt.cli.models import BuildProfile
 from molt.dx import development_artifact_env
 
@@ -895,7 +895,7 @@ def _handle_debug_bisect(
     }
 
     if args.passes:
-        passes = tuple(_split_tokens(args.passes))
+        passes = tuple(split_capability_tokens(args.passes))
         if not passes:
             message = "--passes must include at least one pass name"
             payload = normalize_debug_payload(

@@ -8,8 +8,9 @@ import shlex
 import shutil
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from molt.cli import build_inputs as _build_inputs
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
@@ -22,10 +23,24 @@ from molt.cli.arg_helpers import (
 from molt.cli.atomic_io import (
     _atomic_copy_file,
 )
-from molt.cli.capability_spec import (
+from molt.capability_policy import (
     CapabilityInput,
-    _materialize_capabilities_arg,
-    _parse_capabilities,
+    CapabilityPolicy,
+    materialize_capability_input,
+    merge_capability_policies,
+    parse_capability_input,
+)
+from molt.capability_manifest import (
+    AuditConfig,
+    AuditSink,
+    CapabilityManifest,
+    IoMode,
+    load_manifest,
+    resolve_runtime_policy_from_env,
+)
+from molt._host_capabilities_generated import (
+    DEFAULT_CAPABILITY_TIER,
+    MAXIMUM_BUILTIN_CAPABILITY_TIER,
 )
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
@@ -63,6 +78,69 @@ from molt.cli.process_execution import (
     _run_command,
     _run_command_timed,
 )
+
+
+def _apply_run_capability_policy(
+    env: dict[str, str],
+    *,
+    capabilities: CapabilityInput | None,
+    capability_manifest: str | None,
+    require_signed_manifest: bool,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
+) -> str | None:
+    """Resolve CLI and manifest grants once, then project one runtime policy."""
+
+    cli_policy: CapabilityPolicy | None = None
+    if capabilities is not None:
+        resolved_input = parse_capability_input(capabilities)
+        if resolved_input.errors:
+            return "Invalid capabilities: " + ", ".join(resolved_input.errors)
+        cli_policy = resolved_input.policy
+
+    manifest: CapabilityManifest | None = None
+    if capability_manifest is not None:
+        try:
+            manifest = load_manifest(
+                capability_manifest, require_signed=require_signed_manifest
+            )
+        except Exception as exc:
+            return f"Invalid capability manifest: {exc}"
+
+    policy = merge_capability_policies(cli_policy, manifest)
+    if policy is None:
+        try:
+            if audit_log is not None:
+                env.update(_build_inputs._parse_audit_log_flag(audit_log))
+            if io_mode is not None:
+                env.update(_build_inputs._parse_io_mode_flag(io_mode))
+            env.update(resolve_runtime_policy_from_env(env).to_env_vars())
+        except Exception as exc:
+            return f"Invalid capability policy: {exc}"
+        return None
+    envelope = manifest if manifest is not None else CapabilityManifest()
+    try:
+        if audit_log is not None:
+            audit_env = _build_inputs._parse_audit_log_flag(audit_log)
+            envelope = replace(
+                envelope,
+                audit=AuditConfig(
+                    enabled=True,
+                    sink=cast(AuditSink, audit_env["MOLT_AUDIT_SINK"]),
+                    output=audit_env["MOLT_AUDIT_OUTPUT"],
+                ),
+            )
+        if io_mode is not None:
+            _build_inputs._parse_io_mode_flag(io_mode)
+            envelope = replace(
+                envelope,
+                io=replace(envelope.io, mode=cast(IoMode, io_mode)),
+            )
+        tier = env.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER).strip().casefold()
+        env.update(envelope.to_env_vars(policy, tier=tier))
+    except Exception as exc:
+        return f"Invalid capability policy: {exc}"
+    return None
 
 
 def _run_script_cross(
@@ -120,40 +198,17 @@ def _run_script_cross(
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
     if trusted:
-        env["MOLT_TRUSTED"] = "1"
-    if capabilities is not None:
-        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
-        if errors:
-            return _fail(
-                "Invalid capabilities: " + ", ".join(errors),
-                json_output,
-                command="run",
-            )
-        if parsed is not None:
-            env["MOLT_CAPABILITIES"] = ",".join(parsed)
-
-    if capability_manifest is not None:
-        from molt.capability_manifest import load_manifest
-
-        try:
-            manifest_obj = load_manifest(
-                capability_manifest, require_signed=require_signed_manifest
-            )
-            env.update(manifest_obj.to_env_vars())
-        except Exception as e:
-            return _fail(
-                f"Invalid capability manifest: {e}",
-                json_output,
-                command="run",
-            )
-
-    # --audit-log flag (overrides manifest audit config)
-    if audit_log is not None:
-        env.update(_build_inputs._parse_audit_log_flag(audit_log))
-
-    # --io-mode flag (overrides manifest io config)
-    if io_mode is not None:
-        env.update(_build_inputs._parse_io_mode_flag(io_mode))
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
+    capability_error = _apply_run_capability_policy(
+        env,
+        capabilities=capabilities,
+        capability_manifest=capability_manifest,
+        require_signed_manifest=require_signed_manifest,
+        audit_log=audit_log,
+        io_mode=io_mode,
+    )
+    if capability_error is not None:
+        return _fail(capability_error, json_output, command="run")
 
     # --type-gate flag
     env.update(_build_inputs._parse_type_gate_flag(type_gate))
@@ -164,7 +219,7 @@ def _run_script_cross(
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
+        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
         build_args.extend(["--capabilities", cap_arg])
 
     if not json_output:
@@ -528,40 +583,17 @@ def run_script(
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
     if trusted:
-        env["MOLT_TRUSTED"] = "1"
-    if capabilities is not None:
-        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
-        if errors:
-            return _fail(
-                "Invalid capabilities: " + ", ".join(errors),
-                json_output,
-                command="run",
-            )
-        if parsed is not None:
-            env["MOLT_CAPABILITIES"] = ",".join(parsed)
-
-    if capability_manifest is not None:
-        from molt.capability_manifest import load_manifest
-
-        try:
-            manifest_obj = load_manifest(
-                capability_manifest, require_signed=require_signed_manifest
-            )
-            env.update(manifest_obj.to_env_vars())
-        except Exception as e:
-            return _fail(
-                f"Invalid capability manifest: {e}",
-                json_output,
-                command="run",
-            )
-
-    # --audit-log flag (overrides manifest audit config)
-    if audit_log is not None:
-        env.update(_build_inputs._parse_audit_log_flag(audit_log))
-
-    # --io-mode flag (overrides manifest io config)
-    if io_mode is not None:
-        env.update(_build_inputs._parse_io_mode_flag(io_mode))
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
+    capability_error = _apply_run_capability_policy(
+        env,
+        capabilities=capabilities,
+        capability_manifest=capability_manifest,
+        require_signed_manifest=require_signed_manifest,
+        audit_log=audit_log,
+        io_mode=io_mode,
+    )
+    if capability_error is not None:
+        return _fail(capability_error, json_output, command="run")
 
     # --type-gate flag
     env.update(_build_inputs._parse_type_gate_flag(type_gate))
@@ -572,7 +604,7 @@ def run_script(
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
+        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
         build_args.extend(["--capabilities", cap_arg])
     try:
         build_contract, build_duration_s, build_error = _run_wrapper_build(
@@ -697,17 +729,17 @@ def compare(
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
     if trusted:
-        env["MOLT_TRUSTED"] = "1"
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     if capabilities is not None:
-        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
-        if errors:
+        resolved_input = parse_capability_input(capabilities)
+        if resolved_input.errors:
             return _fail(
-                "Invalid capabilities: " + ", ".join(errors),
+                "Invalid capabilities: " + ", ".join(resolved_input.errors),
                 json_output,
                 command="compare",
             )
-        if parsed is not None:
-            env["MOLT_CAPABILITIES"] = ",".join(parsed)
+        if resolved_input.policy is not None:
+            env.update(CapabilityManifest().to_env_vars(resolved_input.policy))
 
     requested_python_selector = python_exe
     requested_target_python = None
@@ -750,7 +782,7 @@ def compare(
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
-        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
+        cap_arg, capabilities_tmp = materialize_capability_input(capabilities)
         build_args.extend(["--capabilities", cap_arg])
     emit_arg = _extract_emit_arg(build_args)
     if emit_arg and emit_arg != "bin":
@@ -1050,7 +1082,7 @@ def diff(
         return root_error
     env = _base_env(root, molt_root=root)
     if trusted:
-        env["MOLT_TRUSTED"] = "1"
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     cmd = [sys.executable, "tests/molt_diff.py"]
     if python_version:
         cmd.extend(["--python-version", python_version])

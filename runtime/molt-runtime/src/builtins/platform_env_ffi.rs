@@ -31,8 +31,7 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "time.wall") || has_capability(_py, "time");
-        audit_capability_decision("time.uuid1", "time.wall", AuditArgs::None, allowed);
+        let allowed = crate::operation_allowed(_py, crate::OperationId::TimeUuid1, AuditArgs::None);
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing time.wall capability");
         }

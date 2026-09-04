@@ -108,6 +108,9 @@ def _emit_backend_pipeline_outputs(
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
+                resolved_capability_policy=(
+                    prepared_build_config.resolved_capability_policy
+                ),
                 runtime_state=runtime_state,
                 ensure_runtime_wasm_both=ensure_runtime_wasm_both,
                 runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
@@ -134,7 +137,7 @@ def _emit_backend_pipeline_outputs(
             _non_native_output._generate_snapshot_header(
                 output_wasm=prepared_non_native_result.primary_output,
                 target_profile=target,
-                capabilities_list=prepared_build_config.capabilities_list,
+                resolved_capability_policy=prepared_build_config.resolved_capability_policy,
                 verbose=verbose,
             )
             prepared_non_native_result.success_messages.append(
@@ -161,8 +164,7 @@ def _emit_backend_pipeline_outputs(
             source_path=resolved_build_entry.source_path,
             deterministic=deterministic,
             trusted=trusted,
-            capabilities_list=prepared_build_config.capabilities_list,
-            capability_profiles=prepared_build_config.capability_profiles,
+            resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             capabilities_source=prepared_build_config.capabilities_source,
             sysroot_path=prepared_build_roots.sysroot_path,
             emit_mode=output_layout.emit_mode,
@@ -219,8 +221,7 @@ def _emit_backend_pipeline_outputs(
             source_path=resolved_build_entry.source_path,
             deterministic=deterministic,
             trusted=trusted,
-            capabilities_list=prepared_build_config.capabilities_list,
-            capability_profiles=prepared_build_config.capability_profiles,
+            resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             capabilities_source=prepared_build_config.capabilities_source,
             sysroot_path=prepared_build_roots.sysroot_path,
             emit_mode=output_layout.emit_mode,
@@ -263,8 +264,7 @@ def _emit_backend_pipeline_outputs(
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
-            trusted=trusted,
-            capabilities_list=prepared_build_config.capabilities_list,
+            resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             artifacts_root=artifacts_root,
             json_output=json_output,
             output_binary=output_layout.output_binary,
@@ -337,8 +337,7 @@ def _emit_backend_pipeline_outputs(
         ),
         deterministic=deterministic,
         trusted=trusted,
-        capabilities_list=prepared_build_config.capabilities_list,
-        capability_profiles=prepared_build_config.capability_profiles,
+        resolved_capability_policy=prepared_build_config.resolved_capability_policy,
         capabilities_source=prepared_build_config.capabilities_source,
         sysroot_path=prepared_build_roots.sysroot_path,
         emit_mode=output_layout.emit_mode,

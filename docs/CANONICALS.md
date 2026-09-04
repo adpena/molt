@@ -31,6 +31,7 @@ of truth when a claim drifts.
 - [spec/areas/compat/surfaces/c_api/c_api_surface_index.md](spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
 - [spec/areas/compat/contracts/libmolt_extension_abi_contract.md](spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - [spec/areas/perf/0520_DFLASH_CONTRACT.md](spec/areas/perf/0520_DFLASH_CONTRACT.md)
+- [CAPABILITIES.md](CAPABILITIES.md)
 
 ## Compiler Foundation
 

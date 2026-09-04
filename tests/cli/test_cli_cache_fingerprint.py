@@ -462,6 +462,9 @@ def _write_frontend_tree(root: Path) -> dict[str, Path]:
         "nested_helper": molt_root / "frontend" / "lowering" / "reducer.py",
         "type_facts": molt_root / "type_facts.py",
         "capabilities": molt_root / "capabilities.py",
+        "capability_manifest": molt_root / "capability_manifest.py",
+        "capability_policy": molt_root / "capability_policy.py",
+        "host_capabilities": molt_root / "_host_capabilities_generated.py",
     }
     for name, source in sources.items():
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -494,6 +497,9 @@ def _rewrite_same_length_content(path: Path) -> None:
         "nested_helper",
         "type_facts",
         "capabilities",
+        "capability_manifest",
+        "capability_policy",
+        "host_capabilities",
     ],
 )
 def test_cache_tooling_fingerprint_tracks_each_helper_under_metadata_collision(

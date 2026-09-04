@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
-from molt.cli.capability_spec import CapabilityInput
+from molt.capability_policy import CapabilityInput
 
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
@@ -137,3 +137,10 @@ def _resolve_capabilities_config(
         if isinstance(caps, (list, str, dict)):
             return caps
     return None
+
+
+def _select_capability_input(
+    *candidates: CapabilityInput | None,
+) -> CapabilityInput | None:
+    """Select the first present policy while preserving explicit deny-all values."""
+    return next((candidate for candidate in candidates if candidate is not None), None)

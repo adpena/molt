@@ -22,6 +22,7 @@ the source of truth.
 - Import/bootstrap, external package admission, native extension sidecar custody, backend-IR direct-call closure, shared-stdlib cache, and public importlib transaction authority: [spec/areas/compat/contracts/import_system_contract.md](spec/areas/compat/contracts/import_system_contract.md)
 - WASM optimization and import-retention authority: [spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md](spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md)
 - Browser numeric kernel host contract: [spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md](spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md)
+- Capability policy, manifest, CLI-adapter, and runtime-enforcement ownership: [CAPABILITIES.md](CAPABILITIES.md)
 
 ## Debugging
 

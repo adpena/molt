@@ -168,9 +168,7 @@ def _run_backend_pipeline(
                     json_output,
                     command="build",
                 )
-            app_export_contract_path = (
-                Path(artifacts_root) / "app_export_contract.json"
-            )
+            app_export_contract_path = Path(artifacts_root) / "app_export_contract.json"
             _atomic_write_json(
                 app_export_contract_path,
                 app_export_contract,
@@ -266,10 +264,7 @@ def _run_backend_pipeline(
             stdlib_profile=runtime_stdlib_profile,
             native_artifact_plan=native_artifact_plan,
             resolved_modules=resolved_modules,
-            capabilities_list=prepared_build_config.capabilities_list,
-            capability_profiles=prepared_build_config.capability_profiles,
-            manifest_env_vars=prepared_build_config.manifest_env_vars,
-            capability_config_digest=prepared_build_config.capability_config_cache_digest,
+            resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             stage_timings_ms=pipeline_stage_ms,
         )
     )

@@ -9,6 +9,7 @@ import sys
 import time
 from typing import Any
 
+from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli.binary_image_analysis import (
     _merge_binary_image_analysis_stage,
     _native_artifact_binary_image_analysis_payload,
@@ -101,8 +102,7 @@ def _build_common_build_json_data(
     output: Path,
     deterministic: bool,
     trusted: bool,
-    capabilities_list: list[str] | None,
-    capability_profiles: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     capabilities_source: str | None,
     sysroot_path: Path | None,
     cache_info: Mapping[str, Any],
@@ -117,8 +117,9 @@ def _build_common_build_json_data(
         "output": str(output),
         "deterministic": deterministic,
         "trusted": trusted,
-        "capabilities": capabilities_list,
-        "capability_profiles": capability_profiles,
+        "capabilities": list(resolved_capability_policy.grants.capabilities),
+        "capability_profiles": list(resolved_capability_policy.grants.profiles),
+        "capability_policy_digest": resolved_capability_policy.digest(),
         "capabilities_source": capabilities_source,
         "sysroot": str(sysroot_path) if sysroot_path is not None else None,
         "cache": dict(cache_info),
@@ -164,8 +165,7 @@ def _build_native_link_success_data(
     output_binary: Path,
     deterministic: bool,
     trusted: bool,
-    capabilities_list: list[str] | None,
-    capability_profiles: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     capabilities_source: str | None,
     sysroot_path: Path | None,
     cache_info: Mapping[str, Any],
@@ -185,8 +185,7 @@ def _build_native_link_success_data(
         output=output_binary,
         deterministic=deterministic,
         trusted=trusted,
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
+        resolved_capability_policy=resolved_capability_policy,
         capabilities_source=capabilities_source,
         sysroot_path=sysroot_path,
         cache_info=cache_info,
@@ -320,9 +319,7 @@ def _finalize_native_link_candidate(
         _assert_native_binary_valid(candidate, target_triple)
     except _NativeBinaryInvalid as exc:
         if phase_times is not None:
-            phase_times["validate_wall_ns"] = (
-                time.perf_counter_ns() - validate_started
-            )
+            phase_times["validate_wall_ns"] = time.perf_counter_ns() - validate_started
         return f"native candidate validation failed: {exc}"
     if phase_times is not None:
         phase_times["validate_wall_ns"] = time.perf_counter_ns() - validate_started
@@ -384,8 +381,7 @@ def _emit_native_link_result(
     link_candidate: Path | None = None,
     deterministic: bool,
     trusted: bool,
-    capabilities_list: list[str] | None,
-    capability_profiles: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     capabilities_source: str | None,
     sysroot_path: Path | None,
     emit_mode: str,
@@ -516,8 +512,7 @@ def _emit_native_link_result(
                 output_binary=output_binary,
                 deterministic=deterministic,
                 trusted=trusted,
-                capabilities_list=capabilities_list,
-                capability_profiles=capability_profiles,
+                resolved_capability_policy=resolved_capability_policy,
                 capabilities_source=capabilities_source,
                 sysroot_path=sysroot_path,
                 cache_info=cache_info,
@@ -615,8 +610,7 @@ def _emit_non_native_build_result(
     source_path: Path,
     deterministic: bool,
     trusted: bool,
-    capabilities_list: list[str] | None,
-    capability_profiles: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     capabilities_source: str | None,
     sysroot_path: Path | None,
     emit_mode: str,
@@ -664,8 +658,7 @@ def _emit_non_native_build_result(
             output=output,
             deterministic=deterministic,
             trusted=trusted,
-            capabilities_list=capabilities_list,
-            capability_profiles=capability_profiles,
+            resolved_capability_policy=resolved_capability_policy,
             capabilities_source=capabilities_source,
             sysroot_path=sysroot_path,
             cache_info=cache_info,

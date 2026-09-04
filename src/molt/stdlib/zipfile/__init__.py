@@ -48,7 +48,6 @@ _EOCD_SIG = b"PK\x05\x06"
 _ZIP64_EOCD_SIG = b"PK\x06\x06"
 _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
 
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 _MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32")
 _MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY = _require_intrinsic(
@@ -69,8 +68,6 @@ _IndexEntry = tuple[int, int, int, int, int]
 
 
 def _require_capability(name: str) -> None:
-    if _MOLT_CAPABILITIES_TRUSTED():
-        return
     _MOLT_CAPABILITIES_REQUIRE(name)
 
 

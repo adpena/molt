@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
-from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
     _rustc_version,
@@ -210,7 +209,7 @@ def _runtime_fingerprint(
     artifact_selection: RuntimeArtifactSelection = RUNTIME_RLIB_ARTIFACTS,
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
+    feature_list = tuple(dict.fromkeys(sorted(runtime_features)))
     rustc_info = _rustc_version()
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += "build-schema:runtime-source-config-toolchain-v4\n"

@@ -228,6 +228,11 @@ def test_ci_push_path_is_cheap_only() -> None:
     proof_plan_text = _read("tools/proof_plan.toml")
     assert '"-m", "not slow"' in proof_plan_text
     assert "native.integration.bench-cli" in proof_plan_text
+    assert "native.integration.capability-manifest" in proof_plan_text
+    assert (
+        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"
+        in proof_plan_text
+    )
     assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
         ci_text
     )

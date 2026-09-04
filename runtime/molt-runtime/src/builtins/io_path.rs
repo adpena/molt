@@ -2991,6 +2991,11 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
                 );
             }
         };
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::RandomEntropy, AuditArgs::None)
+        {
+            return err;
+        }
         let mut buf = Vec::new();
         if buf.try_reserve_exact(len).is_err() {
             return raise_exception::<_>(_py, "MemoryError", "out of memory");

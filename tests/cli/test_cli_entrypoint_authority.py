@@ -6,6 +6,7 @@ import molt.cli as cli
 from molt.cli import entrypoint
 from molt.cli import entrypoint_dispatch
 from molt.cli import entrypoint_parser
+from molt.cli.config_resolution import _select_capability_input
 
 
 def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> None:
@@ -66,3 +67,13 @@ def test_run_double_dash_owns_option_shaped_program_arguments() -> None:
     assert args.python_version == "3.14"
     assert args.profile is None
     assert args.script_args == ["--profile", "user"]
+
+
+def test_capability_precedence_preserves_explicit_deny_all() -> None:
+    inherited = ["net"]
+    assert _select_capability_input(None, [], inherited) == []
+    assert _select_capability_input(None, "", inherited) == ""
+    assert _select_capability_input(None, None, inherited) is inherited
+
+    dispatch_source = inspect.getsource(entrypoint_dispatch)
+    assert "args.capabilities or" not in dispatch_source
