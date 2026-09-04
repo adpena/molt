@@ -20,6 +20,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,6 +105,11 @@ def sandbox(guard, tmp_path, monkeypatch):
     monkeypatch.setattr(guard, "MANIFEST_PATH", manifest)
     monkeypatch.setattr(guard, "BASELINE_PATH", baseline)
     monkeypatch.setattr(guard, "DEFAULT_RESULTS_PATH", results)
+    monkeypatch.setattr(
+        guard,
+        "load_dynamic_policy_scope",
+        lambda: frozenset({REAL_BYDESIGN_TEST}),
+    )
 
     class Handle:
         MANIFEST_PATH = manifest
@@ -151,6 +157,35 @@ def test_committed_manifest_passes(guard):
 
 def test_committed_manifest_lint_clean(guard):
     assert guard.main(["--lint-only"]) == 0
+
+
+def test_dynamic_policy_scope_uses_canonical_test_policy(guard, monkeypatch):
+    expected = frozenset({REAL_BYDESIGN_TEST})
+    observed: dict[str, object] = {}
+    selectors = (
+        ("tests/differential/policy-a", False),
+        ("tests/differential/policy-b", True),
+    )
+
+    def verification_scope_paths(targets, *, scope, repo_root):
+        observed.update(targets=targets, scope=scope, repo_root=repo_root)
+        return expected
+
+    monkeypatch.setattr(
+        guard.test_policy, "verification_scope_paths", verification_scope_paths
+    )
+    monkeypatch.setattr(
+        guard,
+        "load_verified_subset_policy",
+        lambda: SimpleNamespace(suite_selectors=selectors),
+    )
+
+    assert guard.load_dynamic_policy_scope() == expected
+    assert observed == {
+        "targets": selectors,
+        "scope": "dynamic_execution_policy",
+        "repo_root": guard.ROOT,
+    }
 
 
 def test_execution_red_registry_rejects_new_red_and_unexpected_pass(sandbox, guard):
@@ -345,8 +380,8 @@ def test_fail_stale_path(sandbox, guard):
 
 
 def test_fail_by_design_overlap(sandbox, guard):
-    # A test that is ALSO in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS must not appear
-    # here (no parallel truth). Uses a REAL by-design test path.
+    # A test that is ALSO in the dynamic-execution scope must not appear here
+    # (no parallel truth). Uses a REAL by-design test path.
     assert (REPO_ROOT / REAL_BYDESIGN_TEST).exists()
     sandbox.make_baseline()
     m = sandbox.load(sandbox.MANIFEST_PATH)

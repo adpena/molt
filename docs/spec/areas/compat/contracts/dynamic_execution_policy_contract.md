@@ -22,10 +22,17 @@ This aligns with:
 - Capability-gated behavior that is already part of approved contracts.
 
 ## 3. Tooling Guardrails
-- Differential tests that rely on intentionally unsupported dynamism remain registered in:
-  `tools/stdlib_full_coverage_manifest.py` -> `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
-- Lint-time policy checks must fail if policy references drift or if the dynamic expected-failure contract is broken.
-- Runtime import execution paths that remain intentionally restricted should carry `dynamic-exec-policy` notes in code.
+- Each differential test that relies on intentionally unsupported dynamism
+  declares the complete policy at its source:
+  `# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy`.
+- `tools/compat/test_policy.py` is the canonical parser and projection authority;
+  consumers discover the scope through `verification_scope_paths(...)` rather
+  than maintaining path manifests.
+- Lint-time policy checks fail if scope metadata, required policy documents, or
+  the expected-failure contract drifts.
+- The dynamic-policy guard checks the concrete fail-closed control-flow and
+  diagnostic evidence in runtime import execution paths. A comment or marker is
+  not proof of enforcement.
 
 ## 4. Future Enablement Gate (Explicitly Deferred)
 Future support can be considered only behind a capability-gated, opt-in path after all of the following:

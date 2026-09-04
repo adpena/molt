@@ -1329,7 +1329,7 @@ def test_unavailable_ntfs_change_time_forces_content_hashing(
     _write(target, "header-b")
     os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
     monkeypatch.setattr(
-        "molt.llvm_toolchain._content_change_time_ns", lambda *_args: None
+        "molt.llvm_toolchain.content_change_time_ns", lambda *_args: None
     )
 
     with pytest.raises(LlvmToolchainConfigError, match="content digest drift"):

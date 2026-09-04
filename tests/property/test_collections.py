@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for collection operations.
 
 Tests algebraic invariants for list, dict, set, and tuple — append length,

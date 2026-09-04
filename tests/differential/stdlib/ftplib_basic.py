@@ -1,4 +1,4 @@
-# MOLT_META: wasm=no
+# MOLT_META: backends=llvm,luau,native
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read
 """Purpose: differential coverage for ftplib basic."""
 
@@ -6,28 +6,25 @@ import socketserver
 import threading
 import ftplib
 
+
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
-        self.wfile.write(b"220 ready
-")
+        self.wfile.write(b"220 ready\r\n")
         while True:
             line = self.rfile.readline()
             if not line:
                 break
             cmd = line.strip().upper()
             if cmd.startswith(b"USER"):
-                self.wfile.write(b"331 ok
-")
+                self.wfile.write(b"331 ok\r\n")
             elif cmd.startswith(b"PASS"):
-                self.wfile.write(b"230 ok
-")
+                self.wfile.write(b"230 ok\r\n")
             elif cmd.startswith(b"QUIT"):
-                self.wfile.write(b"221 bye
-")
+                self.wfile.write(b"221 bye\r\n")
                 break
             else:
-                self.wfile.write(b"200 ok
-")
+                self.wfile.write(b"200 ok\r\n")
+
 
 server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
 thread = threading.Thread(target=server.serve_forever)

@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for hashlib and base64 intrinsics.
 
 Tests determinism, fixed output lengths, collision resistance (probabilistic),

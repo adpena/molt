@@ -1,11 +1,11 @@
 import atexit
 import concurrent.futures
 import contextlib
+import hashlib
 import io
 import json
 import os
 import re
-import runpy
 import socket
 import shutil
 import subprocess
@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -46,12 +46,17 @@ from molt.dx import (  # noqa: E402
 )
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt import python_interpreter  # noqa: E402
+from molt.target_python import (  # noqa: E402
+    TargetPythonVersion,
+    _parse_target_python_version,
+    require_supported_target_python,
+)
 from tests import process_guard_common  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
-_DIFF_ARTIFACT_ENV_READY = False
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
@@ -171,25 +176,23 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _ensure_diff_artifact_env() -> None:
-    global _DIFF_ARTIFACT_ENV_READY
-    if _DIFF_ARTIFACT_ENV_READY:
-        return
+def _configure_diff_artifact_environment(
+    *,
+    repo_root: Path,
+    environment: MutableMapping[str, str],
+) -> None:
+    """Install canonical artifact custody at the CLI execution boundary."""
+
     resolved = development_artifact_env(
-        _repo_root(),
-        os.environ,
+        repo_root,
+        environment,
         session_prefix="diff",
-        session_id=os.environ.get("MOLT_SESSION_ID") or f"diff-{os.getpid()}",
+        session_id=environment.get("MOLT_SESSION_ID") or f"diff-{os.getpid()}",
         create_dirs=True,
     )
     for key in (*CANONICAL_RUN_ENV_KEYS, *DX_ENV_KEYS, "PYTHONPATH"):
         if key in resolved:
-            os.environ[key] = resolved[key]
-    _DIFF_ARTIFACT_ENV_READY = True
-
-
-def _stdlib_full_coverage_manifest_path() -> Path:
-    return _repo_root() / "tools" / "stdlib_full_coverage_manifest.py"
+            environment[key] = resolved[key]
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
@@ -211,28 +214,6 @@ def _collect_env_overrides(file_path: str) -> dict[str, str]:
     return overrides
 
 
-def _collect_meta(file_path: str) -> dict[str, list[str]]:
-    meta: dict[str, list[str]] = {}
-    try:
-        text = Path(file_path).read_text()
-    except OSError:
-        return meta
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("# MOLT_META:"):
-            continue
-        payload = stripped[len("# MOLT_META:") :].strip()
-        for token in payload.split():
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            values = [v for v in value.split(",") if v]
-            if not values:
-                values = [""]
-            meta.setdefault(key, []).extend(values)
-    return meta
-
-
 def _diff_capabilities(env: dict[str, str]) -> str:
     if "MOLT_DIFF_CAPABILITIES" in env:
         return env["MOLT_DIFF_CAPABILITIES"]
@@ -242,22 +223,24 @@ def _diff_capabilities(env: dict[str, str]) -> str:
 
 
 def _metadata_stdlib_profile(file_path: str) -> tuple[str | None, str | None]:
-    values = _collect_meta(file_path).get("stdlib_profile", [])
-    normalized = {value.strip().lower() for value in values if value.strip()}
-    if not normalized:
-        return None, None
-    if len(normalized) != 1:
-        return None, "MOLT_META stdlib_profile must select exactly one profile"
-    profile = next(iter(normalized))
-    if profile not in {"micro", "full"}:
-        return None, "MOLT_META stdlib_profile must be 'micro' or 'full'"
-    return profile, None
+    try:
+        return test_policy.parse_metadata(file_path).stdlib_profile, None
+    except ValueError as exc:
+        return None, str(exc)
 
 
-def _apply_metadata_env_overrides(file_path: str, env: dict[str, str]) -> str | None:
-    profile, error = _metadata_stdlib_profile(file_path)
-    if error is not None:
-        return error
+def _apply_metadata_env_overrides(
+    file_path: str,
+    env: dict[str, str],
+    *,
+    metadata: test_policy.TestMetadata | None = None,
+) -> str | None:
+    if metadata is None:
+        profile, error = _metadata_stdlib_profile(file_path)
+        if error is not None:
+            return error
+    else:
+        profile = metadata.stdlib_profile
     if profile is None:
         return None
     explicit = env.get("MOLT_DIFF_STDLIB_PROFILE", "").strip().lower()
@@ -268,55 +251,6 @@ def _apply_metadata_env_overrides(file_path: str, env: dict[str, str]) -> str | 
         )
     env["MOLT_DIFF_STDLIB_PROFILE"] = profile
     return None
-
-
-def _normalize_repo_relative(path: str | Path) -> str:
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = (_repo_root() / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
-    try:
-        rel = candidate.relative_to(_repo_root())
-    except ValueError:
-        return candidate.as_posix()
-    return rel.as_posix()
-
-
-@lru_cache(maxsize=1)
-def _too_dynamic_expected_failure_tests() -> frozenset[str]:
-    manifest = _stdlib_full_coverage_manifest_path()
-    if not manifest.exists():
-        return frozenset()
-    try:
-        namespace = runpy.run_path(str(manifest))
-    except Exception:
-        return frozenset()
-    raw = namespace.get("TOO_DYNAMIC_EXPECTED_FAILURE_TESTS", ())
-    if not isinstance(raw, tuple):
-        return frozenset()
-    out: set[str] = set()
-    for item in raw:
-        if not isinstance(item, str):
-            continue
-        out.add(_normalize_repo_relative(item))
-    return frozenset(out)
-
-
-def _manifest_marks_expected_failure(file_path: str) -> bool:
-    return _normalize_repo_relative(file_path) in _too_dynamic_expected_failure_tests()
-
-
-def _parse_version(value: str) -> tuple[int, int] | None:
-    parts = value.strip().split(".")
-    if len(parts) < 2:
-        return None
-    try:
-        major = int(parts[0])
-        minor = int(parts[1])
-    except ValueError:
-        return None
-    return major, minor
 
 
 @lru_cache(maxsize=None)
@@ -403,130 +337,45 @@ def _python_exe_version(python_exe: PythonCommand) -> tuple[int, int] | None:
     return _python_command_version(_resolve_python_command(python_exe))
 
 
+def _resolve_molt_target_python(
+    python_exe: PythonCommand,
+    explicit: str | TargetPythonVersion | None,
+) -> TargetPythonVersion:
+    oracle_version = _python_exe_version(python_exe)
+    if oracle_version is None:
+        raise ValueError("cannot derive Molt target Python from the CPython oracle")
+    derived = require_supported_target_python(
+        TargetPythonVersion(oracle_version[0], oracle_version[1], 0)
+    )
+    if explicit is None:
+        return derived
+    if isinstance(explicit, TargetPythonVersion):
+        target = require_supported_target_python(explicit)
+    else:
+        target = _parse_target_python_version(explicit)
+    if isinstance(explicit, str) and explicit != target.short:
+        raise ValueError("Molt target Python must use canonical 3.<minor> spelling")
+    if target.feature_version != oracle_version:
+        raise ValueError(
+            "Molt target Python does not match the CPython oracle: "
+            f"target={target.short}, oracle={derived.short}"
+        )
+    return target
+
+
 def _molt_sys_env_for_python_exe(python_exe: PythonCommand) -> dict[str, str]:
     return _molt_sys_env_for_python_command(_resolve_python_command(python_exe))
 
 
-def _host_platform_tags() -> set[str]:
-    tags: set[str] = set()
-    if os.name == "posix":
-        tags.update({"posix", "unix"})
-    if os.name == "nt":
-        tags.add("windows")
-    if sys.platform.startswith("linux"):
-        tags.add("linux")
-    elif sys.platform == "darwin":
-        tags.add("macos")
-    elif sys.platform.startswith("freebsd"):
-        tags.add("freebsd")
-    wasm_raw = os.environ.get("MOLT_TARGET", "").strip().lower()
-    wasm_flag = os.environ.get("MOLT_WASM", "").strip().lower()
-    if wasm_raw == "wasm" or wasm_flag in {"1", "true", "yes", "on"}:
-        tags.add("wasm")
-    return tags
-
-
-def _normalize_output(text: str, normalize: set[str]) -> str:
-    if "all" in normalize or "newlines" in normalize:
-        text = text.replace("\r\n", "\n")
-    if "all" in normalize or "paths" in normalize:
-        text = text.replace("\\", "/")
-    return text
-
-
 # The CPython-parity comparison law lives in ONE place: tools/compat/comparison.py
 # (doc 66 Phase 0). These names are thin re-exports so the in-file comparison
-# sites and external consumers (tools/wasm_diff.py) keep working while routing
-# through the single law. There is no second comparison implementation in the
+# sites keep working while routing through the single law. There is no second
+# comparison implementation or backend-specific runner in the
 # tree after this extraction; tests/test_compat_comparison.py proves the law
 # behaves byte-identically to the inlined version it replaced.
 _canonicalize_stdout = compat_comparison.canonicalize_stdout
 _extract_exception_signature = compat_comparison.extract_exception_signature
 _stderr_matches = compat_comparison.stderr_matches
-
-
-def _truthy_flag(values: list[str]) -> bool:
-    for value in values:
-        if value.strip().lower() in {"1", "true", "yes", "on"}:
-            return True
-    return False
-
-
-def _meta_expect_molt_fail(meta: dict[str, list[str]]) -> bool:
-    values = [v.lower() for v in meta.get("expect_fail", []) + meta.get("xfail", [])]
-    return "molt" in values
-
-
-def _meta_expect_fail_reason(meta: dict[str, list[str]]) -> str:
-    values = meta.get("expect_fail_reason", []) + meta.get("xfail_reason", [])
-    if not values:
-        return ""
-    return values[0].strip()
-
-
-def _resolve_expected_failure_status(
-    *,
-    expect_molt_fail: bool,
-    raw_status: str,
-    cpython_returncode: int,
-) -> tuple[str, str | None]:
-    if not expect_molt_fail:
-        return raw_status, None
-    if cpython_returncode != 0:
-        return raw_status, None
-    if raw_status == "fail":
-        return "pass", "xfail"
-    if raw_status == "pass":
-        return "fail", "xpass"
-    return raw_status, None
-
-
-def _should_skip(
-    meta: dict[str, list[str]],
-    *,
-    python_version: tuple[int, int] | None,
-    host_tags: set[str],
-) -> tuple[bool, str | None]:
-    if _truthy_flag(meta.get("skip", [])):
-        return True, "metadata skip"
-
-    platforms = {
-        p.lower() for p in meta.get("platforms", []) + meta.get("platform", [])
-    }
-    if platforms and host_tags.isdisjoint(platforms):
-        return True, f"platform {sorted(platforms)}"
-
-    wasm_flags = [v.lower() for v in meta.get("wasm", [])]
-    if wasm_flags:
-        wants_wasm = any(v in {"1", "true", "yes", "on", "only"} for v in wasm_flags)
-        forbids_wasm = any(v in {"0", "false", "no"} for v in wasm_flags)
-        if "wasm" in host_tags and forbids_wasm:
-            return True, "wasm disabled"
-        if "wasm" not in host_tags and wants_wasm:
-            return True, "wasm only"
-
-    allowed_versions = meta.get("py", []) + meta.get("python", [])
-    if python_version is not None and allowed_versions:
-        allowed = {_parse_version(v) for v in allowed_versions}
-        allowed.discard(None)
-        if allowed and python_version not in allowed:
-            return True, f"python {python_version[0]}.{python_version[1]}"
-
-    if python_version is not None:
-        min_versions = [_parse_version(v) for v in meta.get("min_py", [])]
-        max_versions = [_parse_version(v) for v in meta.get("max_py", [])]
-        min_versions = [v for v in min_versions if v is not None]
-        max_versions = [v for v in max_versions if v is not None]
-        if min_versions:
-            min_version = min_versions[0]
-            if python_version < min_version:
-                return True, f"min_py {min_version[0]}.{min_version[1]}"
-        if max_versions:
-            max_version = max_versions[0]
-            if python_version > max_version:
-                return True, f"max_py {max_version[0]}.{max_version[1]}"
-
-    return False, None
 
 
 def _diff_timeout() -> float | None:
@@ -556,19 +405,69 @@ def _diff_build_timeout(run_timeout: float | None) -> float | None:
     return max(run_timeout * 2.0, 300.0)
 
 
+@dataclass(frozen=True, slots=True)
+class DiffArtifactLayout:
+    """Immutable artifact-root projection for one repository/environment pair."""
+
+    repo_root: Path
+    artifact_root: Path
+    diff_root: Path
+    tmp_root: Path
+    cargo_target_root: Path
+    cache_root: Path
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        repo_root: Path,
+        environment: Mapping[str, str],
+    ) -> "DiffArtifactLayout":
+        repository = Path(repo_root).expanduser()
+
+        def configured_path(key: str) -> Path | None:
+            raw = environment.get(key, "").strip()
+            return Path(raw).expanduser() if raw else None
+
+        artifact_root = configured_path("MOLT_EXT_ROOT") or repository
+        diff_root = configured_path("MOLT_DIFF_ROOT") or artifact_root / "tmp" / "diff"
+        tmp_root = configured_path("MOLT_DIFF_TMPDIR") or artifact_root / "tmp"
+        cargo_target_root = (
+            configured_path("MOLT_DIFF_CARGO_TARGET_DIR")
+            or configured_path("CARGO_TARGET_DIR")
+            or cargo_target_dir_for_artifact_root(
+                artifact_root,
+                environment.get("MOLT_SESSION_ID"),
+            )
+        )
+        return cls(
+            repo_root=repository,
+            artifact_root=artifact_root,
+            diff_root=diff_root,
+            tmp_root=tmp_root,
+            cargo_target_root=cargo_target_root,
+            cache_root=artifact_root / ".molt_cache",
+        )
+
+
+def _diff_artifact_layout(
+    *,
+    repo_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> DiffArtifactLayout:
+    return DiffArtifactLayout.from_environment(
+        repo_root=repo_root if repo_root is not None else _repo_root(),
+        environment=environment if environment is not None else os.environ,
+    )
+
+
+def _materialize_artifact_root(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _diff_root() -> Path:
-    _ensure_diff_artifact_env()
-    raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
-    if raw:
-        root = Path(raw).expanduser()
-    else:
-        artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-        if artifact_root:
-            root = Path(artifact_root).expanduser() / "tmp" / "diff"
-        else:
-            root = _repo_root() / "tmp" / "diff"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return _materialize_artifact_root(_diff_artifact_layout().diff_root)
 
 
 def _diff_results_jsonl_path() -> Path | None:
@@ -619,54 +518,15 @@ def _record_diff_result(record: dict[str, object]) -> None:
 
 
 def _diff_tmp_root() -> Path:
-    _ensure_diff_artifact_env()
-    raw = os.environ.get("MOLT_DIFF_TMPDIR", "").strip()
-    if raw:
-        root = Path(raw).expanduser()
-    else:
-        artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-        if artifact_root:
-            root = Path(artifact_root).expanduser() / "tmp"
-        else:
-            root = _repo_root() / "tmp"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return _materialize_artifact_root(_diff_artifact_layout().tmp_root)
 
 
 def _diff_cargo_target_root() -> Path:
-    _ensure_diff_artifact_env()
-    raw = os.environ.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
-    if raw:
-        root = Path(raw).expanduser()
-    else:
-        cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
-        if cargo_target:
-            root = Path(cargo_target).expanduser()
-        else:
-            artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-            if artifact_root:
-                root = cargo_target_dir_for_artifact_root(
-                    Path(artifact_root).expanduser(),
-                    os.environ.get("MOLT_SESSION_ID"),
-                )
-            else:
-                root = cargo_target_dir_for_artifact_root(
-                    _repo_root(),
-                    os.environ.get("MOLT_SESSION_ID"),
-                )
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return _materialize_artifact_root(_diff_artifact_layout().cargo_target_root)
 
 
 def _diff_cache_root() -> Path:
-    _ensure_diff_artifact_env()
-    artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if artifact_root:
-        root = Path(artifact_root).expanduser() / ".molt_cache"
-    else:
-        root = _repo_root() / ".molt_cache"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return _materialize_artifact_root(_diff_artifact_layout().cache_root)
 
 
 def _diff_backend_daemon_root() -> Path:
@@ -1296,12 +1156,35 @@ def _diff_log_passes() -> bool:
 
 def _diff_trusted_default() -> bool:
     raw = os.environ.get("MOLT_DIFF_TRUSTED", "").strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "on"}
-    raw = os.environ.get("MOLT_DEV_TRUSTED", "").strip().lower()
-    if not raw:
-        return True
-    return raw not in {"0", "false", "no", "off"}
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _backend_execution_context(
+    file_path: str,
+    python_exe: PythonCommand,
+    build_profile: str,
+    target_python: str | TargetPythonVersion | None,
+    *,
+    metadata: test_policy.TestMetadata | None = None,
+) -> compat_backends.BackendExecutionContext:
+    resolved_target = _resolve_molt_target_python(python_exe, target_python)
+    env = os.environ.copy()
+    env["MOLT_TRUSTED"] = "1" if _diff_trusted_default() else "0"
+    env.update(_collect_env_overrides(file_path))
+    metadata_error = _apply_metadata_env_overrides(
+        file_path,
+        env,
+        metadata=metadata,
+    )
+    if metadata_error is not None:
+        raise ValueError(metadata_error)
+    env.update(_molt_sys_env_for_python_exe(python_exe))
+    return compat_backends.BackendExecutionContext(
+        target_python=resolved_target,
+        build_profile=build_profile,
+        capabilities=_diff_capabilities(env),
+        environment=env,
+    )
 
 
 def _diff_measure_rss() -> bool:
@@ -2006,54 +1889,6 @@ def _constrain_jobs_for_memory_guard(
     return safe_jobs
 
 
-def _collect_test_files(target: Path) -> list[Path]:
-    if target.is_dir():
-        manifest = target / "TESTS.txt"
-        if manifest.is_file():
-            files: list[Path] = []
-            seen: set[Path] = set()
-            for raw in manifest.read_text(encoding="utf-8").splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                path = Path(line)
-                if not path.is_absolute():
-                    path = Path.cwd() / path
-                if not path.exists():
-                    raise FileNotFoundError(
-                        f"Manifest entry missing: {line} (from {manifest})"
-                    )
-                if path.is_dir():
-                    pattern = _diff_glob()
-                    matches = sorted(path.glob(pattern))
-                else:
-                    matches = [path]
-                for match in matches:
-                    if match.suffix != ".py":
-                        continue
-                    resolved = match.resolve()
-                    if resolved in seen:
-                        continue
-                    seen.add(resolved)
-                    files.append(match)
-            return files
-        pattern = _diff_glob()
-        return sorted(target.glob(pattern))
-    return [target]
-
-
-def _collect_test_files_multi(targets: Sequence[Path]) -> list[Path]:
-    seen: set[Path] = set()
-    files: list[Path] = []
-    for target in targets:
-        for path in _collect_test_files(target):
-            if path in seen:
-                continue
-            seen.add(path)
-            files.append(path)
-    return files
-
-
 def _order_test_files(files: list[Path], jobs: int) -> list[Path]:
     mode = os.environ.get("MOLT_DIFF_ORDER", "auto").strip().lower()
     if mode not in {"auto", "name", "size-asc", "size-desc"}:
@@ -2133,6 +1968,7 @@ def _diff_worker(
     python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
+    target_python: str | TargetPythonVersion | None = None,
 ) -> dict[str, object]:
     _install_worker_orphan_guard()
     started = time.monotonic()
@@ -2140,7 +1976,11 @@ def _diff_worker(
     buffer_err = io.StringIO()
     with contextlib.redirect_stdout(buffer_out), contextlib.redirect_stderr(buffer_err):
         status = diff_test(
-            file_path, python_exe, build_profile=build_profile, targets=targets
+            file_path,
+            python_exe,
+            build_profile=build_profile,
+            targets=targets,
+            target_python=target_python,
         )
     return {
         "path": file_path,
@@ -2192,6 +2032,7 @@ def _diff_run_single(
     python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
+    target_python: str | TargetPythonVersion | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     buffer_out = io.StringIO()
@@ -2200,7 +2041,11 @@ def _diff_run_single(
     err_stream = _TeeStream(sys.stderr, buffer_err)
     with contextlib.redirect_stdout(out_stream), contextlib.redirect_stderr(err_stream):
         status = diff_test(
-            file_path, python_exe, build_profile=build_profile, targets=targets
+            file_path,
+            python_exe,
+            build_profile=build_profile,
+            targets=targets,
+            target_python=target_python,
         )
     return {
         "path": file_path,
@@ -2866,6 +2711,7 @@ def _run_batch_compile_build(
     output_root: Path,
     output_binary: Path,
     build_profile: str,
+    target_python: TargetPythonVersion | None,
     no_cache: bool,
     rebuild: bool,
     request_timeout: float,
@@ -2888,6 +2734,8 @@ def _run_batch_compile_build(
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
+    if target_python is not None:
+        params["python_version"] = target_python.short
     if stdlib_profile is not None:
         params["stdlib_profile"] = stdlib_profile
     if diff_caps:
@@ -3098,6 +2946,7 @@ def run_molt(
     no_cache: bool = False,
     rebuild: bool = False,
     extra_env: dict[str, str] | None = None,
+    execution_context: compat_backends.BackendExecutionContext | None = None,
 ):
     return _run_molt(
         file_path,
@@ -3107,6 +2956,7 @@ def run_molt(
         no_cache=no_cache,
         rebuild=rebuild,
         extra_env=extra_env,
+        execution_context=execution_context,
     )
 
 
@@ -3118,6 +2968,7 @@ def run_molt_build_only(
     no_cache: bool = False,
     rebuild: bool = False,
     extra_env: dict[str, str] | None = None,
+    execution_context: compat_backends.BackendExecutionContext | None = None,
 ) -> tuple[str, str, int]:
     return _run_molt(
         file_path,
@@ -3127,6 +2978,7 @@ def run_molt_build_only(
         no_cache=no_cache,
         rebuild=rebuild,
         extra_env=extra_env,
+        execution_context=execution_context,
     )
 
 
@@ -3139,6 +2991,7 @@ def _run_molt(
     no_cache: bool,
     rebuild: bool,
     extra_env: dict[str, str] | None,
+    execution_context: compat_backends.BackendExecutionContext | None,
 ) -> tuple[str | None, str, int]:
     _apply_memory_limit()
     output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
@@ -3154,7 +3007,16 @@ def _run_molt(
     run_metrics: dict[str, int] | None = None
 
     # Build
-    env = os.environ.copy()
+    if (
+        execution_context is not None
+        and execution_context.build_profile != build_profile
+    ):
+        raise ValueError("backend execution context build profile drifted")
+    env = (
+        dict(execution_context.environment)
+        if execution_context is not None
+        else os.environ.copy()
+    )
     env["PYTHONPATH"] = "src"
     env["PYTHONHASHSEED"] = "0"
     # Keep differential builds hermetic to the configured diff roots so host
@@ -3189,20 +3051,20 @@ def _run_molt(
     # Always route through the diff target root (which itself honors
     # MOLT_DIFF_CARGO_TARGET_DIR) instead of inheriting unrelated shell state.
     env["CARGO_TARGET_DIR"] = str(_diff_cargo_target_root())
-    if "MOLT_TRUSTED" not in env and _diff_trusted_default():
-        env["MOLT_TRUSTED"] = "1"
-    env.update(_collect_env_overrides(file_path))
-    metadata_error = _apply_metadata_env_overrides(file_path, env)
-    if metadata_error is not None:
-        _record_rss_metrics(
-            file_path,
-            build_metrics=None,
-            run_metrics=None,
-            build_rc=2,
-            run_rc=None,
-            status="build_invalid_stdlib_profile",
-        )
-        return None, metadata_error, 2
+    if execution_context is None:
+        env["MOLT_TRUSTED"] = "1" if _diff_trusted_default() else "0"
+        env.update(_collect_env_overrides(file_path))
+        metadata_error = _apply_metadata_env_overrides(file_path, env)
+        if metadata_error is not None:
+            _record_rss_metrics(
+                file_path,
+                build_metrics=None,
+                run_metrics=None,
+                build_rc=2,
+                run_rc=None,
+                status="build_invalid_stdlib_profile",
+            )
+            return None, metadata_error, 2
     if extra_env:
         env.update(extra_env)
     if daemon_enabled is None:
@@ -3255,6 +3117,11 @@ def _run_molt(
                 output_root=output_root,
                 output_binary=output_binary,
                 build_profile=build_profile,
+                target_python=(
+                    execution_context.target_python
+                    if execution_context is not None
+                    else None
+                ),
                 no_cache=no_cache,
                 rebuild=rebuild,
                 request_timeout=batch_request_timeout,
@@ -3293,6 +3160,10 @@ def _run_molt(
             "--output",
             str(output_binary),
         ]
+        if execution_context is not None:
+            build_cmd.extend(
+                ["--python-version", execution_context.target_python.short]
+            )
         # Grant standard capabilities for CPython parity in differential tests.
         # Without these, compiled binaries cannot access the filesystem (tempfile,
         # pathlib, os.path), environment variables, or time functions — causing
@@ -3478,12 +3349,26 @@ def _is_timeout_error(stderr: str) -> bool:
 
 def _is_backend_daemon_build_error(stderr: str) -> bool:
     needle = stderr.lower()
+    # Retry only failures that identify the daemon transport/startup protocol.
+    # A backend compilation failure or compiler panic is deterministic program
+    # signal; rebuilding it cold wastes minutes and cannot repair the input.
     return any(
         token in needle
         for token in (
             "backend daemon failed to become ready",
+            "failed to start backend daemon",
+            "backend daemon connection failed",
+            "backend daemon died while request was in flight",
+            "backend daemon returned empty response",
+            "backend daemon returned no response",
+            "backend daemon returned invalid json",
+            "backend daemon returned non-object response",
+            "backend daemon response missing job results",
+            "backend daemon response had malformed job payload",
+            "backend daemon reported success but output is missing",
+            "backend daemon process is not running",
+            "backend daemon closed response pipe",
             "incompatiblesignature(",
-            "backend compilation failed",
         )
     )
 
@@ -3764,12 +3649,7 @@ def _print_rss_top(
 
 @dataclass(frozen=True)
 class _BackendOutcome:
-    """One backend's NORMALIZED outcome for a test: (stdout, stderr, rc).
-
-    `stdout` is None when the backend never produced output (build failure
-    before execution). Already passed through `_normalize_output` so the
-    comparison law sees the same canonical text the single-backend path used.
-    """
+    """One backend's outcome for a test: (stdout, stderr, return code)."""
 
     stdout: str | None
     stderr: str
@@ -3814,8 +3694,7 @@ def _compat_backend_registry() -> dict[str, compat_backends.BackendAdapter]:
 
 def _run_native_backend(
     file_path: str,
-    build_profile: str,
-    molt_extra_env: dict[str, str],
+    context: compat_backends.BackendExecutionContext,
 ) -> tuple[str | None, str, int]:
     """Run the NATIVE backend with the full dyld/daemon/OOM retry pipeline.
 
@@ -3826,7 +3705,9 @@ def _run_native_backend(
     normalizes once for every backend.
     """
     molt_out, molt_err, molt_ret = run_molt(
-        file_path, build_profile, extra_env=molt_extra_env
+        file_path,
+        context.build_profile,
+        execution_context=context,
     )
     saw_dyld_retry = False
     if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
@@ -3839,10 +3720,10 @@ def _run_native_backend(
         )
         retry_out, retry_err, retry_ret = run_molt(
             file_path,
-            build_profile,
+            context.build_profile,
             daemon_enabled=False,
             no_cache=False,
-            extra_env=molt_extra_env,
+            execution_context=context,
         )
         molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if _is_dyld_unknown_imports(molt_err):
@@ -3853,9 +3734,10 @@ def _run_native_backend(
             )
             retry_out, retry_err, retry_ret = run_molt(
                 file_path,
-                build_profile,
+                context.build_profile,
                 daemon_enabled=False,
                 no_cache=True,
+                execution_context=context,
             )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
@@ -3866,10 +3748,11 @@ def _run_native_backend(
             )
             retry_out, retry_err, retry_ret = run_molt(
                 file_path,
-                build_profile,
+                context.build_profile,
                 daemon_enabled=False,
                 no_cache=True,
                 rebuild=True,
+                execution_context=context,
             )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
@@ -3883,11 +3766,12 @@ def _run_native_backend(
             with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
                 retry_out, retry_err, retry_ret = run_molt(
                     file_path,
-                    build_profile,
+                    context.build_profile,
                     daemon_enabled=False,
                     no_cache=True,
                     rebuild=True,
                     extra_env=isolated_env,
+                    execution_context=context,
                 )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
     if saw_dyld_retry and _diff_disable_daemon_on_dyld():
@@ -3921,9 +3805,10 @@ def _run_native_backend(
         )
         retry_out, retry_err, retry_ret = run_molt(
             file_path,
-            build_profile,
+            context.build_profile,
             daemon_enabled=False,
             no_cache=False,
+            execution_context=context,
         )
         molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if (
@@ -3939,10 +3824,11 @@ def _run_native_backend(
             with _isolated_retry_env() as isolated_env:
                 retry_out, retry_err, retry_ret = run_molt(
                     file_path,
-                    build_profile,
+                    context.build_profile,
                     daemon_enabled=False,
                     no_cache=True,
                     extra_env=isolated_env,
+                    execution_context=context,
                 )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if molt_out is None and _is_backend_daemon_build_error(molt_err):
@@ -3963,10 +3849,11 @@ def _run_native_backend(
         with _isolated_retry_env() as isolated_env:
             retry_out, retry_err, retry_ret = run_molt(
                 file_path,
-                build_profile,
+                context.build_profile,
                 daemon_enabled=False,
                 no_cache=True,
                 extra_env=isolated_env,
+                execution_context=context,
             )
         molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
     return molt_out, molt_err, molt_ret
@@ -3976,10 +3863,7 @@ def _run_backend_for_diff(
     *,
     backend: str,
     file_path: str,
-    build_profile: str,
-    molt_extra_env: dict[str, str],
-    normalize: set[str],
-    record: dict[str, object],
+    context: compat_backends.BackendExecutionContext,
 ) -> "_BackendOutcome | _Sentinel":
     """Produce one backend's normalized outcome, or a sentinel.
 
@@ -3988,9 +3872,7 @@ def _run_backend_for_diff(
     LOUD skip of this backend only). Otherwise a normalized `_BackendOutcome`.
     """
     if backend == "native":
-        raw_out, raw_err, raw_ret = _run_native_backend(
-            file_path, build_profile, molt_extra_env
-        )
+        raw_out, raw_err, raw_ret = _run_native_backend(file_path, context)
         # Pass the native outcome through the SAME fault-injection seam the other
         # backends use, so the synthetic-divergence proof works uniformly on
         # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
@@ -4015,12 +3897,9 @@ def _run_backend_for_diff(
         if not avail.available:
             print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
             return _UNCALIBRATED_SENTINEL
-        diff_caps = _diff_capabilities(os.environ)
         result = adapter.build_and_run(
             file_path,
-            build_profile,
-            extra_env=molt_extra_env,
-            capabilities=diff_caps,
+            context=context,
         )
         # The fault-injection seam applies at exactly ONE layer (here), uniformly
         # for every backend, so adapters stay pure build+run.
@@ -4030,9 +3909,7 @@ def _run_backend_for_diff(
     if _should_retry_oom(raw_ret, raw_err):
         return _OOM_SENTINEL
 
-    norm_out = _normalize_output(raw_out, normalize) if raw_out is not None else None
-    norm_err = _normalize_output(raw_err, normalize)
-    return _BackendOutcome(stdout=norm_out, stderr=norm_err, returncode=raw_ret)
+    return _BackendOutcome(stdout=raw_out, stderr=raw_err, returncode=raw_ret)
 
 
 def _cross_backend_divergence(
@@ -4116,6 +3993,7 @@ def _record_backend_result(
     backend: str,
     raw_status: str,
     expect_molt_fail: bool,
+    outcome: "_BackendOutcome",
 ) -> None:
     """Append a per-backend honesty row so the (test x backend) matrix is fed.
 
@@ -4128,10 +4006,16 @@ def _record_backend_result(
     assert isinstance(backend_rows, list)
     backend_rows.append(
         {
-            "file": _normalize_repo_relative(file_path),
+            "record_type": "backend",
+            "file": test_policy.normalize_repo_relative(file_path),
             "backend": backend,
             "raw_status": raw_status,
             "expect_molt_fail": expect_molt_fail,
+            "returncode": outcome.returncode,
+            "stdout_sha256": hashlib.sha256(
+                (outcome.stdout or "").encode("utf-8")
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(outcome.stderr.encode("utf-8")).hexdigest(),
         }
     )
 
@@ -4141,6 +4025,7 @@ def diff_test(
     python_exe: PythonCommand = sys.executable,
     build_profile: str = "dev",
     targets: tuple[str, ...] = ("native",),
+    target_python: str | TargetPythonVersion | None = None,
 ):
     """Run one differential test across `targets` and return its RESOLVED status.
 
@@ -4165,7 +4050,8 @@ def diff_test(
     # Mutable record the inner finalizer fills in; emitted once on every exit
     # path (skip / oom / pass / fail). raw_status is authoritative for honesty.
     record: dict[str, object] = {
-        "file": _normalize_repo_relative(file_path),
+        "record_type": "test",
+        "file": test_policy.normalize_repo_relative(file_path),
         "raw_status": None,
         "resolved_status": None,
         "reason_tag": None,
@@ -4173,39 +4059,62 @@ def diff_test(
     }
 
     def _impl() -> str:
-        meta = _collect_meta(file_path)
-        manifest_expect_fail = _manifest_marks_expected_failure(file_path)
-        explicit_expect_fail = _meta_expect_molt_fail(meta)
-        expect_molt_fail = manifest_expect_fail or explicit_expect_fail
+        meta = test_policy.parse_metadata(file_path)
+        expect_molt_fail = meta.expect_molt_fail
+        expect_fail_reason = meta.expected_failure_reason
         record["expect_molt_fail"] = expect_molt_fail
-        expect_fail_reason = _meta_expect_fail_reason(meta)
-        if not expect_fail_reason and manifest_expect_fail:
-            expect_fail_reason = "too_dynamic_policy"
+        record["expected_failure_reason"] = expect_fail_reason
         python_version = _python_exe_version(python_exe)
-        host_tags = _host_platform_tags()
-        skip, reason = _should_skip(
-            meta,
-            python_version=python_version,
-            host_tags=host_tags,
+        execution_context = _backend_execution_context(
+            file_path,
+            python_exe,
+            build_profile,
+            target_python,
+            metadata=meta,
         )
-        if skip:
+        record["compiler_target_python"] = execution_context.target_python.short
+        host_tags = test_policy.current_platform_tags()
+        architecture = test_policy.current_architecture()
+        exclusion_by_backend = {
+            backend: test_policy.exclusion_reason(
+                meta,
+                python_version=python_version,
+                platform_tags=host_tags,
+                architecture=architecture,
+                backend=backend,
+            )
+            for backend in targets
+        }
+        eligible_targets = tuple(
+            backend for backend in targets if exclusion_by_backend[backend] is None
+        )
+        if not eligible_targets:
+            reasons = sorted(
+                {
+                    reason
+                    for reason in exclusion_by_backend.values()
+                    if reason is not None
+                }
+            )
+            reason = "; ".join(reasons) or "not applicable to requested backends"
             note = f" ({reason})" if reason else ""
             print(f"[SKIP] {file_path}{note}")
             # skip/oom never reach _finalize_status; record raw==resolved so the
             # honesty sink sees every test, not just the compared ones.
             record["raw_status"] = "skip"
             record["resolved_status"] = "skip"
+            record["exclusion_reason"] = reason
             return "skip"
 
-        normalize = {v.lower() for v in meta.get("normalize", [])}
-        stdout_mode = (meta.get("stdout", ["exact"])[0]).lower()
-        stderr_mode = (meta.get("stderr", ["ignore"])[0]).lower()
+        stdout_mode = meta.stdout_mode
+        stderr_mode = meta.stderr_mode
 
         print(f"Testing {file_path} against {_python_command_display(python_exe)}...")
         cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+        record["cpython_returncode"] = cp_ret
 
         def _finalize_status(raw_status: str) -> str:
-            resolved_status, reason_tag = _resolve_expected_failure_status(
+            resolved_status, reason_tag = test_policy.resolve_expected_failure_status(
                 expect_molt_fail=expect_molt_fail,
                 raw_status=raw_status,
                 cpython_returncode=cp_ret,
@@ -4234,9 +4143,13 @@ def diff_test(
             record["raw_status"] = "skip"
             record["resolved_status"] = "skip"
             return "skip"
-        molt_extra_env = _molt_sys_env_for_python_exe(python_exe)
-        cp_out = _normalize_output(cp_out, normalize)
-        cp_err = _normalize_output(cp_err, normalize)
+        record["cpython_stdout_sha256"] = hashlib.sha256(
+            cp_out.encode("utf-8")
+        ).hexdigest()
+        record["cpython_stderr_sha256"] = hashlib.sha256(
+            cp_err.encode("utf-8")
+        ).hexdigest()
+        record["comparison_law"] = compat_comparison.COMPARISON_LAW_VERSION
 
         # The CPython oracle, the meta gating, the comparison law, and the
         # cross-backend divergence check are all backend-INDEPENDENT (doc 66
@@ -4245,14 +4158,11 @@ def diff_test(
         # OOM retry pipeline (it is native-shaped); other backends use their
         # adapter's guarded build+run.
         per_backend: dict[str, _BackendOutcome] = {}
-        for backend in targets:
+        for backend in eligible_targets:
             outcome = _run_backend_for_diff(
                 backend=backend,
                 file_path=file_path,
-                build_profile=build_profile,
-                molt_extra_env=molt_extra_env,
-                normalize=normalize,
-                record=record,
+                context=execution_context,
             )
             if outcome is _OOM_SENTINEL:
                 print(f"[OOM] {file_path} ({backend})")
@@ -4312,7 +4222,12 @@ def diff_test(
             # Per-backend honesty row so the matrix join (test x backend) is fed
             # for every backend that ran, not just the aggregate.
             _record_backend_result(
-                record, file_path, backend, "pass" if ok else "fail", expect_molt_fail
+                record,
+                file_path,
+                backend,
+                "pass" if ok else "fail",
+                expect_molt_fail,
+                outcome,
             )
 
         # --- Cross-backend divergence sub-oracle (doc 66 FACT 2) --------------
@@ -4346,6 +4261,7 @@ def run_diff(
     build_profile: str = "dev",
     *,
     targets: tuple[str, ...] = ("native",),
+    target_python: str | None = None,
     jobs: int | None = None,
     log_dir: Path | None = None,
     log_file: Path | None = None,
@@ -4356,6 +4272,10 @@ def run_diff(
     warm_cache: bool = False,
     retry_oom: bool = False,
 ) -> dict:
+    compiler_target_python = _resolve_molt_target_python(
+        python_exe,
+        target_python,
+    )
     _ensure_diff_run_lock()
     _prune_orphan_diff_workers()
     _prune_orphan_build_helpers()
@@ -4363,10 +4283,10 @@ def run_diff(
     _prune_stale_build_locks()
     results: list[tuple[str, str]] = []
     duration_by_path: dict[str, float] = {}
-    if isinstance(target, Path):
-        test_files = _collect_test_files(target)
-    else:
-        test_files = _collect_test_files_multi(target)
+    selected_targets = (target,) if isinstance(target, Path) else tuple(target)
+    test_files = list(
+        test_policy.collect_test_files(selected_targets, pattern=_diff_glob())
+    )
     if jobs is None:
         jobs = _default_jobs() if len(test_files) > 1 else 1
     run_id = _diff_run_id()
@@ -4431,7 +4351,17 @@ def run_diff(
             shared_cache = str(_diff_cache_root())
             os.environ["MOLT_CACHE"] = shared_cache
         for file_path in test_files:
-            _out, err, rc = run_molt_build_only(str(file_path), build_profile)
+            context = _backend_execution_context(
+                str(file_path),
+                python_exe,
+                build_profile,
+                compiler_target_python,
+            )
+            _out, err, rc = run_molt_build_only(
+                str(file_path),
+                build_profile,
+                execution_context=context,
+            )
             if rc != 0:
                 print(f"[WARM-CACHE FAIL] {file_path}: {err.strip()}")
     if jobs <= 1:
@@ -4440,7 +4370,11 @@ def run_diff(
                 for file_path in test_files:
                     _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
                     payload = _diff_run_single(
-                        str(file_path), python_exe, build_profile, targets
+                        str(file_path),
+                        python_exe,
+                        build_profile,
+                        targets,
+                        compiler_target_python,
                     )
                     path = payload["path"]
                     status = payload["status"]
@@ -4508,6 +4442,7 @@ def run_diff(
                             python_exe,
                             build_profile,
                             targets,
+                            compiler_target_python,
                         ): str(file_path)
                         for file_path in test_files
                     }
@@ -4594,7 +4529,13 @@ def run_diff(
                 echo=True,
             )
         for path in oom_paths:
-            retry_payload = _diff_run_single(path, python_exe, build_profile, targets)
+            retry_payload = _diff_run_single(
+                path,
+                python_exe,
+                build_profile,
+                targets,
+                compiler_target_python,
+            )
             retry_status = retry_payload["status"]
             assert isinstance(retry_status, str)
             status_by_path[path] = retry_status
@@ -4661,7 +4602,7 @@ def run_diff(
         "skipped_files": skipped_files,
         "item_results": [
             {
-                "path": _normalize_repo_relative(path),
+                "path": test_policy.normalize_repo_relative(path),
                 "status": status,
                 "duration_s": duration_by_path[path],
             }
@@ -4678,6 +4619,7 @@ def run_diff(
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
             "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
             "build_profile": build_profile,
+            "compiler_target_python": compiler_target_python.short,
             "stdlib_profile": _diff_stdlib_profile(os.environ)[0] or "",
             "warm_cache": warm_cache,
             "retry_oom": retry_oom,
@@ -4762,6 +4704,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--python-version", help="Python version to test against (e.g. 3.13)"
+    )
+    parser.add_argument(
+        "--molt-target-python",
+        help=(
+            "Explicit compiler target Python minor. It must match the selected "
+            "CPython oracle and is forwarded to every backend build."
+        ),
     )
     parser.add_argument(
         "--build-profile",
@@ -4885,6 +4834,10 @@ if __name__ == "__main__":
                 continue
             target_paths.append(raw)
 
+    _configure_diff_artifact_environment(
+        repo_root=_repo_root(),
+        environment=os.environ,
+    )
     if target_paths:
         targets = [Path(path) for path in target_paths]
         retry_oom = _diff_retry_oom_default()
@@ -4898,6 +4851,7 @@ if __name__ == "__main__":
                 python_exe,
                 build_profile=build_profile,
                 targets=backend_targets,
+                target_python=args.molt_target_python,
                 jobs=args.jobs,
                 log_dir=log_dir,
                 log_file=log_file,
@@ -4922,6 +4876,7 @@ if __name__ == "__main__":
             python_exe,
             build_profile=build_profile,
             targets=backend_targets,
+            target_python=args.molt_target_python,
             jobs=args.jobs,
             log_dir=log_dir,
             log_file=log_file,

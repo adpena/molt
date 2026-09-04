@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from tools import verified_subset
+from tools.compat import test_policy
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
@@ -47,8 +50,7 @@ def test_diff_capabilities_prefers_explicit_diff_override_then_test_contract() -
 
 
 def test_expected_failure_status_maps_fail_to_xfail_pass() -> None:
-    module = _load_diff_module()
-    status, reason = module._resolve_expected_failure_status(
+    status, reason = test_policy.resolve_expected_failure_status(
         expect_molt_fail=True,
         raw_status="fail",
         cpython_returncode=0,
@@ -58,8 +60,7 @@ def test_expected_failure_status_maps_fail_to_xfail_pass() -> None:
 
 
 def test_expected_failure_status_maps_pass_to_xpass_fail() -> None:
-    module = _load_diff_module()
-    status, reason = module._resolve_expected_failure_status(
+    status, reason = test_policy.resolve_expected_failure_status(
         expect_molt_fail=True,
         raw_status="pass",
         cpython_returncode=0,
@@ -69,8 +70,7 @@ def test_expected_failure_status_maps_pass_to_xpass_fail() -> None:
 
 
 def test_expected_failure_status_ignored_when_cpython_fails() -> None:
-    module = _load_diff_module()
-    status, reason = module._resolve_expected_failure_status(
+    status, reason = test_policy.resolve_expected_failure_status(
         expect_molt_fail=True,
         raw_status="fail",
         cpython_returncode=1,
@@ -79,38 +79,90 @@ def test_expected_failure_status_ignored_when_cpython_fails() -> None:
     assert reason is None
 
 
-def test_manifest_expected_failure_marks_exec_eval_cases(
-    tmp_path: Path, monkeypatch
+def test_deterministic_compiler_panic_does_not_trigger_backend_retry(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_diff_module()
-    manifest = tmp_path / "stdlib_full_coverage_manifest.py"
-    manifest.write_text(
-        "STDLIB_FULLY_COVERED_MODULES = ()\n"
-        "STDLIB_REQUIRED_INTRINSICS_BY_MODULE = {}\n"
-        "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS = (\n"
-        "  'tests/differential/basic/exec_locals_scope.py',\n"
-        "  'tests/differential/basic/eval_locals_scope.py',\n"
-        ")\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(module, "_stdlib_full_coverage_manifest_path", lambda: manifest)
-    module._too_dynamic_expected_failure_tests.cache_clear()
-
-    assert module._manifest_marks_expected_failure(
-        "tests/differential/basic/exec_locals_scope.py"
-    )
-    assert module._manifest_marks_expected_failure(
-        "tests/differential/basic/eval_locals_scope.py"
-    )
-    assert not module._manifest_marks_expected_failure(
-        "tests/differential/basic/arith.py"
+    calls: list[dict[str, object]] = []
+    stderr = (
+        "backend compilation failed\n"
+        "thread 'main' panicked at runtime/molt-passes/src/tir/passes/"
+        "async_work_poll.rs:152: zero-payload exception edge"
     )
 
+    def fail_once(*args: object, **kwargs: object) -> tuple[None, str, int]:
+        calls.append({"args": args, "kwargs": kwargs})
+        return None, stderr, 1
 
-def test_repo_manifest_covers_all_exec_eval_cases() -> None:
+    monkeypatch.setattr(module, "run_molt", fail_once)
+
+    context = module.compat_backends.BackendExecutionContext(
+        target_python=module.TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={"MOLT_TRUSTED": "0"},
+    )
+    assert module._run_native_backend("case.py", context) == (None, stderr, 1)
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["execution_context"] is context
+    assert not module._is_backend_daemon_build_error(stderr)
+
+
+def test_molt_target_python_must_match_cpython_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _load_diff_module()
-    module._too_dynamic_expected_failure_tests.cache_clear()
-    declared = module._too_dynamic_expected_failure_tests()
+    monkeypatch.setattr(module, "_python_exe_version", lambda _python: (3, 14))
+
+    assert module._resolve_molt_target_python("python", None).short == "3.14"
+    assert module._resolve_molt_target_python("python", "3.14").short == "3.14"
+    with pytest.raises(ValueError, match="does not match the CPython oracle"):
+        module._resolve_molt_target_python("python", "3.13")
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "backend daemon failed to become ready",
+        "backend daemon connection failed: timeout",
+        "backend daemon returned invalid JSON: bad payload",
+        "IncompatibleSignature(expected, actual)",
+    ],
+)
+def test_backend_retry_classifier_accepts_only_explicit_daemon_failures(
+    stderr: str,
+) -> None:
+    module = _load_diff_module()
+    assert module._is_backend_daemon_build_error(stderr)
+
+
+def test_source_scope_marks_exec_eval_cases(tmp_path: Path) -> None:
+    basic = tmp_path / "tests" / "differential" / "basic"
+    basic.mkdir(parents=True)
+    for name in ("exec_locals_scope.py", "eval_locals_scope.py"):
+        (basic / name).write_text(
+            "# MOLT_META: verified_subset_scope=dynamic_execution_policy "
+            "expect_fail=molt expect_fail_reason=too_dynamic_policy\n",
+            encoding="utf-8",
+        )
+    (basic / "arith.py").write_text("print(1)\n", encoding="utf-8")
+    declared = test_policy.verification_scope_paths(
+        (("tests/differential/basic", False),),
+        scope="dynamic_execution_policy",
+        repo_root=tmp_path,
+    )
+
+    assert "tests/differential/basic/exec_locals_scope.py" in declared
+    assert "tests/differential/basic/eval_locals_scope.py" in declared
+    assert "tests/differential/basic/arith.py" not in declared
+
+
+def test_repo_source_scopes_cover_all_exec_eval_cases() -> None:
+    policy = verified_subset.load_manifest()
+    declared = test_policy.verification_scope_paths(
+        policy.suite_selectors,
+        scope="dynamic_execution_policy",
+    )
 
     basic_dir = REPO_ROOT / "tests" / "differential" / "basic"
     required = {
@@ -121,30 +173,14 @@ def test_repo_manifest_covers_all_exec_eval_cases() -> None:
     assert not missing
 
 
-def test_repo_manifest_has_no_policy_deferred_runpy_dynamic_cases() -> None:
-    module = _load_diff_module()
-    module._too_dynamic_expected_failure_tests.cache_clear()
-    declared = module._too_dynamic_expected_failure_tests()
+def test_repo_scopes_have_no_policy_deferred_runpy_dynamic_cases() -> None:
+    policy = verified_subset.load_manifest()
+    declared = test_policy.verification_scope_paths(
+        policy.suite_selectors,
+        scope="dynamic_execution_policy",
+    )
     deferred_runpy = sorted(path for path in declared if "/stdlib/runpy_" in path)
     assert not deferred_runpy
-
-
-def test_repo_manifest_dynamic_policy_docs_exist() -> None:
-    manifest_path = REPO_ROOT / "tools" / "stdlib_full_coverage_manifest.py"
-    namespace = {}
-    exec(manifest_path.read_text(encoding="utf-8"), namespace)
-    docs = namespace.get("TOO_DYNAMIC_POLICY_DOC_REFERENCES", ())
-    assert isinstance(docs, tuple)
-    assert docs
-    required = {
-        "docs/spec/areas/core/0000-vision.md",
-        "docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md",
-        "docs/spec/areas/testing/0007-testing.md",
-        "docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md",
-    }
-    assert required.issubset(set(docs))
-    missing = [doc for doc in docs if not (REPO_ROOT / doc).exists()]
-    assert not missing
 
 
 def test_rss_top_entries_use_final_file_status_after_retries(
@@ -253,7 +289,11 @@ def test_run_diff_serial_emits_run_line_before_file_work(
     monkeypatch.setattr(module, "_prune_orphan_build_helpers", lambda: None)
     monkeypatch.setattr(module, "_prune_backend_daemons", lambda: None)
     monkeypatch.setattr(module, "_prune_stale_build_locks", lambda: None)
-    monkeypatch.setattr(module, "_collect_test_files_multi", lambda _target: [case])
+    monkeypatch.setattr(
+        module.test_policy,
+        "collect_test_files",
+        lambda *_args, **_kwargs: (case,),
+    )
     monkeypatch.setattr(module, "_diff_run_id", lambda: "serial-run-line")
     monkeypatch.setattr(module, "_diff_memory_guard_config", lambda: config)
     monkeypatch.setattr(module, "_prepare_memory_guard_run", lambda _config: None)
@@ -418,16 +458,25 @@ def test_diff_memory_guard_kills_active_child_tree_limit(
         )
     ]
     killed: list[int] = []
+    termination_identities: list[dict[int, object]] = []
     module.harness_memory_guard._TERMINATED_PGIDS.clear()
     monkeypatch.setattr(
         module.harness_memory_guard.process_sentinel,
         "process_groups",
         lambda *args, **kwargs: groups,
     )
+
+    def terminate_group(
+        pgid: int, *, grace: float, expected_identities: dict[int, object]
+    ) -> None:
+        assert grace == 0.25
+        killed.append(pgid)
+        termination_identities.append(dict(expected_identities))
+
     monkeypatch.setattr(
         module.harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: killed.append(pgid),
+        terminate_group,
     )
     sentinel = module.harness_memory_guard.repo_process_sentinel(
         repo_root=Path(module._repo_root()),
@@ -441,6 +490,12 @@ def test_diff_memory_guard_kills_active_child_tree_limit(
     sentinel.scan_once()
 
     assert killed == [200]
+    assert termination_identities == [
+        {
+            sample.pid: module.memory_guard.process_identity(sample)
+            for sample in groups[0].samples
+        }
+    ]
     trip = (tmp_path / "tripped.json").read_text(encoding="utf-8")
     assert "per-tree memory guard tripped" in trip
     assert "scope=process_tree" in trip
@@ -631,6 +686,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
         build_profile="dev",
+        target_python=module.TargetPythonVersion(3, 14, 0),
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
@@ -643,6 +699,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
     assert stderr == ""
     assert resets["count"] == 1
     assert "stdlib_profile" not in seen_params[0]
+    assert seen_params[0]["python_version"] == "3.14"
 
     rc, stdout, stderr, error = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack", "MOLT_DIFF_STDLIB_PROFILE": "full"},
@@ -650,6 +707,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
         build_profile="dev",
+        target_python=module.TargetPythonVersion(3, 14, 0),
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
@@ -662,6 +720,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
     assert stderr == ""
     assert resets["count"] == 2
     assert seen_params[1]["stdlib_profile"] == "full"
+    assert seen_params[1]["python_version"] == "3.14"
 
 
 def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
@@ -704,6 +763,7 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
         build_profile="dev",
+        target_python=module.TargetPythonVersion(3, 13, 0),
         no_cache=False,
         rebuild=False,
         request_timeout=12.0,
@@ -752,6 +812,7 @@ def test_run_batch_compile_build_error_path_force_closes_server(
         output_root=tmp_path,
         output_binary=tmp_path / "arith_molt",
         build_profile="dev",
+        target_python=module.TargetPythonVersion(3, 13, 0),
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
@@ -805,9 +866,16 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
+    context = module.compat_backends.BackendExecutionContext(
+        target_python=module.TargetPythonVersion(3, 14, 0),
+        build_profile="dev",
+        capabilities="fs,env,time,random",
+        environment={"MOLT_TRUSTED": "0"},
+    )
     stdout, stderr, rc = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
+        execution_context=context,
     )
 
     assert (stdout, stderr, rc) == ("", "", 0)
@@ -825,6 +893,8 @@ def test_run_molt_build_only_uses_build_profile_flag(
             seen_cmds[0][seen_cmds[0].index("--out-dir") + 1],
             "--output",
             seen_cmds[0][seen_cmds[0].index("--output") + 1],
+            "--python-version",
+            "3.14",
             "--capabilities",
             "fs,env,time,random",
         ]
@@ -969,7 +1039,9 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(
-        module, "_collect_meta", lambda file_path: {"stdlib_profile": ["full"]}
+        module.test_policy,
+        "parse_metadata",
+        lambda file_path: test_policy.TestMetadata(stdlib_profile="full"),
     )
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
@@ -1005,7 +1077,9 @@ def test_run_molt_build_only_rejects_conflicting_metadata_stdlib_profile(
     monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(
-        module, "_collect_meta", lambda file_path: {"stdlib_profile": ["full"]}
+        module.test_policy,
+        "parse_metadata",
+        lambda file_path: test_policy.TestMetadata(stdlib_profile="full"),
     )
     monkeypatch.setattr(
         module,
@@ -1129,39 +1203,51 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
 
 
 def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
-    monkeypatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     module = _load_diff_module()
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+    environment: dict[str, str] = {}
 
-    assert module._diff_root() == repo_root / "tmp" / "diff"
+    layout = module.DiffArtifactLayout.from_environment(
+        repo_root=repo_root,
+        environment=environment,
+    )
+
+    assert layout.diff_root == repo_root / "tmp" / "diff"
+    assert environment == {}
 
 
 def test_diff_root_defaults_to_ext_tmp_diff_when_ext_root_set(
-    monkeypatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     module = _load_diff_module()
     ext_root = tmp_path / "ext-root"
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+    environment = {"MOLT_EXT_ROOT": str(ext_root)}
 
-    assert module._diff_root() == ext_root / "tmp" / "diff"
+    layout = module.DiffArtifactLayout.from_environment(
+        repo_root=tmp_path / "repo",
+        environment=environment,
+    )
+
+    assert layout.diff_root == ext_root / "tmp" / "diff"
+    assert environment == {"MOLT_EXT_ROOT": str(ext_root)}
 
 
 def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
-    monkeypatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     module = _load_diff_module()
     ext_root = tmp_path / "ext-root"
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    monkeypatch.delenv("MOLT_DIFF_TMPDIR", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+    environment = {"MOLT_EXT_ROOT": str(ext_root)}
 
-    assert module._diff_tmp_root() == ext_root / "tmp"
+    layout = module.DiffArtifactLayout.from_environment(
+        repo_root=tmp_path / "repo",
+        environment=environment,
+    )
+
+    assert layout.tmp_root == ext_root / "tmp"
 
 
 @pytest.mark.parametrize(
@@ -1174,18 +1260,20 @@ def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
     ],
 )
 def test_diff_cargo_target_root_respects_priority_order(
-    monkeypatch, tmp_path: Path, envs: dict[str, str], expected: Path
+    tmp_path: Path, envs: dict[str, str], expected: Path
 ) -> None:
     module = _load_diff_module()
     repo_root = tmp_path / "repo-root"
-    monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
-    monkeypatch.delenv("MOLT_DIFF_CARGO_TARGET_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    for key, value in envs.items():
-        monkeypatch.setenv(key, str(tmp_path / value))
+    environment = {key: str(tmp_path / value) for key, value in envs.items()}
+    original_environment = dict(environment)
 
-    assert module._diff_cargo_target_root() == tmp_path / expected
+    layout = module.DiffArtifactLayout.from_environment(
+        repo_root=repo_root,
+        environment=environment,
+    )
+
+    assert layout.cargo_target_root == tmp_path / expected
+    assert environment == original_environment
 
 
 def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
@@ -1210,7 +1298,11 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     monkeypatch.setattr(module, "_prune_orphan_build_helpers", lambda: None)
     monkeypatch.setattr(module, "_prune_backend_daemons", lambda: None)
     monkeypatch.setattr(module, "_prune_stale_build_locks", lambda: None)
-    monkeypatch.setattr(module, "_collect_test_files", lambda path: [path])
+    monkeypatch.setattr(
+        module.test_policy,
+        "collect_test_files",
+        lambda *_args, **_kwargs: (target_file,),
+    )
     monkeypatch.setattr(module, "_diff_run_id", lambda: "run-id")
     monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
     monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
@@ -1244,8 +1336,16 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
         module, "_order_test_files", lambda test_files, jobs: test_files
     )
 
-    def fake_run_molt_build_only(file_path: str, build_profile: str):
+    def fake_run_molt_build_only(
+        file_path: str,
+        build_profile: str,
+        *,
+        execution_context: object,
+    ):
         del file_path, build_profile
+        assert execution_context.target_python.short == (
+            f"{sys.version_info.major}.{sys.version_info.minor}"
+        )
         seen_cache_roots.append(os.environ.get("MOLT_CACHE"))
         return "", "", 0
 

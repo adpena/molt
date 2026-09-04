@@ -1378,6 +1378,18 @@ argv = ["uv", "run", "python3", "tools/gen_native_callable_abi.py", "--check"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
+id = "repository.release-matrix.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_release_matrix.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
 id = "repository.generator-manifest"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
@@ -1385,7 +1397,7 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "uv"
-dependencies = ["repository.op-kinds.generated", "repository.heap-kinds.generated", "repository.runtime-profile.generated", "repository.cpython-slots.generated", "repository.wasm-abi.generated", "repository.cpython-coverage.generated", "repository.intrinsics.generated", "repository.codecs.generated", "repository.stringprep.generated", "repository.frontend-protocol.generated", "repository.frontend-diagnostics.generated", "repository.luau-support.generated", "repository.differential-lanes.generated", "repository.target-features.generated", "repository.browser-assets.generated", "repository.cpython-abi-layout.generated", "repository.native-callable-abi.generated"]
+dependencies = ["repository.op-kinds.generated", "repository.heap-kinds.generated", "repository.runtime-profile.generated", "repository.cpython-slots.generated", "repository.wasm-abi.generated", "repository.cpython-coverage.generated", "repository.intrinsics.generated", "repository.codecs.generated", "repository.stringprep.generated", "repository.frontend-protocol.generated", "repository.frontend-diagnostics.generated", "repository.luau-support.generated", "repository.differential-lanes.generated", "repository.target-features.generated", "repository.browser-assets.generated", "repository.cpython-abi-layout.generated", "repository.native-callable-abi.generated", "repository.release-matrix.generated"]
 argv = ["uv", "run", "python3", "tools/check_generator_manifest.py", "--check"]
 toolchains = ["python", "uv"]
 

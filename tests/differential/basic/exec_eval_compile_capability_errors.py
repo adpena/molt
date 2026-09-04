@@ -1,4 +1,5 @@
 """Purpose: differential coverage for exec/eval/compile capability errors."""
+# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy
 
 
 def show(label: str, thunk) -> None:

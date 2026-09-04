@@ -1,5 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read
-# MOLT_META: wasm=only
+# MOLT_META: backends=wasm
 """Wasm-only contract coverage for glob dir_fd host split (server vs browser)."""
 
 from __future__ import annotations

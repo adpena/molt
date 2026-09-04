@@ -19,7 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from molt.file_hashing import _content_change_time_ns
+from molt.file_hashing import content_change_time_ns
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
@@ -1231,7 +1231,7 @@ def _content_manifest(
     for path in paths:
         stat = path.stat()
         relative = str(path.relative_to(prefix)).replace("\\", "/")
-        change_ns = _content_change_time_ns(path, stat)
+        change_ns = content_change_time_ns(path, stat)
         metadata.append((path, stat, relative, change_ns))
 
     digests: dict[Path, str] = {}
@@ -1250,7 +1250,7 @@ def _content_manifest(
         sha256 = digests.get(path, "")
         if hash_contents:
             current = path.stat()
-            current_change_ns = _content_change_time_ns(path, current)
+            current_change_ns = content_change_time_ns(path, current)
             if (
                 current.st_size != stat.st_size
                 or current.st_mtime_ns != stat.st_mtime_ns

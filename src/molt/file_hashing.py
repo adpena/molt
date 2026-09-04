@@ -11,6 +11,10 @@ _SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
 _SOURCE_FINGERPRINT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
 
 
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 @lru_cache(maxsize=1)
 def _windows_change_time_api() -> tuple[Any, Any, Any] | None:
     if os.name != "nt":
@@ -72,19 +76,14 @@ def _windows_change_time_ns(path: Path) -> int | None:
         if handle in (None, invalid_handle):
             return None
         try:
-            info = file_basic_info()
-            if not kernel32.GetFileInformationByHandleEx(
-                handle, 0, ctypes.byref(info), ctypes.sizeof(info)
-            ):
-                return None
-            return int(info.ChangeTime) * 100
+            return _windows_handle_change_time_ns(handle)
         finally:
             kernel32.CloseHandle(handle)
     except (AttributeError, OSError, ValueError):
         return None
 
 
-def _content_change_time_ns(path: Path, stat: os.stat_result) -> int | None:
+def content_change_time_ns(path: Path, stat: os.stat_result) -> int | None:
     if os.name == "nt":
         # Windows st_ctime is creation time and is never a substitute for the
         # NTFS ChangeTime query. None tells exact consumers to fail closed and
@@ -93,12 +92,51 @@ def _content_change_time_ns(path: Path, stat: os.stat_result) -> int | None:
     return stat.st_ctime_ns
 
 
-def _sha256_file(path: Path) -> str:
+def _windows_handle_change_time_ns(handle: Any) -> int | None:
+    api = _windows_change_time_api()
+    if api is None:
+        return None
+    ctypes, kernel32, file_basic_info = api
+    try:
+        info = file_basic_info()
+        if not kernel32.GetFileInformationByHandleEx(
+            handle, 0, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            return None
+        return int(info.ChangeTime) * 100
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def content_change_time_ns_from_fd(
+    file_descriptor: int,
+    stat: os.stat_result,
+) -> int | None:
+    """Return content-change time from the already-open file when supported."""
+
+    if os.name != "nt":
+        return stat.st_ctime_ns
+    try:
+        import msvcrt
+
+        return _windows_handle_change_time_ns(msvcrt.get_osfhandle(file_descriptor))
+    except (ImportError, OSError, ValueError):
+        return None
+
+
+def _sha256_file_with_size(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
+    size = 0
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _source_fingerprint_should_skip(path: Path) -> bool:
@@ -176,6 +214,9 @@ def _hash_source_tree_metadata(
                     stat = item.stat()
                 except OSError:
                     return None
+                change_time_ns = content_change_time_ns(item, stat)
+                if change_time_ns is None:
+                    return None
                 try:
                     rel_path = item.relative_to(root)
                     rel_text = str(rel_path)
@@ -187,7 +228,7 @@ def _hash_source_tree_metadata(
                 hasher.update(b"\0")
                 hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
                 hasher.update(b"\0")
-                hasher.update(str(stat.st_ctime_ns).encode("utf-8"))
+                hasher.update(str(change_time_ns).encode("utf-8"))
                 hasher.update(b"\0")
                 file_count += 1
     except OSError:

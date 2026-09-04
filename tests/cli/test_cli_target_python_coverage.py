@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.target_python import TargetPythonVersion, require_verified_target_python
+from molt.target_python import TargetPythonVersion, require_verified_subset_target
 
 
 def test_python_interpreter_import_stays_outside_cli_package() -> None:
@@ -41,14 +41,14 @@ def test_python_interpreter_import_stays_outside_cli_package() -> None:
 
 def test_verified_windows_312_tuple_resolves() -> None:
     target = TargetPythonVersion(3, 12, 0)
-    assert require_verified_target_python(target, platform="windows") is target
+    assert require_verified_subset_target(target, platform="windows") is target
 
 
-def test_unverified_tuple_fails_with_matrix_diagnostic() -> None:
+def test_tuple_outside_required_matrix_fails_with_matrix_diagnostic() -> None:
     with pytest.raises(
         ValueError,
-        match=r"CPython 3\.13 on windows.*CPython 3\.12 on windows",
+        match=r"CPython 3\.13 on freebsd.*CPython 3\.12 on windows",
     ):
-        require_verified_target_python(
-            TargetPythonVersion(3, 13, 0), platform="windows"
+        require_verified_subset_target(
+            TargetPythonVersion(3, 13, 0), platform="freebsd"
         )

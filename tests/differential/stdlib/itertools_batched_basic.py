@@ -1,4 +1,3 @@
-# MOLT_META: min_py=3.12
 """Purpose: differential coverage for itertools.batched."""
 
 import itertools

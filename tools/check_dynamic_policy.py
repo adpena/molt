@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
-import runpy
 from pathlib import Path
 
+from molt.verified_subset import load_verified_subset_policy
+
+try:
+    from tools.compat import test_policy
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    from compat import test_policy  # type: ignore[no-redef]
+
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
+DYNAMIC_EXECUTION_SCOPE = "dynamic_execution_policy"
 
 REQUIRED_DOCS: tuple[str, ...] = (
     "docs/spec/areas/core/0000-vision.md",
@@ -23,7 +29,7 @@ DOC_REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
         "reflection-heavy patterns",
     ),
     "docs/spec/areas/testing/0007-testing.md": (
-        "Expected-Failure Policy For Too-Dynamic Cases",
+        "Verified-Subset Scope Policy For Too-Dynamic Cases",
         "No `exec`/`eval`",
     ),
     "docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md": (
@@ -32,9 +38,15 @@ DOC_REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-RUNTIME_POLICY_MARKERS: dict[str, str] = {
-    "runtime/molt-runtime/src/builtins/modules.rs": "dynamic-exec-policy",
-    "runtime/molt-runtime/src/builtins/platform.rs": "dynamic-exec-policy",
+RUNTIME_POLICY_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "runtime/molt-runtime/src/builtins/modules.rs": (
+        'if trace_name == "exec" || trace_name == "eval"',
+        "dynamic code execution is outside the verified subset",
+    ),
+    "runtime/molt-runtime/src/builtins/platform.rs": (
+        "fn importlib_extension_exec_unavailable(",
+        "has no compiler-emitted body in this binary",
+    ),
 }
 
 RUNPY_POLICY_NOTE_DOCS: tuple[str, ...] = (
@@ -54,21 +66,17 @@ RUNPY_EMPTY_NOTE_REASON_TOKENS: tuple[str, ...] = (
 )
 
 
-def _load_manifest() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    namespace = runpy.run_path(str(MANIFEST_PATH))
-    doc_refs = namespace.get("TOO_DYNAMIC_POLICY_DOC_REFERENCES", ())
-    expected_failures = namespace.get("TOO_DYNAMIC_EXPECTED_FAILURE_TESTS", ())
-    if not isinstance(doc_refs, tuple):
-        raise RuntimeError(
-            "TOO_DYNAMIC_POLICY_DOC_REFERENCES must be a tuple[str, ...] in "
-            "tools/stdlib_full_coverage_manifest.py"
+def _load_scope_paths() -> tuple[str, ...]:
+    try:
+        policy = load_verified_subset_policy()
+        paths = test_policy.verification_scope_paths(
+            policy.suite_selectors,
+            scope=DYNAMIC_EXECUTION_SCOPE,
+            repo_root=ROOT,
         )
-    if not isinstance(expected_failures, tuple):
-        raise RuntimeError(
-            "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS must be a tuple[str, ...] in "
-            "tools/stdlib_full_coverage_manifest.py"
-        )
-    return doc_refs, expected_failures
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    return tuple(sorted(paths))
 
 
 def _check_docs() -> list[str]:
@@ -85,39 +93,45 @@ def _check_docs() -> list[str]:
     return errors
 
 
-def _check_manifest(
-    doc_refs: tuple[str, ...], expected_failures: tuple[str, ...]
-) -> list[str]:
+def _check_scope(paths: tuple[str, ...]) -> list[str]:
     errors: list[str] = []
-    missing_refs = sorted(set(REQUIRED_DOCS) - set(doc_refs))
-    if missing_refs:
-        errors.append(
-            "TOO_DYNAMIC_POLICY_DOC_REFERENCES missing required docs: "
-            + ", ".join(missing_refs)
-        )
-    has_exec = any("/exec" in path for path in expected_failures)
-    has_eval = any("/eval" in path for path in expected_failures)
+    has_exec = any("/exec" in path or "_exec_" in path for path in paths)
+    has_eval = any("/eval" in path or "_eval_" in path for path in paths)
     if not has_exec:
         errors.append(
-            "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS must include at least one exec* case"
+            "dynamic_execution_policy scope must include at least one exec case"
         )
     if not has_eval:
         errors.append(
-            "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS must include at least one eval* case"
+            "dynamic_execution_policy scope must include at least one eval case"
         )
+    for path in paths:
+        metadata = test_policy.parse_metadata(ROOT / path)
+        if not metadata.expect_molt_fail:
+            errors.append(
+                f"dynamic_execution_policy test must declare expect_fail=molt: {path}"
+            )
+        if metadata.expected_failure_reason != "too_dynamic_policy":
+            errors.append(
+                "dynamic_execution_policy test must declare "
+                f"expect_fail_reason=too_dynamic_policy: {path}"
+            )
     return errors
 
 
-def _check_runtime_policy_markers() -> list[str]:
+def _check_runtime_policy_evidence() -> list[str]:
     errors: list[str] = []
-    for rel_path, marker in RUNTIME_POLICY_MARKERS.items():
+    for rel_path, required_snippets in RUNTIME_POLICY_EVIDENCE.items():
         path = ROOT / rel_path
         if not path.exists():
             errors.append(f"missing runtime policy file: {rel_path}")
             continue
         text = path.read_text(encoding="utf-8")
-        if marker not in text:
-            errors.append(f"missing runtime policy marker {marker!r} in {rel_path}")
+        for snippet in required_snippets:
+            if snippet not in text:
+                errors.append(
+                    f"runtime policy evidence missing snippet {snippet!r}: {rel_path}"
+                )
     return errors
 
 
@@ -144,10 +158,10 @@ def _has_runpy_empty_lane_doc_note() -> bool:
     return False
 
 
-def _check_runpy_policy_lanes(expected_failures: tuple[str, ...]) -> list[str]:
+def _check_runpy_policy_lanes(scope_paths: tuple[str, ...]) -> list[str]:
     errors: list[str] = []
     runpy_entries = sorted(
-        path for path in expected_failures if _is_runpy_expected_failure(path)
+        path for path in scope_paths if _is_runpy_expected_failure(path)
     )
     if runpy_entries:
         for rel_path in runpy_entries:
@@ -157,26 +171,26 @@ def _check_runpy_policy_lanes(expected_failures: tuple[str, ...]) -> list[str]:
 
     if not _has_runpy_empty_lane_doc_note():
         errors.append(
-            "runpy policy lane governance missing: add at least one runpy entry to "
-            "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS or add an explicit STATUS/ROADMAP "
-            "note that runpy dynamic-lane expected failures are currently empty "
-            "because supported lanes moved to intrinsic support"
+            "runpy policy lane governance missing: annotate at least one runpy test "
+            "with verified_subset_scope=dynamic_execution_policy or add an explicit "
+            "STATUS/ROADMAP note that runpy dynamic-lane expected failures are "
+            "currently empty because supported lanes moved to intrinsic support"
         )
     return errors
 
 
 def main() -> int:
     try:
-        doc_refs, expected_failures = _load_manifest()
+        scope_paths = _load_scope_paths()
     except RuntimeError as exc:
         print(f"dynamic policy guard failed: {exc}")
         return 1
 
     errors = []
     errors.extend(_check_docs())
-    errors.extend(_check_manifest(doc_refs, expected_failures))
-    errors.extend(_check_runpy_policy_lanes(expected_failures))
-    errors.extend(_check_runtime_policy_markers())
+    errors.extend(_check_scope(scope_paths))
+    errors.extend(_check_runpy_policy_lanes(scope_paths))
+    errors.extend(_check_runtime_policy_evidence())
     if errors:
         print("dynamic policy guard violated:")
         for err in errors:

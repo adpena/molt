@@ -1,4 +1,4 @@
-# MOLT_META: wasm=no
+# MOLT_META: backends=llvm,luau,native
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read
 """Purpose: differential coverage for urllib request timeout error."""
 
@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -17,6 +18,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass
+
 
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 thread = threading.Thread(target=server.serve_forever)
