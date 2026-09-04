@@ -4991,6 +4991,190 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
     assert str(summary_path) in out
 
 
+def test_proof_queue_diagnoses_persists_and_reclaims_expired_guard_contract(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "expired.log"
+    summary_path = tmp_path / "expired.memory_guard.json"
+    guard_state_root = tmp_path / "guard-state"
+    guard_state_root.mkdir()
+    log_path.write_text("proof_queue command execution\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "returncode": None,
+                "command": [
+                    sys.executable,
+                    "tools/proof_queue_pkg/guarded_execution.py",
+                ],
+                "limits": {"timeout_s": 30.0},
+                "repro": {
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(guard_state_root),
+                    },
+                    "guard_process": {"pid": 90_301},
+                },
+                "child_process": {
+                    "pid": 90_302,
+                    "command": [
+                        sys.executable,
+                        "tools/proof_queue_pkg/guarded_execution.py",
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="expired-run",
+        logical_id="expired",
+        reason="prove expired guard contract is never silent",
+        command=[sys.executable, "-c", "print('expired')"],
+        cwd=state.ROOT,
+        resource_family="rust",
+        contention_key="cargo:expired-guard",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    started_at = (
+        state.dt.datetime.now(state.dt.UTC)
+        - state.dt.timedelta(
+            seconds=(
+                30.0 + diagnostic_evidence.RUNNING_GUARD_TIMEOUT_GRACE_SECONDS + 30.0
+            )
+        )
+    ).isoformat()
+    state._update_run(
+        conn,
+        "expired-run",
+        status="running",
+        guard_pid=os.getpid(),
+        started_at=started_at,
+    )
+
+    assert (
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "diagnose",
+                "expired-run",
+                "--append-note",
+                "--no-notebook",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "running-proof-guard-timeout-expired" in out
+    assert "summary_status=child_running" in out
+    assert "configured_timeout=30.0s" in out
+    assert "timeout_overdue=" in out
+    assert "active_guard_marker=missing" in out
+    assert "prune-stale --run-id RUN_ID" in out
+    notes = _notes(db)
+    assert notes[-1]["kind"] == "finding"
+    assert "running-proof-guard-timeout-expired" in notes[-1]["body"]
+    assert "prune-stale --run-id RUN_ID" in notes[-1]["body"]
+
+    assert (
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "prune-stale",
+                "--run-id",
+                "expired-run",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "pruned=1" in out
+    assert "running-proof-guard-timeout-expired" in out
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
+
+
+def test_proof_queue_keeps_fresh_nonfinal_guard_contract_running(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "fresh.log"
+    summary_path = tmp_path / "fresh.memory_guard.json"
+    log_path.write_text("proof_queue command execution\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "returncode": None,
+                "limits": {"timeout_s": 3600.0},
+                "child_process": {
+                    "pid": 90_402,
+                    "command": [sys.executable, "guarded_execution.py"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="fresh-run",
+        logical_id="fresh",
+        reason="prove fresh guard contract remains active",
+        command=[sys.executable, "-c", "print('fresh')"],
+        cwd=state.ROOT,
+        resource_family="rust",
+        contention_key="cargo:fresh-guard",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    state._update_run(
+        conn,
+        "fresh-run",
+        status="running",
+        guard_pid=os.getpid(),
+        started_at=state._utc_now(),
+    )
+
+    assert (
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "diagnose",
+                "fresh-run",
+            ]
+        )
+        == 0
+    )
+    assert "no diagnostic signals" in capsys.readouterr().out
+    assert _rows(db)[0]["status"] == "running"
+
+
 def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
