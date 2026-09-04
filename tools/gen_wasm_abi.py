@@ -40,6 +40,7 @@ from wasm_abi_gen.paths import (
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
     OUT_RS_DIR,
     OUT_RS_FILES,
@@ -58,6 +59,7 @@ RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 RUSTFMT_CACHE_ENABLED = True
 RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
+    "rendered_native_exception_observer_abi_rs",
     "rendered_runtime_callables_rs",
     "rendered_wasm_facts_callable_table_rs",
     "rendered_py",
@@ -1076,36 +1078,51 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
             "}\n\n",
             "#[inline]\n",
-            "pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {\n",
+            "pub(crate) fn op_loop_runtime_call(\n",
+            "    kind: &str,\n",
+            "    marked: bool,\n",
+            ") -> Option<OpLoopRuntimeCallSpec> {\n",
             "    match kind {\n",
         ]
     )
     for entry in op_loop_entries:
-        lines.extend(
-            [
-                f'        "{entry["kind"]}" => Some(OpLoopRuntimeCallSpec {{\n',
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
-                "            args: &[\n",
+        variants = [(None, entry["import_name"], entry["required_imports"])]
+        if marked_import_name := entry.get("marked_import_name"):
+            marked_required_imports = [
+                marked_import_name if required == entry["import_name"] else required
+                for required in entry["required_imports"]
             ]
-        )
-        for arg in entry["args"]:
-            lines.append(f"                {_render_op_loop_arg(arg)},\n")
-        lines.extend(
-            [
-                "            ],\n",
-                "            required_imports: &[\n",
-            ]
-        )
-        for required in entry["required_imports"]:
-            lines.append(f"                {_rust_runtime_import(data, required)},\n")
-        lines.extend(
-            [
-                "            ],\n",
-                "            sink: OpLoopRuntimeSinkSpec::"
-                f"{OP_LOOP_RUNTIME_SINKS[entry['sink']]},\n",
-                "        }),\n",
-            ]
-        )
+            variants.insert(
+                0, (" if marked", marked_import_name, marked_required_imports)
+            )
+        for guard, import_name, required_imports in variants:
+            lines.extend(
+                [
+                    f'        "{entry["kind"]}"{guard or ""} => Some(OpLoopRuntimeCallSpec {{\n',
+                    f"            import: {_rust_runtime_import(data, import_name)},\n",
+                    "            args: &[\n",
+                ]
+            )
+            for arg in entry["args"]:
+                lines.append(f"                {_render_op_loop_arg(arg)},\n")
+            lines.extend(
+                [
+                    "            ],\n",
+                    "            required_imports: &[\n",
+                ]
+            )
+            for required in required_imports:
+                lines.append(
+                    f"                {_rust_runtime_import(data, required)},\n"
+                )
+            lines.extend(
+                [
+                    "            ],\n",
+                    "            sink: OpLoopRuntimeSinkSpec::"
+                    f"{OP_LOOP_RUNTIME_SINKS[entry['sink']]},\n",
+                    "        }),\n",
+                ]
+            )
     lines.extend(
         [
             "        _ => None,\n",
@@ -1114,6 +1131,93 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         ]
     )
     return "".join(lines)
+
+
+def _native_marked_op_loop_symbol_rows(
+    data: dict,
+) -> tuple[tuple[str, str, str | None], ...]:
+    imports = {entry["name"]: entry for entry in data["import"]}
+    rows: dict[str, tuple[str, str | None]] = {}
+
+    def register(name: str, base_symbol: str, marked_symbol: str | None) -> None:
+        existing = rows.get(name)
+        if existing is None:
+            rows[name] = (base_symbol, marked_symbol)
+            return
+        existing_base, existing_marked = existing
+        if existing_base != base_symbol:
+            raise WasmAbiManifestError(
+                f"native marked op-loop symbol {name!r} has conflicting base exports "
+                f"{existing_base!r} and {base_symbol!r}"
+            )
+        if (
+            existing_marked is not None
+            and marked_symbol is not None
+            and existing_marked != marked_symbol
+        ):
+            raise WasmAbiManifestError(
+                f"native marked op-loop symbol {name!r} has conflicting marked exports "
+                f"{existing_marked!r} and {marked_symbol!r}"
+            )
+        if existing_marked is None and marked_symbol is not None:
+            rows[name] = (base_symbol, marked_symbol)
+
+    for entry in data.get("op_loop_runtime_call", []):
+        marked_import_name = entry.get("marked_import_name")
+        if marked_import_name is None:
+            continue
+        import_name = entry["import_name"]
+        try:
+            base_symbol = _runtime_export_name(imports[import_name])
+            marked_symbol = _runtime_export_name(imports[marked_import_name])
+        except KeyError as exc:
+            raise WasmAbiManifestError(
+                f"native marked op-loop projection references unknown import {exc.args[0]!r}"
+            ) from exc
+        register(entry["kind"], base_symbol, marked_symbol)
+        # Native lowering also accepts the base import name as the semantic op
+        # kind (for example, exception_last_pending).
+        register(import_name, base_symbol, None)
+
+    return tuple(
+        (name, base_symbol, marked_symbol)
+        for name, (base_symbol, marked_symbol) in rows.items()
+    )
+
+
+def render_native_exception_observer_abi_rs(data: dict) -> str:
+    rows = _native_marked_op_loop_symbol_rows(data)
+    marked_groups: dict[str, list[str]] = {}
+    base_groups: dict[str, list[str]] = {}
+    for name, base_symbol, marked_symbol in rows:
+        base_groups.setdefault(base_symbol, []).append(name)
+        if marked_symbol is not None:
+            marked_groups.setdefault(marked_symbol, []).append(name)
+
+    lines = [_header("//")]
+    lines.extend(
+        [
+            "/// Resolve a native runtime symbol from manifest-owned marked op-loop calls.\n",
+            "///\n",
+            "/// The base import name is also accepted as a semantic alias. A marker only\n",
+            "/// changes rows that declare `marked_import_name` in the WASM ABI manifest.\n",
+            "pub(crate) fn pending_exception_observer_runtime_symbol(\n",
+            "    kind: &str,\n",
+            "    marked: bool,\n",
+            ") -> Option<&'static str> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for runtime_symbol, names in marked_groups.items():
+        pattern = " | ".join(_rust_string(name) for name in names)
+        lines.append(
+            f"        {pattern} if marked => Some({_rust_string(runtime_symbol)}),\n"
+        )
+    for runtime_symbol, names in base_groups.items():
+        pattern = " | ".join(_rust_string(name) for name in names)
+        lines.append(f"        {pattern} => Some({_rust_string(runtime_symbol)}),\n")
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
+    return _rustfmt("exception_observer_abi.rs", "".join(lines))
 
 
 def _render_rs_container_runtime_selector(data: dict) -> str:
@@ -2379,6 +2483,10 @@ def main(argv: list[str]) -> int:
         rendered_rs_modules = timed(
             "render_rs_modules", lambda: render_rs_modules(data)
         )
+        rendered_native_exception_observer_abi_rs = timed(
+            "render_native_exception_observer_abi_rs",
+            lambda: render_native_exception_observer_abi_rs(data),
+        )
         rendered_runtime_callables_rs = timed(
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
@@ -2403,6 +2511,9 @@ def main(argv: list[str]) -> int:
         )
         bundle = {
             "rendered_rs_modules": rendered_rs_modules,
+            "rendered_native_exception_observer_abi_rs": (
+                rendered_native_exception_observer_abi_rs
+            ),
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
             "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
             "rendered_py": rendered_py,
@@ -2414,6 +2525,9 @@ def main(argv: list[str]) -> int:
         if not args.no_cache:
             timed("cache_store", lambda: _store_render_cache(cache_key, bundle))
     rendered_rs_modules = dict(bundle["rendered_rs_modules"])
+    rendered_native_exception_observer_abi_rs = str(
+        bundle["rendered_native_exception_observer_abi_rs"]
+    )
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
     rendered_wasm_facts_callable_table_rs = str(
         bundle["rendered_wasm_facts_callable_table_rs"]
@@ -2427,6 +2541,10 @@ def main(argv: list[str]) -> int:
         ok = (
             0
             if _check_rs_modules(rendered_rs_modules)
+            and _check(
+                OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
+                rendered_native_exception_observer_abi_rs,
+            )
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
             and _check(
                 OUT_WASM_FACTS_CALLABLE_TABLE_RS,
@@ -2448,6 +2566,10 @@ def main(argv: list[str]) -> int:
             print(f"total: {total:.3f}s", file=sys.stderr)
         return ok
     _write_rs_modules(rendered_rs_modules)
+    _write_if_changed(
+        OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
+        rendered_native_exception_observer_abi_rs,
+    )
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
     _write_if_changed(
         OUT_WASM_FACTS_CALLABLE_TABLE_RS,

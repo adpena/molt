@@ -76,6 +76,7 @@ pub(crate) enum WasmRuntimeImport {
     ExceptionKind,
     ExceptionLast,
     ExceptionLastPending,
+    AsyncWorkPollAndExceptionLastPending,
     ExceptionMatchBuiltin,
     ExceptionResolveCaptured,
     ExceptionMessage,

@@ -5,6 +5,8 @@ use molt_tir::ir_rewrites::{
 use std::fmt::Write as _;
 
 pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
+    pub(in crate::native_backend::simple_backend) native_target_info:
+        Option<crate::tir::target_info::TargetInfo>,
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
     pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) pre_split_task_kinds:
@@ -88,12 +90,15 @@ impl SimpleBackend {
                     progress_prefix: Some("MOLT_BACKEND"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
-                preprocess_backend_tir_input,
+                |function| preprocess_backend_tir_input(function, native_tti),
             )
             .cached_tir
         });
         if !self.skip_ir_passes {
-            eliminate_dead_ops(ir);
+            let dead_op_target = native_tti
+                .clone()
+                .unwrap_or_else(crate::tir::target_info::TargetInfo::llvm_release_fast);
+            eliminate_dead_ops(ir, &dead_op_target);
         }
 
         let (pre_split_task_kinds, pre_split_task_closure_sizes) = self
@@ -146,6 +151,7 @@ impl SimpleBackend {
         }
 
         NativeProgramPipeline {
+            native_target_info: native_tti,
             emit_resolver_here,
             app_callable_manifest,
             pre_split_task_kinds,
@@ -284,7 +290,10 @@ fn run_post_tir_simple_ir_rewrites(functions: &mut [FunctionIR]) {
     }
 }
 
-pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
+pub(crate) fn preprocess_backend_tir_input(
+    tmp_func: &mut FunctionIR,
+    target_info: &crate::tir::target_info::TargetInfo,
+) {
     if tmp_func.ops.iter().any(|op| op.kind == "phi") {
         rewrite_phi_to_store_load(&mut tmp_func.ops);
         crate::tir::pipeline_cache::trace_tir_function_stage(
@@ -294,7 +303,7 @@ pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
         );
     }
     if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
-        elide_useless_try_blocks_for_function(tmp_func);
+        elide_useless_try_blocks_for_function(tmp_func, target_info);
         crate::tir::pipeline_cache::trace_tir_function_stage(
             &tmp_func.name,
             "after_try_elision",

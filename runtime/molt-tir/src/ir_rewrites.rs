@@ -181,8 +181,15 @@ pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
 /// Elide try/except wrappers using the same typed representation authority as
 /// the backend lowering path. Transport flags such as `fast_int` and
 /// `fast_float` are not proof that Python dispatch cannot raise.
-pub fn elide_useless_try_blocks_for_function(func: &mut FunctionIR) {
-    let scalar_plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir(func);
+pub fn elide_useless_try_blocks_for_function(
+    func: &mut FunctionIR,
+    target_info: &crate::tir::target_info::TargetInfo,
+) {
+    let scalar_plan =
+        crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
+            func,
+            target_info,
+        );
     let scalar_facts =
         crate::passes::SimpleIrScalarPurityFacts::for_function(func, Some(&scalar_plan));
     elide_useless_try_blocks_inner(&mut func.ops, Some(&scalar_facts));

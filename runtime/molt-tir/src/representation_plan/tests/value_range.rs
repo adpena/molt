@@ -143,7 +143,10 @@ fn range_loop_tir(start_v: i64, stop: i64) -> (TirFunction, ValueId, ValueId) {
 #[test]
 fn checked_loop_seed_admits_peeled_fast_loop_only() {
     let func_ir = super::super::test_fixtures::peeled_compute_func_ir();
-    let plan = ScalarRepresentationPlan::for_function_ir(&func_ir);
+    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
+        &func_ir,
+        &crate::tir::TargetInfo::native_release_fast(),
+    );
     let primary = plan.primary_name_sets();
     let int_primary = &primary.int;
 

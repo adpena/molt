@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 
 _BUILD_SEQUENCE_FIELDS = (
@@ -98,13 +104,25 @@ def _manifest_sequence(
                     not isinstance(index, int)
                     or isinstance(index, bool)
                     or not isinstance(value, str)
+                    or not value
                     or not 0 <= index < len(result)
                 ):
                     raise ValueError("compile_command_operands is invalid")
+                if result[index] != "%{operand}":
+                    raise ValueError(
+                        "compile_command_operands does not reference an operand slot"
+                    )
                 replacements.append((index, value))
             operand_indexes = [index for index, _value in replacements]
             if operand_indexes != sorted(set(operand_indexes)):
                 raise ValueError("compile_command_operands indexes are not canonical")
+            placeholder_indexes = [
+                index for index, value in enumerate(result) if value == "%{operand}"
+            ]
+            if operand_indexes != placeholder_indexes:
+                raise ValueError(
+                    "compile_command_operands does not exactly cover operand slots"
+                )
             for index, value in replacements:
                 result[index] = value
     return result
@@ -159,6 +177,9 @@ def _compile_command_template(
         if value.startswith("/Fo") and len(value) > 3:
             operands.append({"index": index, "value": value})
             template[index] = "%{operand}"
+    operand_indexes = [item["index"] for item in operands]
+    if len(operand_indexes) != len(set(operand_indexes)):
+        raise ValueError("compile command has overlapping operand encodings")
     return template, sorted(operands, key=lambda item: item["index"])
 
 
@@ -179,7 +200,9 @@ def _object_unit_identity(
     excluded.update(f"{field}_ref" for field in _OBJECT_SEQUENCE_FIELDS)
     payload = {key: item.get(key) for key in sorted(item) if key not in excluded}
     payload["compile_command"] = _manifest_sequence(manifest, item, "compile_command")
-    payload["symbol_command"] = _manifest_sequence(manifest, item, "symbol_command")
+    symbol_command = _manifest_sequence(manifest, item, "symbol_command")
+    if symbol_command is not None:
+        payload["symbol_command"] = symbol_command
     payload["dependencies"] = _manifest_dependencies(manifest, item)
     for field in _OBJECT_SEQUENCE_FIELDS:
         if field in item or f"{field}_ref" in item:
@@ -197,13 +220,62 @@ def _object_unit_sha256(manifest: Mapping[str, Any], item: Mapping[str, Any]) ->
     ).hexdigest()
 
 
+def _expand_source_extension_manifest_authorities(
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Materialize a compact manifest before an owned semantic mutation."""
+
+    expanded = deepcopy(dict(manifest))
+    if "build_authorities" not in expanded:
+        return expanded
+    _validate_compact_source_extension_manifest(expanded)
+    build = expanded.get("build")
+    if isinstance(build, dict):
+        for field in _BUILD_SEQUENCE_FIELDS:
+            values = _manifest_sequence(expanded, build, field)
+            build.pop(f"{field}_ref", None)
+            if values is not None:
+                build[field] = values
+    closure = expanded.get("object_closure")
+    objects = closure.get("objects") if isinstance(closure, Mapping) else None
+    assert isinstance(objects, list)
+    for raw_item in objects:
+        assert isinstance(raw_item, dict)
+        item = cast(dict[str, Any], raw_item)
+        for field in ("compile_command", "symbol_command"):
+            values = _manifest_sequence(expanded, item, field)
+            item.pop(f"{field}_ref", None)
+            if values is not None:
+                item[field] = values
+        item.pop("compile_command_operands", None)
+        dependencies = _manifest_dependencies(expanded, item)
+        item.pop("dependencies_ref", None)
+        item["dependencies"] = dependencies
+        for field in _OBJECT_SEQUENCE_FIELDS:
+            values = _manifest_sequence(expanded, item, field)
+            item.pop(f"{field}_ref", None)
+            if values is not None:
+                item[field] = values
+        item.pop("unit_sha256", None)
+    expanded.pop("build_authorities")
+    return expanded
+
+
 def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Compact an owned manifest in place while preserving exact argv."""
 
+    if "build_authorities" in manifest:
+        raise ValueError("source-extension manifest must be expanded before compaction")
     pool: dict[str, list[str]] = {}
     build = manifest.get("build")
     if isinstance(build, dict):
         build = cast(dict[str, Any], build)
+        stale_build_refs = sorted(key for key in build if key.endswith("_ref"))
+        if stale_build_refs:
+            raise ValueError(
+                "expanded source-extension build retains compact reference(s): "
+                + ", ".join(stale_build_refs)
+            )
         for field in _BUILD_SEQUENCE_FIELDS:
             raw = build.pop(field, None)
             if raw is None:
@@ -223,9 +295,22 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
         if not isinstance(item, dict):
             raise ValueError(f"object_closure.objects[{index}] must be an object")
         item = cast(dict[str, Any], item)
+        stale_compact_fields = sorted(
+            key
+            for key in item
+            if key.endswith("_ref")
+            or key in {"compile_command_operands", "unit_sha256"}
+        )
+        if stale_compact_fields:
+            raise ValueError(
+                f"expanded object_closure.objects[{index}] retains compact field(s): "
+                + ", ".join(stale_compact_fields)
+            )
         for field in ("compile_command", "symbol_command"):
             raw = item.pop(field, None)
-            if not isinstance(raw, list):
+            if raw is None and field == "symbol_command":
+                continue
+            if not isinstance(raw, list) or not raw:
                 raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
             values = [value for value in raw if isinstance(value, str) and value]
             if len(values) != len(raw):
@@ -349,6 +434,15 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
             require_sequence(build, field, required=False)
     closure = manifest.get("object_closure")
     objects = closure.get("objects") if isinstance(closure, Mapping) else None
+    if (
+        not isinstance(closure, Mapping)
+        or closure.get("schema_version")
+        != SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "extension manifest object closure schema_version must be "
+            f"{SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION}"
+        )
     if not isinstance(objects, list) or not objects:
         raise ValueError("extension manifest object closure is empty")
     for index, item in enumerate(objects):
@@ -359,9 +453,26 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
             raise ValueError(
                 f"object_closure.objects[{index}] compile command is missing"
             )
-        if require_sequence(item, "symbol_command", required=True) is None:
+        if "compile_command_operands" in item and "compile_command_ref" not in item:
             raise ValueError(
-                f"object_closure.objects[{index}] symbol command is missing"
+                f"object_closure.objects[{index}] compile operands require "
+                "compile_command_ref"
+            )
+        symbol_authority = item.get("symbol_authority")
+        if symbol_authority == SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY:
+            if require_sequence(item, "symbol_command", required=True) is None:
+                raise ValueError(
+                    f"object_closure.objects[{index}] symbol command is missing"
+                )
+        elif symbol_authority == SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY:
+            if "symbol_command" in item or "symbol_command_ref" in item:
+                raise ValueError(
+                    f"object_closure.objects[{index}] WASM symbol authority "
+                    "must not retain a symbol command"
+                )
+        else:
+            raise ValueError(
+                f"object_closure.objects[{index}] symbol authority is invalid"
             )
         dependencies = item.get("dependencies")
         if dependencies == []:

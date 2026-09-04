@@ -74,6 +74,10 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 ) -> bool {
     let kind = op.kind.as_str();
 
+    if op.is_async_work_poll() {
+        return false;
+    }
+
     if simple_ir_op_has_static_module_class_binding_effect_proof(op) {
         return true;
     }

@@ -751,9 +751,7 @@ def test_app_export_adapters_have_no_ownership_import_dependency(
             call_abi=_app_adapter_call_abi(),
         )
         imports = wasm_link._collect_imports(adapted_path.read_bytes())
-        assert all(
-            name != "molt_inc_ref_obj" for _module, name, _kind, _desc in imports
-        )
+        assert all(wasm_import.name != "molt_inc_ref_obj" for wasm_import in imports)
     finally:
         temp_dir.cleanup()
 
@@ -2209,6 +2207,18 @@ def _module_with_flattenable_rec_group_type() -> bytes:
     return wasm_link._build_sections([(1, bytes(type_payload))])
 
 
+def test_post_link_canonicalization_flattens_plain_function_rec_groups() -> None:
+    module = _module_with_flattenable_rec_group_type()
+
+    canonical = wasm_link._canonicalize_wasm_ld_output(
+        module,
+        description="test output",
+    )
+
+    assert canonical != module
+    assert wasm_link._parse_sections(canonical) == [(1, b"\x01\x60\x00\x00")]
+
+
 def test_strip_debug_sections_removes_all_dwarf_custom_sections() -> None:
     debug_info = wasm_link._build_custom_section(".debug_info", b"old")
     debug_line_str = wasm_link._build_custom_section(".debug_line_str", b"new")
@@ -2435,9 +2445,34 @@ def test_wasm_module_facts_capture_link_validation_surface() -> None:
 
     facts = wasm_link.parse_wasm_module_facts(data)
 
-    assert facts.imports == (("env", "memory", 2, b"\x00\x01"),)
+    assert facts.imports == (
+        wasm_artifact.WasmImport(
+            "env",
+            "memory",
+            2,
+            limits_flags=0,
+            minimum=1,
+        ),
+    )
     assert facts.module_imports["env"] == frozenset({"memory"})
     assert facts.memory_import_mins[("env", "memory")] == 1
+
+
+@pytest.mark.parametrize(
+    ("section_id", "error"),
+    (
+        (2, "Trailing bytes in wasm import section"),
+        (7, "Trailing bytes in wasm export section"),
+    ),
+)
+def test_wasm_module_facts_reject_trailing_interface_payload(
+    section_id: int,
+    error: str,
+) -> None:
+    module = wasm_link._build_sections([(section_id, b"\x00\x00")])
+
+    with pytest.raises(ValueError, match=error):
+        wasm_link.parse_wasm_module_facts(module)
 
 
 def test_validate_linked_parses_module_facts_once(
@@ -2487,7 +2522,7 @@ def test_validate_linked_accepts_known_host_table_contract(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
 
     linked = tmp_path / "linked.wasm"
     linked.write_bytes(_build_linked_host_table_module("__indirect_function_table"))
@@ -2554,6 +2589,53 @@ def test_validate_wasm_structural_falls_back_when_debug_strip_fails(
 
     assert wasm_link._validate_wasm_structural(module, description="Probe wasm")
     assert validated_inputs == [module]
+
+
+def test_validate_wasm_structural_fails_closed_without_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+
+    assert not wasm_link._validate_wasm_structural(
+        wasm_link._build_sections([]),
+        description="Probe wasm",
+    )
+    assert "structural validation unavailable" in capsys.readouterr().err
+
+
+def test_validate_wasm_structural_fails_closed_on_validator_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "wasm-tools")
+    monkeypatch.setattr(wasm_link, "_strip_debug_sections", lambda _data: None)
+    monkeypatch.setattr(
+        wasm_link,
+        "_run_external_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("validator crashed")),
+    )
+
+    assert not wasm_link._validate_wasm_structural(
+        wasm_link._build_sections([]),
+        description="Probe wasm",
+    )
+    assert "structural validation failed: validator crashed" in capsys.readouterr().err
+
+
+def test_validate_freestanding_requires_structural_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validations: list[str] = []
+
+    def reject(_data: bytes, *, description: str) -> bool:
+        validations.append(description)
+        return False
+
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", reject)
+
+    assert not wasm_link._validate_freestanding(wasm_link._build_sections([]))
+    assert validations == ["Freestanding wasm"]
 
 
 def test_stub_dead_functions_preserves_start_root_reachability() -> None:
@@ -3059,7 +3141,7 @@ def test_split_combined_post_link_restores_real_defined_memory_export() -> None:
 
     assert restored is not None
     facts = wasm_link.parse_wasm_module_facts(restored)
-    assert not [entry for entry in facts.imports if entry[2] == 2]
+    assert not [entry for entry in facts.imports if entry.kind == 2]
     assert facts.export_kinds["molt_memory"] == (2, 0)
 
 
@@ -3074,11 +3156,13 @@ def test_defined_memory_export_restoration_rejects_imported_memory() -> None:
 
 def test_split_app_shared_memory_contract_passes_split_validation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = tmp_path / "app.wasm"
     runtime = tmp_path / "molt_runtime.wasm"
     app.write_bytes(_build_split_runtime_app_module([]))
     runtime.write_bytes(_build_exported_runtime_module_many([]))
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
 
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
@@ -3086,10 +3170,12 @@ def test_split_app_shared_memory_contract_passes_split_validation(
 def test_validate_split_runtime_outputs_requires_shared_app_memory(
     tmp_path: Path,
     capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
 
     app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
@@ -3293,26 +3379,29 @@ def test_transform_authority_digest_invalidates_both_cache_keys(
     assert keys("authority-a") != keys("authority-b")
 
 
-def test_wasm_link_cache_authority_closes_over_all_transform_consumers() -> None:
-    relative_paths = {
-        path.resolve().relative_to(wasm_link.TOOLS_ROOT.parent).as_posix()
-        for path in wasm_link._wasm_link_transform_authority_paths()
+def test_wasm_link_cache_authority_uses_entry_module_import_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = wasm_link.TOOLS_ROOT.parent
+    entry = Path(wasm_link.__file__).resolve()
+    optimizer_policy = Path(wasm_link._optimizer_policy.__file__).resolve()
+    real_paths = {
+        path.resolve() for path in wasm_link._wasm_link_transform_authority_paths()
     }
-    assert relative_paths == {
-        "tools/artifact_publish.py",
-        "tools/wasm_link.py",
-        "tools/wasm_link_edit.py",
-        "tools/wasm_link_facts.py",
-        "tools/wasm_link_format.py",
-        "tools/wasm_link_optimize.py",
-        "tools/wasm_optimize.py",
-        "src/molt/wasm_artifact.py",
-        "src/molt/wasm_linking_symbols.py",
-        "src/molt/wasm_optimization.py",
-    }
-    assert all(
-        path.is_file() for path in wasm_link._wasm_link_transform_authority_paths()
-    )
+    assert optimizer_policy in real_paths
+
+    expected = (entry, optimizer_policy)
+    calls: list[tuple[Path, tuple[Path, ...]]] = []
+
+    def closure(root: Path, seeds: tuple[Path, ...]) -> tuple[Path, ...]:
+        calls.append((root, seeds))
+        return expected
+
+    monkeypatch.setattr(wasm_link, "local_python_import_closure", closure)
+
+    assert wasm_link._wasm_link_transform_authority_paths() == expected
+    assert calls == [(repo_root, (entry,))]
+    assert optimizer_policy.name == "wasm_link_optimizer_policy.py"
 
 
 def test_wasm_facts_and_scanner_identity_invalidate_both_cache_keys(
@@ -3716,13 +3805,13 @@ def test_run_wasm_ld_links_staged_native_objects(
         output,
         linked,
         native_objects=(native_object,),
-        native_link_arguments=("--allow-undefined",),
+        native_link_arguments=("--undefined=ndimage_edt",),
     )
 
     assert rc == 0
     output_index = wasm_ld_inputs.index("-o") + 2
     assert Path(wasm_ld_inputs[output_index + 2]).name == native_object.name
-    assert "--allow-undefined" in wasm_ld_inputs
+    assert "--undefined=ndimage_edt" in wasm_ld_inputs
 
 
 def test_run_wasm_ld_rejects_signature_mismatch_warning(
@@ -3989,7 +4078,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         split_runtime=True,
         split_output_dir=split_dir,
         native_objects=(native_object,),
-        native_link_arguments=("--allow-undefined",),
+        native_link_arguments=("--undefined=ndimage_edt",),
     )
 
     assert rc == 0
@@ -3997,8 +4086,8 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     monolithic_cmd, split_app_cmd = link_calls
     assert any(Path(part).name == native_object.name for part in monolithic_cmd)
     assert any(Path(part).name == native_object.name for part in split_app_cmd)
-    assert "--allow-undefined" in monolithic_cmd
-    assert "--allow-undefined" in split_app_cmd
+    assert "--undefined=ndimage_edt" in monolithic_cmd
+    assert "--undefined=ndimage_edt" in split_app_cmd
     assert any(Path(part).name == runtime.name for part in monolithic_cmd)
     assert not any(Path(part).name == runtime.name for part in split_app_cmd)
     assert "--stack-first" in monolithic_cmd
@@ -4049,11 +4138,9 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
             link_calls.append(list(cmd))
             linked_input = Path(cmd[cmd.index("-o") + 2]).read_bytes()
             function_imports = {
-                (module, name)
-                for module, name, kind, _desc in wasm_link._collect_imports(
-                    linked_input
-                )
-                if kind == 0
+                (wasm_import.module, wasm_import.name)
+                for wasm_import in wasm_link._collect_imports(linked_input)
+                if wasm_import.kind == 0
             }
             assert ("env", symbol) in function_imports
             assert ("molt_native", symbol) not in function_imports
@@ -4982,9 +5069,11 @@ def test_rewrite_native_runtime_imports_forces_generated_runtime_exports(
 
 def test_split_runtime_validation_uses_generated_runtime_export_names(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = tmp_path / "app.wasm"
     runtime = tmp_path / "runtime.wasm"
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
     app.write_bytes(
         _build_split_runtime_app_module(["socket_drop", "unknown_probe"], memory_min=1)
     )

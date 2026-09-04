@@ -6,6 +6,12 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from molt.wasm_artifact import (
+    read_wasm_limits as _read_limits,
+    skip_wasm_import_description as _parse_import_desc,
+    write_wasm_limits as _write_limits,
+)
+
 from wasm_link_format import (
     FLAG_BINDING_GLOBAL,
     FLAG_EXPLICIT_NAME,
@@ -29,16 +35,13 @@ from wasm_link_format import (
     _count_func_imports,
     wasm_runtime_export_name,
     _parse_custom_section,
-    _parse_import_desc,
     _parse_indexed_symbol,
     _parse_linking_payload,
     _parse_func_type_indices,
     _parse_sections,
     _parse_type_section,
-    _read_limits,
     _read_string,
     _read_varuint,
-    _write_limits,
     _write_string,
     _write_varuint,
 )
@@ -268,7 +271,7 @@ def _inject_app_export_adapters(
                 f"contract app export {public_name!r} has invalid type index {type_idx}"
             )
         params, results = types[type_idx]
-        if any(param != 0x7E for param in params) or results != (0x7E,):
+        if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
             raise ValueError(
                 f"contract app export {public_name!r} must have canonical "
                 "(i64...) -> i64 signature"
@@ -409,18 +412,18 @@ def _inject_app_export_adapters(
 
 def _function_type_for_index(
     data: bytes, function_index: int
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
+) -> tuple[tuple[bytes, ...], tuple[bytes, ...]]:
     sections = _parse_sections(data)
     types = _parse_type_section(sections)
     import_count = _count_func_imports(sections)
     if function_index < import_count:
         imported_index = 0
-        for _module, _name, kind, desc in _collect_imports(data):
-            if kind != 0:
+        for wasm_import in _collect_imports(data):
+            if wasm_import.kind != 0:
                 continue
             if imported_index == function_index:
-                type_index, end = _read_varuint(desc, 0)
-                if end != len(desc) or type_index >= len(types):
+                type_index = wasm_import.type_index
+                if type_index is None or type_index >= len(types):
                     raise ValueError(
                         "app export adapter import has invalid function type"
                     )
@@ -445,7 +448,7 @@ def _forward_owned_result_adapter_call(data: bytes, function_index: int) -> int:
     """Return the target call from an exact owned-result forwarding adapter."""
 
     params, results = _function_type_for_index(data, function_index)
-    if any(param != 0x7E for param in params) or results != (0x7E,):
+    if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
         raise ValueError(
             "app export adapter must have canonical (i64...) -> i64 signature"
         )
@@ -719,24 +722,26 @@ def _restore_output_export_aliases(data: bytes) -> bytes | None:
 
 
 def _table_import_min(data: bytes) -> int | None:
-    for module, name, kind, desc in _collect_imports(data):
-        if kind != 1 or module != "env" or name != "__indirect_function_table":
+    for wasm_import in _collect_imports(data):
+        if (
+            wasm_import.kind != 1
+            or wasm_import.module != "env"
+            or wasm_import.name != "__indirect_function_table"
+        ):
             continue
-        if not desc:
-            return None
-        _, minimum, _, _ = _read_limits(desc, 1)
-        return minimum
+        return wasm_import.minimum
     return None
 
 
 def _memory_import_min(data: bytes) -> int | None:
-    for module, name, kind, desc in _collect_imports(data):
-        if kind != 2 or module != "env" or name != "memory":
+    for wasm_import in _collect_imports(data):
+        if (
+            wasm_import.kind != 2
+            or wasm_import.module != "env"
+            or wasm_import.name != "memory"
+        ):
             continue
-        if not desc:
-            return None
-        _, minimum, _, _ = _read_limits(desc, 0)
-        return minimum
+        return wasm_import.minimum
     return None
 
 
@@ -1227,7 +1232,7 @@ def _rewrite_output_imports(
 
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
-    sections = _parse_sections(data)
+    sections = _parse_sections(data, allow_duplicate_standard_sections=True)
     vector_section_ids = {1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13}
     merged_sections: list[tuple[int, bytes]] = []
     merged_indices: dict[int, int] = {}

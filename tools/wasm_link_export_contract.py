@@ -202,12 +202,10 @@ def _import_index_for_kind(
     kind: int,
 ) -> int | None:
     index = 0
-    for import_module, import_name, import_kind, _desc in _api("_collect_imports")(
-        data
-    ):
-        if import_kind != kind:
+    for wasm_import in _api("_collect_imports")(data):
+        if wasm_import.kind != kind:
             continue
-        if import_module == module and import_name == name:
+        if wasm_import.module == module and wasm_import.name == name:
             return index
         index += 1
     return None
@@ -253,7 +251,7 @@ def _ensure_defined_memory_export(data: bytes) -> bytes | None:
         for name in ("molt_memory", "memory")
     ):
         return None
-    memory_imports = [entry for entry in facts.imports if entry[2] == 2]
+    memory_imports = [entry for entry in facts.imports if entry.kind == 2]
     if memory_imports:
         raise ValueError("cannot restore linked memory export from an imported memory")
     memory_sections = [

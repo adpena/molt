@@ -11,6 +11,13 @@ from molt.cli.source_extension_reproducibility import (
     _canonicalize_meson_metadata,
     _source_extension_deterministic_path_args,
 )
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+)
 
 
 def _flag_replacements(arguments: list[str]) -> list[str]:
@@ -139,9 +146,7 @@ def test_meson_metadata_identity_ignores_roots_and_transient_dependency_ids(
     ]
 
     first_canonical = _canonicalize_meson_metadata(first, ((first_root, "@build"),))
-    second_canonical = _canonicalize_meson_metadata(
-        second, ((second_root, "@build"),)
-    )
+    second_canonical = _canonicalize_meson_metadata(second, ((second_root, "@build"),))
     assert first_canonical == second_canonical
     assert first_canonical[0]["name"] == "dep123"
 
@@ -194,6 +199,9 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
         )
         manifest = {
             "module": "pkg.native",
+            "init_symbol": "PyInit_native",
+            "target_triple": "wasm32-wasip1",
+            "artifact_kind": "wasm_relocatable_object",
             "extension": "pkg/native.molt.wasm",
             "extension_sha256": "a" * 64,
             "wheel": "pkg-1.0-py3-molt_abi1-wasm32_wasip1.whl",
@@ -208,11 +216,24 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
                 "digest": "stale",
             },
             "object_closure": {
-                "closure_sha256": "stale",
+                "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+                "root_symbol": "PyInit_native",
+                "init_symbol_owner": "module.o",
+                "defined_symbols": ["PyInit_native"],
+                "undefined_symbols": [],
+                "runtime_symbols": [],
+                "required_c_api_symbols": [],
+                "required_capsules": [],
+                "project_generated_c_api_symbols": [],
+                "wasm_imports": [],
                 "objects": [
                     {
                         "source": str(source / "module.c"),
-                        "object": str(output / "module.o"),
+                        "object": "module.o",
+                        "source_sha256": "b" * 64,
+                        "object_sha256": "c" * 64,
+                        "defined_symbols": ["PyInit_native"],
+                        "undefined_symbols": [],
                         "compile_command": [
                             "clang",
                             "-c",
@@ -220,14 +241,19 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
                             "-o",
                             str(output / "module.o"),
                         ],
+                        "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+                        "dependencies": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [],
+                        "project_generated_c_api_symbols": [],
                     }
                 ],
             },
             "build": {
                 "source_plan_digest": "stale",
-                "object_closure_sha256": "stale",
             },
         }
+        finalize_source_extension_object_closure(manifest)
         return _canonical_extension_manifest_for_wheel(
             manifest,
             location_roots=(

@@ -739,7 +739,10 @@ def run_wasm_ld_with_custodied_inputs(
         if updated is not None:
             work_linked.write_bytes(updated)
             linked_bytes = updated
-        if not any(entry[2] == 2 for entry in api["_collect_imports"](linked_bytes)):
+        if not any(
+            wasm_import.kind == 2
+            for wasm_import in api["_collect_imports"](linked_bytes)
+        ):
             try:
                 updated = api["_ensure_defined_memory_export"](linked_bytes)
             except ValueError as exc:

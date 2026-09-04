@@ -75,7 +75,7 @@ fn function_op_count(func: &TirFunction) -> usize {
 const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
     match target {
         TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift => true,
-        TargetKind::Luau => false,
+        TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => false,
     }
 }
 
@@ -1014,7 +1014,14 @@ mod tests {
             TirBlock {
                 id: body,
                 args: vec![],
-                ops: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+                    source_span: None,
+                }],
                 terminator: Terminator::Branch {
                     target: header,
                     args: vec![],
@@ -1030,6 +1037,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![] },
             },
         );
+        func.label_id_map.insert(exit.0, 90);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
         let pm = build_default_pipeline(TargetInfo::native_release_fast());

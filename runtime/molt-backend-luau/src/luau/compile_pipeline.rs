@@ -107,29 +107,10 @@ impl LuauBackend {
     /// Luau.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         validate_luau_function_symbol_contract(ir)?;
-        validate_luau_identity_contract(ir)?;
-        molt_tir::target_admission::validate_target_contract(
+        molt_tir::target_admission::validate_target_contract_with_representation_plan(
             ir,
-            "luau",
-            molt_tir::target_admission::NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
-            molt_tir::target_admission::RuntimeTargetCapabilities {
-                extern_function_linkage: false,
-                execution_frame_state: true,
-                python_frame_introspection: false,
-                python_identity: true,
-                tuple_representation: true,
-                exception_model: true,
-                deterministic_lifetime: false,
-                format_protocol: false,
-                iterable_protocol: true,
-                object_model: true,
-                python_truthiness: true,
-                python_comparison: true,
-                structured_runtime_errors: true,
-                async_runtime: false,
-                unstructured_control_flow: true,
-                host_capabilities: false,
-            },
+            &crate::tir::target_info::TargetInfo::luau_release_fast(),
+            validate_luau_identity_contract,
         )?;
         let source = self.emit_source(ir);
         // Dispatch failures emit no source and this Result boundary never
@@ -915,23 +896,23 @@ pub(super) fn validate_luau_function_symbol_contract(ir: &SimpleIR) -> Result<()
     Ok(())
 }
 
-pub(super) fn validate_luau_identity_contract(ir: &SimpleIR) -> Result<(), String> {
-    for function in &ir.functions {
-        let plan = ScalarRepresentationPlan::for_function_ir(function);
-        for (index, op) in function.ops.iter().enumerate() {
-            if !matches!(op.kind.as_str(), "is" | "is_not") {
-                continue;
-            }
-            let args = op.args.as_deref().unwrap_or(&[]);
-            if args.len() < 2 {
-                continue;
-            }
-            if identity_lowering(&plan, &args[0], &args[1]) == IdentityLowering::Reject {
-                return Err(format!(
-                    "luau target rejected before source generation: {}:op#{index} `{}`: identity needs alias/reference/singleton provenance or statically disjoint scalar kinds because Luau compares same-kind numbers and strings by value",
-                    function.name, op.kind,
-                ));
-            }
+pub(super) fn validate_luau_identity_contract(
+    function: &FunctionIR,
+    plan: &ScalarRepresentationPlan,
+) -> Result<(), String> {
+    for (index, op) in function.ops.iter().enumerate() {
+        if !matches!(op.kind.as_str(), "is" | "is_not") {
+            continue;
+        }
+        let args = op.args.as_deref().unwrap_or(&[]);
+        if args.len() < 2 {
+            continue;
+        }
+        if identity_lowering(plan, &args[0], &args[1]) == IdentityLowering::Reject {
+            return Err(format!(
+                "luau target rejected before source generation: {}:op#{index} `{}`: identity needs alias/reference/singleton provenance or statically disjoint scalar kinds because Luau compares same-kind numbers and strings by value",
+                function.name, op.kind,
+            ));
         }
     }
     Ok(())

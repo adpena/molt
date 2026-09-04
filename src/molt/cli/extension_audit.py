@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any
 import zipfile
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 from molt.cli.extension_manifest import (
     _MOLT_C_API_VERSION_RE,
@@ -12,32 +12,14 @@ from molt.cli.extension_manifest import (
     _manifest_dotted_name_tuple,
     _validate_extension_manifest,
 )
-from molt.file_hashing import _sha256_file
+from molt.cli.source_extension_object_closure import (
+    SourceExtensionObjectClosureError,
+    validate_source_extension_object_closure,
+)
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
-
-
-def _object_closure_string_set(
-    object_closure: Mapping[str, Any],
-    field_name: str,
-) -> set[str]:
-    symbols = {
-        item.strip()
-        for item in object_closure.get(field_name, ())
-        if isinstance(item, str) and item.strip()
-    }
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if not isinstance(item, Mapping):
-                continue
-            symbols.update(
-                value.strip()
-                for value in item.get(field_name, ())
-                if isinstance(value, str) and value.strip()
-            )
-    return symbols
+from molt.file_hashing import _sha256_file
 
 
 def extension_audit(
@@ -181,7 +163,7 @@ def extension_audit(
         manifest,
         manifest_dir=manifest_dir,
         wheel_path=wheel_path,
-        require_capabilities=require_capabilities,
+        require_nonempty_capabilities=require_capabilities,
         required_abi=required_abi,
         require_checksum=require_checksum and not require_artifact_file,
         warn_missing_checksum=not require_checksum and not require_artifact_file,
@@ -274,66 +256,61 @@ def extension_audit(
         "keys": [],
     }
     if isinstance(object_closure, Mapping):
-        runtime_symbols = _object_closure_string_set(object_closure, "runtime_symbols")
-        undefined_symbols = _object_closure_string_set(
-            object_closure,
-            "undefined_symbols",
-        )
-        defined_symbols = _object_closure_string_set(object_closure, "defined_symbols")
-        required_c_api_symbols = _object_closure_string_set(
-            object_closure,
-            "required_c_api_symbols",
-        )
-        required_capsules = _object_closure_string_set(
-            object_closure,
-            "required_capsules",
-        )
-        project_generated_c_api_symbols = _object_closure_string_set(
-            object_closure,
-            "project_generated_c_api_symbols",
-        )
-        project_generated_c_api_prefixes = _object_closure_string_set(
-            object_closure,
-            "project_generated_c_api_prefixes",
-        )
-        object_closure_summary = {
-            "present": True,
-            "has_closure_sha256": isinstance(object_closure.get("closure_sha256"), str)
-            and bool(object_closure.get("closure_sha256")),
-            "object_count": len(object_closure.get("objects") or [])
-            if isinstance(object_closure.get("objects"), list)
-            else 0,
-            "runtime_symbol_count": len(runtime_symbols),
-            "undefined_symbol_count": len(undefined_symbols),
-            "defined_symbol_count": len(defined_symbols),
-            "required_c_api_symbol_count": len(required_c_api_symbols),
-            "required_capsule_count": len(required_capsules),
-            "project_generated_c_api_symbol_count": len(
-                project_generated_c_api_symbols
-            ),
-            "project_generated_c_api_prefix_count": len(
-                project_generated_c_api_prefixes
-            ),
-            "root_symbol": object_closure.get("root_symbol")
-            if isinstance(object_closure.get("root_symbol"), str)
-            else None,
-            "init_symbol_owner": object_closure.get("init_symbol_owner")
-            if isinstance(object_closure.get("init_symbol_owner"), str)
-            else None,
-            "keys": sorted(str(key) for key in object_closure.keys()),
-        }
-        if require_object_closure and not (
-            object_closure_summary["has_closure_sha256"]
-            or object_closure_summary["object_count"]
-            or object_closure_summary["runtime_symbol_count"]
-            or object_closure_summary["undefined_symbol_count"]
-            or object_closure_summary["defined_symbol_count"]
-            or object_closure_summary["required_c_api_symbol_count"]
-            or object_closure_summary["required_capsule_count"]
-            or object_closure_summary["project_generated_c_api_symbol_count"]
-            or object_closure_summary["project_generated_c_api_prefix_count"]
-        ):
-            errors.append("object_closure is empty")
+        try:
+            validated_object_closure = validate_source_extension_object_closure(
+                manifest
+            )
+            canonical_object_closure, _closure_digest = validated_object_closure
+        except SourceExtensionObjectClosureError as exc:
+            errors.append(f"object_closure is invalid: {exc}")
+        else:
+            if (
+                require_artifact_file
+                and extension_path is not None
+                and extension_path.is_file()
+            ):
+                from molt.cli.source_extensions import (
+                    validate_source_extension_artifact_object_closure,
+                )
+
+                errors.extend(
+                    validate_source_extension_artifact_object_closure(
+                        artifact_path=extension_path,
+                        manifest=manifest,
+                        validated_closure=validated_object_closure,
+                    )
+                )
+            object_closure_summary = {
+                "present": True,
+                "has_closure_sha256": True,
+                "object_count": len(canonical_object_closure["objects"]),
+                "runtime_symbol_count": len(
+                    canonical_object_closure["runtime_symbols"]
+                ),
+                "undefined_symbol_count": len(
+                    canonical_object_closure["undefined_symbols"]
+                ),
+                "defined_symbol_count": len(
+                    canonical_object_closure["defined_symbols"]
+                ),
+                "required_c_api_symbol_count": len(
+                    canonical_object_closure["required_c_api_symbols"]
+                ),
+                "required_capsule_count": len(
+                    canonical_object_closure["required_capsules"]
+                ),
+                "project_generated_c_api_symbol_count": len(
+                    canonical_object_closure["project_generated_c_api_symbols"]
+                ),
+                "project_generated_c_api_prefix_count": len(
+                    canonical_object_closure["project_generated_c_api_prefixes"]
+                ),
+                "root_symbol": canonical_object_closure["root_symbol"],
+                "init_symbol_owner": canonical_object_closure["init_symbol_owner"],
+                "keys": sorted(str(key) for key in object_closure),
+            }
+    elif "object_closure" in manifest:
+        errors.append("object_closure is invalid: expected an object")
     elif require_object_closure:
         errors.append("object_closure missing")
 

@@ -327,7 +327,9 @@ _TERMINATOR_VARIANTS = (
 # alias_analysis.rs). Kept distinct from the mapper's alias grouping because
 # the classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
+    "exception_check_kinds",
     "async_work_poll_kinds",
+    "async_work_poll_marker_kinds",
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
     "classifier_owned_alias",
@@ -361,6 +363,7 @@ _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS = (
     "simpleir_comparison_semantics_kinds",
     "simpleir_fallible_protocol_semantics_kinds",
     "simpleir_async_runtime_semantics_kinds",
+    "simpleir_pending_call_eval_breaker_semantics_kinds",
     "simpleir_unstructured_control_semantics_kinds",
     "simpleir_host_capability_semantics_kinds",
 )

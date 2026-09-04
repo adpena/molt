@@ -1,5 +1,7 @@
 use crate::OpIR;
-use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_state_resume_at;
+use molt_tir::tir::op_kinds_generated::{
+    simpleir_kind_is_exception_check, simpleir_kind_is_wasm_state_resume_at,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::wasm) fn exception_handler_region_indices(ops: &[OpIR]) -> BTreeSet<usize> {
@@ -22,7 +24,7 @@ pub(in crate::wasm::state_dispatch) fn exception_handler_region_indices_from_lab
     let handler_labels: Vec<i64> = ops
         .iter()
         .filter_map(|op| {
-            matches!(op.kind.as_str(), "check_exception" | "async_work_poll")
+            simpleir_kind_is_exception_check(op.kind.as_str())
                 .then_some(op.value)
                 .flatten()
         })

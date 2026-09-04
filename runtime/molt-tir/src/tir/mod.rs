@@ -7,9 +7,9 @@ pub mod tests_roundtrip;
 pub mod verify_lir;
 pub mod verify_lir_repr;
 pub use molt_ir::tir::{
-    blocks, call_targets, cfg, cfg_liveness, dominators, effect_proof, function, numeric_facts,
-    op_kinds_generated, ops, printer, serialize, simple_def_use, ssa, target_info, types,
-    value_range, values, verify,
+    blocks, call_targets, cfg, cfg_liveness, clone_support, dominators, effect_proof, function,
+    numeric_facts, op_kinds_generated, ops, printer, serialize, simple_def_use, ssa, target_info,
+    types, value_range, values, verify,
 };
 pub use molt_passes::tir::{
     analysis, bolt, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,
@@ -37,7 +37,9 @@ pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
-pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
+pub use self::target_info::{
+    BuildProfile, NumericTargetCapabilities, ProfileData, SimdCaps, TargetInfo, TargetKind,
+};
 pub use self::types::{FuncSignature, TirType};
 pub use self::value_range::ValueRangeResult;
 pub use self::values::{TirValue, ValueId};

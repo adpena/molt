@@ -7,8 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::ir::{FunctionIR, OpIR};
 use crate::tir::analysis::{AnalysisManager, LoopForest};
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::cfg::CFG;
 use crate::tir::exception_regions::{
     ExceptionBoundaryHandler, ExceptionOpPosition, ExceptionRegionFacts, ExceptionRegions,
 };
@@ -16,7 +18,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     opcode_requires_async_work_poll_after_table, simpleir_kind_is_call_graph_user_call,
 };
-use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -38,19 +40,6 @@ fn mark_poll(op: &mut TirOp) -> bool {
     op.mark_async_work_poll()
 }
 
-fn check_exception(label: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
-    attrs.insert("value".into(), AttrValue::Int(label));
-    TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::CheckException,
-        operands: vec![],
-        results: vec![],
-        attrs,
-        source_span: None,
-    }
-}
-
 fn check_label(op: &TirOp) -> Option<i64> {
     if op.opcode != OpCode::CheckException {
         return None;
@@ -59,6 +48,22 @@ fn check_label(op: &TirOp) -> Option<i64> {
         Some(AttrValue::Int(label)) => Some(*label),
         _ => None,
     }
+}
+
+const FINALLY_PENDING_OBSERVER: &str = "exception_finally_pending_observer";
+
+fn is_deferred_finally_observer(op: &TirOp) -> bool {
+    op.opcode == OpCode::Copy
+        && matches!(
+            op.attrs.get("_original_kind"),
+            Some(AttrValue::Str(kind)) if kind == FINALLY_PENDING_OBSERVER
+        )
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PostCallObservation {
+    Check(BlockId, usize),
+    DeferredFinally(BlockId, usize),
 }
 
 /// Locate the frontend-authored exception observation for a call boundary.
@@ -70,7 +75,7 @@ fn check_label(op: &TirOp) -> Option<i64> {
 /// unconditional fallthrough. Never cross another call, lexical transfer,
 /// conditional edge, or cycle and incorrectly let one later check service two
 /// semantic boundaries.
-fn post_call_check_site(
+fn post_call_observation(
     func: &TirFunction,
     block_id: BlockId,
     call_index: usize,
@@ -78,7 +83,7 @@ fn post_call_check_site(
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
-) -> Option<(BlockId, usize)> {
+) -> Option<PostCallObservation> {
     let mut current = block_id;
     let mut start = call_index + 1;
     let mut visited = BTreeSet::new();
@@ -89,9 +94,15 @@ fn post_call_check_site(
         let block = func.blocks.get(&current)?;
         for (index, op) in block.ops.iter().enumerate().skip(start) {
             if op.opcode == OpCode::CheckException {
+                if op.is_async_work_poll() && check_label(op).is_none() {
+                    return Some(PostCallObservation::Check(current, index));
+                }
                 return check_label(op)
                     .filter(|label| target.is_none() || target == Some(*label))
-                    .map(|_| (current, index));
+                    .map(|_| PostCallObservation::Check(current, index));
+            }
+            if is_deferred_finally_observer(op) {
+                return Some(PostCallObservation::DeferredFinally(current, index));
             }
             if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
                 || op_clears_pending_exception(op)
@@ -117,43 +128,41 @@ fn latch_check_site(
     func: &TirFunction,
     latch: BlockId,
     target: Option<i64>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
 ) -> Option<(BlockId, usize)> {
-    let block = func.blocks.get(&latch)?;
-    for (index, op) in block.ops.iter().enumerate().rev() {
-        if op.opcode == OpCode::CheckException {
-            return check_label(op)
-                .filter(|label| target.is_none() || target == Some(*label))
-                .map(|_| (latch, index));
-        }
-        if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
-            || op_clears_pending_exception(op)
-            || op_may_raise(value_types, const_ints, op)
-        {
+    let mut current = latch;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
             return None;
         }
+        let block = func.blocks.get(&current)?;
+        for (index, op) in block.ops.iter().enumerate().rev() {
+            if op.opcode == OpCode::CheckException {
+                return check_label(op)
+                    .filter(|label| target.is_none() || target == Some(*label))
+                    .map(|_| (current, index));
+            }
+            if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
+                || op_clears_pending_exception(op)
+                || op_may_raise(value_types, const_ints, op)
+            {
+                return None;
+            }
+        }
+        let [predecessor] = predecessors.get(&current)?.as_slice() else {
+            return None;
+        };
+        let Terminator::Branch { target, .. } = &func.blocks.get(predecessor)?.terminator else {
+            return None;
+        };
+        if *target != current {
+            return None;
+        }
+        current = *predecessor;
     }
-    None
-}
-
-/// A post-SSA pass cannot invent the value mapping for a non-empty handler
-/// signature. Such payloads must come from the SSA-authored exception edge.
-/// Fail at the construction site instead of emitting a malformed edge that
-/// lower-to-SimpleIR would silently materialize as uninitialized handler slots.
-fn assert_synthetic_edge_needs_no_payload(func: &TirFunction, label: i64, site: &str) {
-    let Some(target) = crate::tir::dominators::exception_label_to_block(func)
-        .get(&label)
-        .copied()
-    else {
-        return;
-    };
-    let arg_count = func.blocks[&target].args.len();
-    assert_eq!(
-        arg_count, 0,
-        "async-work poll cannot synthesize exception edge at {site} in function {:?} to handler {target} (label {label}) with {arg_count} block args; preserve the SSA-authored payload-bearing CheckException",
-        func.name
-    );
 }
 
 /// Resolve a reachable insertion boundary. The outer `Option` is reachability;
@@ -176,50 +185,16 @@ fn reachable_lexical_handler(
     }
 }
 
-/// Create the function-level propagation exit used when optimized/synthetic
-/// TIR has no surviving lexical `CheckException` to clone. The exit is a real
-/// labeled block in the same authority as frontend-created exception exits;
-/// lower-to-SimpleIR therefore emits the ordinary return-with-pending path and
-/// every backend receives an explicit branch target.
-fn make_function_exception_exit(func: &mut TirFunction) -> TirOp {
-    let mut used_labels: BTreeSet<i64> = func.label_id_map.values().copied().collect();
-    used_labels.extend(func.blocks.values().flat_map(|block| {
-        block
-            .ops
-            .iter()
-            .filter_map(|op| match op.attrs.get("value") {
-                Some(AttrValue::Int(label)) => Some(*label),
-                _ => None,
-            })
-    }));
-    let mut label = 0_i64;
-    while used_labels.contains(&label) {
-        label = label
-            .checked_add(1)
-            .expect("TIR exhausted the exception-label domain");
-    }
-
-    let exit = func.fresh_block();
-    func.blocks.insert(
-        exit,
-        TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        },
-    );
-    func.label_id_map.insert(exit.0, label);
-
-    check_exception(label)
+#[derive(Debug)]
+struct PollPlacementPlan {
+    call_sites: Vec<(BlockId, usize, Option<i64>)>,
+    latch_sites: Vec<(BlockId, BTreeSet<BlockId>, Option<i64>)>,
+    predecessors: HashMap<BlockId, Vec<BlockId>>,
+    value_types: HashMap<ValueId, TirType>,
+    const_ints: HashMap<ValueId, i64>,
 }
 
-pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    let mut stats = PassStats {
-        name: "async_work_poll",
-        ..Default::default()
-    };
-
+fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacementPlan {
     let loops = am.get::<LoopForest>(func).clone();
     let region_facts = am.get::<ExceptionRegions>(func).clone();
     let predecessors = crate::tir::dominators::build_pred_map(func);
@@ -244,7 +219,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
-    let call_sites: Vec<_> = func
+    let call_sites = func
         .blocks
         .iter()
         .flat_map(|(&block_id, block)| {
@@ -284,99 +259,336 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         );
         entry.0.insert(header);
     }
-    let latch_sites: Vec<_> = latch_sites_by_block
+    let latch_sites = latch_sites_by_block
         .into_iter()
         .map(|(latch, (headers, target))| (latch, headers, target))
         .collect();
 
-    let call_needs_function_exit = call_sites.iter().any(|(block, index, target)| {
-        target.is_none()
-            && post_call_check_site(
+    PollPlacementPlan {
+        call_sites,
+        latch_sites,
+        predecessors,
+        value_types,
+        const_ints,
+    }
+}
+
+fn observation_is_marked(func: &TirFunction, observation: PostCallObservation) -> bool {
+    let (block, index) = match observation {
+        PostCallObservation::Check(block, index)
+        | PostCallObservation::DeferredFinally(block, index) => (block, index),
+    };
+    func.blocks[&block].ops[index].is_async_work_poll()
+}
+
+/// Whether every target-required call and loop boundary already owns its final
+/// marked observation. Module transforms consume only this post-pipeline form;
+/// refusing unprepared input before mutation keeps SSA payload construction in
+/// the pre-SSA lowering authority.
+pub(crate) fn is_materialized(func: &TirFunction) -> bool {
+    let mut analyses = AnalysisManager::new();
+    let plan = placement_plan(func, &mut analyses);
+    let calls_ready = plan.call_sites.iter().all(|(block, index, target)| {
+        post_call_observation(
+            func,
+            *block,
+            *index,
+            *target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        )
+        .is_some_and(|observation| observation_is_marked(func, observation))
+    });
+    calls_ready
+        && plan.latch_sites.iter().all(|(latch, _, target)| {
+            latch_check_site(
+                func,
+                *latch,
+                *target,
+                &plan.predecessors,
+                &plan.value_types,
+                &plan.const_ints,
+            )
+            .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
+        })
+}
+
+/// Marked loop observations that serve only a latch, not a preceding call.
+/// Generator fusion removes these when the consumer and producer backedges are
+/// structurally merged; dual-role call observations remain intact.
+pub(crate) fn standalone_latch_poll_sites(func: &TirFunction) -> BTreeSet<(BlockId, usize)> {
+    let mut analyses = AnalysisManager::new();
+    let plan = placement_plan(func, &mut analyses);
+    let call_observations: BTreeSet<_> = plan
+        .call_sites
+        .iter()
+        .filter_map(|(block, index, target)| {
+            match post_call_observation(
                 func,
                 *block,
                 *index,
                 *target,
-                &predecessors,
-                &value_types,
-                &const_ints,
-            )
-            .is_none()
-    });
-    let latch_needs_function_exit = latch_sites.iter().any(|(latch, _, target)| {
-        target.is_none()
-            && latch_check_site(func, *latch, *target, &value_types, &const_ints).is_none()
-    });
-    let function_exit_check = (call_needs_function_exit || latch_needs_function_exit)
-        .then(|| make_function_exception_exit(func));
-
-    // Prefer the frontend's lexical successor. Optimized and synthetic TIR may
-    // legitimately lack one; those sites use the canonical function exit above
-    // rather than silently dropping the poll or panicking in the pipeline.
-    let mut call_blocks = BTreeSet::new();
-    call_blocks.extend(call_sites.iter().map(|(block, _, _)| *block));
-    for block_id in call_blocks {
-        let mut sites: Vec<_> = call_sites
-            .iter()
-            .filter(|(block, _, _)| *block == block_id)
-            .map(|(_, index, target)| (*index, *target))
-            .collect();
-        sites.sort_unstable_by_key(|(index, _)| *index);
-        for (index, target) in sites.into_iter().rev() {
-            let existing_site = post_call_check_site(
-                func,
-                block_id,
-                index,
-                target,
-                &predecessors,
-                &value_types,
-                &const_ints,
-            );
-            if let Some((existing_block, existing_index)) = existing_site {
-                let block = func.blocks.get_mut(&existing_block).unwrap();
-                stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));
-                continue;
+                &plan.predecessors,
+                &plan.value_types,
+                &plan.const_ints,
+            ) {
+                Some(PostCallObservation::Check(block, index)) => Some((block, index)),
+                _ => None,
             }
-            let mut check = if let Some(label) = target {
-                assert_synthetic_edge_needs_no_payload(
-                    func,
-                    label,
-                    &format!("post-call {block_id} op#{index}"),
+        })
+        .collect();
+    plan.latch_sites
+        .iter()
+        .filter_map(|(latch, _, target)| {
+            latch_check_site(
+                func,
+                *latch,
+                *target,
+                &plan.predecessors,
+                &plan.value_types,
+                &plan.const_ints,
+            )
+        })
+        .filter(|site| {
+            func.blocks[&site.0].ops[site.1].is_async_work_poll()
+                && !call_observations.contains(site)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) struct PreSsaMaterialization {
+    pub(crate) markers_changed: usize,
+    pub(crate) transfers_inserted: usize,
+}
+
+fn latch_insertion_index(ir: &FunctionIR, cfg: &CFG, latch: BlockId) -> usize {
+    let block = cfg
+        .blocks
+        .get(latch.0 as usize)
+        .unwrap_or_else(|| panic!("async-work latch {latch} has no SimpleIR block"));
+    if block.start_op == block.end_op {
+        return block.end_op;
+    }
+    let last = block.end_op - 1;
+    if crate::tir::is_structural(&ir.ops[last].kind) {
+        last
+    } else {
+        block.end_op
+    }
+}
+
+/// Materialize every missing asynchronous-work observation in SimpleIR before
+/// SSA conversion. This is the sole insertion authority: SSA already owns the
+/// handler environment and therefore authors payload operands exactly once.
+///
+/// A call inside generated `finally` arbitration is different: its pending
+/// exception is intentionally consumed by `exception_finally_pending_observer`
+/// so replacement and `__context__` chaining can complete. Such a boundary gets
+/// a branchless poll; every other missing boundary gets an explicit transfer.
+///
+/// `preview` is a placement-only lift whose source indices are physical
+/// positions in this exact `ir` stream. Durable transported source provenance
+/// is restored by the owning lowerer after materialization.
+pub(crate) fn materialize_before_ssa(
+    ir: &mut FunctionIR,
+    preview: &mut TirFunction,
+) -> PreSsaMaterialization {
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    enum Target {
+        Handler(i64),
+        FunctionExit,
+    }
+
+    let mut am = AnalysisManager::new();
+    let plan = placement_plan(preview, &mut am);
+    let simple_cfg = CFG::build(&ir.ops);
+    let mut insertions: BTreeMap<usize, Target> = BTreeMap::new();
+    let mut markers_changed = 0;
+
+    let mut record = |index: usize, target: Target| {
+        if let Some(previous) = insertions.insert(index, target) {
+            assert_eq!(
+                previous, target,
+                "one async-work boundary cannot have conflicting exception custody"
+            );
+        }
+    };
+
+    for (block, index, target) in &plan.call_sites {
+        match post_call_observation(
+            preview,
+            *block,
+            *index,
+            *target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        ) {
+            Some(PostCallObservation::Check(..)) => {}
+            Some(PostCallObservation::DeferredFinally(observer_block, observer_index)) => {
+                let prepared_index = preview.blocks[&observer_block].ops[observer_index]
+                    .source_op_index()
+                    .expect("deferred-finally observer lost its prepared SimpleIR position");
+                assert_eq!(
+                    ir.ops[prepared_index].kind, FINALLY_PENDING_OBSERVER,
+                    "deferred-finally observer source kind drifted before SSA materialization"
                 );
-                check_exception(label)
-            } else {
-                function_exit_check
-                    .clone()
-                    .expect("depth-zero async-work poll requires a function exception exit")
-            };
-            mark_poll(&mut check);
-            func.blocks
-                .get_mut(&block_id)
-                .unwrap()
-                .ops
-                .insert(index + 1, check);
-            stats.ops_added += 1;
+                if !ir.ops[prepared_index].async_work_poll {
+                    ir.ops[prepared_index].async_work_poll = true;
+                    let observer =
+                        &mut preview.blocks.get_mut(&observer_block).unwrap().ops[observer_index];
+                    assert!(
+                        mark_poll(observer),
+                        "SimpleIR and preview TIR async-work markers must change together"
+                    );
+                    markers_changed += 1;
+                }
+            }
+            None => {
+                let prepared_index = preview.blocks[block].ops[*index]
+                    .source_op_index()
+                    .expect("async-work call lost its prepared SimpleIR position");
+                record(
+                    prepared_index + 1,
+                    target.map_or(Target::FunctionExit, Target::Handler),
+                );
+            }
+        }
+    }
+    for (latch, _, target) in &plan.latch_sites {
+        if latch_check_site(
+            preview,
+            *latch,
+            *target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        )
+        .is_none()
+        {
+            record(
+                latch_insertion_index(ir, &simple_cfg, *latch),
+                target.map_or(Target::FunctionExit, Target::Handler),
+            );
         }
     }
 
-    for (latch, _headers, target) in latch_sites {
-        let existing_site = latch_check_site(func, latch, target, &value_types, &const_ints);
+    if insertions.is_empty() {
+        return PreSsaMaterialization {
+            markers_changed,
+            transfers_inserted: 0,
+        };
+    }
+    let function_exit = insertions
+        .values()
+        .any(|target| *target == Target::FunctionExit)
+        .then(|| crate::tir::clone_support::LabelAllocator::for_simple_ir(ir).fresh());
+    let insertion_count = insertions.len();
+    let original_ops = std::mem::take(&mut ir.ops);
+    let original_len = original_ops.len();
+    let mut insertion_iter = insertions.into_iter().peekable();
+    let mut materialized_ops = Vec::with_capacity(
+        original_len + insertion_count + if function_exit.is_some() { 2 } else { 0 },
+    );
+    let materialized_poll = |target| OpIR {
+        kind: "async_work_poll".into(),
+        value: match target {
+            Target::Handler(label) => Some(label),
+            Target::FunctionExit => function_exit,
+        },
+        ..OpIR::default()
+    };
+    for (index, op) in original_ops.into_iter().enumerate() {
+        if insertion_iter.peek().is_some_and(|(at, _)| *at == index) {
+            let (_, target) = insertion_iter.next().expect("peeked insertion");
+            materialized_ops.push(materialized_poll(target));
+        }
+        materialized_ops.push(op);
+    }
+    if insertion_iter
+        .peek()
+        .is_some_and(|(at, _)| *at == original_len)
+    {
+        let (_, target) = insertion_iter.next().expect("peeked terminal insertion");
+        materialized_ops.push(materialized_poll(target));
+    }
+    assert!(
+        insertion_iter.next().is_none(),
+        "async-work insertion index exceeds SimpleIR length"
+    );
+    if let Some(label) = function_exit {
+        materialized_ops.push(OpIR {
+            kind: "label".into(),
+            value: Some(label),
+            ..OpIR::default()
+        });
+        materialized_ops.push(OpIR {
+            kind: "ret_void".into(),
+            ..OpIR::default()
+        });
+    }
+    ir.ops = materialized_ops;
+    PreSsaMaterialization {
+        markers_changed,
+        transfers_inserted: insertion_count,
+    }
+}
+
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    let mut stats = PassStats {
+        name: "async_work_poll",
+        ..Default::default()
+    };
+
+    let plan = placement_plan(func, am);
+    for (block_id, index, target) in plan.call_sites {
+        let observation = post_call_observation(
+            func,
+            block_id,
+            index,
+            target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        );
+        if let Some(PostCallObservation::Check(existing_block, existing_index)) = observation {
+            let block = func.blocks.get_mut(&existing_block).unwrap();
+            stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));
+            continue;
+        }
+        if let Some(PostCallObservation::DeferredFinally(observer_block, observer_index)) =
+            observation
+        {
+            let observer = &mut func.blocks.get_mut(&observer_block).unwrap().ops[observer_index];
+            stats.attrs_changed += usize::from(mark_poll(observer));
+            continue;
+        }
+        panic!(
+            "async-work post-call {block_id} op#{index} in function {:?} has no pre-SSA-authored exception transfer; materialize async-work boundaries before SSA conversion",
+            func.name
+        );
+    }
+
+    for (latch, _headers, target) in plan.latch_sites {
+        let existing_site = latch_check_site(
+            func,
+            latch,
+            target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        );
         if let Some((existing_block, existing_index)) = existing_site {
             let check = &mut func.blocks.get_mut(&existing_block).unwrap().ops[existing_index];
             stats.attrs_changed += usize::from(mark_poll(check));
             continue;
         }
-
-        let mut check = if let Some(label) = target {
-            assert_synthetic_edge_needs_no_payload(func, label, &format!("loop latch {latch}"));
-            check_exception(label)
-        } else {
-            function_exit_check
-                .clone()
-                .expect("depth-zero loop poll requires a function exception exit")
-        };
-        mark_poll(&mut check);
-        func.blocks.get_mut(&latch).unwrap().ops.push(check);
-        stats.ops_added += 1;
+        panic!(
+            "async-work loop latch {latch} in function {:?} has no pre-SSA-authored exception transfer; materialize async-work boundaries before SSA conversion",
+            func.name
+        );
     }
 
     if stats.total_changes() != 0 {
@@ -423,6 +635,378 @@ mod tests {
             AttrValue::Str("exception_pop".into()),
         );
         op
+    }
+
+    fn deferred_finally_payload_ir() -> FunctionIR {
+        FunctionIR {
+            name: "deferred_finally_payload".into(),
+            params: vec![
+                "__molt_closure__".into(),
+                "self".into(),
+                "exception_stack_token".into(),
+                "exception_stack_depth".into(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "try_start".into(),
+                    value: Some(93),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "try_start".into(),
+                    value: Some(96),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "try_end".into(),
+                    value: Some(96),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "jump".into(),
+                    value: Some(97),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(96),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "try_end".into(),
+                    value: Some(96),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(97),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "call".into(),
+                    s_value: Some("cleanup".into()),
+                    out: Some("cleanup_result".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: FINALLY_PENDING_OBSERVER.into(),
+                    out: Some("cleanup_pending".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("none".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "is".into(),
+                    args: Some(vec!["cleanup_pending".into(), "none".into()]),
+                    out: Some("cleanup_succeeded".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "if".into(),
+                    args: Some(vec!["cleanup_succeeded".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("selected_pending".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "else".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "copy_var".into(),
+                    var: Some("cleanup_pending".into()),
+                    out: Some("selected_pending".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "end_if".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(93),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(93),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "build_tuple".into(),
+                    args: Some(vec![
+                        "__molt_closure__".into(),
+                        "self".into(),
+                        "exception_stack_token".into(),
+                        "exception_stack_depth".into(),
+                    ]),
+                    out: Some("payload".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["payload".into()]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deferred_finally_poll_preserves_one_observer_and_four_value_handler_payload() {
+        let mut ir = deferred_finally_payload_ir();
+
+        let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
+        let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        assert_eq!(materialized.markers_changed, 1);
+        assert_eq!(
+            materialized.transfers_inserted, 0,
+            "the existing observer must avoid a second SSA lowering"
+        );
+        assert_eq!(ir.ops[7].kind, "call");
+        assert_eq!(ir.ops[8].kind, FINALLY_PENDING_OBSERVER);
+        assert!(ir.ops[8].async_work_poll);
+
+        let observer = preview
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| is_deferred_finally_observer(op))
+            .expect("existing finally-pending observer");
+        assert!(observer.is_async_work_poll());
+        let call_block = preview
+            .blocks
+            .values()
+            .find(|block| block.ops.iter().any(|op| op.opcode == OpCode::Call))
+            .expect("cleanup call block");
+        assert!(
+            call_block
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::CheckException),
+            "the poll must continue through finally arbitration instead of branching directly"
+        );
+        let handler = preview
+            .label_id_map
+            .iter()
+            .find_map(|(block, label)| (*label == 93).then_some(BlockId(*block)))
+            .expect("outer handler block");
+        assert_eq!(
+            preview.blocks[&handler].args.len(),
+            4,
+            "SSA must remain the sole authority for the four-value handler payload"
+        );
+
+        let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&preview);
+        let observer = round_trip
+            .iter()
+            .find(|op| op.kind == FINALLY_PENDING_OBSERVER)
+            .expect("observer survives TIR to SimpleIR");
+        assert!(observer.async_work_poll, "semantic marker must round-trip");
+    }
+
+    #[test]
+    fn target_lowering_separates_finally_observer_position_from_durable_provenance() {
+        let mut ir = deferred_finally_payload_ir();
+        let observer_index = ir
+            .ops
+            .iter()
+            .position(|op| op.kind == FINALLY_PENDING_OBSERVER)
+            .expect("fixture observer");
+        ir.ops[observer_index].source_op_idx = Some(0);
+        assert_ne!(ir.ops[0].kind, FINALLY_PENDING_OBSERVER);
+
+        let tir = crate::tir::lower_from_simple::lower_to_tir_for_target(
+            &ir,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
+        let observer = tir
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| is_deferred_finally_observer(op))
+            .expect("existing finally-pending observer");
+        assert!(observer.is_async_work_poll());
+        assert_eq!(observer.source_op_index(), Some(0));
+
+        let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
+        let observer = round_trip
+            .iter()
+            .find(|op| op.kind == FINALLY_PENDING_OBSERVER)
+            .expect("observer survives target-aware TIR round trip");
+        assert!(observer.async_work_poll);
+        assert_eq!(observer.source_op_idx, Some(0));
+        assert!(
+            round_trip
+                .iter()
+                .filter(|op| op.kind != FINALLY_PENDING_OBSERVER)
+                .all(|op| !op.async_work_poll),
+            "stale provenance must not mark an unrelated current-stream operation"
+        );
+    }
+
+    #[test]
+    fn target_lowering_places_call_poll_after_pre_ssa_loop_rewrite() {
+        let call = OpIR {
+            kind: "call".into(),
+            s_value: Some("work".into()),
+            out: Some("result".into()),
+            source_op_idx: Some(0),
+            ..OpIR::default()
+        };
+        let ir = FunctionIR {
+            name: "rewritten_loop_call".into(),
+            ops: vec![
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("initial".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_index_start".into(),
+                    args: Some(vec!["initial".into()]),
+                    out: Some("index".into()),
+                    ..OpIR::default()
+                },
+                call,
+                OpIR {
+                    kind: "loop_index_next".into(),
+                    args: Some(vec!["index".into()]),
+                    out: Some("index".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+
+        let tir = crate::tir::lower_from_simple::lower_to_tir_for_target(
+            &ir,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
+        let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
+        let call_index = round_trip
+            .iter()
+            .position(|op| op.kind == "call")
+            .expect("call survives target-aware lowering");
+        assert_eq!(round_trip[call_index].source_op_idx, Some(0));
+        assert_eq!(round_trip[call_index + 1].kind, "async_work_poll");
+    }
+
+    #[test]
+    fn loop_latch_poll_is_materialized_before_ssa_with_handler_payload() {
+        let mut ir = FunctionIR {
+            name: "payload_loop".into(),
+            params: vec!["payload".into()],
+            ops: vec![
+                OpIR {
+                    kind: "try_start".into(),
+                    value: Some(40),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "copy_var".into(),
+                    var: Some("payload".into()),
+                    out: Some("iteration_value".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_continue".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "try_end".into(),
+                    value: Some(40),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(40),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "copy_var".into(),
+                    var: Some("payload".into()),
+                    out: Some("handler_value".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
+        let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        assert_eq!(materialized.markers_changed, 0);
+        assert_eq!(materialized.transfers_inserted, 1);
+        let inserted = ir
+            .ops
+            .windows(2)
+            .find(|ops| ops[1].kind == "loop_continue")
+            .map(|ops| &ops[0])
+            .expect("poll immediately before loop latch transfer");
+        assert_eq!(inserted.kind, "async_work_poll");
+        assert_eq!(inserted.value, Some(40));
+
+        let mut lowered = crate::tir::lower_from_simple::lower_to_tir(&ir);
+        let poll = lowered
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.is_async_work_poll())
+            .expect("marked latch transfer");
+        assert_eq!(poll.operands.len(), 1);
+        let handler = lowered
+            .label_id_map
+            .iter()
+            .find_map(|(block, label)| (*label == 40).then_some(BlockId(*block)))
+            .expect("payload handler");
+        assert_eq!(lowered.blocks[&handler].args.len(), 1);
+        run(&mut lowered, &mut AnalysisManager::new());
+        crate::tir::verify::verify_function(&lowered)
+            .expect("payload-bearing latch poll must remain valid SSA");
     }
 
     #[test]
@@ -552,7 +1136,7 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_check_site(
+            post_call_observation(
                 &func,
                 entry,
                 0,
@@ -565,7 +1149,7 @@ mod tests {
             "a later call is a hard semantic boundary"
         );
         assert_eq!(
-            post_call_check_site(
+            post_call_observation(
                 &func,
                 entry,
                 1,
@@ -574,7 +1158,7 @@ mod tests {
                 &value_types,
                 &const_ints,
             ),
-            Some((entry, 2))
+            Some(PostCallObservation::Check(entry, 2))
         );
     }
 
@@ -601,7 +1185,7 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_check_site(
+            post_call_observation(
                 &func,
                 entry,
                 0,
@@ -610,7 +1194,7 @@ mod tests {
                 &value_types,
                 &const_ints,
             ),
-            Some((observer, 0))
+            Some(PostCallObservation::Check(observer, 0))
         );
 
         func.blocks
@@ -619,7 +1203,7 @@ mod tests {
             .ops
             .insert(0, op(OpCode::Call));
         assert_eq!(
-            post_call_check_site(
+            post_call_observation(
                 &func,
                 entry,
                 0,
@@ -648,7 +1232,7 @@ mod tests {
         func.blocks.get_mut(&observer).unwrap().ops.remove(0);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_call_check_site(
+            post_call_observation(
                 &func,
                 entry,
                 0,
@@ -675,10 +1259,18 @@ mod tests {
             target: latch,
             args: vec![],
         };
+        let predecessors = crate::tir::dominators::build_pred_map(&func);
         let value_types = func.value_types.clone();
         let const_ints = const_int_values(&func);
         assert_eq!(
-            latch_check_site(&func, latch, Some(70), &value_types, &const_ints,),
+            latch_check_site(
+                &func,
+                latch,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
             Some((latch, 0))
         );
 
@@ -688,14 +1280,22 @@ mod tests {
             .ops
             .push(op(OpCode::Call));
         assert_eq!(
-            latch_check_site(&func, latch, Some(70), &value_types, &const_ints,),
+            latch_check_site(
+                &func,
+                latch,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
             None,
             "a raising call after the check is a hard latch boundary"
         );
     }
 
     #[test]
-    fn loop_without_lexical_check_gets_one_labeled_function_exit() {
+    #[should_panic(expected = "has no pre-SSA-authored exception transfer")]
+    fn post_ssa_loop_without_transfer_fails_closed() {
         let mut func = TirFunction::new("synthetic_loop".into(), vec![], TirType::None);
         let header = func.entry_block;
         let latch = BlockId(1);
@@ -717,35 +1317,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func, &mut AnalysisManager::new());
-        assert_eq!(stats.ops_added, 1);
-        let check = func.blocks[&latch]
-            .ops
-            .iter()
-            .find(|op| op.opcode == OpCode::CheckException)
-            .expect("latch poll");
-        let label = match check.attrs.get("value") {
-            Some(AttrValue::Int(label)) => *label,
-            other => panic!("poll missing exception label: {other:?}"),
-        };
-        assert_eq!(
-            func.label_id_map
-                .values()
-                .filter(|value| **value == label)
-                .count(),
-            1
-        );
-        let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
-        assert!(
-            simple
-                .iter()
-                .any(|op| { op.kind == "async_work_poll" && op.value == Some(label) })
-        );
-        assert!(
-            simple
-                .iter()
-                .any(|op| op.kind == "label" && op.value == Some(label))
-        );
+        run(&mut func, &mut AnalysisManager::new());
     }
 
     #[test]
@@ -756,8 +1328,8 @@ mod tests {
             labeled_op(OpCode::TryStart, 10),
             labeled_op(OpCode::TryStart, 20),
             op(OpCode::Call),
-            check(10),
             check(20),
+            check(10),
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
@@ -769,21 +1341,33 @@ mod tests {
             .filter_map(check_label)
             .collect();
         assert_eq!(checks[0], 20, "poll must target the inner lexical handler");
-        assert_eq!(checks[1..], [10, 20]);
+        assert_eq!(checks[1..], [10]);
     }
 
     #[test]
     fn same_block_try_transition_routes_each_call_from_its_exact_boundary() {
         let mut func = TirFunction::new("try_transition".into(), vec![], TirType::None);
         let entry = func.entry_block;
+        let exit = func.fresh_block();
+        func.label_id_map.insert(exit.0, 31);
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             labeled_op(OpCode::TryStart, 30),
             op(OpCode::Call),
             check(30),
             labeled_op(OpCode::TryEnd, 30),
             op(OpCode::Call),
+            check(31),
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
 
         run(&mut func, &mut AnalysisManager::new());
         let polls: Vec<_> = func.blocks[&entry]
@@ -794,7 +1378,7 @@ mod tests {
             .collect();
         assert_eq!(polls.len(), 2);
         assert_eq!(polls[0], 30);
-        assert_ne!(polls[1], 30, "depth-zero call must use the function exit");
+        assert_eq!(polls[1], 31, "depth-zero call must use the function exit");
     }
 
     #[test]
@@ -853,7 +1437,7 @@ mod tests {
             TirBlock {
                 id: latch,
                 args: vec![],
-                ops: vec![],
+                ops: vec![check(74)],
                 terminator: Terminator::Branch {
                     target: header,
                     args: vec![],
@@ -890,11 +1474,14 @@ mod tests {
             op(OpCode::TryStart),
             check(80),
             op(OpCode::Call),
+            check(80),
             op(OpCode::TryStart),
             check(81),
             op(OpCode::Call),
+            check(81),
             op(OpCode::TryEnd),
             op(OpCode::Call),
+            check(80),
             op(OpCode::TryEnd),
         ];
         for (handler, label) in [(outer_handler, 80), (inner_handler, 81)] {
@@ -934,7 +1521,7 @@ mod tests {
             TirBlock {
                 id: latch,
                 args: vec![],
-                ops: vec![],
+                ops: vec![check(40)],
                 terminator: Terminator::Branch {
                     target: header,
                     args: vec![],
@@ -977,7 +1564,7 @@ mod tests {
             TirBlock {
                 id: latch,
                 args: vec![],
-                ops: vec![],
+                ops: vec![check(50)],
                 terminator: Terminator::CondBranch {
                     cond: ValueId(0),
                     then_block: inner,
@@ -1019,7 +1606,7 @@ mod tests {
             TirBlock {
                 id: header,
                 args: vec![],
-                ops: vec![op(OpCode::Call)],
+                ops: vec![op(OpCode::Call), check(22)],
                 terminator: Terminator::CondBranch {
                     cond,
                     then_block: first_try,
@@ -1035,7 +1622,11 @@ mod tests {
                 TirBlock {
                     id: block,
                     args: vec![],
-                    ops: vec![labeled_op(OpCode::TryStart, label), exception_pop()],
+                    ops: vec![
+                        labeled_op(OpCode::TryStart, label),
+                        exception_pop(),
+                        check(22),
+                    ],
                     terminator: Terminator::Branch {
                         target: header,
                         args: vec![],
@@ -1066,14 +1657,25 @@ mod tests {
     fn depth_zero_exit_lowers_as_value_return_for_non_none_function() {
         let mut func = TirFunction::new("value_function".into(), vec![], TirType::I64);
         let entry = func.entry_block;
+        let exit = func.fresh_block();
+        func.label_id_map.insert(exit.0, 1);
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
         let mut constant = labeled_op(OpCode::ConstInt, 7);
         constant.results.push(value);
-        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Call), constant];
+        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Call), check(1), constant];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
             values: vec![value],
         };
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
 
         run(&mut func, &mut AnalysisManager::new());
         let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);

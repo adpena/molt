@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ir::OpIR;
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
+use crate::tir::clone_support::LabelAllocator;
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
@@ -11,8 +12,8 @@ use crate::tir::ops::{AttrValue, OpCode};
 
 use super::cfg::{collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header};
 use super::cleanup::{
-    close_try_regions_before_handler_labels, eliminate_dead_labels, missing_label_references,
-    validate_labels, validate_structured_if_markers,
+    eliminate_dead_labels, missing_label_references, validate_labels,
+    validate_structured_if_markers,
 };
 use super::op_lowering::lower_op_many;
 use super::op_utils::{annotate_lowered_op, attr_int};
@@ -119,9 +120,13 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             .values()
             .copied()
             .collect();
-        let max_used = used_ids.iter().copied().max().unwrap_or(0);
-        let max_bid = func.blocks.keys().map(|b| b.0 as i64).max().unwrap_or(0);
-        let mut next_fresh = max_used.max(max_bid) + 1;
+        let mut fresh_labels = LabelAllocator::after_labels(
+            used_ids
+                .iter()
+                .copied()
+                .chain(reserved_state_ids.iter().copied())
+                .chain(func.blocks.keys().map(|block| block.0 as i64)),
+        );
         let mut mapping = HashMap::new();
         let mut assigned_ids: HashSet<i64> = HashSet::new();
         let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -142,21 +147,37 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             {
                 mapping.insert(bid, label_val);
             } else {
-                while used_ids.contains(&next_fresh)
-                    || reserved_state_ids.contains(&next_fresh)
-                    || assigned_ids.contains(&next_fresh)
-                {
-                    next_fresh += 1;
-                }
-                mapping.insert(bid, next_fresh);
-                assigned_ids.insert(next_fresh);
-                next_fresh += 1;
+                let fresh = fresh_labels.fresh();
+                mapping.insert(bid, fresh);
+                assigned_ids.insert(fresh);
             }
         }
         mapping
     };
-    let block_label_id =
-        |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
+    let block_label_id = |bid: &BlockId| -> i64 {
+        *label_id_for_block
+            .get(bid)
+            .unwrap_or_else(|| panic!("missing linearization label for {bid}"))
+    };
+    let mut trampoline_blocks: Vec<BlockId> = func
+        .blocks
+        .iter()
+        .filter_map(|(&block_id, block)| match &block.terminator {
+            Terminator::CondBranch { then_args, .. } if !then_args.is_empty() => Some(block_id),
+            _ => None,
+        })
+        .collect();
+    trampoline_blocks.sort_unstable_by_key(|block| block.0);
+    let mut synthetic_labels = LabelAllocator::after_labels(label_id_for_block.values().copied());
+    let trampoline_label_id_for_block: HashMap<BlockId, i64> = trampoline_blocks
+        .into_iter()
+        .map(|block| (block, synthetic_labels.fresh()))
+        .collect();
+    let trampoline_label_id = |block: &BlockId| -> i64 {
+        *trampoline_label_id_for_block
+            .get(block)
+            .unwrap_or_else(|| panic!("missing conditional trampoline label for {block}"))
+    };
     if debug_loop_if_return {
         eprintln!("LOWER_DEBUG_LABEL_MAP: {:?}", label_id_for_block);
     }
@@ -828,6 +849,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 &rpo,
                 &block_param_vars,
                 &block_label_id,
+                &trampoline_label_id,
                 &if_inlined_blocks,
                 &original_to_new_label,
                 &original_label_to_block,
@@ -1022,6 +1044,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 block,
                 &block_param_vars,
                 &block_label_id,
+                &trampoline_label_id,
                 &if_inlined_blocks,
                 &mut out,
                 original_has_ret,
@@ -1036,7 +1059,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
     }
     eliminate_dead_labels(&mut out);
-    close_try_regions_before_handler_labels(&mut out);
     if let Err(detail) = validate_structured_if_markers(&out) {
         panic!(
             "[TIR] invalid structured if lowering for {}: {}",

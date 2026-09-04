@@ -58,6 +58,7 @@ LINK_IMPORT_PRIMITIVE_CLASSES = {
     "wasm_libcxx_link_import",
     "wasm_toolchain_link_import",
 }
+WASM_EXTERN_KINDS = {"function", "table", "memory", "global", "tag"}
 CONST_POLICY_INLINE_SEEDS = {
     "none",
     "int",
@@ -199,6 +200,78 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
         if arity is not None:
             imports.append((arity, name))
     return sorted(imports)
+
+
+def generator_external_native_artifact_import_shapes(
+    data: dict,
+) -> tuple[tuple[str, str, str], ...]:
+    shapes: dict[str, tuple[str, str]] = {}
+    for entry in (
+        *data.get("link_allowed_import", []),
+        *data.get("external_native_link_import", []),
+    ):
+        shape = (entry["wasm_import_module"], entry["wasm_import_kind"])
+        previous = shapes.setdefault(entry["name"], shape)
+        if previous != shape:
+            raise WasmAbiManifestError(
+                f"WASM artifact import {entry['name']!r} has conflicting shapes "
+                f"{previous!r} and {shape!r}"
+            )
+    for entry in data["import"]:
+        shapes.setdefault(entry["name"], ("env", "function"))
+    for name in data["runtime_export_policy"]["host_exports"]:
+        shapes.setdefault(name, ("env", "function"))
+    return tuple((name, *shapes[name]) for name in sorted(shapes))
+
+
+def generator_external_native_artifact_function_signatures(
+    data: dict,
+) -> tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]:
+    """Return the complete module-qualified ABI for external artifacts."""
+
+    candidates: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {
+        ("env", name): (params, results)
+        for name, params, results in generator_cpython_abi_link_import_signatures()
+    }
+    for entry in data.get("link_allowed_import", []):
+        if entry.get("wasm_import_kind") != "function":
+            continue
+        name = entry["name"]
+        signature = (
+            tuple(entry["wasm_params"]),
+            tuple(entry["wasm_results"]),
+        )
+        identity = (entry["wasm_import_module"], name)
+        previous = candidates.setdefault(identity, signature)
+        if previous != signature:
+            raise WasmAbiManifestError(
+                f"external native import {name!r} has conflicting signatures"
+            )
+    static_types = data["static_type"]
+    for entry in data["import"]:
+        signature = static_types[entry["type"]]
+        normalized = (tuple(signature["params"]), tuple(signature["results"]))
+        candidates.setdefault(("env", entry["name"]), normalized)
+        export_name = runtime_export_name(entry)
+        if export_name is not None:
+            candidates.setdefault(("env", export_name), normalized)
+    for entry in data["runtime_host_export_signature"]:
+        candidates.setdefault(
+            ("env", entry["name"]),
+            (tuple(entry["params"]), tuple(entry["results"])),
+        )
+
+    signatures: list[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = []
+    for name, module, kind in generator_external_native_artifact_import_shapes(data):
+        if kind != "function":
+            continue
+        signature = candidates.get((module, name))
+        if signature is None:
+            raise WasmAbiManifestError(
+                f"WASM artifact function import {module}.{name} lacks signature authority"
+            )
+        signatures.append((module, name, *signature))
+    return tuple(signatures)
 
 
 def _is_cpython_abi_export_name(name: str) -> bool:
@@ -526,12 +599,17 @@ def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
                 "name": name,
                 "primitive_class": CPYTHON_ABI_LINK_IMPORT_CLASS,
                 "symbol_kind": kind,
+                "wasm_import_module": "env",
+                "wasm_import_kind": "function" if kind == "function" else "global",
             }
         )
     for entry in external_imports:
         name = entry.get("name")
         if name in generated_kinds:
-            entry["symbol_kind"] = generated_kinds[name]
+            kind = generated_kinds[name]
+            entry["symbol_kind"] = kind
+            entry["wasm_import_module"] = "env"
+            entry["wasm_import_kind"] = "function" if kind == "function" else "global"
     data["external_native_link_import"] = external_imports
     return data
 
@@ -1352,18 +1430,26 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call_group entry {idx} has invalid import_name"
             )
+        marked_import_name = entry.get("marked_import_name")
+        if marked_import_name is not None and (
+            not isinstance(marked_import_name, str) or not marked_import_name
+        ):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid marked_import_name"
+            )
         args = [f"local:{arg_idx}" for arg_idx in range(arg_count)]
         for kind in kinds:
             expanded_import_name = import_name or kind
-            expanded.append(
-                {
-                    "kind": kind,
-                    "import_name": expanded_import_name,
-                    "args": args,
-                    "required_imports": [expanded_import_name],
-                    "sink": sink,
-                }
-            )
+            expanded_entry = {
+                "kind": kind,
+                "import_name": expanded_import_name,
+                "args": args,
+                "required_imports": [expanded_import_name],
+                "sink": sink,
+            }
+            if marked_import_name is not None:
+                expanded_entry["marked_import_name"] = marked_import_name
+            expanded.append(expanded_entry)
     return expanded
 
 
@@ -1780,6 +1866,21 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call {kind!r} references unknown import {import_name!r}"
             )
+        marked_import_name = entry.get("marked_import_name")
+        if marked_import_name is not None:
+            if not isinstance(marked_import_name, str) or not marked_import_name:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} has invalid marked_import_name"
+                )
+            if marked_import_name == import_name:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} marked_import_name must differ from import_name"
+                )
+            if marked_import_name not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} references unknown marked import "
+                    f"{marked_import_name!r}"
+                )
         required_imports = entry.get("required_imports")
         if required_imports is None:
             required_imports = [import_name]
@@ -1808,6 +1909,11 @@ def validate_loaded_manifest(
         if import_name not in required_seen:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call {kind!r} required_imports must include emitted import {import_name!r}"
+            )
+        if marked_import_name is not None and marked_import_name in required_seen:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} required_imports must not include conditional "
+                f"marked import {marked_import_name!r}"
             )
         entry["required_imports"] = normalized_required_imports
         sink = entry.get("sink")
@@ -2239,6 +2345,14 @@ def validate_loaded_manifest(
     if not isinstance(link_allowed, list):
         raise WasmAbiManifestError("link_allowed_import must be a list of tables")
     seen_link_allowed: set[str] = set()
+    runtime_import_signatures: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    for import_entry in data["import"]:
+        signature = static_types[import_entry["type"]]
+        normalized_signature = (signature["params"], signature["results"])
+        runtime_import_signatures[("env", import_entry["name"])] = normalized_signature
+        export_name = runtime_export_name(import_entry)
+        if export_name is not None:
+            runtime_import_signatures[("env", export_name)] = normalized_signature
     for idx, entry in enumerate(link_allowed):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(
@@ -2265,6 +2379,60 @@ def validate_loaded_manifest(
             )
         if name in seen_link_allowed:
             raise WasmAbiManifestError(f"duplicate linker allowlist import {name!r}")
+        default_module = (
+            "wasi_snapshot_preview1" if primitive_class == "wasi_link_import" else "env"
+        )
+        wasm_import_module = entry.setdefault("wasm_import_module", default_module)
+        wasm_import_kind = entry.setdefault("wasm_import_kind", "function")
+        if not isinstance(wasm_import_module, str) or not wasm_import_module:
+            raise WasmAbiManifestError(
+                f"link_allowed_import {name!r} has invalid wasm_import_module"
+            )
+        if wasm_import_kind not in WASM_EXTERN_KINDS:
+            raise WasmAbiManifestError(
+                f"link_allowed_import {name!r} has invalid wasm_import_kind "
+                f"{wasm_import_kind!r}"
+            )
+        if wasm_import_kind == "function":
+            indirect_arity = _parse_call_indirect_import_arity(name)
+            if indirect_arity is not None:
+                expected_signature = (
+                    ["i64"] * (indirect_arity + 1),
+                    ["i64"],
+                )
+            else:
+                expected_signature = runtime_import_signatures.get(
+                    (wasm_import_module, name)
+                )
+            if expected_signature is None:
+                params = _validate_val_type_list(
+                    "link_allowed_import",
+                    idx,
+                    "wasm_params",
+                    entry.get("wasm_params"),
+                )
+                results = _validate_val_type_list(
+                    "link_allowed_import",
+                    idx,
+                    "wasm_results",
+                    entry.get("wasm_results"),
+                )
+            else:
+                params, results = expected_signature
+                declared_params = entry.get("wasm_params")
+                declared_results = entry.get("wasm_results")
+                if declared_params is not None or declared_results is not None:
+                    if declared_params != params or declared_results != results:
+                        raise WasmAbiManifestError(
+                            f"link_allowed_import {name!r} signature differs from "
+                            "the existing runtime/arity authority"
+                        )
+            entry["wasm_params"] = list(params)
+            entry["wasm_results"] = list(results)
+        elif "wasm_params" in entry or "wasm_results" in entry:
+            raise WasmAbiManifestError(
+                f"non-function link_allowed_import {name!r} cannot declare a signature"
+            )
         seen_link_allowed.add(name)
     call_indirect_imports = _call_indirect_imports(data)
     call_indirect_arities = [arity for arity, _name in call_indirect_imports]
@@ -2304,6 +2472,17 @@ def validate_loaded_manifest(
         if name in seen_external_native_link_imports:
             raise WasmAbiManifestError(
                 f"duplicate external native link import {name!r}"
+            )
+        wasm_import_module = entry.get("wasm_import_module")
+        wasm_import_kind = entry.get("wasm_import_kind")
+        if not isinstance(wasm_import_module, str) or not wasm_import_module:
+            raise WasmAbiManifestError(
+                f"external_native_link_import {name!r} has invalid wasm_import_module"
+            )
+        if wasm_import_kind not in WASM_EXTERN_KINDS:
+            raise WasmAbiManifestError(
+                f"external_native_link_import {name!r} has invalid "
+                f"wasm_import_kind {wasm_import_kind!r}"
             )
         seen_external_native_link_imports.add(name)
 

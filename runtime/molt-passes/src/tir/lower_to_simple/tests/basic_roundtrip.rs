@@ -69,6 +69,7 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
         "module".into(),
     ];
     let mut ops = Vec::new();
+    let all_requirements = crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements::ALL.bits();
     for (index, kind) in carrier_kinds.iter().enumerate() {
         let args = match *kind {
             "builtin_func" => vec!["name".into()],
@@ -85,7 +86,7 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
             out: Some(format!("result_{index}")),
             s_value: (*kind == "get_attr_generic_obj").then(|| "_getframe".into()),
             value: (*kind == "builtin_func").then_some(1),
-            runtime_requirement_bits: 1 << 14,
+            runtime_requirement_bits: all_requirements,
             ..OpIR::default()
         });
     }
@@ -106,7 +107,7 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
             .iter()
             .find(|op| op.kind == kind)
             .unwrap_or_else(|| panic!("carrier {kind} must survive the TIR round-trip"));
-        assert_eq!(op.runtime_requirement_bits, 1 << 14, "{kind}");
+        assert_eq!(op.runtime_requirement_bits, all_requirements, "{kind}");
     }
 }
 

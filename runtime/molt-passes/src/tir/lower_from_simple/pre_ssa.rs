@@ -5,6 +5,14 @@
 
 use super::super::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten;
 
+fn with_inherited_source_site(
+    mut replacement: crate::ir::OpIR,
+    source: &crate::ir::OpIR,
+) -> crate::ir::OpIR {
+    replacement.inherit_source_site_from(source);
+    replacement
+}
+
 /// Rewrite `loop_index_start`/`loop_index_next` into `store_var`/`load_var`
 /// patterns so the SSA conversion creates proper phi nodes at loop headers.
 ///
@@ -63,6 +71,7 @@ pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<c
 
     struct LoopIndexPattern {
         loop_start_idx: usize,
+        source_op_idx: usize,
         var_name: String,
         init_arg: String,
     }
@@ -90,6 +99,7 @@ pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<c
                     if !var_name.is_empty() && var_name != "none" {
                         patterns.push(LoopIndexPattern {
                             loop_start_idx: ls_idx,
+                            source_op_idx: idx,
                             var_name,
                             init_arg,
                         });
@@ -127,12 +137,15 @@ pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<c
         // Before a loop_start, insert store_var for each pattern.
         if let Some(pats) = insert_before.get(&idx) {
             for pat in pats {
-                result.push(OpIR {
-                    kind: "store_var".to_string(),
-                    var: Some(pat.var_name.clone()),
-                    args: Some(vec![pat.init_arg.clone()]),
-                    ..OpIR::default()
-                });
+                result.push(with_inherited_source_site(
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some(pat.var_name.clone()),
+                        args: Some(vec![pat.init_arg.clone()]),
+                        ..OpIR::default()
+                    },
+                    &ops[pat.source_op_idx],
+                ));
             }
         }
 
@@ -145,12 +158,15 @@ pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<c
                 let var_name = op.out.clone().unwrap_or_default();
                 if rewrite_vars.contains(var_name.as_str()) {
                     // Rewrite to load_var: read V from the phi.
-                    result.push(OpIR {
-                        kind: "load_var".to_string(),
-                        var: Some(var_name.clone()),
-                        out: Some(var_name),
-                        ..OpIR::default()
-                    });
+                    result.push(with_inherited_source_site(
+                        OpIR {
+                            kind: "load_var".to_string(),
+                            var: Some(var_name.clone()),
+                            out: Some(var_name),
+                            ..OpIR::default()
+                        },
+                        op,
+                    ));
                 } else {
                     result.push(op.clone());
                 }
@@ -169,12 +185,15 @@ pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<c
                         .and_then(|a| a.first())
                         .cloned()
                         .unwrap_or_default();
-                    result.push(OpIR {
-                        kind: "store_var".to_string(),
-                        var: Some(var_name),
-                        args: Some(vec![updated_arg]),
-                        ..OpIR::default()
-                    });
+                    result.push(with_inherited_source_site(
+                        OpIR {
+                            kind: "store_var".to_string(),
+                            var: Some(var_name),
+                            args: Some(vec![updated_arg]),
+                            ..OpIR::default()
+                        },
+                        op,
+                    ));
                 } else {
                     result.push(op.clone());
                 }
@@ -366,12 +385,15 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
                     let var_name = format!("_cell_{}_{}", args[0], slot_val);
                     replacements.push((
                         i,
-                        OpIR {
-                            kind: "store_var".to_string(),
-                            var: Some(var_name),
-                            args: Some(vec![args[2].clone()]),
-                            ..OpIR::default()
-                        },
+                        with_inherited_source_site(
+                            OpIR {
+                                kind: "store_var".to_string(),
+                                var: Some(var_name),
+                                args: Some(vec![args[2].clone()]),
+                                ..OpIR::default()
+                            },
+                            op,
+                        ),
                     ));
                 }
             } else if op.kind == "index"
@@ -386,12 +408,15 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
                     let var_name = format!("_cell_{}_{}", args[0], slot_val);
                     replacements.push((
                         i,
-                        OpIR {
-                            kind: "load_var".to_string(),
-                            var: Some(var_name),
-                            out: Some(out.clone()),
-                            ..OpIR::default()
-                        },
+                        with_inherited_source_site(
+                            OpIR {
+                                kind: "load_var".to_string(),
+                                var: Some(var_name),
+                                out: Some(out.clone()),
+                                ..OpIR::default()
+                            },
+                            op,
+                        ),
                     ));
                 }
             }

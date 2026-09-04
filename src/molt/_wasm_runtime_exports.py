@@ -116,9 +116,16 @@ def wasm_split_runtime_export_rename_map(
 
 def wasm_static_link_runtime_symbols_for_imports(
     import_symbols: Iterable[str],
+    *,
+    typed_imports: Iterable[tuple[str, str]] = (),
 ) -> tuple[str, ...]:
+    non_runtime_typed_names = {
+        name for module, name in typed_imports if module != "env"
+    }
     runtime_symbols: set[str] = set()
     for symbol in import_symbols:
+        if symbol in non_runtime_typed_names:
+            continue
         try:
             _runtime_export_name_or_fail(symbol)
         except ValueError:

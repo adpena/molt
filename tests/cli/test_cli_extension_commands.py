@@ -10,9 +10,13 @@ from pathlib import Path
 
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
+from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
+    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
+    wasm_import_signature,
+)
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.cli import extension_commands as cli_commands
-from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extension_target as cli_source_extension_target
@@ -23,6 +27,19 @@ from molt.cli.extension_manifest import (
     _manifest_support_file_payloads,
 )
 from molt.cli.source_extensions import source_extension_manifest_source_path
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+    source_extension_object_closure_digest,
+    source_extension_wasm_import_receipts,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
+from molt.cli.source_extension_manifest_codec import (
+    _compact_source_extension_manifest,
+    _manifest_sequence,
+)
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.c_api_symbols import is_c_api_external_requirement
@@ -257,24 +274,93 @@ def _install_extension_object_symbol_facts(
     *,
     default_init_symbol: str,
     by_stem: dict[str, tuple[set[str], set[str]]] | None = None,
+    linked_stems: tuple[str, ...] | None = None,
 ) -> None:
     symbol_facts = by_stem or {}
+    linked_symbol_facts = (
+        [symbol_facts[stem] for stem in linked_stems]
+        if linked_stems is not None
+        else list(symbol_facts.values())
+    )
 
     def fake_object_symbols(
         path: Path,
         *,
         nm_command: tuple[str, ...] | None = None,
-    ) -> tuple[set[str], set[str]] | None:
-        del nm_command
+        target_triple: str | None = None,
+        aggregate_linker_closure: bool = False,
+    ) -> cli_source_extensions._SourceExtensionArtifactSymbolInspection | None:
+        artifact_bytes = path.read_bytes()
+        is_wasm = artifact_bytes.startswith(b"\0asm\x01\0\0\0")
+        symbol_authority = (
+            cli_source_extensions.SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
+            if is_wasm
+            else cli_source_extensions.SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY
+        )
+        import_interface = (
+            wasm_artifact.read_wasm_import_interface(path) if is_wasm else None
+        )
+        wasm_imports = (
+            import_interface.imports if import_interface is not None else None
+        )
+
+        def inspection(
+            defined: set[str], undefined: set[str]
+        ) -> cli_source_extensions._SourceExtensionArtifactSymbolInspection:
+            return cli_source_extensions._SourceExtensionArtifactSymbolInspection(
+                defined_symbols=frozenset(defined),
+                undefined_symbols=frozenset(undefined),
+                defined_function_symbols=frozenset(defined),
+                symbol_authority=symbol_authority,
+                wasm_imports=wasm_imports,
+                wasm_function_import_signatures=(
+                    import_interface.function_signatures
+                    if import_interface is not None
+                    else ()
+                ),
+                wasm_function_exports=(
+                    tuple(
+                        sorted(
+                            export.name
+                            for export in wasm_artifact.read_wasm_function_exports(path)
+                        )
+                    )
+                    if is_wasm
+                    else ()
+                ),
+                artifact_bytes=artifact_bytes if is_wasm else None,
+            )
+
+        del nm_command, target_triple
+        if path.name.endswith((".molt.wasm", ".molt.a")):
+            defined = {
+                symbol
+                for symbols, _undefined in linked_symbol_facts
+                for symbol in symbols
+            }
+            undefined = {
+                symbol
+                for _defined, symbols in linked_symbol_facts
+                for symbol in symbols
+                if symbol not in defined
+            }
+            if symbol_facts:
+                if aggregate_linker_closure:
+                    undefined.difference_update(defined)
+                return inspection(defined, undefined)
         stem = path.stem.split("_", 1)[1] if "_" in path.stem else path.stem
         if stem in symbol_facts:
             defined, undefined = symbol_facts[stem]
-            return set(defined), set(undefined)
-        return {default_init_symbol}, {"PyModule_Create", "molt_c_api_version"}
+            if aggregate_linker_closure:
+                undefined = set(undefined) - set(defined)
+            return inspection(set(defined), set(undefined))
+        return inspection(
+            {default_init_symbol}, {"PyModule_Create", "molt_c_api_version"}
+        )
 
     monkeypatch.setattr(
-        cli_backend_cache,
-        "_native_object_global_symbol_sets",
+        cli_source_extensions,
+        "_inspect_source_extension_artifact_symbols",
         fake_object_symbols,
     )
 
@@ -291,14 +377,18 @@ def _wasm_exporting_i64_unary_symbol(
     symbol: str,
     *,
     imports: tuple[str, ...] = (),
+    memory_imports: tuple[str, ...] = (),
 ) -> bytes:
-    return _wasm_exporting_i64_unary_symbols((symbol,), imports=imports)
+    return _wasm_exporting_i64_unary_symbols(
+        (symbol,), imports=imports, memory_imports=memory_imports
+    )
 
 
 def _wasm_exporting_i64_unary_symbols(
     symbols: tuple[str, ...],
     *,
     imports: tuple[str, ...] = (),
+    memory_imports: tuple[str, ...] = (),
 ) -> bytes:
     def uleb(value: int) -> bytes:
         out = bytearray()
@@ -316,26 +406,179 @@ def _wasm_exporting_i64_unary_symbols(
     def section(section_id: int, payload: bytes) -> bytes:
         return bytes([section_id]) + uleb(len(payload)) + payload
 
-    type_section = uleb(1) + b"\x60" + uleb(1) + b"\x7e" + uleb(1) + b"\x7e"
-    import_entries = b"".join(
-        wasm_string("env") + wasm_string(import_name) + b"\x00" + uleb(0)
-        for import_name in imports
+    value_types = {"i32": b"\x7f", "i64": b"\x7e", "f32": b"\x7d", "f64": b"\x7c"}
+
+    def expected_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        module = WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
+            name, ("env", "function")
+        )[0]
+        external = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get((module, name))
+        if external is not None:
+            result = str(external["result"])
+            return (
+                tuple(str(value) for value in external["params"]),
+                () if result == "nil" else tuple(result.split(", ")),
+            )
+        runtime = wasm_import_signature(name)
+        return runtime if runtime is not None else (("i64",), ("i64",))
+
+    def type_entry(signature: tuple[tuple[str, ...], tuple[str, ...]]) -> bytes:
+        params, results = signature
+        return (
+            b"\x60"
+            + uleb(len(params))
+            + b"".join(value_types[value] for value in params)
+            + uleb(len(results))
+            + b"".join(value_types[value] for value in results)
+        )
+
+    defined_signature = (("i64",), ("i64",))
+    type_signatures = [defined_signature]
+    import_signatures = [expected_signature(name) for name in imports]
+    for signature in import_signatures:
+        if signature not in type_signatures:
+            type_signatures.append(signature)
+    type_section = uleb(len(type_signatures)) + b"".join(
+        type_entry(signature) for signature in type_signatures
     )
-    import_section = section(2, uleb(len(imports)) + import_entries) if imports else b""
+    function_import_entries = b"".join(
+        wasm_string(
+            WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
+                import_name, ("env", "function")
+            )[0]
+        )
+        + wasm_string(import_name)
+        + b"\x00"
+        + uleb(type_signatures.index(signature))
+        for import_name, signature in zip(imports, import_signatures, strict=True)
+    )
+    memory_import_entries = b"".join(
+        wasm_string("env") + wasm_string(import_name) + b"\x02" + b"\x00" + uleb(1)
+        for import_name in memory_imports
+    )
+    import_count = len(imports) + len(memory_imports)
+    import_section = (
+        section(
+            2,
+            uleb(import_count) + function_import_entries + memory_import_entries,
+        )
+        if import_count
+        else b""
+    )
     function_section = uleb(1) + uleb(0)
     export_section = uleb(len(symbols)) + b"".join(
         wasm_string(symbol) + b"\x00" + uleb(len(imports)) for symbol in symbols
     )
     body = uleb(0) + b"\x42\x00\x0b"
     code_section = uleb(1) + uleb(len(body)) + body
+    linking_entries = [
+        b"\x00" + uleb(0) + uleb(len(imports)) + wasm_string(symbol)
+        for symbol in symbols
+    ]
+    linking_entries.extend(
+        b"\x00" + uleb(0x50) + uleb(index) + wasm_string(import_name)
+        for index, import_name in enumerate(imports)
+    )
+    linking_symbol_table = uleb(len(linking_entries)) + b"".join(linking_entries)
+    linking_payload = (
+        wasm_string("linking")
+        + uleb(2)
+        + b"\x08"
+        + uleb(len(linking_symbol_table))
+        + linking_symbol_table
+    )
     return (
         b"\x00asm\x01\x00\x00\x00"
+        + section(0, linking_payload)
         + section(1, type_section)
         + import_section
         + section(3, function_section)
         + section(7, export_section)
         + section(10, code_section)
     )
+
+
+def _finalize_test_extension_object_closure(
+    manifest: dict[str, object],
+    *,
+    artifact_path: Path,
+) -> None:
+    closure = manifest["object_closure"]
+    assert isinstance(closure, dict)
+    objects = closure["objects"]
+    assert isinstance(objects, list) and objects
+    inspection = cli_source_extensions._inspect_source_extension_artifact_symbols(
+        artifact_path,
+        aggregate_linker_closure=True,
+    )
+    assert inspection is not None and inspection.wasm_imports is not None
+    closure["defined_symbols"] = sorted(inspection.defined_symbols)
+    closure["undefined_symbols"] = sorted(inspection.undefined_symbols)
+    receipts = list(source_extension_wasm_import_receipts(inspection.wasm_imports))
+    closure["wasm_imports"] = receipts
+    declared_sources = manifest.get("sources")
+    source_fallbacks = (
+        declared_sources
+        if isinstance(declared_sources, list) and len(declared_sources) == len(objects)
+        else [str(artifact_path)] * len(objects)
+    )
+    for item, source_fallback in zip(objects, source_fallbacks, strict=True):
+        assert isinstance(item, dict)
+        item.setdefault("source", source_fallback)
+        item.setdefault(
+            "source_sha256",
+            hashlib.sha256(Path(source_fallback).read_bytes()).hexdigest(),
+        )
+        item.setdefault(
+            "object_sha256", hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        )
+        item.setdefault("defined_symbols", [])
+        item.setdefault("undefined_symbols", [])
+        item.setdefault(
+            "compile_command", ["fixture-compiler", "-c", str(item["source"])]
+        )
+        item["symbol_authority"] = SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
+        item.pop("symbol_command", None)
+        item.setdefault("dependencies", [])
+        item.setdefault("required_c_api_symbols", [])
+        item.setdefault("required_capsules", [])
+        item.setdefault("project_generated_c_api_symbols", [])
+        item["defined_symbols"] = sorted(
+            set(item["defined_symbols"]) & set(inspection.defined_symbols)
+        )
+        item["undefined_symbols"] = sorted(
+            set(item["undefined_symbols"]) & set(inspection.undefined_symbols)
+        )
+        if item.get("object") == closure.get("init_symbol_owner"):
+            item["defined_symbols"] = sorted(
+                set(item["defined_symbols"]) | {str(closure["root_symbol"])}
+            )
+    closure["runtime_symbols"] = list(
+        wasm_static_link_runtime_symbols_for_imports(
+            (
+                *inspection.undefined_symbols,
+                *(receipt["name"] for receipt in receipts),
+            ),
+            typed_imports=(
+                (receipt["module"], receipt["name"]) for receipt in receipts
+            ),
+        )
+    )
+    for field in (
+        "required_c_api_symbols",
+        "required_capsules",
+        "project_generated_c_api_symbols",
+    ):
+        closure[field] = sorted(
+            {
+                value
+                for item in objects
+                for value in item[field]
+                if isinstance(value, str) and value
+            }
+        )
+    manifest.setdefault("build", {})
+    finalize_source_extension_object_closure(manifest)
 
 
 def _write_extension_project(
@@ -2275,9 +2518,10 @@ def test_extension_build_derives_module_attr_support_source_closure(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
         by_stem={
-            "demoext": ({"PyInit_demoext"}, set()),
+            "demoext": ({"PyInit_demoext"}, {"helper_generated"}),
             "helper_generated": ({"helper_generated"}, set()),
         },
+        linked_stems=("demoext", "helper_generated"),
     )
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -2442,6 +2686,7 @@ def test_extension_build_excludes_linked_static_library(
             "helper_generated": ({"helper_generated"}, set()),
             "unique": ({"array__unique_hash"}, set()),
         },
+        linked_stems=("demoext", "helper_generated"),
     )
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -2497,11 +2742,19 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
         by_stem={
-            "demoext": ({"PyInit_demoext"}, {"FLOAT_add_indexed"}),
+            "demoext": (
+                {"PyInit_demoext"},
+                {"FLOAT_add_indexed", "helper_generated"},
+            ),
             "helper_generated": ({"helper_generated"}, set()),
             "loops_arithmetic.dispatch": ({"FLOAT_add_indexed"}, set()),
             "simd.dispatch": ({"SIMD_not_linked"}, set()),
         },
+        linked_stems=(
+            "demoext",
+            "helper_generated",
+            "loops_arithmetic.dispatch",
+        ),
     )
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -2523,7 +2776,7 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["build"]["object_count"] == 3
-    assert manifest["build"]["linked_object_count"] == 2
+    assert manifest["build"]["linked_object_count"] == 3
     assert (
         str(
             (
@@ -3164,7 +3417,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     )
     wasm_bytes = _wasm_exporting_i64_unary_symbol(
         "PyInit_demoext",
-        imports=("PyModule_Create", "molt_c_api_version"),
+        imports=("PyModule_Create2", "molt_c_api_version"),
     )
     executed: list[list[str]] = []
 
@@ -3193,7 +3446,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         by_stem={
             "demoext": (
                 {"PyInit_demoext"},
-                {"PyModule_Create", "molt_c_api_version", "molt_helper"},
+                {"PyModule_Create2", "molt_c_api_version", "molt_helper"},
             ),
             "helper": ({"molt_helper"}, set()),
         },
@@ -3479,15 +3732,17 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
             "deterministic = true",
         ],
     )
-    wasm_imports = (
+    wasm_function_imports = (
         "molt_alloc",
         "molt_cpython_abi_date_from_date",
         "PyOS_strtol",
         "malloc",
     )
+    raw_data_relocations = ("PyExc_RuntimeError", "Py_None")
     wasm_bytes = _wasm_exporting_i64_unary_symbols(
         ("PyInit_demoext", native_symbol),
-        imports=wasm_imports,
+        imports=wasm_function_imports,
+        memory_imports=("__linear_memory",),
     )
     commands: list[list[str]] = []
 
@@ -3505,7 +3760,10 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
         by_stem={
-            "demoext": ({"PyInit_demoext", native_symbol}, set(wasm_imports)),
+            "demoext": (
+                {"PyInit_demoext", native_symbol},
+                set((*wasm_function_imports, *raw_data_relocations)),
+            ),
         },
     )
     monkeypatch.setattr(
@@ -3559,11 +3817,29 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     assert manifest["extension_sha256"] == hashlib.sha256(wasm_bytes).hexdigest()
     object_closure = manifest["object_closure"]
     assert object_closure["defined_symbols"] == ["PyInit_demoext", native_symbol]
-    assert object_closure["undefined_symbols"] == sorted(wasm_imports)
+    raw_undefined = (*wasm_function_imports, *raw_data_relocations)
+    assert object_closure["undefined_symbols"] == sorted(raw_undefined)
+    assert object_closure["wasm_imports"] == sorted(
+        (
+            *(
+                {"module": "env", "name": name, "kind": "function"}
+                for name in wasm_function_imports
+            ),
+            {"module": "env", "name": "__linear_memory", "kind": "memory"},
+        ),
+        key=lambda item: (item["module"], item["name"], item["kind"]),
+    )
     assert object_closure["runtime_symbols"] == sorted(
-        wasm_static_link_runtime_symbols_for_imports(wasm_imports)
+        wasm_static_link_runtime_symbols_for_imports(
+            (*raw_undefined, "__linear_memory")
+        )
     )
     assert "malloc" not in object_closure["runtime_symbols"]
+    assert object_closure["objects"][0]["undefined_symbols"] == sorted(raw_undefined)
+    assert "__linear_memory" not in object_closure["objects"][0]["undefined_symbols"]
+    assert object_closure["closure_sha256"] == source_extension_object_closure_digest(
+        object_closure
+    )
     required_c_api_symbols = {
         symbol
         for item in object_closure["objects"]
@@ -3608,6 +3884,42 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         "@toolchain/"
     )
     assert "@wasi-sysroot" in embedded_closure["objects"][0]["compile_command"]
+
+
+@pytest.mark.slow
+def test_extension_build_real_wasm_object_separates_import_and_data_relocation_closure(
+    tmp_path: Path,
+) -> None:
+    target_plan = _source_extension_target_plan("wasm")
+    try:
+        cli_source_extension_toolchain._resolve_source_extension_toolchain(target_plan)
+    except (OSError, ValueError) as exc:
+        pytest.skip(f"LLVM/WASI source-extension toolchain is unavailable: {exc}")
+
+    out_dir = tmp_path / "pending-call-probe"
+    rc = cli_commands.extension_build(
+        project=str(ROOT / "tests/fixtures/pending_call_probe"),
+        out_dir=str(out_dir),
+        target="wasm",
+        deterministic=True,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    object_closure = manifest["object_closure"]
+    raw_undefined = object_closure["objects"][0]["undefined_symbols"]
+    wasm_import_names = {item["name"] for item in object_closure["wasm_imports"]}
+    assert {"PyExc_RuntimeError", "Py_None"} <= set(raw_undefined)
+    assert {"PyExc_RuntimeError", "Py_None"} <= set(object_closure["undefined_symbols"])
+    assert {"PyExc_RuntimeError", "Py_None"}.isdisjoint(wasm_import_names)
+    assert "__linear_memory" in wasm_import_names
+    assert "__linear_memory" not in raw_undefined
+    assert {"PyExc_RuntimeError", "Py_None"} <= set(object_closure["runtime_symbols"])
+    assert object_closure["closure_sha256"] == source_extension_object_closure_digest(
+        object_closure
+    )
 
 
 def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
@@ -3681,6 +3993,10 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol=init_symbol,
+    )
     monkeypatch.setattr(
         cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
     )
@@ -4144,7 +4460,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
         "extension_sha256": extension_sha256,
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__multiarray_umath",
             "init_symbol_owner": "0_multiarray.o",
             "closure_sha256": extension_sha256,
@@ -4163,6 +4479,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
@@ -4245,7 +4562,7 @@ def _minimal_static_extension_manifest(
         "extension_sha256": extension_sha256,
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__multiarray_umath",
             "init_symbol_owner": "0_multiarray.o",
             "closure_sha256": extension_sha256,
@@ -4264,6 +4581,7 @@ def _minimal_static_extension_manifest(
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     return manifest, artifact_path
 
 
@@ -4393,7 +4711,7 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
         "sources": [str(source_path)],
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__nd_image",
             "init_symbol_owner": "0_nd_image.o",
             "closure_sha256": extension_sha256,
@@ -4413,6 +4731,7 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
@@ -4440,9 +4759,11 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
     )
     for sealed_manifest in (root_manifest, artifact_manifest):
         assert sealed_manifest["object_closure"]["required_capsules"] == [capsule]
-        assert sealed_manifest["object_closure"]["objects"][0]["required_capsules"] == [
-            capsule
-        ]
+        assert _manifest_sequence(
+            sealed_manifest,
+            sealed_manifest["object_closure"]["objects"][0],
+            "required_capsules",
+        ) == [capsule]
 
 
 def test_extension_seal_persists_runtime_python_import_modules_for_static_artifact(
@@ -4493,7 +4814,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
         "extension_sha256": extension_sha256,
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__multiarray_umath",
             "init_symbol_owner": "0_multiarray.o",
             "closure_sha256": extension_sha256,
@@ -4513,6 +4834,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
@@ -4605,7 +4927,7 @@ def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
             "digest": "source-plan-digest",
         },
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__multiarray_umath",
             "init_symbol_owner": "0_multiarray.o",
             "closure_sha256": extension_sha256,
@@ -4635,6 +4957,7 @@ def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
@@ -4717,7 +5040,7 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
         "sealed_from_extension_sha256": extension_sha256,
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__multiarray_umath",
             "init_symbol_owner": "0_multiarray.o",
             "closure_sha256": extension_sha256,
@@ -4737,6 +5060,7 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
@@ -4806,7 +5130,7 @@ def test_extension_seal_rejects_fake_module_attr_callable_export(
         "sources": [str(source_path)],
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__nd_image",
             "init_symbol_owner": "0_nd_image.o",
             "closure_sha256": extension_sha256,
@@ -4827,6 +5151,7 @@ def test_extension_seal_rejects_fake_module_attr_callable_export(
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
@@ -4954,7 +5279,7 @@ def test_extension_seal_publishes_provider_module_support_source(
         "sources": [str(source_path)],
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__nd_image",
             "init_symbol_owner": "0_nd_image.o",
             "closure_sha256": extension_sha256,
@@ -4975,6 +5300,7 @@ def test_extension_seal_publishes_provider_module_support_source(
             ],
         },
     }
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
@@ -5113,14 +5439,15 @@ def test_extension_seal_publishes_provider_module_support_source(
     ]
 
 
-def test_extension_audit_requires_static_link_artifact_custody(
+def _write_auditable_static_link_manifest(
     tmp_path: Path,
-    capsys,
-) -> None:
+) -> tuple[Path, Path, Path, dict[str, object]]:
     out_dir = tmp_path / "dist"
     artifact_dir = out_dir / "nativepkg"
     artifact_dir.mkdir(parents=True)
-    artifact_bytes = b"\0asm-static-link-probe"
+    artifact_bytes = _wasm_exporting_i64_unary_symbol(
+        "PyInit__native", imports=("molt_alloc",)
+    )
     artifact_path = artifact_dir / "_native.molt.wasm"
     artifact_path.write_bytes(artifact_bytes)
     manifest = {
@@ -5147,16 +5474,15 @@ def test_extension_audit_requires_static_link_artifact_custody(
         "extension": "nativepkg/_native.molt.wasm",
         "extension_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__native",
             "init_symbol_owner": "0_native.o",
-            "closure_sha256": "a" * 64,
             "project_generated_c_api_prefixes": ["npy_generated_"],
             "objects": [
                 {
-                    "path": "0_native.o",
+                    "object": "0_native.o",
                     "defined_symbols": ["PyInit__native"],
-                    "undefined_symbols": ["molt_add"],
+                    "undefined_symbols": ["molt_alloc"],
                     "required_c_api_symbols": ["PyLong_FromLong"],
                     "required_capsules": [
                         "numpy.core._multiarray_umath._ARRAY_API",
@@ -5164,29 +5490,54 @@ def test_extension_audit_requires_static_link_artifact_custody(
                     "project_generated_c_api_symbols": ["npy_generated_int8"],
                 }
             ],
-            "runtime_symbols": ["molt_add"],
-            "undefined_symbols": ["molt_add"],
         },
     }
-    (out_dir / "extension_manifest.json").write_text(
+    _finalize_test_extension_object_closure(manifest, artifact_path=artifact_path)
+    manifest_path = out_dir / "extension_manifest.json"
+    manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
     )
+    return out_dir, artifact_path, manifest_path, manifest
 
+
+def _audit_static_link_manifest(
+    out_dir: Path,
+    capsys,
+    *,
+    require_object_closure: bool,
+) -> tuple[int, dict[str, object]]:
     rc = cli.extension_audit(
         path=str(out_dir),
         require_loader_kind="libmolt_source",
         require_runtime_linkage="static_link",
         require_artifact_kind="wasm_relocatable_object",
         require_artifact_file=True,
-        require_object_closure=True,
+        require_object_closure=require_object_closure,
         require_checksum=True,
         json_output=True,
         verbose=False,
     )
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    return rc, payload
+
+
+def test_extension_audit_requires_static_link_artifact_custody(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir, _artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=True,
+    )
 
     assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ok"
     assert payload["data"]["extension_file_status"] == "ok"
     assert payload["data"]["object_closure"]["present"] is True
@@ -5205,7 +5556,7 @@ def test_extension_audit_requires_static_link_artifact_custody(
     )
 
     manifest["artifact_kind"] = "static_archive"
-    (out_dir / "extension_manifest.json").write_text(
+    manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -5219,6 +5570,174 @@ def test_extension_audit_requires_static_link_artifact_custody(
     assert any(
         "target/artifact mismatch" in error and "wasm_relocatable_object" in error
         for error in mismatch["errors"]
+    )
+
+
+def test_extension_audit_summarizes_validated_optional_closure_fields(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir, _artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    closure = manifest["object_closure"]
+    assert isinstance(closure, dict)
+    objects = closure["objects"]
+    assert isinstance(objects, list)
+    for item in objects:
+        assert isinstance(item, dict)
+        item["required_c_api_symbols"] = []
+        item["required_capsules"] = []
+        item["project_generated_c_api_symbols"] = []
+    optional_fields = (
+        "required_c_api_symbols",
+        "required_capsules",
+        "project_generated_c_api_symbols",
+        "project_generated_c_api_prefixes",
+    )
+    for field in optional_fields:
+        closure.pop(field)
+    finalize_source_extension_object_closure(manifest)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=False,
+    )
+
+    assert rc == 0
+    summary = payload["data"]["object_closure"]
+    assert summary["required_c_api_symbol_count"] == 0
+    assert summary["required_capsule_count"] == 0
+    assert summary["project_generated_c_api_symbol_count"] == 0
+    assert summary["project_generated_c_api_prefix_count"] == 0
+    assert set(optional_fields).isdisjoint(summary["keys"])
+
+
+@pytest.mark.parametrize(
+    "invalid_closure",
+    [
+        pytest.param([], id="non-mapping"),
+        pytest.param({"schema_version": 2}, id="malformed-mapping"),
+    ],
+)
+def test_extension_audit_rejects_present_invalid_object_closure_without_requirement(
+    tmp_path: Path,
+    capsys,
+    invalid_closure: object,
+) -> None:
+    out_dir, _artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    manifest["object_closure"] = invalid_closure
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=False,
+    )
+
+    assert rc == 1
+    assert any("object_closure" in str(error) for error in payload["errors"])
+
+
+@pytest.mark.parametrize("corruption", ["schema-v1", "closure-hash", "build-hash"])
+def test_extension_audit_rejects_false_object_closure_identity(
+    tmp_path: Path,
+    capsys,
+    corruption: str,
+) -> None:
+    out_dir, _artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    closure = manifest["object_closure"]
+    assert isinstance(closure, dict)
+    if corruption == "schema-v1":
+        closure["schema_version"] = 1
+    elif corruption == "closure-hash":
+        closure["closure_sha256"] = "f" * 64
+    else:
+        build = manifest["build"]
+        assert isinstance(build, dict)
+        build["object_closure_sha256"] = "f" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=False,
+    )
+
+    assert rc == 1
+    assert any("object_closure" in str(error) for error in payload["errors"])
+
+
+def test_extension_audit_rejects_false_compact_object_unit_identity(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir, _artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    compact = _compact_source_extension_manifest(manifest)
+    closure = compact["object_closure"]
+    assert isinstance(closure, dict)
+    objects = closure["objects"]
+    assert isinstance(objects, list) and isinstance(objects[0], dict)
+    objects[0]["unit_sha256"] = "f" * 64
+    manifest_path.write_text(
+        json.dumps(compact, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=False,
+    )
+
+    assert rc == 1
+    assert any("unit identity is false" in str(error) for error in payload["errors"])
+
+
+def test_extension_audit_compares_required_artifact_symbol_closure(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir, artifact_path, manifest_path, manifest = (
+        _write_auditable_static_link_manifest(tmp_path)
+    )
+    replacement = _wasm_exporting_i64_unary_symbol(
+        "PyInit_other",
+        imports=("molt_alloc",),
+    )
+    artifact_path.write_bytes(replacement)
+    manifest["extension_sha256"] = hashlib.sha256(replacement).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc, payload = _audit_static_link_manifest(
+        out_dir,
+        capsys,
+        require_object_closure=True,
+    )
+
+    assert rc == 1
+    assert any(
+        "defined-symbol closure differs" in str(error) for error in payload["errors"]
     )
 
 
@@ -6301,17 +6820,3 @@ def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(
         check=False,
     )
     assert result.returncode == 0, result.stderr
-
-
-def _materialize_fake_extension_command(cmd: list[str]) -> Path:
-    if "-o" in cmd:
-        output = Path(cmd[cmd.index("-o") + 1])
-        payload = b"object" if "-c" in cmd else b"wasm-object"
-    else:
-        archive_mode_index = cmd.index("rcsD")
-        output = Path(cmd[archive_mode_index + 1])
-        payload = static_archive_bytes()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(payload)
-    _write_fake_compiler_depfile(cmd)
-    return output

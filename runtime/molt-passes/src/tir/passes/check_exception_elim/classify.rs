@@ -119,6 +119,9 @@ pub(crate) fn op_may_raise(
     const_ints: &HashMap<ValueId, i64>,
     op: &TirOp,
 ) -> bool {
+    if op.is_async_work_poll() {
+        return true;
+    }
     if opcode_requires_i64_zero_divisor_guard_table(op.opcode)
         && proven_nonzero_i64_divisor(value_types, const_ints, op)
     {

@@ -309,6 +309,7 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -443,6 +444,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -535,6 +537,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -624,6 +627,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -705,6 +709,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -762,6 +767,7 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )

@@ -31,7 +31,10 @@ pub(crate) fn prepare_native_application_ir(
             .unwrap_or_default();
         molt_backend::eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         molt_backend::eliminate_dead_imports(ir);
-        molt_backend::eliminate_dead_ops(ir);
+        molt_backend::eliminate_dead_ops(
+            ir,
+            &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
+        );
     }
     deduplicate_functions_by_name(&mut ir.functions);
 }

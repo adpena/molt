@@ -86,8 +86,9 @@ def test_provider_surface_owns_complete_archive_symbol_families(
     }
     reads: list[Path] = []
 
-    def read_symbols(path: Path):
+    def read_symbols(path: Path, *, target_triple: str):
         reads.append(path)
+        assert target_triple == "wasm32-wasip1"
         return facts[path]
 
     monkeypatch.setattr(
@@ -132,10 +133,31 @@ def test_unreadable_provider_family_fails_closed(
     monkeypatch.setattr(
         providers,
         "_native_archive_global_symbol_sets",
-        lambda _path: None,
+        lambda _path, *, target_triple: None,
     )
     providers._provider_surfaces_from_key.cache_clear()
     providers._provider_symbol_classes_from_key.cache_clear()
     providers._provider_symbols_from_key.cache_clear()
 
     assert providers.wasm_external_link_provider_symbol_classes() == {}
+
+
+def test_nm_symbol_normalization_uses_artifact_target_not_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = "00000000 T __molt_runtime\n         U _Py_None\n"
+    monkeypatch.setattr(backend_cache.sys, "platform", "darwin")
+
+    wasm_defined, wasm_undefined = backend_cache._parse_native_nm_global_symbol_sets(
+        output,
+        target_triple="wasm32-wasip1",
+    )
+    macho_defined, macho_undefined = backend_cache._parse_native_nm_global_symbol_sets(
+        output,
+        target_triple="aarch64-apple-darwin",
+    )
+
+    assert wasm_defined == {"__molt_runtime"}
+    assert wasm_undefined == {"_Py_None"}
+    assert macho_defined == {"_molt_runtime"}
+    assert macho_undefined == {"Py_None"}

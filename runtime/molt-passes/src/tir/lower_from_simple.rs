@@ -25,6 +25,7 @@ use super::op_kinds_generated::{
     SimpleIrReturnShape, opcode_sets_exception_handling_table, simpleir_return_shape,
 };
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
+use super::target_info::TargetInfo;
 use super::types::TirType;
 
 /// Lift every **non-extern** `FunctionIR` in `functions` to TIR and assemble a
@@ -65,6 +66,17 @@ pub fn lower_functions_to_tir_module(functions: &[FunctionIR]) -> (TirModule, Ve
 /// parameter types plus canonical propagation over the SSA graph. Transport
 /// compatibility metadata on SimpleIR is intentionally ignored here.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
+    lower_to_tir_impl(ir, None)
+}
+
+/// Lower for an executable target, materializing target-required async-work
+/// boundaries before SSA so payload-bearing exception edges receive the same
+/// canonical environment mapping as frontend-authored transfers.
+pub fn lower_to_tir_for_target(ir: &FunctionIR, target_info: &TargetInfo) -> TirFunction {
+    lower_to_tir_impl(ir, Some(target_info))
+}
+
+fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFunction {
     if std::env::var("MOLT_TRACE_SIMPLE_IMPORT").as_deref() == Ok("1") {
         for op in &ir.ops {
             if op.kind.contains("import") {
@@ -113,28 +125,21 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // at loop headers for cell variables. Always-on; no env gate.
     let _cell_rewrite_applied = rewrite_cell_locals_to_store_load(&mut working_ops);
 
-    let tmp_ir = crate::ir::FunctionIR {
+    let mut tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
-        ops: working_ops.clone(),
+        ops: working_ops,
         params: ir.params.clone(),
         param_types: ir.param_types.clone(),
         source_file: ir.source_file.clone(),
         is_extern: false,
         execution_context: ir.execution_context,
     };
-    let ir_ref = &tmp_ir;
-    let ops = &working_ops[..];
-
-    // 1. Build CFG from the rewritten op stream.
-    let cfg = CFG::build(ops);
-
-    // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
-    // No catch_unwind — panics propagate cleanly through rayon. Using
-    // AssertUnwindSafe on borrowed state violates Rust's unwind safety contract.
-    let ssa = convert_to_ssa_with_name_and_params(&ir.name, &cfg, ops, &ir.params);
-
-    // 3. Assemble the TirFunction from the SSA output.
-    let mut tir_func = assemble_function(ir_ref, &cfg, ssa);
+    let mut tir_func =
+        if target_info.is_some_and(TargetInfo::supports_pending_call_eval_breaker_poll) {
+            lower_prepared_with_async_work_materialization(&mut tmp_ir)
+        } else {
+            lower_prepared_function(&tmp_ir)
+        };
     // Preserve the RC drop-insertion marker across the round-trip (see above).
     if had_drop_inserted_marker {
         tir_func.attrs.insert(
@@ -149,6 +154,54 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
         );
     }
     tir_func
+}
+
+fn lower_prepared_function(ir: &FunctionIR) -> TirFunction {
+    // Build the exact CFG consumed by SSA, then convert once. No catch_unwind:
+    // panics propagate cleanly through rayon, preserving unwind safety.
+    let cfg = CFG::build(&ir.ops);
+    let ssa = convert_to_ssa_with_name_and_params(&ir.name, &cfg, &ir.ops, &ir.params);
+    assemble_function(ir, &cfg, ssa)
+}
+
+/// Lower a placement preview whose source indices are exact positions in the
+/// prepared SimpleIR stream, materialize against that same stream, then restore
+/// durable source provenance on the returned TIR. `OpIR::source_op_idx` is an
+/// origin/inline-cache identity and must never be dereferenced as a current
+/// array position after a TIR round trip.
+fn lower_prepared_with_async_work_materialization(ir: &mut FunctionIR) -> TirFunction {
+    let transported_source_indices: Vec<_> = ir
+        .ops
+        .iter_mut()
+        .map(|op| op.source_op_idx.take())
+        .collect();
+    let mut preview = lower_prepared_function(ir);
+    for (op, source_op_idx) in ir.ops.iter_mut().zip(transported_source_indices) {
+        op.source_op_idx = source_op_idx;
+    }
+
+    let materialized = super::passes::async_work_poll::materialize_before_ssa(ir, &mut preview);
+    if materialized.transfers_inserted != 0 {
+        return lower_prepared_function(ir);
+    }
+
+    for op in preview
+        .blocks
+        .values_mut()
+        .flat_map(|block| block.ops.iter_mut())
+    {
+        let Some(prepared_index) = op.source_op_index() else {
+            continue;
+        };
+        let source = ir.ops.get(prepared_index).unwrap_or_else(|| {
+            panic!(
+                "prepared SimpleIR source index {prepared_index} exceeds {} operations",
+                ir.ops.len()
+            )
+        });
+        op.set_source_op_index(source.source_op_index_or(prepared_index));
+    }
+    preview
 }
 
 /// Assemble a `TirFunction` from a `FunctionIR`, its `CFG`, and the `SsaOutput`.

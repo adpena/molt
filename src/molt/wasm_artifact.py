@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import json
 import mmap
 import os
 from pathlib import Path
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Collection, Iterable, Literal, Mapping, Sequence
 import uuid
 
 from molt._wasm_abi_generated import (
@@ -16,6 +16,9 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
+
+if TYPE_CHECKING:
+    from molt.wasm_linking_symbols import WasmLinkingSymbolTable
 
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 WASM_FINAL_ARTIFACT_FORBIDDEN_CUSTOM_SECTIONS = frozenset({"linking"})
@@ -70,12 +73,16 @@ def wasm_runtime_manifest_entry_path(manifest: Path) -> Path:
     mode = payload.get("mode")
     label = {"linked": "linked", "split-runtime": "app"}.get(mode)
     if label is None:
-        raise ValueError(f"WASM execution manifest has unsupported mode {mode!r}: {manifest}")
+        raise ValueError(
+            f"WASM execution manifest has unsupported mode {mode!r}: {manifest}"
+        )
     modules = payload.get("modules")
     descriptor = modules.get(label) if isinstance(modules, dict) else None
     module_path = descriptor.get("path") if isinstance(descriptor, dict) else None
     if not isinstance(module_path, str) or not module_path:
-        raise ValueError(f"WASM execution manifest missing modules.{label}.path: {manifest}")
+        raise ValueError(
+            f"WASM execution manifest missing modules.{label}.path: {manifest}"
+        )
     return manifest.parent / module_path
 
 
@@ -93,12 +100,16 @@ def copy_wasm_runtime_manifest_for_artifact(
     payload = json.loads(source_manifest.read_text(encoding="utf-8"))
     modules = payload.get("modules")
     if not isinstance(modules, dict):
-        raise ValueError(f"WASM execution manifest has no modules object: {source_manifest}")
+        raise ValueError(
+            f"WASM execution manifest has no modules object: {source_manifest}"
+        )
     source_resolved = source_artifact.resolve()
     destination_root = destination_artifact.parent.resolve()
     matched = False
     for label, descriptor in modules.items():
-        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("path"), str):
+        if not isinstance(descriptor, dict) or not isinstance(
+            descriptor.get("path"), str
+        ):
             continue
         resolved = (source_manifest.parent / descriptor["path"]).resolve()
         if resolved == source_resolved:
@@ -151,9 +162,23 @@ class WasmImport:
     name: str
     kind: int
     type_index: int | None = None
+    limits_flags: int | None = None
     minimum: int | None = None
-    value_type: int | None = None
+    maximum: int | None = None
+    reference_type: bytes | None = None
+    value_type: bytes | None = None
     mutable: bool | None = None
+    tag_attribute: int | None = None
+    description: bytes = field(default=b"", compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class WasmImportInterface:
+    imports: tuple[WasmImport, ...]
+    function_signatures: tuple[
+        tuple[str, str, tuple[str, ...], str],
+        ...,
+    ]
 
 
 @dataclass(frozen=True)
@@ -164,6 +189,34 @@ class WasmExport:
 
     def to_tuple(self) -> tuple[str, int, int]:
         return self.name, self.kind, self.index
+
+
+@dataclass(frozen=True)
+class WasmRelocatableObjectInterface:
+    imports: tuple[WasmImport, ...]
+    function_import_signatures: tuple[
+        tuple[str, str, tuple[str, ...], str],
+        ...,
+    ]
+    function_exports: tuple[WasmExport, ...]
+    linking_symbols: WasmLinkingSymbolTable
+
+
+@dataclass(frozen=True)
+class WasmTypeEntry:
+    """One type-index-bearing entry from a WebAssembly type section."""
+
+    encoding: bytes
+    function_signature: tuple[tuple[bytes, ...], tuple[bytes, ...]] | None
+    is_plain_function: bool
+
+
+@dataclass(frozen=True)
+class WasmTypeGroup:
+    """One top-level type-section group and its sequential type entries."""
+
+    recursive: bool
+    entries: tuple[WasmTypeEntry, ...]
 
 
 @dataclass(frozen=True)
@@ -303,7 +356,7 @@ def _read_wasm_custom_section_name(payload: bytes) -> str:
 def wasm_custom_section_names(data: bytes) -> tuple[str, ...]:
     return tuple(
         _read_wasm_custom_section_name(payload)
-        for section_id, payload in _parse_wasm_sections(data)
+        for section_id, payload in parse_wasm_sections(data)
         if section_id == 0
     )
 
@@ -326,7 +379,7 @@ def strip_wasm_publication_sections(
     final_artifact: bool,
     preserve_debug: bool,
 ) -> bytes:
-    sections = _parse_wasm_sections(data)
+    sections = parse_wasm_sections(data)
     kept: list[tuple[int, bytes]] = []
     changed = False
     for section_id, payload in sections:
@@ -359,14 +412,26 @@ def wasm_publication_policy_violations(
     return tuple(violations)
 
 
-def parse_wasm_section_spans(data: bytes) -> list[WasmSectionSpan]:
+def parse_wasm_section_spans(
+    data: bytes,
+    *,
+    allow_duplicate_standard_sections: bool = False,
+) -> list[WasmSectionSpan]:
     if len(data) < len(WASM_HEADER) or data[: len(WASM_HEADER)] != WASM_HEADER:
         raise ValueError("Invalid wasm binary")
     offset = len(WASM_HEADER)
     sections: list[WasmSectionSpan] = []
+    standard_section_ids: set[int] = set()
     while offset < len(data):
         section_id = data[offset]
         offset += 1
+        if section_id != 0:
+            if (
+                section_id in standard_section_ids
+                and not allow_duplicate_standard_sections
+            ):
+                raise ValueError(f"Duplicate wasm section id {section_id}")
+            standard_section_ids.add(section_id)
         section_size, offset = _read_wasm_varuint(data, offset)
         section_end = offset + section_size
         if section_end > len(data):
@@ -389,15 +454,36 @@ def read_wasm_section_spans(path: Path) -> list[WasmSectionSpan]:
     return parse_wasm_section_spans(path.read_bytes())
 
 
-def _parse_wasm_sections(data: bytes) -> list[tuple[int, bytes]]:
-    return [
-        (span.id, data[span.offset : span.offset + span.size])
-        for span in parse_wasm_section_spans(data)
-    ]
+def _wasm_sections_from_spans(
+    data: bytes,
+    spans: Sequence[WasmSectionSpan],
+) -> list[tuple[int, bytes]]:
+    return [(span.id, data[span.offset : span.offset + span.size]) for span in spans]
+
+
+def parse_wasm_sections(
+    data: bytes,
+    *,
+    allow_duplicate_standard_sections: bool = False,
+) -> list[tuple[int, bytes]]:
+    """Return the ordered section payloads for one core module.
+
+    Duplicate standard sections are rejected by default. The explicit opt-in is
+    reserved for the linker's normalization pass, which consumes invalid
+    intermediate linker output and returns a strict single-section module.
+    """
+
+    return _wasm_sections_from_spans(
+        data,
+        parse_wasm_section_spans(
+            data,
+            allow_duplicate_standard_sections=allow_duplicate_standard_sections,
+        ),
+    )
 
 
 def _parse_wasm_file_sections(path: Path) -> list[tuple[int, bytes]]:
-    return _parse_wasm_sections(path.read_bytes())
+    return parse_wasm_sections(path.read_bytes())
 
 
 def inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
@@ -427,12 +513,23 @@ def _build_wasm_sections(sections: Sequence[tuple[int, bytes]]) -> bytes:
     return bytes(out)
 
 
-def _read_wasm_limits(data: bytes, offset: int) -> tuple[int, int, int]:
+def read_wasm_limits(data: bytes, offset: int) -> tuple[int, int, int | None, int]:
     flags, offset = _read_wasm_varuint(data, offset)
     minimum, offset = _read_wasm_varuint(data, offset)
+    maximum: int | None = None
     if flags & 0x1:
-        _, offset = _read_wasm_varuint(data, offset)
-    return flags, minimum, offset
+        maximum, offset = _read_wasm_varuint(data, offset)
+    return flags, minimum, maximum, offset
+
+
+def write_wasm_limits(flags: int, minimum: int, maximum: int | None) -> bytes:
+    output = bytearray(_write_wasm_varuint(flags))
+    output.extend(_write_wasm_varuint(minimum))
+    if flags & 0x1:
+        if maximum is None:
+            raise ValueError("WASM limits with a maximum flag require a maximum")
+        output.extend(_write_wasm_varuint(maximum))
+    return bytes(output)
 
 
 def _read_wasm_import_description(
@@ -442,19 +539,39 @@ def _read_wasm_import_description(
         type_index, cursor = _read_wasm_varuint(payload, cursor)
         return WasmImport(module, name, kind, type_index=type_index), cursor
     if kind == 1:
-        if cursor >= len(payload):
-            raise ValueError("Unexpected EOF while reading table type")
-        cursor += 1
-        _, minimum, cursor = _read_wasm_limits(payload, cursor)
-        return WasmImport(module, name, kind, minimum=minimum), cursor
+        reference_type, cursor = _read_wasm_value_type_encoding(payload, cursor)
+        limits_flags, minimum, maximum, cursor = read_wasm_limits(payload, cursor)
+        return (
+            WasmImport(
+                module,
+                name,
+                kind,
+                limits_flags=limits_flags,
+                minimum=minimum,
+                maximum=maximum,
+                reference_type=reference_type,
+            ),
+            cursor,
+        )
     if kind == 2:
-        _, minimum, cursor = _read_wasm_limits(payload, cursor)
-        return WasmImport(module, name, kind, minimum=minimum), cursor
+        limits_flags, minimum, maximum, cursor = read_wasm_limits(payload, cursor)
+        return (
+            WasmImport(
+                module,
+                name,
+                kind,
+                limits_flags=limits_flags,
+                minimum=minimum,
+                maximum=maximum,
+            ),
+            cursor,
+        )
     if kind == 3:
-        if cursor + 2 > len(payload):
-            raise ValueError("Unexpected EOF while reading global type")
-        value_type = payload[cursor]
-        mutable = payload[cursor + 1]
+        value_type, cursor = _read_wasm_value_type_encoding(payload, cursor)
+        if cursor >= len(payload):
+            raise ValueError("Unexpected EOF while reading global mutability")
+        mutable = payload[cursor]
+        cursor += 1
         if mutable not in (0, 1):
             raise ValueError(f"Invalid wasm global mutability {mutable}")
         return (
@@ -465,38 +582,74 @@ def _read_wasm_import_description(
                 value_type=value_type,
                 mutable=bool(mutable),
             ),
-            cursor + 2,
+            cursor,
         )
     if kind == 4:
         if cursor >= len(payload):
             raise ValueError("Unexpected EOF while reading tag attribute")
+        tag_attribute = payload[cursor]
         cursor += 1
-        _, cursor = _read_wasm_varuint(payload, cursor)
-        return WasmImport(module, name, kind), cursor
+        type_index, cursor = _read_wasm_varuint(payload, cursor)
+        return (
+            WasmImport(
+                module,
+                name,
+                kind,
+                type_index=type_index,
+                tag_attribute=tag_attribute,
+            ),
+            cursor,
+        )
     raise ValueError(f"Unknown wasm import kind {kind}")
+
+
+def skip_wasm_import_description(data: bytes, offset: int, kind: int) -> int:
+    """Return the end of one canonical import descriptor."""
+
+    _, offset = _read_wasm_import_description(
+        data,
+        offset,
+        module="",
+        name="",
+        kind=kind,
+    )
+    return offset
 
 
 def _iter_wasm_imports(
     sections: Sequence[tuple[int, bytes]],
 ) -> list[WasmImport]:
-    imports: list[WasmImport] = []
     for section_id, payload in sections:
-        if section_id != 2:
-            continue
-        cursor = 0
-        count, cursor = _read_wasm_varuint(payload, cursor)
-        for _ in range(count):
-            module, cursor = _read_wasm_string(payload, cursor)
-            name, cursor = _read_wasm_string(payload, cursor)
-            if cursor >= len(payload):
-                raise ValueError("Unexpected EOF while reading import")
-            kind = payload[cursor]
-            cursor += 1
-            wasm_import, cursor = _read_wasm_import_description(
-                payload, cursor, module=module, name=name, kind=kind
+        if section_id == 2:
+            return parse_wasm_import_section(payload)
+    return []
+
+
+def parse_wasm_import_section(payload: bytes) -> list[WasmImport]:
+    """Parse one complete import-section payload and reject trailing data."""
+
+    imports: list[WasmImport] = []
+    cursor = 0
+    count, cursor = _read_wasm_varuint(payload, cursor)
+    for _ in range(count):
+        module, cursor = _read_wasm_string(payload, cursor)
+        name, cursor = _read_wasm_string(payload, cursor)
+        if cursor >= len(payload):
+            raise ValueError("Unexpected EOF while reading import")
+        kind = payload[cursor]
+        cursor += 1
+        description_start = cursor
+        wasm_import, cursor = _read_wasm_import_description(
+            payload, cursor, module=module, name=name, kind=kind
+        )
+        imports.append(
+            replace(
+                wasm_import,
+                description=payload[description_start:cursor],
             )
-            imports.append(wasm_import)
-        break
+        )
+    if cursor != len(payload):
+        raise ValueError("Trailing bytes in wasm import section")
     return imports
 
 
@@ -504,10 +657,73 @@ def parse_wasm_imports(
     data: bytes, *, on_error: Literal["raise", "ignore"] = "raise"
 ) -> list[WasmImport]:
     try:
-        return _iter_wasm_imports(_parse_wasm_sections(data))
+        return _iter_wasm_imports(parse_wasm_sections(data))
     except (UnicodeDecodeError, ValueError, IndexError):
         if on_error == "ignore":
             return []
+        raise
+
+
+def _wasm_import_interface_from_sections(
+    sections: Sequence[tuple[int, bytes]],
+    *,
+    signature_import_names: Collection[str] | None = None,
+) -> WasmImportInterface:
+    imports = tuple(_iter_wasm_imports(sections))
+    type_signatures = _read_wasm_type_signature_encodings(sections)
+    signatures: list[tuple[str, str, tuple[str, ...], str]] = []
+    for wasm_import in imports:
+        if wasm_import.kind != WASM_EXTERN_KIND_FUNCTION:
+            continue
+        type_index = wasm_import.type_index
+        if type_index is None:
+            raise ValueError(
+                f"Missing wasm function import type for {wasm_import.name}"
+            )
+        if type_index not in type_signatures:
+            raise ValueError(
+                f"Missing wasm type index {type_index} for import "
+                f"{wasm_import.module}.{wasm_import.name}"
+            )
+        encoded_signature = type_signatures[type_index]
+        if encoded_signature is None:
+            raise ValueError(
+                f"Wasm function import {wasm_import.module}.{wasm_import.name} "
+                f"references non-function type index {type_index}"
+            )
+        if (
+            signature_import_names is not None
+            and wasm_import.name not in signature_import_names
+        ):
+            continue
+        encoded_params, encoded_results = encoded_signature
+        params = tuple(
+            _format_wasm_value_type_encoding(value) for value in encoded_params
+        )
+        results = tuple(
+            _format_wasm_value_type_encoding(value) for value in encoded_results
+        )
+        signatures.append(
+            (
+                wasm_import.module,
+                wasm_import.name,
+                params,
+                _format_wasm_result_kind(results),
+            )
+        )
+    return WasmImportInterface(imports, tuple(signatures))
+
+
+def parse_wasm_import_interface(
+    data: bytes,
+    *,
+    on_error: Literal["raise", "ignore"] = "raise",
+) -> WasmImportInterface:
+    try:
+        return _wasm_import_interface_from_sections(parse_wasm_sections(data))
+    except (UnicodeDecodeError, ValueError, IndexError):
+        if on_error == "ignore":
+            return WasmImportInterface((), ())
         raise
 
 
@@ -519,6 +735,19 @@ def read_wasm_imports(
     except OSError:
         if on_error == "ignore":
             return []
+        raise
+
+
+def read_wasm_import_interface(
+    path: Path,
+    *,
+    on_error: Literal["raise", "ignore"] = "raise",
+) -> WasmImportInterface:
+    try:
+        return parse_wasm_import_interface(path.read_bytes(), on_error=on_error)
+    except OSError:
+        if on_error == "ignore":
+            return WasmImportInterface((), ())
         raise
 
 
@@ -601,7 +830,7 @@ def parse_wasm_defined_globals(
     data: bytes, *, on_error: Literal["raise", "ignore"] = "raise"
 ) -> list[WasmGlobal]:
     try:
-        return _iter_wasm_defined_globals(_parse_wasm_sections(data))
+        return _iter_wasm_defined_globals(parse_wasm_sections(data))
     except (UnicodeDecodeError, ValueError, IndexError):
         if on_error == "ignore":
             return []
@@ -661,7 +890,7 @@ def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]
 
 
 def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
-    sections = _parse_wasm_sections(data)
+    sections = parse_wasm_sections(data)
     slots: dict[int, int] = {}
     for section_id, payload in sections:
         if section_id != 9:
@@ -879,7 +1108,7 @@ def read_wasm_split_runtime_callable_layout(
 ) -> WasmSplitRuntimeCallableLayout:
     try:
         data = path.read_bytes()
-        table_boundary = _wasm_table_min_from_sections(_parse_wasm_sections(data))
+        table_boundary = _wasm_table_min_from_sections(parse_wasm_sections(data))
     except (OSError, ValueError) as exc:
         raise ValueError(f"invalid split runtime wasm: {exc}") from exc
     if table_boundary is None:
@@ -982,7 +1211,7 @@ def _read_wasm_memory_min_bytes(path: Path) -> int | None:
             if section_id == 5:
                 count, cursor = _read_wasm_varuint(payload, cursor)
                 for _ in range(count):
-                    _, minimum, cursor = _read_wasm_limits(payload, cursor)
+                    _, minimum, _, cursor = read_wasm_limits(payload, cursor)
                     memory_pages = max(memory_pages or 0, minimum)
     except ValueError:
         return None
@@ -1075,19 +1304,164 @@ def _format_wasm_result_kind(results: Sequence[str]) -> str:
 def _read_wasm_type_signatures(
     sections: Sequence[tuple[int, bytes]],
 ) -> dict[int, tuple[list[str], str]]:
-    signatures: dict[int, tuple[list[str], str]] = {}
+    return {
+        type_index: (
+            [_format_wasm_value_type_encoding(value) for value in params],
+            _format_wasm_result_kind(
+                [_format_wasm_value_type_encoding(value) for value in results]
+            ),
+        )
+        for type_index, signature in _read_wasm_type_signature_encodings(
+            sections
+        ).items()
+        if signature is not None
+        for params, results in (signature,)
+    }
+
+
+def _read_wasm_gc_field_type(data: bytes, offset: int) -> int:
+    _storage_type, offset = _read_wasm_value_type_encoding(data, offset)
+    if offset >= len(data) or data[offset] not in (0, 1):
+        raise ValueError("Invalid wasm GC field mutability")
+    return offset + 1
+
+
+def _read_wasm_composite_type(
+    data: bytes,
+    offset: int,
+) -> tuple[tuple[tuple[bytes, ...], tuple[bytes, ...]] | None, int]:
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading wasm composite type")
+    form = data[offset]
+    offset += 1
+    if form == 0x60:
+        params, offset = _read_wasm_encoded_value_type_vec(data, offset)
+        results, offset = _read_wasm_encoded_value_type_vec(data, offset)
+        return (tuple(params), tuple(results)), offset
+    if form == 0x5F:
+        field_count, offset = _read_wasm_varuint(data, offset)
+        for _ in range(field_count):
+            offset = _read_wasm_gc_field_type(data, offset)
+        return None, offset
+    if form == 0x5E:
+        return None, _read_wasm_gc_field_type(data, offset)
+    raise ValueError(f"Unsupported wasm composite type form 0x{form:02x}")
+
+
+def _read_wasm_subtype(
+    data: bytes,
+    offset: int,
+) -> tuple[tuple[tuple[bytes, ...], tuple[bytes, ...]] | None, int]:
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading wasm subtype")
+    if data[offset] in (0x4F, 0x50):
+        offset += 1
+        supertype_count, offset = _read_wasm_varuint(data, offset)
+        for _ in range(supertype_count):
+            _supertype, offset = _read_wasm_varint(data, offset, 33)
+    return _read_wasm_composite_type(data, offset)
+
+
+def parse_wasm_type_section_groups(payload: bytes) -> tuple[WasmTypeGroup, ...]:
+    """Parse the canonical type-entry/group structure from a type payload.
+
+    Entries retain their exact encoding so consumers can inspect signatures or
+    rewrite group boundaries without implementing another GC-aware byte walk.
+    """
+
+    cursor = 0
+    group_count, cursor = _read_wasm_varuint(payload, cursor)
+    groups: list[WasmTypeGroup] = []
+    for _ in range(group_count):
+        if cursor >= len(payload):
+            raise ValueError("Unexpected EOF while reading wasm type section")
+        recursive = payload[cursor] == 0x4E
+        if recursive:
+            cursor += 1
+            member_count, cursor = _read_wasm_varuint(payload, cursor)
+            if member_count == 0:
+                raise ValueError("Empty wasm recursive type group")
+        else:
+            member_count = 1
+
+        entries: list[WasmTypeEntry] = []
+        for _ in range(member_count):
+            start = cursor
+            signature, cursor = _read_wasm_subtype(payload, cursor)
+            entries.append(
+                WasmTypeEntry(
+                    encoding=payload[start:cursor],
+                    function_signature=signature,
+                    is_plain_function=payload[start] == 0x60,
+                )
+            )
+        groups.append(WasmTypeGroup(recursive=recursive, entries=tuple(entries)))
+
+    if cursor != len(payload):
+        raise ValueError("Trailing bytes in wasm type section")
+    return tuple(groups)
+
+
+def flatten_wasm_plain_function_rec_groups(data: bytes) -> bytes | None:
+    """Flatten recursive groups made solely of plain function types.
+
+    The rewrite preserves entry order and therefore every type index. Real GC
+    recursion or explicit subtyping fails closed because removing that group
+    boundary would change semantics. Unrelated standalone GC types are retained
+    byte-for-byte.
+    """
+
+    sections = parse_wasm_sections(data)
+    type_section_index = next(
+        (
+            index
+            for index, (section_id, _payload) in enumerate(sections)
+            if section_id == 1
+        ),
+        None,
+    )
+    if type_section_index is None:
+        return None
+    payload = sections[type_section_index][1]
+    groups = parse_wasm_type_section_groups(payload)
+    if not any(group.recursive for group in groups):
+        return None
+
+    flattened_entries: list[bytes] = []
+    for group in groups:
+        if group.recursive:
+            for entry in group.entries:
+                if not entry.is_plain_function:
+                    form = entry.encoding[0]
+                    raise ValueError(
+                        "rec group flatten: group member is not a plain func "
+                        f"type (form {hex(form)}); cannot flatten a real "
+                        "recursive/subtype group without changing semantics"
+                    )
+                flattened_entries.append(entry.encoding)
+        else:
+            flattened_entries.append(group.entries[0].encoding)
+
+    rewritten_payload = _write_wasm_varuint(len(flattened_entries)) + b"".join(
+        flattened_entries
+    )
+    rewritten_sections = list(sections)
+    rewritten_sections[type_section_index] = (1, rewritten_payload)
+    return _build_wasm_sections(rewritten_sections)
+
+
+def _read_wasm_type_signature_encodings(
+    sections: Sequence[tuple[int, bytes]],
+) -> dict[int, tuple[tuple[bytes, ...], tuple[bytes, ...]] | None]:
+    signatures: dict[int, tuple[tuple[bytes, ...], tuple[bytes, ...]] | None] = {}
     for section_id, payload in sections:
         if section_id != 1:
             continue
-        cursor = 0
-        count, cursor = _read_wasm_varuint(payload, cursor)
-        for type_index in range(count):
-            if cursor >= len(payload) or payload[cursor] != 0x60:
-                raise ValueError("Unsupported wasm type form")
-            cursor += 1
-            params, cursor = _read_wasm_value_type_vec(payload, cursor)
-            results, cursor = _read_wasm_value_type_vec(payload, cursor)
-            signatures[type_index] = (params, _format_wasm_result_kind(results))
+        type_index = 0
+        for group in parse_wasm_type_section_groups(payload):
+            for entry in group.entries:
+                signatures[type_index] = entry.function_signature
+                type_index += 1
         break
     return signatures
 
@@ -1148,7 +1522,7 @@ def parse_wasm_callable_table_attestation(
     rejected rather than becoming another ABI authority.
     """
 
-    sections = _parse_wasm_sections(data)
+    sections = parse_wasm_sections(data)
     payloads: list[bytes] = []
     for section_id, payload in sections:
         if section_id != 0:
@@ -1406,21 +1780,28 @@ def read_wasm_code_metrics(path: Path) -> WasmCodeMetrics:
 def _iter_wasm_exports(
     sections: Sequence[tuple[int, bytes]],
 ) -> list[WasmExport]:
-    exports: list[WasmExport] = []
     for section_id, payload in sections:
-        if section_id != 7:
-            continue
-        cursor = 0
-        count, cursor = _read_wasm_varuint(payload, cursor)
-        for _ in range(count):
-            name, cursor = _read_wasm_string(payload, cursor)
-            if cursor >= len(payload):
-                raise ValueError("Unexpected EOF while reading export")
-            kind = payload[cursor]
-            cursor += 1
-            index, cursor = _read_wasm_varuint(payload, cursor)
-            exports.append(WasmExport(name, kind, index))
-        break
+        if section_id == 7:
+            return parse_wasm_export_section(payload)
+    return []
+
+
+def parse_wasm_export_section(payload: bytes) -> list[WasmExport]:
+    """Parse one complete export-section payload and reject trailing data."""
+
+    exports: list[WasmExport] = []
+    cursor = 0
+    count, cursor = _read_wasm_varuint(payload, cursor)
+    for _ in range(count):
+        name, cursor = _read_wasm_string(payload, cursor)
+        if cursor >= len(payload):
+            raise ValueError("Unexpected EOF while reading export")
+        kind = payload[cursor]
+        cursor += 1
+        index, cursor = _read_wasm_varuint(payload, cursor)
+        exports.append(WasmExport(name, kind, index))
+    if cursor != len(payload):
+        raise ValueError("Trailing bytes in wasm export section")
     return exports
 
 
@@ -1431,7 +1812,7 @@ def parse_wasm_exports(
     on_error: Literal["raise", "ignore"] = "raise",
 ) -> list[WasmExport]:
     try:
-        exports = _iter_wasm_exports(_parse_wasm_sections(data))
+        exports = _iter_wasm_exports(parse_wasm_sections(data))
     except (UnicodeDecodeError, ValueError, IndexError):
         if on_error == "ignore":
             return []
@@ -1441,12 +1822,44 @@ def parse_wasm_exports(
     return [export for export in exports if export.kind == kind]
 
 
+def parse_wasm_relocatable_object_interface(
+    data: bytes,
+    *,
+    signature_import_names: Collection[str] = (),
+) -> WasmRelocatableObjectInterface:
+    """Parse one relocatable artifact once for all closure consumers."""
+
+    spans = tuple(parse_wasm_section_spans(data))
+    sections = _wasm_sections_from_spans(data, spans)
+    import_interface = _wasm_import_interface_from_sections(
+        sections,
+        signature_import_names=signature_import_names,
+    )
+    from molt.wasm_linking_symbols import parse_wasm_linking_symbols
+
+    linking_symbols = parse_wasm_linking_symbols(
+        data,
+        wasm_imports=import_interface.imports,
+        section_spans=spans,
+    )
+    return WasmRelocatableObjectInterface(
+        imports=import_interface.imports,
+        function_import_signatures=import_interface.function_signatures,
+        function_exports=tuple(
+            export
+            for export in _iter_wasm_exports(sections)
+            if export.kind == WASM_EXTERN_KIND_FUNCTION
+        ),
+        linking_symbols=linking_symbols,
+    )
+
+
 def rename_wasm_export_names(
     data: bytes, rename_map: Mapping[str, str]
 ) -> bytes | None:
     if not rename_map:
         return None
-    sections = _parse_wasm_sections(data)
+    sections = parse_wasm_sections(data)
     modified = False
     rewritten_sections: list[tuple[int, bytes]] = []
     for section_id, payload in sections:

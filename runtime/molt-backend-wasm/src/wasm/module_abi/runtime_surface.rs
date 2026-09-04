@@ -152,7 +152,7 @@ impl WasmRuntimeSurfacePlan {
                 .max_class_def_words
                 .max(ClassDefLayout::parse(meta).spill_words());
         }
-        if let Some(call) = op_loop_runtime_call(kind) {
+        if let Some(call) = op_loop_runtime_call(kind, op.is_async_work_poll()) {
             self.required_imports
                 .extend(call.required_imports.iter().copied());
         }

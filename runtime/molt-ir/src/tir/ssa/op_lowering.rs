@@ -7,7 +7,7 @@ use super::super::dominators;
 use super::super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
     simpleir_first_trailing_result_arg_table, simpleir_kind_is_async_work_poll,
-    simpleir_kind_preserves_original_kind_for_ssa,
+    simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::simple_def_use::visit_simple_ir_defined_names;
@@ -252,7 +252,14 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
-        if simpleir_kind_is_async_work_poll(&op.kind) {
+        if op.async_work_poll {
+            assert!(
+                simpleir_kind_may_carry_async_work_poll_marker(&op.kind),
+                "SimpleIR op {:?} cannot carry the async-work poll marker",
+                op.kind
+            );
+        }
+        if op.async_work_poll || simpleir_kind_is_async_work_poll(&op.kind) {
             attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
         }
 

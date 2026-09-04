@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import sys
+from dataclasses import dataclass
 from functools import lru_cache
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
@@ -21,7 +22,6 @@ from molt._wasm_abi_generated import (
     wasm_runtime_export_name,
 )
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
-from molt.cli.backend_cache import _native_archive_global_symbol_sets
 from molt.c_api_symbols import c_api_primitive_class
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.c_api_symbols import is_c_api_symbol
@@ -33,7 +33,7 @@ from molt.cli.extension_manifest import (
     _py_methoddef_names,
     _validate_extension_manifest,
 )
-from molt.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_bytes, _sha256_file
 from molt.cli.external_link_providers import (
     wasm_external_link_provider_symbol_classes,
 )
@@ -57,6 +57,7 @@ from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
     source_extension_manifest_runtime_python_imports,
+    validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
@@ -65,7 +66,11 @@ from molt.cli.source_extension_link_requirements import (
     resolve_source_extension_link_requirements,
 )
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
-from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
+from molt.cli.source_extension_object_closure import (
+    SourceExtensionObjectClosureError,
+    validate_source_extension_object_closure,
+)
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:
@@ -122,6 +127,13 @@ _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
     "node_modules",
     "site-packages",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalArtifactManifestSnapshot:
+    path: Path
+    payload: Mapping[str, Any]
+    sha256: str
 
 
 def _external_package_dir(root: Path, package: str) -> Path | None:
@@ -597,13 +609,7 @@ def _manifest_object_closure_required_capsules(
     object_closure = manifest.get("object_closure")
     if not isinstance(object_closure, Mapping):
         return ()
-    required = set(_manifest_str_tuple(object_closure, "required_capsules"))
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping):
-                required.update(_manifest_str_tuple(item, "required_capsules"))
-    return tuple(sorted(required))
+    return _manifest_str_tuple(object_closure, "required_capsules")
 
 
 def _manifest_has_sealed_extension_custody(manifest: Mapping[str, Any]) -> bool:
@@ -721,20 +727,7 @@ def _manifest_object_closure_defined_symbols(
     object_closure = manifest.get("object_closure")
     if not isinstance(object_closure, Mapping):
         return ()
-    defined: set[str] = set()
-    raw_symbols = object_closure.get("defined_symbols")
-    if isinstance(raw_symbols, list):
-        defined.update(
-            symbol.strip()
-            for symbol in raw_symbols
-            if isinstance(symbol, str) and symbol.strip()
-        )
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping):
-                defined.update(_manifest_str_tuple(item, "defined_symbols"))
-    return tuple(sorted(defined))
+    return _manifest_str_tuple(object_closure, "defined_symbols")
 
 
 def _manifest_object_closure_runtime_symbols(
@@ -743,13 +736,7 @@ def _manifest_object_closure_runtime_symbols(
     object_closure = manifest.get("object_closure")
     if not isinstance(object_closure, Mapping):
         return ()
-    runtime_symbols = set(_manifest_str_tuple(object_closure, "runtime_symbols"))
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping):
-                runtime_symbols.update(_manifest_str_tuple(item, "runtime_symbols"))
-    return tuple(sorted(runtime_symbols))
+    return _manifest_str_tuple(object_closure, "runtime_symbols")
 
 
 def _manifest_object_closure_required_c_api_symbols(
@@ -758,39 +745,20 @@ def _manifest_object_closure_required_c_api_symbols(
     object_closure = manifest.get("object_closure")
     if not isinstance(object_closure, Mapping):
         return ()
-    required = {
-        symbol
-        for symbol in _manifest_str_tuple(object_closure, "required_c_api_symbols")
-        if is_c_api_external_requirement(symbol)
-    }
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping):
-                required.update(
-                    symbol
-                    for symbol in _manifest_str_tuple(item, "required_c_api_symbols")
-                    if is_c_api_external_requirement(symbol)
+    return tuple(
+        sorted(
+            {
+                symbol
+                for symbol in _manifest_str_tuple(
+                    object_closure, "required_c_api_symbols"
                 )
-    return tuple(sorted(required))
+                if is_c_api_external_requirement(symbol)
+            }
+        )
+    )
 
 
 def _manifest_object_closure_undefined_symbols(
-    manifest: Mapping[str, Any],
-) -> tuple[str, ...]:
-    object_closure = manifest.get("object_closure")
-    if not isinstance(object_closure, Mapping):
-        return ()
-    undefined = set(_manifest_str_tuple(object_closure, "undefined_symbols"))
-    objects = object_closure.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping):
-                undefined.update(_manifest_str_tuple(item, "undefined_symbols"))
-    return tuple(sorted(undefined))
-
-
-def _manifest_object_closure_external_undefined_symbols(
     manifest: Mapping[str, Any],
 ) -> tuple[str, ...]:
     object_closure = manifest.get("object_closure")
@@ -839,43 +807,12 @@ def _molt_runtime_namespace_symbol(symbol: str) -> bool:
     return symbol.startswith(("molt_", "__molt"))
 
 
-def _wasm_relocatable_import_symbols(
-    *,
-    package: str,
-    artifact_path: Path,
-    artifact_kind: str,
-    context: str,
-) -> tuple[tuple[str, ...] | None, list[str]]:
-    if artifact_kind != "wasm_relocatable_object":
-        return None, []
-    try:
-        return (
-            tuple(
-                sorted(
-                    {
-                        wasm_import.name
-                        for wasm_import in read_wasm_imports(artifact_path)
-                    }
-                )
-            ),
-            [],
-        )
-    except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
-        return None, [
-            f"{package}: cannot validate {context} for {artifact_path.name}: {exc}"
-        ]
-
-
 def _object_closure_abi_symbol_board(
     manifest: Mapping[str, Any],
     *,
-    external_symbols: Collection[str] | None = None,
+    external_link_classes: Mapping[str, str],
 ) -> tuple[tuple[_ExternalNativeAbiSymbol, ...], list[str]]:
-    undefined_symbols = set(
-        external_symbols
-        if external_symbols is not None
-        else _manifest_object_closure_undefined_symbols(manifest)
-    )
+    undefined_symbols = set(_manifest_object_closure_undefined_symbols(manifest))
     non_c_api_symbols = sorted(
         symbol for symbol in undefined_symbols if not is_c_api_symbol(symbol)
     )
@@ -885,10 +822,6 @@ def _object_closure_abi_symbol_board(
     defined_symbols = set(_manifest_object_closure_defined_symbols(manifest))
     runtime_symbols = set(_manifest_object_closure_runtime_symbols(manifest))
     runtime_backed_symbols = _wasm_runtime_backed_abi_symbols()
-    external_link_classes = {
-        **wasm_external_link_provider_symbol_classes(),
-        **WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-    }
     records: list[_ExternalNativeAbiSymbol] = []
     errors: list[str] = []
     for symbol in non_c_api_symbols:
@@ -952,15 +885,9 @@ def _object_closure_abi_symbol_board(
 
 def _object_closure_c_api_symbol_board(
     manifest: Mapping[str, Any],
-    *,
-    external_symbols: Collection[str] | None = None,
 ) -> tuple[tuple[_ExternalNativeCapiSymbol, ...] | None, list[str]]:
     required_symbols = set(_manifest_object_closure_required_c_api_symbols(manifest))
-    undefined_symbols = set(
-        external_symbols
-        if external_symbols is not None
-        else _manifest_object_closure_undefined_symbols(manifest)
-    )
+    undefined_symbols = set(_manifest_object_closure_undefined_symbols(manifest))
     c_api_symbols = sorted(
         {
             symbol
@@ -992,15 +919,13 @@ def _object_closure_c_api_symbol_board(
         else:
             status = surface.status_for(symbol)
         primitive_class = c_api_primitive_class(symbol)
-        if symbol in runtime_symbols and symbol in undefined_symbols:
-            if primitive_class == "numpy_c_api":
-                if status in {"source_compile_only", "missing"}:
-                    status = "package_native"
-            elif is_cpython_abi_link_symbol(symbol) and status not in {
-                "project_defined",
-                "fail_fast",
-            }:
-                status = "cpython_abi_link"
+        if (
+            symbol in runtime_symbols
+            and symbol in undefined_symbols
+            and is_cpython_abi_link_symbol(symbol)
+            and status not in {"project_defined", "fail_fast"}
+        ):
+            status = "cpython_abi_link"
         if (
             status == "missing"
             and primitive_class == "numpy_c_api"
@@ -1040,162 +965,17 @@ def _object_closure_c_api_symbol_board(
     return tuple(records), errors
 
 
-def _validate_wasm_relocatable_undefined_symbol_custody(
-    *,
-    package: str,
-    artifact_path: Path,
-    manifest: Mapping[str, Any],
-    artifact_kind: str,
-    binary_import_symbols: Sequence[str] | None = None,
-) -> list[str]:
-    if artifact_kind != "wasm_relocatable_object":
-        return []
-    if binary_import_symbols is None:
-        binary_import_symbols, import_errors = _wasm_relocatable_import_symbols(
-            package=package,
-            artifact_path=artifact_path,
-            artifact_kind=artifact_kind,
-            context="object_closure.undefined_symbols",
-        )
-        if import_errors:
-            return import_errors
-    assert binary_import_symbols is not None
-    sidecar_symbols = _manifest_object_closure_undefined_symbols(manifest)
-    external_sidecar_symbols = _manifest_object_closure_external_undefined_symbols(
-        manifest
-    )
-    missing_from_sidecar = [
-        symbol for symbol in binary_import_symbols if symbol not in sidecar_symbols
-    ]
-    stale_in_sidecar = [
-        symbol
-        for symbol in external_sidecar_symbols
-        if symbol not in binary_import_symbols
-    ]
-    errors: list[str] = []
-    if missing_from_sidecar:
-        errors.append(
-            f"{package}: {artifact_path.name} imports symbols absent from "
-            "object_closure.undefined_symbols: " + ", ".join(missing_from_sidecar)
-        )
-    if stale_in_sidecar:
-        errors.append(
-            f"{package}: object_closure.undefined_symbols names symbols absent "
-            f"from {artifact_path.name} imports: " + ", ".join(stale_in_sidecar)
-        )
-    return errors
-
-
-def _validate_direct_symbol_callable_export_custody(
-    *,
-    package: str,
-    artifact_path: Path,
-    manifest: Mapping[str, Any],
-    runtime_linkage: str,
-    artifact_kind: str,
-    callable_exports: Sequence[Any],
-) -> list[str]:
-    direct_symbols = tuple(
-        sorted(
-            {
-                export.symbol
-                for export in callable_exports
-                if export.binding == "direct_symbol" and export.symbol
-            }
-        )
-    )
-    if not direct_symbols:
-        return []
-    if runtime_linkage != "static_link":
-        return []
-    if artifact_kind == "wasm_relocatable_object":
-        try:
-            exported_symbols = {
-                export.name for export in read_wasm_function_exports(artifact_path)
-            }
-        except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
-            return [
-                f"{package}: cannot validate direct_symbol callable exports for "
-                f"{artifact_path.name}: {exc}"
-            ]
-        missing = [
-            symbol for symbol in direct_symbols if symbol not in exported_symbols
-        ]
-        if missing:
-            return [
-                f"{package}: direct_symbol callable exports are absent from "
-                f"{artifact_path.name} function exports: {', '.join(missing)}"
-            ]
-        return []
-    if artifact_kind == "static_archive":
-        defined_symbols = set(_manifest_object_closure_defined_symbols(manifest))
-        if not defined_symbols:
-            return [
-                f"{package}: static_archive direct_symbol callable exports require "
-                "object_closure.defined_symbols in extension_manifest.json"
-            ]
-        missing = [symbol for symbol in direct_symbols if symbol not in defined_symbols]
-        if missing:
-            return [
-                f"{package}: direct_symbol callable exports are absent from "
-                "object_closure.defined_symbols: " + ", ".join(missing)
-            ]
-        return []
-    return []
-
-
-def _validate_static_archive_object_closure(
-    *,
-    package: str,
-    artifact_path: Path,
-    manifest: Mapping[str, Any],
-    artifact_kind: str,
-) -> list[str]:
-    if artifact_kind != "static_archive":
-        return []
-    symbol_sets = _native_archive_global_symbol_sets(artifact_path)
-    if symbol_sets is None:
-        return [
-            f"{package}: cannot read static archive symbol closure for "
-            f"{artifact_path.name}"
-        ]
-    actual_defined, actual_undefined = symbol_sets
-    actual_external_undefined = actual_undefined - actual_defined
-    declared_defined = set(_manifest_object_closure_defined_symbols(manifest))
-    declared_undefined = set(
-        _manifest_object_closure_external_undefined_symbols(manifest)
-    )
-    errors: list[str] = []
-    if actual_defined != declared_defined:
-        missing = sorted(actual_defined - declared_defined)
-        stale = sorted(declared_defined - actual_defined)
-        errors.append(
-            f"{package}: static archive defined-symbol closure differs from "
-            "object_closure.defined_symbols"
-            + (f"; missing={', '.join(missing[:16])}" if missing else "")
-            + (f"; stale={', '.join(stale[:16])}" if stale else "")
-        )
-    if actual_external_undefined != declared_undefined:
-        missing = sorted(actual_external_undefined - declared_undefined)
-        stale = sorted(declared_undefined - actual_external_undefined)
-        errors.append(
-            f"{package}: static archive unresolved-symbol closure differs from "
-            "object_closure.undefined_symbols"
-            + (f"; missing={', '.join(missing[:16])}" if missing else "")
-            + (f"; stale={', '.join(stale[:16])}" if stale else "")
-        )
-    return errors
-
-
 def _validate_external_package_native_artifact(
     *,
     package: str,
     package_dir: Path,
     artifact_path: Path,
-    manifest_path: Path,
-    manifest: Mapping[str, Any],
+    manifest_snapshot: _ExternalArtifactManifestSnapshot,
     expected_target_triple: str,
+    expected_target_python: TargetPythonVersion,
 ) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
+    manifest_path = manifest_snapshot.path
+    manifest = manifest_snapshot.payload
     errors: list[str] = []
     module_name = _external_extension_module_name(
         package=package,
@@ -1206,7 +986,7 @@ def _validate_external_package_native_artifact(
         manifest,
         manifest_dir=manifest_path.parent,
         wheel_path=None,
-        require_capabilities=True,
+        require_nonempty_capabilities=False,
         required_abi=None,
         require_checksum=False,
         warn_missing_checksum=False,
@@ -1220,6 +1000,17 @@ def _validate_external_package_native_artifact(
         )
     runtime_linkage = _required_manifest_str(manifest, "runtime_linkage", errors)
     artifact_kind = _required_manifest_str(manifest, "artifact_kind", errors)
+    object_closure = manifest.get("object_closure")
+    validated_object_closure: tuple[dict[str, Any], str] | None = None
+    if isinstance(object_closure, Mapping):
+        try:
+            validated_object_closure = validate_source_extension_object_closure(
+                manifest
+            )
+        except SourceExtensionObjectClosureError as exc:
+            errors.append(f"{package}: object_closure is invalid: {exc}")
+    else:
+        errors.append(f"{package}: extension manifest has no object_closure")
     init_symbol = _required_manifest_str(manifest, "init_symbol", errors)
     manifest_module = _required_manifest_str(manifest, "module", errors)
     if manifest_module and manifest_module != module_name:
@@ -1254,6 +1045,12 @@ def _validate_external_package_native_artifact(
         errors.append(
             f"{package}: native artifact target {target_triple!r} does not match "
             f"requested target {expected_target_triple!r}"
+        )
+    target_python = _required_manifest_str(manifest, "target_python", errors)
+    if target_python and target_python != expected_target_python.tag:
+        errors.append(
+            f"{package}: native artifact target Python {target_python!r} does not "
+            f"match requested target {expected_target_python.tag!r}"
         )
     platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
     abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
@@ -1326,50 +1123,65 @@ def _validate_external_package_native_artifact(
             support_file_sha256=manifest_support_file_sha256,
         )
     )
-    wasm_import_symbols, wasm_import_errors = _wasm_relocatable_import_symbols(
-        package=package,
-        artifact_path=artifact_path,
-        artifact_kind=artifact_kind,
-        context="native artifact WASM imports",
-    )
-    errors.extend(wasm_import_errors)
-    abi_symbols, abi_symbol_errors = _object_closure_abi_symbol_board(
-        manifest,
-        external_symbols=wasm_import_symbols,
-    )
-    errors.extend(f"{package}: {error}" for error in abi_symbol_errors)
+    if artifact_kind == "wasm_relocatable_object":
+        external_link_classes = {
+            **wasm_external_link_provider_symbol_classes(target_triple),
+            **WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
+        }
+        abi_symbols, abi_symbol_errors = _object_closure_abi_symbol_board(
+            manifest,
+            external_link_classes=external_link_classes,
+        )
+        errors.extend(f"{package}: {error}" for error in abi_symbol_errors)
+    else:
+        # The generated WASM import/provider surface is not an authority for a
+        # native archive's target-toolchain symbols. Native closure and C-API
+        # custody are validated independently; the typed native link plan owns
+        # final provider resolution for the selected OS/architecture.
+        abi_symbols = ()
+        external_link_classes = {}
     c_api_symbols, c_api_symbol_errors = _object_closure_c_api_symbol_board(
         manifest,
-        external_symbols=wasm_import_symbols,
     )
     errors.extend(f"{package}: {error}" for error in c_api_symbol_errors)
-    errors.extend(
-        _validate_wasm_relocatable_undefined_symbol_custody(
-            package=package,
-            artifact_path=artifact_path,
-            manifest=manifest,
-            artifact_kind=artifact_kind,
-            binary_import_symbols=wasm_import_symbols,
+    direct_symbols = (
+        tuple(
+            sorted(
+                {
+                    export.symbol
+                    for export in callable_exports
+                    if export.binding == "direct_symbol" and export.symbol
+                }
+            )
         )
+        if runtime_linkage == "static_link"
+        else ()
     )
-    errors.extend(
-        _validate_direct_symbol_callable_export_custody(
-            package=package,
-            artifact_path=artifact_path,
-            manifest=manifest,
-            runtime_linkage=runtime_linkage,
-            artifact_kind=artifact_kind,
-            callable_exports=callable_exports,
+    if validated_object_closure is not None:
+        errors.extend(
+            f"{package}: {error}"
+            for error in validate_source_extension_artifact_object_closure(
+                artifact_path=artifact_path,
+                manifest=manifest,
+                required_function_exports=direct_symbols,
+                external_link_provider_classes=external_link_classes,
+                validated_closure=validated_object_closure,
+            )
         )
-    )
-    errors.extend(
-        _validate_static_archive_object_closure(
-            package=package,
-            artifact_path=artifact_path,
-            manifest=manifest,
-            artifact_kind=artifact_kind,
+    try:
+        current_manifest_sha256 = _sha256_file(manifest_path)
+    except OSError as exc:
+        errors.append(
+            f"{package}: extension manifest changed or became unreadable during "
+            f"validation: {manifest_path}: {exc}"
         )
-    )
+    else:
+        if current_manifest_sha256 != manifest_snapshot.sha256:
+            errors.append(
+                f"{package}: extension manifest changed while its artifact plan "
+                f"was being validated: {manifest_path}; expected "
+                f"{manifest_snapshot.sha256}, got {current_manifest_sha256}"
+            )
     if errors:
         return None, errors
     assert c_api_symbols is not None
@@ -1467,7 +1279,7 @@ def _validate_external_package_native_artifact(
             path=artifact_path.resolve(),
             manifest_path=manifest_path.resolve(),
             extension_sha256=actual_extension_sha,
-            manifest_sha256=_sha256_file(manifest_path),
+            manifest_sha256=manifest_snapshot.sha256,
             capabilities=tuple(validation.capabilities),
             abi_tag=abi_tag,
             target_triple=target_triple,
@@ -1500,7 +1312,7 @@ def _load_external_artifact_manifest(
     *,
     artifact_path: Path,
     package_dir: Path,
-) -> tuple[Path | None, Mapping[str, Any] | None, list[str]]:
+) -> tuple[_ExternalArtifactManifestSnapshot | None, list[str]]:
     manifest_path = _find_external_extension_manifest(
         artifact_path=artifact_path,
         package_dir=package_dir,
@@ -1508,26 +1320,31 @@ def _load_external_artifact_manifest(
     if manifest_path is None:
         return (
             None,
-            None,
             [
                 f"native artifact {artifact_path} is missing extension_manifest.json sidecar"
             ],
         )
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return (
-            manifest_path,
             None,
             [f"invalid extension manifest {manifest_path}: {exc}"],
         )
     if not isinstance(manifest, Mapping):
         return (
-            manifest_path,
             None,
             [f"extension manifest {manifest_path} must be an object"],
         )
-    return manifest_path, manifest, []
+    return (
+        _ExternalArtifactManifestSnapshot(
+            path=manifest_path,
+            payload=manifest,
+            sha256=_sha256_bytes(manifest_bytes),
+        ),
+        [],
+    )
 
 
 def _external_artifact_requested_target_triple(target: str) -> str:
@@ -1670,6 +1487,7 @@ def _resolve_external_package_native_artifact_plan(
     external_module_roots: Sequence[Path],
     admitted_packages: Collection[str],
     target: str,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     required_modules: Collection[str] | None = None,
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
     artifacts: list[_ExternalPackageNativeArtifact] = []
@@ -1703,27 +1521,35 @@ def _resolve_external_package_native_artifact_plan(
         package: set() for package in required_package_roots
     }
     mismatched_capsule_providers: dict[str, set[str]] = {}
-    requested_target_triple = _external_artifact_requested_target_triple(target)
+    requested_target_triple: str | None = None
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
             if package_dir is None:
                 continue
             for artifact_path in _iter_external_package_native_artifacts(package_dir):
+                if requested_target_triple is None:
+                    try:
+                        requested_target_triple = (
+                            _external_artifact_requested_target_triple(target)
+                        )
+                    except (RuntimeError, ValueError) as exc:
+                        return None, [
+                            "external native artifacts do not support compiler "
+                            f"target {target!r}: {exc}"
+                        ]
                 module_name = _external_extension_module_name(
                     package=package,
                     package_dir=package_dir,
                     artifact_path=artifact_path,
                 )
-                manifest_path, manifest, manifest_errors = (
-                    _load_external_artifact_manifest(
-                        artifact_path=artifact_path,
-                        package_dir=package_dir,
-                    )
+                manifest_snapshot, manifest_errors = _load_external_artifact_manifest(
+                    artifact_path=artifact_path,
+                    package_dir=package_dir,
                 )
                 if manifest_errors:
                     if (
-                        manifest_path is None
+                        manifest_snapshot is None
                         and required is not None
                         and not (
                             _external_native_artifact_module_required(
@@ -1736,8 +1562,9 @@ def _resolve_external_package_native_artifact_plan(
                         continue
                     errors.extend(f"{package}: {error}" for error in manifest_errors)
                     continue
-                assert manifest_path is not None
-                assert manifest is not None
+                assert manifest_snapshot is not None
+                manifest_path = manifest_snapshot.path
+                manifest = manifest_snapshot.payload
                 artifact_target_triple = manifest.get("target_triple")
                 if (
                     not isinstance(artifact_target_triple, str)
@@ -1765,13 +1592,56 @@ def _resolve_external_package_native_artifact_plan(
                             f"{module_name}={linkage}/{artifact_target_triple}"
                         )
                     continue
+                artifact_target_python = manifest.get("target_python")
+                if (
+                    not isinstance(artifact_target_python, str)
+                    or not artifact_target_python.strip()
+                ):
+                    errors.append(
+                        f"{package}: extension manifest {manifest_path} has no "
+                        "target_python authority"
+                    )
+                    continue
+                artifact_target_python = artifact_target_python.strip()
+                if artifact_target_python != target_python.tag:
+                    candidate = (
+                        f"{module_name}={artifact_target_triple}/"
+                        f"{artifact_target_python}"
+                    )
+                    if package in mismatched_provider_targets:
+                        mismatched_provider_targets[package].add(candidate)
+                    if (
+                        required is not None
+                        and _external_native_artifact_module_required(
+                            package=package,
+                            module_name=module_name,
+                            required_modules=required,
+                        )
+                    ):
+                        errors.append(
+                            f"{package}: native artifact target Python "
+                            f"{artifact_target_python!r} for {module_name!r} does "
+                            f"not match requested target {target_python.tag!r}"
+                        )
+                    runtime_linkage = manifest.get("runtime_linkage")
+                    linkage = (
+                        runtime_linkage.strip()
+                        if isinstance(runtime_linkage, str) and runtime_linkage.strip()
+                        else "<unknown>"
+                    )
+                    for capsule in _manifest_str_tuple(manifest, "provided_capsules"):
+                        mismatched_capsule_providers.setdefault(capsule, set()).add(
+                            f"{module_name}={linkage}/{artifact_target_triple}/"
+                            f"{artifact_target_python}"
+                        )
+                    continue
                 artifact, artifact_errors = _validate_external_package_native_artifact(
                     package=package,
                     package_dir=package_dir,
                     artifact_path=artifact_path,
-                    manifest_path=manifest_path,
-                    manifest=manifest,
+                    manifest_snapshot=manifest_snapshot,
                     expected_target_triple=requested_target_triple,
+                    expected_target_python=target_python,
                 )
                 errors.extend(artifact_errors)
                 if artifact is None:
@@ -2061,6 +1931,7 @@ def _resolve_import_admission_policy(
     json_output: bool,
     defer_native_artifacts: bool = False,
     target: str | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ImportAdmissionPolicy | None, _CliFailure | None]:
     packages, error = _parse_external_static_packages(
         os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
@@ -2109,6 +1980,7 @@ def _resolve_import_admission_policy(
                 external_module_roots=external_module_roots,
                 admitted_packages=packages,
                 target=target,
+                target_python=target_python,
             )
         )
         if native_plan_errors:

@@ -121,6 +121,7 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
     let mut backend = SimpleBackend::new();
     backend.compile_func(
         target_func,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
         &analysis.task_kinds,
         &analysis.task_closure_sizes,
         &analysis.defined_functions,
@@ -161,10 +162,11 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
 fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
     let mut functions = vec![func.clone()];
     let cache_dir = test_tir_pipeline_cache_dir();
+    let target_info = crate::tir::target_info::TargetInfo::native_release_fast();
     let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
         &mut functions,
         crate::tir::pipeline_cache::TirPipelineRunOptions {
-            target_info: crate::tir::target_info::TargetInfo::native_release_fast(),
+            target_info: target_info.clone(),
             cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
             cache_dir: Some(cache_dir.clone()),
             process_externs: false,
@@ -176,7 +178,7 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
                 1, None,
             ),
         },
-        preprocess_backend_tir_input,
+        |function| preprocess_backend_tir_input(function, &target_info),
     );
     assert!(
         run.cached_tir.contains_function(&func.name),

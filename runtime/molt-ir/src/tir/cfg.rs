@@ -49,10 +49,11 @@ pub struct CFG {
     pub dominators: Vec<Option<usize>>,
     /// Loop nesting depth per block (0 = not inside a loop).
     pub loop_depth: Vec<u32>,
-    /// Exception edges: implicit control-flow from blocks inside a try region
-    /// to the corresponding handler block.  Each entry is `(from_block, handler_block)`.
-    /// A `try_start` creates an implicit edge from every block in the try region
-    /// to the handler (the block containing `check_exception` / `state_block_start`).
+    /// Exception edges authored by explicit exception-transfer operations.
+    /// Each entry is `(from_block, handler_block)`. Calls only set pending
+    /// exception state; `check_exception`, `async_work_poll`, and `try_start`
+    /// own the actual transfer, so region membership must not invent blanket
+    /// block-to-handler edges.
     pub exception_edges: Vec<(usize, usize)>,
     /// State-machine resume edges: implicit control-flow from the `state_switch`
     /// dispatch block to every suspend op's resume-continuation block.  Each
@@ -686,12 +687,15 @@ fn natural_loop_body(header: usize, tail: usize, predecessors: &[Vec<usize>]) ->
 // Phase 5: exception edge computation
 // ---------------------------------------------------------------------------
 
-/// Compute implicit exception edges from try regions.
+/// Compute implicit exception edges from explicit transfer operations.
 ///
-/// A `try_start` op with a label value identifies a handler label. Every
-/// block between `try_start` and the matching `try_end` has an implicit
-/// edge to the handler block (the block containing that label or the
-/// `check_exception`/`state_block_start` that follows it).
+/// The structured try stack is path-sensitive: success and handler paths both
+/// contain their own `try_end`, so a linear push/pop walk over block order can
+/// pop an outer frame while scanning a mutually exclusive inner-handler path.
+/// It is also semantically too broad: calls set pending state, while an explicit
+/// observation owns the transfer after any required `finally` arbitration.
+/// Deriving edges solely from the generated transfer-kind authority keeps the
+/// pre-SSA CFG aligned with the executable transfer operations.
 fn compute_exception_edges(
     ops: &[OpIR],
     blocks: &[BasicBlock],
@@ -699,41 +703,8 @@ fn compute_exception_edges(
 ) -> Vec<(usize, usize)> {
     let mut edges: Vec<(usize, usize)> = Vec::new();
 
-    // Walk blocks and track try_start/try_end nesting to determine which
-    // blocks are inside try regions and where their handlers are.
-    let mut active_handlers: Vec<Option<usize>> = Vec::new();
-
     for (bid, block) in blocks.iter().enumerate() {
-        // Scan ops in this block for try_start/try_end to maintain nesting.
-        for op_idx in block.start_op..block.end_op {
-            let kind = ops[op_idx].kind.as_str();
-            match kind {
-                "try_start" => {
-                    let handler_bid = ops[op_idx]
-                        .value
-                        .and_then(|label_id| label_map.get(&label_id))
-                        .and_then(|&target_op| block_containing(blocks, target_op));
-                    active_handlers.push(handler_bid);
-                }
-                "try_end" => {
-                    active_handlers.pop();
-                }
-                _ => {}
-            }
-        }
-
-        // Add exception edges from this block to all active handlers.
-        for handler in &active_handlers {
-            if let Some(handler_bid) = handler
-                && *handler_bid != bid
-            {
-                edges.push((bid, *handler_bid));
-            }
-        }
-
-        // Exception-transfer ops also carry their handler label directly even when
-        // the frontend did not materialize an enclosing try_start/try_end
-        // region. The generated kind mapping includes wire aliases such as
+        // The generated kind mapping includes wire aliases such as
         // `async_work_poll`; spelling-specific discovery would give those ops a
         // CheckException opcode after SSA while omitting the pre-SSA edge used
         // to place and populate handler block arguments.

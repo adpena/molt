@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
+use crate::tir::dominators::is_simple_exception_transfer_kind;
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, simpleir_call_target_role,
     simpleir_kind_is_repoll, simpleir_kind_is_return_terminator, simpleir_kind_is_suspend,
@@ -486,7 +487,7 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
                     }
                 }
             }
-            "check_exception" | "async_work_poll" => {
+            kind if is_simple_exception_transfer_kind(kind) => {
                 add(index, next, EdgeRole::Normal);
                 if let Some(target) = op.value.and_then(|value| labels.get(&value).copied()) {
                     add(index, target, EdgeRole::Exception);
@@ -568,50 +569,6 @@ fn basic_blocks(ops: &[OpIR], edges: &[Vec<LogicalEdge>]) -> BasicBlocks {
     }
 }
 
-fn exception_block_edges(ops: &[OpIR], blocks: &BasicBlocks) -> BTreeSet<(usize, usize)> {
-    let labels: BTreeMap<i64, usize> = ops
-        .iter()
-        .enumerate()
-        .filter_map(|(index, op)| {
-            (simpleir_kind_is_verifier_label_definition(&op.kind))
-                .then_some(op.value.map(|v| (v, index)))
-                .flatten()
-        })
-        .collect();
-    let mut active = Vec::new();
-    let mut regions = Vec::new();
-    for (index, op) in ops.iter().enumerate() {
-        match simpleir_verifier_region_role(&op.kind) {
-            Some(("try", SimpleIrVerifierRegionRole::Start)) => {
-                if let Some(handler) = op.value.and_then(|value| labels.get(&value).copied()) {
-                    active.push((index, handler));
-                }
-            }
-            Some(("try", SimpleIrVerifierRegionRole::End)) => {
-                if let Some((start, handler)) = active.pop() {
-                    regions.push((start, index, handler));
-                }
-            }
-            _ => {}
-        }
-    }
-    regions.extend(
-        active
-            .into_iter()
-            .map(|(start, handler)| (start, ops.len() - 1, handler)),
-    );
-    let mut result = BTreeSet::new();
-    for (start, end, handler_op) in regions {
-        let handler_block = blocks.op_to_block[handler_op];
-        for (block, (block_start, block_end)) in blocks.ranges.iter().enumerate() {
-            if *block_end >= start && *block_start <= end && block != handler_block {
-                result.insert((block, handler_block));
-            }
-        }
-    }
-    result
-}
-
 fn canonical_phi_edges(
     block: usize,
     incoming: &[Vec<LogicalEdge>],
@@ -690,17 +647,6 @@ fn verify_definite_definitions(function: &FunctionIR, errors: &mut Vec<SimpleIrD
                 ordinal: edge.ordinal,
             });
         }
-    }
-    for (source, handler) in exception_block_edges(ops, &blocks) {
-        successors[source].insert(handler);
-        predecessors[handler].insert(source);
-        let ordinal = incoming[handler].len();
-        incoming[handler].push(LogicalEdge {
-            source,
-            target: handler,
-            role: EdgeRole::Exception,
-            ordinal,
-        });
     }
     let mut reachable = BTreeSet::new();
     let mut pending = vec![0];
@@ -834,6 +780,60 @@ mod tests {
             }],
             profile: None,
         })
+    }
+
+    #[test]
+    fn exception_phi_predecessors_are_explicit_transfers_not_try_region_blocks() {
+        let mut try_start = op("try_start");
+        try_start.value = Some(100);
+        let mut branch = op("if");
+        branch.args = Some(vec!["cond".to_string()]);
+        let mut then_value = op("copy_var");
+        then_value.var = Some("seed".to_string());
+        then_value.out = Some("then_value".to_string());
+        let mut else_value = op("copy_var");
+        else_value.var = Some("seed".to_string());
+        else_value.out = Some("else_value".to_string());
+        let mut try_end = op("try_end");
+        try_end.value = Some(100);
+        let mut check = op("check_exception");
+        check.value = Some(100);
+        let mut poll = op("async_work_poll");
+        poll.value = Some(100);
+        let mut label = op("label");
+        label.value = Some(100);
+        let mut phi = op("phi");
+        phi.args = Some(vec![
+            "seed".to_string(),
+            "seed".to_string(),
+            "seed".to_string(),
+        ]);
+        phi.out = Some("handler_value".to_string());
+        let mut handler_return = op("ret");
+        handler_return.args = Some(vec!["handler_value".to_string()]);
+
+        let report = verify(
+            &["cond", "seed"],
+            vec![
+                try_start,
+                branch,
+                then_value,
+                op("else"),
+                else_value,
+                op("end_if"),
+                try_end,
+                check,
+                poll,
+                op("ret_void"),
+                label,
+                phi,
+                handler_return,
+            ],
+        );
+        assert!(
+            report.is_ok(),
+            "only try_start, check_exception, and its async_work_poll alias may feed the handler phi: {report:?}"
+        );
     }
 
     #[test]

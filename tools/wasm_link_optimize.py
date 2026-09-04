@@ -5,7 +5,10 @@ import re
 import sys
 from collections.abc import Callable
 
-from molt.wasm_artifact import strip_wasm_publication_sections
+from molt.wasm_artifact import (
+    skip_wasm_import_description as _parse_import_desc,
+    strip_wasm_publication_sections,
+)
 
 from wasm_link_edit import _strip_internal_exports
 from wasm_link_facts import (
@@ -19,7 +22,6 @@ from wasm_link_format import (
     _collect_function_exports,
     _count_func_imports,
     _parse_func_type_indices,
-    _parse_import_desc,
     _parse_sections,
     _parse_type_section,
     _read_string,

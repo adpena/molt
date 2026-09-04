@@ -1,0 +1,13 @@
+[project]
+name = "pending-call-probe"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.molt.extension]
+module = "pending_call_probe._native"
+sources = ["src/pending_call_probe.c"]
+abi_tier = "cpython-abi"
+capabilities = []
+effects = ["write"]
+determinism = "deterministic"
+python_exports = ["pending_call_probe._native.arm_runtime_error"]

@@ -9,6 +9,8 @@ import sys
 import tempfile
 from typing import Any
 
+from molt.wasm_artifact import flatten_wasm_plain_function_rec_groups
+
 _API: Mapping[str, Any] | None = None
 
 
@@ -25,7 +27,7 @@ def _api(name: str) -> Any:
 
 def _canonicalize_wasm_ld_output(data: bytes, *, description: str) -> bytes:
     try:
-        flattened = _api("_flatten_rec_groups")(data)
+        flattened = flatten_wasm_plain_function_rec_groups(data)
     except ValueError as exc:
         raise ValueError(
             f"Failed to flatten {description} wasm rec groups: {exc}"
@@ -42,15 +44,15 @@ def _validate_freestanding(data: bytes) -> bool:
     Returns True if valid, False if critical issues found.
     """
     try:
-        imports = _api("_collect_imports")(data)
+        imports = _api("parse_wasm_module_facts")(data).imports
     except ValueError as exc:
         print(f"Failed to parse freestanding wasm imports: {exc}", file=sys.stderr)
         return False
 
     wasi_imports = [
-        (module, name)
-        for module, name, _, _ in imports
-        if module == "wasi_snapshot_preview1"
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in imports
+        if wasm_import.module == "wasi_snapshot_preview1"
     ]
     if wasi_imports:
         for module, name in wasi_imports:
@@ -61,7 +63,9 @@ def _validate_freestanding(data: bytes) -> bool:
         return False
 
     runtime_imports = [
-        (module, name) for module, name, _, _ in imports if module == "molt_runtime"
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in imports
+        if wasm_import.module == "molt_runtime"
     ]
     if runtime_imports:
         for module, name in runtime_imports:
@@ -72,7 +76,9 @@ def _validate_freestanding(data: bytes) -> bool:
         return False
 
     other_imports = [
-        (module, name) for module, name, _, _ in imports if module != "env"
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in imports
+        if wasm_import.module != "env"
     ]
     for module, name in other_imports:
         print(
@@ -80,42 +86,22 @@ def _validate_freestanding(data: bytes) -> bool:
             file=sys.stderr,
         )
 
-    # Optionally run wasm-validate for structural validation
-    exe = shutil.which("wasm-validate")
-    if exe is not None:
-        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
-            f.write(data)
-            f.flush()
-            tmp_path = f.name
-        try:
-            result = _api("_run_external_tool")(
-                [exe, tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                print(
-                    f"wasm-validate warning: {result.stderr.strip()}",
-                    file=sys.stderr,
-                )
-        except Exception as exc:
-            print(
-                f"wasm-validate warning: {exc}",
-                file=sys.stderr,
-            )
-        finally:
-            try:
-                Path(tmp_path).unlink()
-            except OSError:
-                pass
-
-    return True
+    return _api("_validate_wasm_structural")(
+        data,
+        description="Freestanding wasm",
+    )
 
 
 def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
     """Run the canonical wasm structural validator when available."""
-    section_order_error = _api("_standard_section_order_error")(data)
+    try:
+        section_order_error = _api("_standard_section_order_error")(data)
+    except Exception as exc:
+        print(
+            f"{description} canonical section-order validation failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
     if section_order_error is not None:
         print(
             f"{description} failed canonical section-order validation: "
@@ -125,7 +111,11 @@ def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
         return False
     exe = shutil.which("wasm-tools")
     if exe is None:
-        return True
+        print(
+            f"{description} structural validation unavailable: wasm-tools not found",
+            file=sys.stderr,
+        )
+        return False
     try:
         validate_data = _api("_strip_debug_sections")(data) or data
     except ValueError as exc:
@@ -135,10 +125,17 @@ def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
             file=sys.stderr,
         )
         validate_data = data
-    with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
-        f.write(validate_data)
-        f.flush()
-        tmp_path = f.name
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+            f.write(validate_data)
+            f.flush()
+            tmp_path = f.name
+    except OSError as exc:
+        print(
+            f"{description} structural validation staging failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
     try:
         result = _api("_run_external_tool")(
             [exe, "validate", tmp_path],
@@ -154,7 +151,8 @@ def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
             )
             return False
     except Exception as exc:
-        print(f"wasm-tools validate warning: {exc}", file=sys.stderr)
+        print(f"{description} structural validation failed: {exc}", file=sys.stderr)
+        return False
     finally:
         try:
             Path(tmp_path).unlink()
@@ -170,17 +168,19 @@ def _validate_linked(linked: Path) -> bool:
     except ValueError as exc:
         print(f"Failed to parse linked wasm: {exc}", file=sys.stderr)
         return False
-    imports = list(facts.imports)
-    if any(module == "molt_runtime" for module, _, _, _ in imports):
+    imports = facts.imports
+    if any(wasm_import.module == "molt_runtime" for wasm_import in imports):
         print(
             "Linked wasm still imports molt_runtime; link step incomplete.",
             file=sys.stderr,
         )
         return False
     call_indirect = [
-        name
-        for module, name, kind, _ in imports
-        if module == "env" and kind == 0 and _api("is_call_indirect_import_name")(name)
+        wasm_import.name
+        for wasm_import in imports
+        if wasm_import.module == "env"
+        and wasm_import.kind == 0
+        and _api("is_call_indirect_import_name")(wasm_import.name)
     ]
     if call_indirect:
         print(
@@ -193,13 +193,17 @@ def _validate_linked(linked: Path) -> bool:
     if not ok:
         print(f"Linked wasm table import validation failed: {err}", file=sys.stderr)
         return False
-    if any(kind == 1 for _, _, kind, _ in imports):
+    if any(wasm_import.kind == 1 for wasm_import in imports):
         print(
             "Linked wasm retains env::__indirect_function_table under the "
             "host-table contract.",
             file=sys.stderr,
         )
-    memory_imports = [(module, name) for module, name, kind, _ in imports if kind == 2]
+    memory_imports = [
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in imports
+        if wasm_import.kind == 2
+    ]
     if memory_imports:
         print("Linked wasm still imports memory.", file=sys.stderr)
         return False

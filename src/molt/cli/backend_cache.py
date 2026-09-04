@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
@@ -49,21 +50,37 @@ _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_ent
 _module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
 
-_SharedStdlibCacheValidationToken = tuple[
-    str, tuple[tuple[str, int, int, int], ...]
-]
+_SharedStdlibCacheValidationToken = tuple[str, tuple[tuple[str, int, int, int], ...]]
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeGlobalSymbolFacts:
+    defined: frozenset[str]
+    undefined: frozenset[str]
+    defined_functions: frozenset[str]
+
+    def symbol_sets(self) -> _NativeObjectSymbolSets:
+        return set(self.defined), set(self.undefined)
+
+
+_NativeObjectSymbolCacheKey = tuple[
+    str, int, int, int, str, str, str, str, str, tuple[str, ...]
+]
+_NativeArchiveSymbolCacheKey = tuple[
+    str, int, int, int, str, str, str, str, tuple[str, ...]
+]
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
-    tuple[str, int, int, int, str, str, str, str, tuple[str, ...]],
-    tuple[frozenset[str], frozenset[str]] | None,
+    _NativeObjectSymbolCacheKey,
+    _NativeGlobalSymbolFacts | None,
 ] = {}
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
-_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 1
+_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 3
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
-_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 1
+_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 3
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: dict[
-    tuple[str, int, int, int, str, str, str, tuple[str, ...]],
-    tuple[frozenset[str], frozenset[str]] | None,
+    _NativeArchiveSymbolCacheKey,
+    _NativeGlobalSymbolFacts | None,
 ] = {}
 _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 1
 
@@ -94,10 +111,32 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     return symbol_sets is None or bool(symbol_sets[0] or symbol_sets[1])
 
 
-def _normalize_native_symbol_name(name: str) -> str:
-    if sys.platform == "darwin" and name.startswith("_"):
+def _target_uses_macho_symbol_decoration(target_triple: str | None) -> bool:
+    if target_triple is None:
+        return sys.platform == "darwin"
+    normalized = target_triple.strip().lower()
+    return any(
+        token in normalized
+        for token in ("apple", "darwin", "macos", "ios", "tvos", "watchos")
+    )
+
+
+def _normalize_native_symbol_name(
+    name: str,
+    *,
+    target_triple: str | None = None,
+) -> str:
+    if _target_uses_macho_symbol_decoration(target_triple) and name.startswith("_"):
         return name[1:]
     return name
+
+
+def _symbol_normalization_target(target_triple: str | None) -> str:
+    return (
+        f"host:{sys.platform}"
+        if target_triple is None
+        else f"target:{target_triple.strip().lower()}"
+    )
 
 
 def _native_nm_command(nm_command: Sequence[str], path: Path) -> list[str]:
@@ -183,7 +222,8 @@ def _native_object_symbol_cache_key(
     object_digest: str,
     *,
     nm_command: Sequence[str] | None,
-) -> tuple[str, int, int, int, str, str, str, str, tuple[str, ...]] | None:
+    target_triple: str | None,
+) -> _NativeObjectSymbolCacheKey | None:
     try:
         resolved = path.resolve()
         stat = path.stat()
@@ -198,6 +238,7 @@ def _native_object_symbol_cache_key(
         os.environ.get("MOLT_TARGET_ROOT", ""),
         os.environ.get("PATH", ""),
         os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
+        _symbol_normalization_target(target_triple),
         tuple(nm_command or ()),
     )
 
@@ -205,15 +246,17 @@ def _native_object_symbol_cache_key(
 def _native_object_symbol_facts_payload(
     *,
     object_digest: str,
-    defined: Collection[str],
-    undefined: Collection[str],
+    facts: _NativeGlobalSymbolFacts,
+    target_triple: str | None,
 ) -> dict[str, object]:
     return {
         "schema": _NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION,
         "platform": sys.platform,
+        "symbol_target": _symbol_normalization_target(target_triple),
         "object_digest": object_digest,
-        "defined": sorted(set(defined)),
-        "undefined": sorted(set(undefined)),
+        "defined": sorted(facts.defined),
+        "undefined": sorted(facts.undefined),
+        "defined_functions": sorted(facts.defined_functions),
     }
 
 
@@ -221,12 +264,11 @@ def _read_native_object_symbol_facts(
     path: Path,
     *,
     object_digest: str,
-) -> _NativeObjectSymbolSets | None:
+    target_triple: str | None,
+) -> _NativeGlobalSymbolFacts | None:
     try:
         payload = json.loads(
-            _native_object_symbol_facts_sidecar_path(path).read_text(
-                encoding="utf-8"
-            )
+            _native_object_symbol_facts_sidecar_path(path).read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         return None
@@ -236,30 +278,44 @@ def _read_native_object_symbol_facts(
         return None
     if payload.get("platform") != sys.platform:
         return None
+    if payload.get("symbol_target") != _symbol_normalization_target(target_triple):
+        return None
     if payload.get("object_digest") != object_digest:
         return None
     defined = payload.get("defined")
     undefined = payload.get("undefined")
-    if not isinstance(defined, list) or not isinstance(undefined, list):
+    defined_functions = payload.get("defined_functions")
+    if not (
+        isinstance(defined, list)
+        and isinstance(undefined, list)
+        and isinstance(defined_functions, list)
+    ):
         return None
-    if not all(isinstance(symbol, str) for symbol in defined):
+    if not all(
+        isinstance(symbol, str) for symbol in (*defined, *undefined, *defined_functions)
+    ):
         return None
-    if not all(isinstance(symbol, str) for symbol in undefined):
+    facts = _NativeGlobalSymbolFacts(
+        defined=frozenset(cast(list[str], defined)),
+        undefined=frozenset(cast(list[str], undefined)),
+        defined_functions=frozenset(cast(list[str], defined_functions)),
+    )
+    if not facts.defined_functions <= facts.defined:
         return None
-    return set(cast(list[str], defined)), set(cast(list[str], undefined))
+    return facts
 
 
 def _write_native_object_symbol_facts(
     path: Path,
     *,
     object_digest: str,
-    defined: Collection[str],
-    undefined: Collection[str],
+    facts: _NativeGlobalSymbolFacts,
+    target_triple: str | None,
 ) -> None:
     payload = _native_object_symbol_facts_payload(
         object_digest=object_digest,
-        defined=defined,
-        undefined=undefined,
+        facts=facts,
+        target_triple=target_triple,
     )
     _atomic_write_json(
         _native_object_symbol_facts_sidecar_path(path),
@@ -277,11 +333,12 @@ def _ensure_native_object_symbol_facts(path: Path, *, is_wasm: bool) -> None:
         _native_object_global_symbol_sets(path)
 
 
-def _native_object_global_symbol_sets(
+def _native_object_global_symbol_facts(
     path: Path,
     *,
     nm_command: Sequence[str] | None = None,
-) -> _NativeObjectSymbolSets | None:
+    target_triple: str | None = None,
+) -> _NativeGlobalSymbolFacts | None:
     try:
         object_digest = _sha256_file(path)
     except OSError:
@@ -290,26 +347,23 @@ def _native_object_global_symbol_sets(
         path,
         object_digest,
         nm_command=nm_command,
+        target_triple=target_triple,
     )
     if cache_key is not None:
         cached = _NATIVE_OBJECT_SYMBOL_SETS_CACHE.get(cache_key)
         if cached is not None:
-            defined_cached, undefined_cached = cached
-            return set(defined_cached), set(undefined_cached)
+            return cached
         if cache_key in _NATIVE_OBJECT_SYMBOL_SETS_CACHE:
             return None
     if object_digest:
         symbol_facts = _read_native_object_symbol_facts(
             path,
             object_digest=object_digest,
+            target_triple=target_triple,
         )
         if symbol_facts is not None:
             if cache_key is not None:
-                defined, undefined = symbol_facts
-                _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = (
-                    frozenset(defined),
-                    frozenset(undefined),
-                )
+                _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = symbol_facts
             return symbol_facts
     result = _native_object_global_symbols_result(
         path,
@@ -320,31 +374,47 @@ def _native_object_global_symbol_sets(
         if cache_key is not None:
             _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = None
         return None
-    defined, undefined = _parse_native_nm_global_symbol_sets(result.stdout)
+    facts = _parse_native_nm_global_symbol_facts(
+        result.stdout,
+        target_triple=target_triple,
+    )
     if cache_key is not None:
         if (
             len(_NATIVE_OBJECT_SYMBOL_SETS_CACHE)
             >= _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT
         ):
             _NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-        _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = (
-            frozenset(defined),
-            frozenset(undefined),
-        )
+        _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = facts
     if object_digest:
         with contextlib.suppress(OSError):
             _write_native_object_symbol_facts(
                 path,
                 object_digest=object_digest,
-                defined=defined,
-                undefined=undefined,
+                facts=facts,
+                target_triple=target_triple,
             )
-    return defined, undefined
+    return facts
 
 
-def _parse_native_nm_global_symbol_sets(
+def _native_object_global_symbol_sets(
+    path: Path,
+    *,
+    nm_command: Sequence[str] | None = None,
+    target_triple: str | None = None,
+) -> _NativeObjectSymbolSets | None:
+    facts = _native_object_global_symbol_facts(
+        path,
+        nm_command=nm_command,
+        target_triple=target_triple,
+    )
+    return None if facts is None else facts.symbol_sets()
+
+
+def _parse_native_nm_global_symbol_facts(
     output: str,
-) -> _NativeObjectSymbolSets:
+    *,
+    target_triple: str | None = None,
+) -> _NativeGlobalSymbolFacts:
     """Parse global ``nm`` facts for one object or static archive.
 
     LLVM ``nm`` emits archive-member header lines between ordinary symbol rows.
@@ -355,6 +425,7 @@ def _parse_native_nm_global_symbol_sets(
 
     defined: set[str] = set()
     undefined: set[str] = set()
+    defined_functions: set[str] = set()
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -367,19 +438,40 @@ def _parse_native_nm_global_symbol_sets(
                 kind, name = parts
             else:
                 _, kind, name = parts[0], parts[1], parts[2]
-            symbol = _normalize_native_symbol_name(name)
+            symbol = _normalize_native_symbol_name(
+                name,
+                target_triple=target_triple,
+            )
             if kind.upper() == "U":
                 undefined.add(symbol)
             else:
                 defined.add(symbol)
-    return defined, undefined
+                if kind.upper() in {"T", "W"}:
+                    defined_functions.add(symbol)
+    return _NativeGlobalSymbolFacts(
+        defined=frozenset(defined),
+        undefined=frozenset(undefined),
+        defined_functions=frozenset(defined_functions),
+    )
 
 
-def _native_archive_global_symbol_sets(
+def _parse_native_nm_global_symbol_sets(
+    output: str,
+    *,
+    target_triple: str | None = None,
+) -> _NativeObjectSymbolSets:
+    return _parse_native_nm_global_symbol_facts(
+        output,
+        target_triple=target_triple,
+    ).symbol_sets()
+
+
+def _native_archive_global_symbol_facts(
     path: Path,
     *,
     nm_command: Sequence[str] | None = None,
-) -> _NativeObjectSymbolSets | None:
+    target_triple: str | None = None,
+) -> _NativeGlobalSymbolFacts | None:
     """Read one provider archive's globals without mutating the toolchain.
 
     Provider archives are immutable installation inputs, not build outputs.
@@ -393,7 +485,8 @@ def _native_archive_global_symbol_sets(
         stat = resolved.stat()
     except OSError:
         return None
-    cache_key = (
+    symbol_target = _symbol_normalization_target(target_triple)
+    cache_key: _NativeArchiveSymbolCacheKey = (
         os.fspath(resolved),
         int(stat.st_size),
         int(stat.st_mtime_ns),
@@ -401,12 +494,12 @@ def _native_archive_global_symbol_sets(
         os.environ.get("MOLT_TARGET_ROOT", ""),
         os.environ.get("PATH", ""),
         os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
+        symbol_target,
         tuple(nm_command or ()),
     )
     cached = _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.get(cache_key)
     if cached is not None:
-        defined_cached, undefined_cached = cached
-        return set(defined_cached), set(undefined_cached)
+        return cached
     if cache_key in _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE:
         return None
     persistent_cache_path = _native_archive_symbol_cache_path(cache_key)
@@ -415,12 +508,8 @@ def _native_archive_global_symbol_sets(
         cache_key=cache_key,
     )
     if persistent_facts is not None:
-        defined, undefined = persistent_facts
-        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = (
-            frozenset(defined),
-            frozenset(undefined),
-        )
-        return defined, undefined
+        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = persistent_facts
+        return persistent_facts
     result = _native_object_global_symbols_result(
         resolved,
         timeout=120,
@@ -429,9 +518,14 @@ def _native_archive_global_symbol_sets(
     if result is None:
         facts = None
     else:
-        defined, undefined = _parse_native_nm_global_symbol_sets(result.stdout)
-        facts = (frozenset(defined), frozenset(undefined))
-    if len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE) >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT:
+        facts = _parse_native_nm_global_symbol_facts(
+            result.stdout,
+            target_triple=target_triple,
+        )
+    if (
+        len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE)
+        >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT
+    ):
         _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = facts
     if facts is None:
@@ -440,14 +534,27 @@ def _native_archive_global_symbol_sets(
         _write_native_archive_symbol_cache(
             persistent_cache_path,
             cache_key=cache_key,
-            defined=facts[0],
-            undefined=facts[1],
+            facts=facts,
         )
-    return set(facts[0]), set(facts[1])
+    return facts
+
+
+def _native_archive_global_symbol_sets(
+    path: Path,
+    *,
+    nm_command: Sequence[str] | None = None,
+    target_triple: str | None = None,
+) -> _NativeObjectSymbolSets | None:
+    facts = _native_archive_global_symbol_facts(
+        path,
+        nm_command=nm_command,
+        target_triple=target_triple,
+    )
+    return None if facts is None else facts.symbol_sets()
 
 
 def _native_archive_symbol_cache_identity(
-    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+    cache_key: _NativeArchiveSymbolCacheKey,
 ) -> dict[str, object]:
     return {
         "path": cache_key[0],
@@ -457,12 +564,13 @@ def _native_archive_symbol_cache_identity(
         "target_root": cache_key[4],
         "path_env": cache_key[5],
         "timeout_env": cache_key[6],
-        "nm_command": list(cache_key[7]),
+        "symbol_target": cache_key[7],
+        "nm_command": list(cache_key[8]),
     }
 
 
 def _native_archive_symbol_cache_path(
-    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+    cache_key: _NativeArchiveSymbolCacheKey,
 ) -> Path:
     identity = _native_archive_symbol_cache_identity(cache_key)
     digest = hashlib.sha256(
@@ -479,8 +587,8 @@ def _native_archive_symbol_cache_path(
 def _read_native_archive_symbol_cache(
     path: Path,
     *,
-    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
-) -> _NativeObjectSymbolSets | None:
+    cache_key: _NativeArchiveSymbolCacheKey,
+) -> _NativeGlobalSymbolFacts | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -493,30 +601,43 @@ def _read_native_archive_symbol_cache(
         return None
     defined = payload.get("defined")
     undefined = payload.get("undefined")
-    if not isinstance(defined, list) or not isinstance(undefined, list):
+    defined_functions = payload.get("defined_functions")
+    if not (
+        isinstance(defined, list)
+        and isinstance(undefined, list)
+        and isinstance(defined_functions, list)
+    ):
         return None
-    if not all(isinstance(symbol, str) for symbol in (*defined, *undefined)):
+    if not all(
+        isinstance(symbol, str) for symbol in (*defined, *undefined, *defined_functions)
+    ):
         return None
-    return (
-        {symbol for symbol in defined if isinstance(symbol, str)},
-        {symbol for symbol in undefined if isinstance(symbol, str)},
+    facts = _NativeGlobalSymbolFacts(
+        defined=frozenset(symbol for symbol in defined if isinstance(symbol, str)),
+        undefined=frozenset(symbol for symbol in undefined if isinstance(symbol, str)),
+        defined_functions=frozenset(
+            symbol for symbol in defined_functions if isinstance(symbol, str)
+        ),
     )
+    if not facts.defined_functions <= facts.defined:
+        return None
+    return facts
 
 
 def _write_native_archive_symbol_cache(
     path: Path,
     *,
-    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
-    defined: Collection[str],
-    undefined: Collection[str],
+    cache_key: _NativeArchiveSymbolCacheKey,
+    facts: _NativeGlobalSymbolFacts,
 ) -> None:
     _atomic_write_json(
         path,
         {
             "schema": _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION,
             "identity": _native_archive_symbol_cache_identity(cache_key),
-            "defined": sorted(set(defined)),
-            "undefined": sorted(set(undefined)),
+            "defined": sorted(facts.defined),
+            "undefined": sorted(facts.undefined),
+            "defined_functions": sorted(facts.defined_functions),
         },
         indent=None,
         sort_keys=True,

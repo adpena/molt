@@ -1,4 +1,4 @@
-//! Unified cost model / `TargetTransformInfo` (Tier-0 substrate **S2**).
+//! Unified target plan / `TargetTransformInfo` (Tier-0 substrate **S2**).
 //!
 //! Before this module existed, every profitability threshold in the TIR
 //! pipeline and the SimpleIR inliner was a free-floating magic constant: the
@@ -10,10 +10,11 @@
 //! truth — and no way to make a decision depend on the actual backend (native
 //! Cranelift / WASM / LLVM / Luau) or build profile.
 //!
-//! [`TargetInfo`] is that single source of truth. It is consulted by every
-//! profitability decision in the pipeline. Pass orchestration owns one and
-//! threads `&TargetInfo` to each pass's `run`, exactly as it threads its
-//! analysis manager; the SimpleIR inliner takes one by reference too.
+//! [`TargetInfo`] is that single source of truth for both optimization policy
+//! and target-proven semantic support. It is consulted by every profitability
+//! decision and by pre-source target admission. Pass orchestration owns one and
+//! threads `&TargetInfo` through lowering and optimization; source backends use
+//! the same plan instead of reconstructing capability booleans.
 //!
 //! ## Behavior-preserving defaults (the firewall)
 //!
@@ -62,6 +63,47 @@ pub enum TargetKind {
     Llvm,
     /// Luau bytecode.
     Luau,
+    /// Standalone Rust source transpilation.
+    Rust,
+    /// Progressive MLIR lowering without a Molt runtime provider.
+    Mlir,
+}
+
+impl TargetKind {
+    pub const fn as_str(self) -> &'static str {
+        crate::tir::op_kinds_generated::simpleir_target_name(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumericTargetCapabilities {
+    pub arbitrary_precision_integers: bool,
+    pub exact_integer_literal_max_magnitude: Option<u128>,
+    pub cpython_float_divmod: bool,
+    pub cpython_power: bool,
+}
+
+impl NumericTargetCapabilities {
+    pub const CPYTHON_EXACT: Self = Self {
+        arbitrary_precision_integers: true,
+        exact_integer_literal_max_magnitude: None,
+        cpython_float_divmod: true,
+        cpython_power: true,
+    };
+
+    pub const FIXED_WIDTH_FLOAT_ONLY: Self = Self {
+        arbitrary_precision_integers: false,
+        exact_integer_literal_max_magnitude: None,
+        cpython_float_divmod: false,
+        cpython_power: false,
+    };
+
+    pub const LUAU_EXACT_INTEGER_LITERALS: Self = Self {
+        arbitrary_precision_integers: false,
+        exact_integer_literal_max_magnitude: Some(1_u128 << 53),
+        cpython_float_divmod: false,
+        cpython_power: false,
+    };
 }
 
 /// The build profile (optimization aggressiveness). Mirrors the cargo profiles
@@ -151,19 +193,27 @@ pub struct ProfileData {
     pub hot_functions: std::collections::BTreeSet<String>,
 }
 
-/// The unified cost model. One instance describes the latencies, vector widths,
-/// cache hierarchy, and profitability thresholds for a given
-/// (target, profile) pair. Passes consult it instead of hardcoding constants.
+/// The unified target plan. One instance describes exact numeric/runtime
+/// semantics, linkage, latencies, vector widths, cache hierarchy, and
+/// profitability thresholds for a `(target, profile)` pair. Admission,
+/// lowering, and passes consult it instead of reconstructing target policy.
 ///
-/// Every field documents the legacy constant it subsumes; the
-/// [`TargetInfo::native_release_fast`] constructor sets each to that exact
-/// literal (the behavioral firewall).
+/// Cost fields document the legacy constants they subsume; the
+/// [`TargetInfo::native_release_fast`] constructor preserves those literals as
+/// a behavioral firewall while also carrying the target's semantic contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetInfo {
     /// Backend this cost model targets.
     pub target: TargetKind,
     /// Build profile (optimization aggressiveness).
     pub profile: BuildProfile,
+
+    /// Whether the target has an external-function provider/linkage ABI.
+    pub extern_function_linkage: bool,
+    /// Numeric semantics the target proves exact before source generation.
+    pub supported_numeric_semantics: NumericTargetCapabilities,
+    /// Generated runtime/object-model requirement bits the target proves exact.
+    pub supported_runtime_semantics: crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements,
 
     // -- Latency / overhead model (abstract cost units) --------------------
     /// Cost of an integer binary op (add/sub/and/…). The unit baseline `1`.
@@ -233,6 +283,12 @@ pub struct TargetInfo {
 }
 
 impl TargetInfo {
+    fn runtime_semantics_for(
+        target: TargetKind,
+    ) -> crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements {
+        crate::tir::op_kinds_generated::simpleir_target_runtime_requirements(target)
+    }
+
     // ----------------------------------------------------------------------
     // Constructors
     // ----------------------------------------------------------------------
@@ -246,6 +302,9 @@ impl TargetInfo {
         TargetInfo {
             target: TargetKind::NativeCranelift,
             profile: BuildProfile::ReleaseFast,
+            extern_function_linkage: true,
+            supported_numeric_semantics: NumericTargetCapabilities::CPYTHON_EXACT,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::NativeCranelift),
 
             // Latency model. The branch-mispredict penalty being positive
             // makes `is_profitable_branchless_rewrite` return `true`, exactly
@@ -303,6 +362,7 @@ impl TargetInfo {
     pub fn wasm_release_fast() -> TargetInfo {
         TargetInfo {
             target: TargetKind::Wasm,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Wasm),
             branch_mispredict_cost: 6,
             optimize_for_size: true,
             ..TargetInfo::native_release_fast()
@@ -315,6 +375,7 @@ impl TargetInfo {
     pub fn llvm_release_fast() -> TargetInfo {
         TargetInfo {
             target: TargetKind::Llvm,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Llvm),
             ..TargetInfo::native_release_fast()
         }
     }
@@ -326,7 +387,36 @@ impl TargetInfo {
     pub fn luau_release_fast() -> TargetInfo {
         TargetInfo {
             target: TargetKind::Luau,
+            extern_function_linkage: false,
+            supported_numeric_semantics: NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Luau),
             optimize_for_size: true,
+            ..TargetInfo::native_release_fast()
+        }
+    }
+
+    /// Standalone Rust transpilation has no Molt runtime or provider ABI and
+    /// admits only the source backend's exact fixed-width floating subset.
+    pub fn rust_release_fast() -> TargetInfo {
+        TargetInfo {
+            target: TargetKind::Rust,
+            extern_function_linkage: false,
+            supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Rust),
+            optimize_for_size: true,
+            ..TargetInfo::native_release_fast()
+        }
+    }
+
+    /// Progressive MLIR lowering currently exposes no executable Molt runtime
+    /// boundary, so runtime-requiring ops remain fail-closed opaque gaps.
+    pub fn mlir_release_fast() -> TargetInfo {
+        TargetInfo {
+            target: TargetKind::Mlir,
+            extern_function_linkage: false,
+            supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Mlir),
+            optimize_for_size: false,
             ..TargetInfo::native_release_fast()
         }
     }
@@ -346,6 +436,7 @@ impl TargetInfo {
         let width = caps.lane_width_64();
         TargetInfo {
             target: TargetKind::Llvm,
+            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Llvm),
             vector_width_i64: width,
             vector_width_f64: width,
             ..TargetInfo::native_release_fast()
@@ -442,9 +533,8 @@ impl TargetInfo {
     /// Targets without that runtime boundary must not receive compiler-created
     /// polls; an explicit poll in input IR remains a hard capability error.
     pub const fn supports_pending_call_eval_breaker_poll(&self) -> bool {
-        matches!(
-            self.target,
-            TargetKind::NativeCranelift | TargetKind::Wasm | TargetKind::Llvm
+        self.supported_runtime_semantics.contains(
+            crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER,
         )
     }
 
@@ -545,6 +635,25 @@ mod tests {
         assert!(TargetInfo::wasm_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(TargetInfo::llvm_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(!TargetInfo::luau_release_fast().supports_pending_call_eval_breaker_poll());
+        assert!(!TargetInfo::rust_release_fast().supports_pending_call_eval_breaker_poll());
+        assert!(!TargetInfo::mlir_release_fast().supports_pending_call_eval_breaker_poll());
+    }
+
+    #[test]
+    fn generated_target_profiles_are_the_complete_runtime_capability_authority() {
+        use crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements as Requirement;
+
+        assert_eq!(
+            TargetInfo::native_release_fast().supported_runtime_semantics,
+            Requirement::ALL,
+            "a new runtime role must trigger an explicit native support audit"
+        );
+        assert_eq!(TargetKind::NativeCranelift.as_str(), "native");
+        assert_eq!(TargetKind::Wasm.as_str(), "wasm");
+        assert_eq!(TargetKind::Llvm.as_str(), "llvm");
+        assert_eq!(TargetKind::Luau.as_str(), "luau");
+        assert_eq!(TargetKind::Rust.as_str(), "rust");
+        assert_eq!(TargetKind::Mlir.as_str(), "mlir");
     }
 
     /// PGO hook: when (someday) populated, hot callees get the larger budget;

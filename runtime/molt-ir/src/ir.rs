@@ -7,8 +7,9 @@ use crate::json_boundary::{
 };
 use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
-    SimpleIrRuntimeRequirements, simpleir_kind_has_function_reference_s_value,
-    simpleir_kind_is_return_terminator, simpleir_runtime_requirements_table,
+    SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
+    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_return_terminator,
+    simpleir_runtime_requirements_table,
 };
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
@@ -325,6 +326,10 @@ pub fn write_function_ir_contract(
         .map_err(|error| format!("FunctionIR contract serialization failed: {error}"))
 }
 
+fn bool_is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, serde::Serialize)]
 #[serde(default)]
 pub struct OpIR {
@@ -383,11 +388,17 @@ pub struct OpIR {
     /// Generated target-admission requirement bits for conservative acquisition
     /// provenance that is not an executable runtime/link symbol.
     #[serde(default)]
-    pub runtime_requirement_bits: u16,
+    pub runtime_requirement_bits: SimpleIrRuntimeRequirementBits,
     /// Direct-call marker paired with `ExecutionContextPolicy::Inherited` on
     /// the callee; the backend must thread its active context at this call site.
     #[serde(default)]
     pub passes_execution_context: bool,
+    /// Role-preserving eval-breaker marker for observations that cannot use the
+    /// established `async_work_poll` CheckException wire alias. A marked
+    /// `exception_finally_pending_observer` polls before returning the pending
+    /// object to the existing finally-replacement arbitration.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub async_work_poll: bool,
     /// Transitional semantic hint preserved on the transport surface for
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
@@ -633,6 +644,8 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OpSourceSite {
+    /// Stable operation provenance transported across TIR round trips.
+    pub source_op_idx: Option<i64>,
     pub source_line: Option<i64>,
     pub col_offset: Option<i64>,
     pub end_col_offset: Option<i64>,
@@ -641,6 +654,7 @@ pub struct OpSourceSite {
 impl OpSourceSite {
     pub fn from_op(op: &OpIR) -> Self {
         Self {
+            source_op_idx: op.source_op_idx,
             source_line: op.source_line,
             col_offset: op.col_offset,
             end_col_offset: op.end_col_offset,
@@ -648,6 +662,7 @@ impl OpSourceSite {
     }
 
     pub fn apply_to_op(self, op: &mut OpIR) {
+        op.source_op_idx = self.source_op_idx;
         op.source_line = self.source_line;
         op.col_offset = self.col_offset;
         op.end_col_offset = self.end_col_offset;
@@ -661,6 +676,27 @@ impl OpIR {
 
     pub fn inherit_source_site_from(&mut self, other: &OpIR) {
         other.source_site().apply_to_op(self);
+    }
+
+    /// Resolve durable source provenance, using the current stream position
+    /// only when this operation has never crossed a TIR round trip.
+    pub fn source_op_index_or(&self, current_index: usize) -> usize {
+        self.source_op_idx.map_or(current_index, |value| {
+            usize::try_from(value).unwrap_or_else(|_| {
+                panic!("invalid negative source_op_idx {value} at op {current_index}")
+            })
+        })
+    }
+
+    /// Return the transported source identity required by inline-cache sites.
+    /// Backends share this validation so native and WASM cannot drift on
+    /// fallback or malformed-index behavior.
+    pub fn required_source_op_index(&self, current_index: usize, kind: &str) -> usize {
+        assert!(
+            self.source_op_idx.is_some(),
+            "{kind} at stream op {current_index} requires transported source_op_idx"
+        );
+        self.source_op_index_or(current_index)
     }
 }
 
@@ -887,6 +923,14 @@ impl FunctionIR {
 }
 
 impl OpIR {
+    /// Whether this operation services the canonical asynchronous-work
+    /// boundary, either through the established CheckException wire alias or
+    /// through the role-preserving observer marker.
+    pub fn is_async_work_poll(&self) -> bool {
+        self.async_work_poll
+            || crate::tir::op_kinds_generated::simpleir_kind_is_async_work_poll(&self.kind)
+    }
+
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         let obj = expect_object(value, ctx)?;
         // Extract ic_index from nested "metadata" object if present.
@@ -918,9 +962,10 @@ impl OpIR {
             runtime_requirement_bits: optional_i64(obj, "runtime_requirement_bits", ctx)?
                 .unwrap_or(0)
                 .try_into()
-                .map_err(|_| format!("{ctx}.runtime_requirement_bits must fit u16"))?,
+                .map_err(|_| format!("{ctx}.runtime_requirement_bits is out of range"))?,
             passes_execution_context: optional_bool(obj, "passes_execution_context", ctx)?
                 .unwrap_or(false),
+            async_work_poll: optional_bool(obj, "async_work_poll", ctx)?.unwrap_or(false),
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
             source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
@@ -1300,6 +1345,24 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_async_work_marker_is_typed_and_observer_scoped() {
+        let ir = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"exception_finally_pending_observer","async_work_poll":true,"out":"pending"},{"kind":"ret_void"}]}]}"#,
+        )
+        .expect("finally observer may carry the async-work marker");
+        let observer = &ir.functions[0].ops[0];
+        assert!(observer.async_work_poll);
+        assert!(observer.is_async_work_poll());
+        assert_eq!(observer.kind, "exception_finally_pending_observer");
+
+        let error = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","async_work_poll":true,"out":"value"},{"kind":"ret_void"}]}]}"#,
+        )
+        .expect_err("unrelated operations must reject the async-work marker");
+        assert!(error.contains("op `const_none` cannot carry async_work_poll"));
     }
 
     #[test]
@@ -1784,10 +1847,22 @@ mod json_parse_tests {
         assert!(wrong_op.contains("cannot carry runtime_requirement_bits"));
 
         let unknown_bit = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":32768,"out":"value"}]}]}"#,
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":65536,"out":"value"}]}]}"#,
         )
         .expect_err("unknown generated requirement bits must fail closed");
         assert!(unknown_bit.contains("unknown runtime_requirement_bits"));
+
+        for invalid in ["-1", "4294967296"] {
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{invalid},"out":"value"}}]}}]}}"#,
+            );
+            let error = SimpleIR::from_json_str(&source)
+                .expect_err("signed or oversized requirement storage must fail at parsing");
+            assert!(
+                error.contains("runtime_requirement_bits is out of range"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

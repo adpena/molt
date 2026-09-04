@@ -1,6 +1,7 @@
 use super::NumericTargetCapabilities;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::op_kinds_generated::{SimpleIrIntegerSemantics, simpleir_integer_semantics_table};
+use crate::tir::target_info::TargetInfo;
 use crate::{OpIR, SimpleIR};
 
 /// Reject unsupported numeric semantics before a backend assembles source.
@@ -8,19 +9,30 @@ use crate::{OpIR, SimpleIR};
 /// target policy supplies only capabilities.
 pub fn validate_numeric_target_contract(
     ir: &SimpleIR,
+    target_info: &TargetInfo,
+) -> Result<(), String> {
+    let target = target_info.target.as_str();
+    let capabilities = target_info.supported_numeric_semantics;
+    for function in &ir.functions {
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(function, target_info);
+        validate_numeric_function_target_contract(function, target, capabilities, &plan)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_numeric_function_target_contract(
+    function: &crate::FunctionIR,
     target: &str,
     capabilities: NumericTargetCapabilities,
+    plan: &ScalarRepresentationPlan,
 ) -> Result<(), String> {
-    for function in &ir.functions {
-        let plan = ScalarRepresentationPlan::for_function_ir(function);
-        for (index, op) in function.ops.iter().enumerate() {
-            let role = simpleir_integer_semantics_table(op.kind.as_str());
-            if let Some(reason) = numeric_admission_failure(&plan, op, role, capabilities) {
-                return Err(format!(
-                    "{target} target rejected before source generation: {}:op#{index} `{}`: {reason}",
-                    function.name, op.kind,
-                ));
-            }
+    for (index, op) in function.ops.iter().enumerate() {
+        let role = simpleir_integer_semantics_table(op.kind.as_str());
+        if let Some(reason) = numeric_admission_failure(plan, op, role, capabilities) {
+            return Err(format!(
+                "{target} target rejected before source generation: {}:op#{index} `{}`: {reason}",
+                function.name, op.kind,
+            ));
         }
     }
     Ok(())

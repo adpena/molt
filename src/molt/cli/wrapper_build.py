@@ -171,6 +171,7 @@ def _wrapper_build_dependency_fingerprints(
             json_output=False,
             defer_native_artifacts=True,
             target=target,
+            target_python=resolved_build_entry.target_python,
         )
         if admission_error is not None or import_admission_policy is None:
             return None
@@ -202,6 +203,7 @@ def _wrapper_build_dependency_fingerprints(
             external_module_roots=import_admission_policy.external_roots,
             admitted_packages=import_admission_policy.admitted_external_packages,
             target=target,
+            target_python=resolved_build_entry.target_python,
             required_modules=(
                 set(prepared_module_graph.module_graph)
                 | set(prepared_module_graph.explicit_imports)

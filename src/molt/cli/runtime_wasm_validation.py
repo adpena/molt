@@ -12,7 +12,7 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_import_name_for_export,
 )
 from molt._wasm_abi_generated import (
-    WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES,
+    WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES,
     wasm_import_signature,
     wasm_runtime_import_name,
 )
@@ -204,8 +204,8 @@ def _runtime_wasm_typed_export_names(
                 or wasm_runtime_import_name(name)
                 or name
             )
-            expected_signature = (
-                WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES.get(canonical_name)
+            expected_signature = WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES.get(
+                canonical_name
             )
             if expected_signature is None:
                 generated = wasm_import_signature(canonical_name)

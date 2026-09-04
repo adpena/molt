@@ -53,6 +53,7 @@ impl SimpleBackend {
         // covers declarations created by shared-stdlib externalization.
         crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
+        let native_target_info = prepared.native_target_info;
         let emit_resolver_here = prepared.emit_resolver_here;
         let app_callable_manifest = prepared.app_callable_manifest;
         let pre_split_task_kinds = prepared.pre_split_task_kinds;
@@ -134,7 +135,7 @@ impl SimpleBackend {
                     progress_prefix: Some("MOLT_BACKEND(llvm)"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
-                preprocess_backend_tir_input,
+                |function| preprocess_backend_tir_input(function, &llvm_tti),
             )
             .cached_tir;
 
@@ -428,6 +429,8 @@ impl SimpleBackend {
         let func_count = ir.functions.len();
         let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
+        let native_target_info = native_target_info
+            .expect("Cranelift preparation must resolve one explicit native target");
         let codegen_start = std::time::Instant::now();
         let mut local_function_arities: BTreeMap<String, usize> = extern_function_signatures
             .iter()
@@ -495,6 +498,7 @@ impl SimpleBackend {
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
+                &native_target_info,
                 &effective_task_kinds,
                 &effective_task_closure_sizes,
                 &ir_analysis.defined_functions,

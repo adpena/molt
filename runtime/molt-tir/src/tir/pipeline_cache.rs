@@ -25,6 +25,7 @@ pub const TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD: usize = 1;
 pub const TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD: usize = 1_000;
 
 const GIB_BYTES: u64 = 1024 * 1024 * 1024;
+const TIR_PIPELINE_SEMANTIC_EPOCH: &[u8] = b"molt-tir-pipeline-semantics-v1";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TirPipelineCacheFlavor {
@@ -36,13 +37,13 @@ pub enum TirPipelineCacheFlavor {
 }
 
 impl TirPipelineCacheFlavor {
-    fn cache_prefix(self) -> &'static [u8] {
+    fn cache_discriminant(self) -> &'static [u8] {
         match self {
-            Self::Native => b"native-tir-function-cache-v4\0",
-            Self::Llvm => b"llvm-tir-function-cache-v2\0",
-            Self::Wasm => b"wasm-tir-function-cache-v3\0",
-            Self::Luau => b"luau-tir-function-cache-v1\0",
-            Self::FactGraph => b"fact-graph-tir-function-cache-v1\0",
+            Self::Native => b"native",
+            Self::Llvm => b"llvm",
+            Self::Wasm => b"wasm",
+            Self::Luau => b"luau",
+            Self::FactGraph => b"fact-graph",
         }
     }
 }
@@ -163,15 +164,40 @@ pub struct TirOwnedModulePipelineRun {
     pub module_analysis: Option<super::module_phase::ModuleAnalysis>,
 }
 
+struct PreparedTirFunction {
+    function: FunctionIR,
+    content_hash: String,
+}
+
+impl PreparedTirFunction {
+    fn new<F>(
+        source: &FunctionIR,
+        cache_flavor: TirPipelineCacheFlavor,
+        target_info: &TargetInfo,
+        preprocess_before_lowering: &F,
+    ) -> Self
+    where
+        F: Fn(&mut FunctionIR) + ?Sized,
+    {
+        let mut function = source.clone();
+        trace_tir_function_stage(&function.name, "start", function.ops.len());
+        preprocess_before_lowering(&mut function);
+        let content_hash = content_hash_for_function(&function, cache_flavor, target_info);
+        Self {
+            function,
+            content_hash,
+        }
+    }
+}
+
+struct TirPreparationWorkItem {
+    index: usize,
+    op_count: usize,
+}
+
 struct TirOptimizationInput {
     index: usize,
-    content_hash: String,
-    name: String,
-    params: Vec<String>,
-    ops: Vec<OpIR>,
-    param_types: Option<Vec<String>>,
-    source_file: Option<String>,
-    execution_context: crate::ExecutionContextPolicy,
+    prepared_function: PreparedTirFunction,
 }
 
 struct TirOptimizationOutput {
@@ -186,8 +212,9 @@ pub fn content_hash_for_function(
     cache_flavor: TirPipelineCacheFlavor,
     target_info: &TargetInfo,
 ) -> String {
-    let mut key = CompilationCacheKey::new(b"molt-cached-tir-function-key-v1");
-    key.field(b"cache-flavor", cache_flavor.cache_prefix());
+    let mut key = CompilationCacheKey::new(b"molt-cached-tir-prepared-function-key-v1");
+    key.field(b"pipeline-semantic-epoch", TIR_PIPELINE_SEMANTIC_EPOCH);
+    key.field(b"cache-flavor", cache_flavor.cache_discriminant());
     let target_fingerprint = tir_pipeline_target_fingerprint(target_info);
     key.field(b"target-contract", target_fingerprint.as_bytes());
     key.digest_field(b"function-ir-contract", |writer| {
@@ -198,60 +225,106 @@ pub fn content_hash_for_function(
 }
 
 pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
+    let TargetInfo {
+        target,
+        profile,
+        extern_function_linkage,
+        supported_numeric_semantics,
+        supported_runtime_semantics,
+        int_binop_cost,
+        branch_mispredict_cost,
+        call_overhead,
+        inline_op_limit,
+        inline_hot_op_limit,
+        pgo_hot_call_threshold,
+        unroll_max_trip,
+        unroll_max_body,
+        vector_width_i64,
+        vector_width_f64,
+        tile_l1,
+        tile_l2,
+        l1_cache_bytes,
+        l2_cache_bytes,
+        optimize_for_size,
+        profile_data,
+    } = target_info;
+    let super::target_info::NumericTargetCapabilities {
+        arbitrary_precision_integers,
+        exact_integer_literal_max_magnitude,
+        cpython_float_divmod,
+        cpython_power,
+    } = supported_numeric_semantics;
+    let hot_functions = profile_data.as_ref().map_or_else(
+        || "none".to_string(),
+        |super::target_info::ProfileData { hot_functions }| {
+            hot_functions
+                .iter()
+                .map(|name| format!("{}:{name}", name.len()))
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+    );
+    let platform = target_platform_fingerprint(*target);
     format!(
         concat!(
-            "target={:?};profile={:?};",
+            "target={};profile={:?};extern={};",
+            "numeric_bigint={};numeric_literal={:?};numeric_divmod={};numeric_power={};",
+            "runtime_requirements={};pgo_hot_functions={};",
             "int_binop={};branch_mispredict={};call_overhead={};",
             "inline={};inline_hot={};pgo_hot={};",
             "unroll_trip={};unroll_body={};",
             "vec_i64={};vec_f64={};",
             "tile_l1={};tile_l2={};l1={};l2={};size={};",
-            "os={};family={};arch={};ptr={};endian={};"
+            "platform={};"
         ),
-        target_info.target,
-        target_info.profile,
-        target_info.int_binop_cost,
-        target_info.branch_mispredict_cost,
-        target_info.call_overhead,
-        target_info.inline_op_limit,
-        target_info.inline_hot_op_limit,
-        target_info.pgo_hot_call_threshold,
-        target_info.unroll_max_trip,
-        target_info.unroll_max_body,
-        target_info.vector_width_i64,
-        target_info.vector_width_f64,
-        target_info.tile_l1,
-        target_info.tile_l2,
-        target_info.l1_cache_bytes,
-        target_info.l2_cache_bytes,
-        target_info.optimize_for_size,
-        std::env::consts::OS,
-        std::env::consts::FAMILY,
-        std::env::consts::ARCH,
-        target_pointer_width(),
-        target_endianness(),
+        target.as_str(),
+        profile,
+        extern_function_linkage,
+        arbitrary_precision_integers,
+        exact_integer_literal_max_magnitude,
+        cpython_float_divmod,
+        cpython_power,
+        supported_runtime_semantics.bits(),
+        hot_functions,
+        int_binop_cost,
+        branch_mispredict_cost,
+        call_overhead,
+        inline_op_limit,
+        inline_hot_op_limit,
+        pgo_hot_call_threshold,
+        unroll_max_trip,
+        unroll_max_body,
+        vector_width_i64,
+        vector_width_f64,
+        tile_l1,
+        tile_l2,
+        l1_cache_bytes,
+        l2_cache_bytes,
+        optimize_for_size,
+        platform,
     )
 }
 
-fn target_pointer_width() -> &'static str {
-    if cfg!(target_pointer_width = "64") {
-        "64"
-    } else if cfg!(target_pointer_width = "32") {
-        "32"
-    } else if cfg!(target_pointer_width = "16") {
-        "16"
-    } else {
-        "unknown"
-    }
-}
+fn target_platform_fingerprint(target: super::target_info::TargetKind) -> String {
+    use super::target_info::TargetKind;
 
-fn target_endianness() -> &'static str {
-    if cfg!(target_endian = "little") {
-        "little"
-    } else if cfg!(target_endian = "big") {
-        "big"
-    } else {
-        "unknown"
+    match target {
+        TargetKind::NativeCranelift | TargetKind::Llvm => format!(
+            "host-os={};host-family={};host-arch={};host-ptr={};host-endian={}",
+            std::env::consts::OS,
+            std::env::consts::FAMILY,
+            std::env::consts::ARCH,
+            usize::BITS,
+            if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        ),
+        TargetKind::Wasm => "wasm32;ptr=32;endian=little".to_string(),
+        TargetKind::Luau => "portable-luau-source".to_string(),
+        TargetKind::Rust => "portable-rust-source".to_string(),
+        TargetKind::Mlir => "portable-mlir".to_string(),
     }
 }
 
@@ -260,14 +333,31 @@ pub fn partition_tir_optimization_work_items_with_limits(
     max_functions_per_batch: usize,
     max_ops_per_batch: usize,
 ) -> Vec<Vec<TirOptimizationWorkItem>> {
+    partition_work_items_with_limits(
+        work_items,
+        max_functions_per_batch,
+        max_ops_per_batch,
+        |item| item.op_count,
+    )
+}
+
+fn partition_work_items_with_limits<T, F>(
+    work_items: Vec<T>,
+    max_functions_per_batch: usize,
+    max_ops_per_batch: usize,
+    op_count: F,
+) -> Vec<Vec<T>>
+where
+    F: Fn(&T) -> usize,
+{
     let max_functions = max_functions_per_batch.max(1);
     let max_ops = max_ops_per_batch.max(1);
-    let mut batches: Vec<Vec<TirOptimizationWorkItem>> = Vec::new();
-    let mut current: Vec<TirOptimizationWorkItem> = Vec::new();
+    let mut batches: Vec<Vec<T>> = Vec::new();
+    let mut current: Vec<T> = Vec::new();
     let mut current_ops = 0usize;
 
     for item in work_items {
-        let item_ops = item.op_count.max(1);
+        let item_ops = op_count(&item).max(1);
         let count_full = current.len() >= max_functions;
         let ops_full = !current.is_empty() && current_ops.saturating_add(item_ops) > max_ops;
         if count_full || ops_full {
@@ -433,58 +523,24 @@ where
     let mut cached_tir_custody = CachedTirCustody::new();
     let mut tir_cache =
         CompilationCache::open(options.cache_dir.clone().unwrap_or_else(backend_cache_dir));
-    let mut work_items: Vec<TirOptimizationWorkItem> = Vec::new();
-
-    for (i, func_ir) in functions.iter_mut().enumerate() {
-        if func_ir.is_extern && !options.process_externs {
-            continue;
-        }
-
-        let content_hash =
-            content_hash_for_function(func_ir, options.cache_flavor, &options.target_info);
-        if let Some(cached_bytes) = tir_cache.get(&content_hash)
-            && let Some(cached_tir_func) = super::serialize::deserialize_tir_function(&cached_bytes)
-        {
-            verify_lir_if_requested(&cached_tir_func, options.verify_lir);
-            let cached_ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
-            assert!(
-                super::lower_to_simple::validate_labels(&cached_ops),
-                "cached TIR back-conversion emitted invalid labels for '{}'",
-                cached_tir_func.name
-            );
-            func_ir.ops = cached_ops;
-            cached_tir_custody.insert(func_ir.name.clone(), cached_tir_func);
-            continue;
-        }
-
-        work_items.push(TirOptimizationWorkItem {
-            index: i,
-            content_hash,
-            op_count: func_ir.ops.len(),
-        });
-    }
-
-    let uncached_count = work_items.len();
-    if uncached_count > 0 {
-        let work_batches = partition_tir_optimization_work_items_with_limits(
+    let work_items: Vec<TirPreparationWorkItem> = functions
+        .iter()
+        .enumerate()
+        .filter(|(_, function)| options.process_externs || !function.is_extern)
+        .map(|(index, function)| TirPreparationWorkItem {
+            index,
+            op_count: function.ops.len(),
+        })
+        .collect();
+    let mut uncached_count = 0usize;
+    if !work_items.is_empty() {
+        let work_batches = partition_work_items_with_limits(
             work_items,
             options.resource_plan.wave_function_limit,
             options.resource_plan.wave_op_budget,
+            |item| item.op_count,
         );
         let batch_count = work_batches.len();
-        if let Some(prefix) = options.progress_prefix {
-            if batch_count == 1 {
-                eprintln!(
-                    "{prefix}: TIR optimizing {uncached_count} uncached functions with {} worker(s)",
-                    options.resource_plan.threads
-                );
-            } else {
-                eprintln!(
-                    "{prefix}: TIR optimizing {uncached_count} uncached functions in {batch_count} bounded waves with {} worker(s)",
-                    options.resource_plan.threads
-                );
-            }
-        }
         let tir_start = std::time::Instant::now();
         let tir_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(options.resource_plan.threads)
@@ -492,37 +548,72 @@ where
             .build()
             .expect("Failed to build TIR thread pool");
         for (batch_idx, batch_items) in work_batches.into_iter().enumerate() {
-            let batch_ops = batch_items.iter().map(|wi| wi.op_count).sum::<usize>();
-            if let Some(prefix) = options.progress_prefix
-                && batch_count > 1
-            {
-                eprintln!(
-                    "{prefix}: TIR batch {}/{} ({} functions, {} ops / budget {})",
-                    batch_idx + 1,
-                    batch_count,
-                    batch_items.len(),
-                    batch_ops,
-                    options.resource_plan.wave_op_budget
-                );
+            let inputs: Vec<TirOptimizationInput> = tir_pool.install(|| {
+                batch_items
+                    .par_iter()
+                    .map(|work_item| TirOptimizationInput {
+                        index: work_item.index,
+                        prepared_function: PreparedTirFunction::new(
+                            &functions[work_item.index],
+                            options.cache_flavor,
+                            &options.target_info,
+                            &preprocess_before_lowering,
+                        ),
+                    })
+                    .collect()
+            });
+            let prepared_ops = inputs
+                .iter()
+                .map(|input| input.prepared_function.function.ops.len())
+                .sum::<usize>();
+            let prepared_count = inputs.len();
+            let mut misses = Vec::new();
+            for input in inputs {
+                let index = input.index;
+                let content_hash = &input.prepared_function.content_hash;
+                if let Some(cached_bytes) = tir_cache.get(content_hash)
+                    && let Some(cached_tir_func) =
+                        super::serialize::deserialize_tir_function(&cached_bytes)
+                {
+                    verify_lir_if_requested(&cached_tir_func, options.verify_lir);
+                    let cached_ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
+                    assert!(
+                        super::lower_to_simple::validate_labels(&cached_ops),
+                        "cached TIR back-conversion emitted invalid labels for '{}'",
+                        cached_tir_func.name
+                    );
+                    let func_ir = &mut functions[index];
+                    func_ir.ops = cached_ops;
+                    cached_tir_custody.insert(func_ir.name.clone(), cached_tir_func);
+                } else {
+                    misses.push(input);
+                }
             }
-            let inputs: Vec<TirOptimizationInput> = batch_items
-                .into_iter()
-                .map(|wi| {
-                    let func_ir = &functions[wi.index];
-                    TirOptimizationInput {
-                        index: wi.index,
-                        content_hash: wi.content_hash,
-                        name: func_ir.name.clone(),
-                        params: func_ir.params.clone(),
-                        ops: func_ir.ops.clone(),
-                        param_types: func_ir.param_types.clone(),
-                        source_file: func_ir.source_file.clone(),
-                        execution_context: func_ir.execution_context,
-                    }
-                })
-                .collect();
+
+            uncached_count += misses.len();
+            if let Some(prefix) = options.progress_prefix
+                && !misses.is_empty()
+            {
+                if batch_count == 1 {
+                    eprintln!(
+                        "{prefix}: TIR optimizing {} uncached functions with {} worker(s)",
+                        misses.len(),
+                        options.resource_plan.threads
+                    );
+                } else {
+                    eprintln!(
+                        "{prefix}: TIR wave {}/{} ({} uncached / {} prepared functions, {} prepared ops / budget {})",
+                        batch_idx + 1,
+                        batch_count,
+                        misses.len(),
+                        prepared_count,
+                        prepared_ops,
+                        options.resource_plan.wave_op_budget
+                    );
+                }
+            }
             let results: Vec<TirOptimizationOutput> = tir_pool.install(|| {
-                inputs
+                misses
                     .into_par_iter()
                     .map(|input| {
                         optimize_tir_input(
@@ -531,7 +622,6 @@ where
                             options.tir_dump,
                             options.tir_stats,
                             options.verify_lir,
-                            &preprocess_before_lowering,
                         )
                     })
                     .collect()
@@ -567,7 +657,9 @@ where
             }
         }
 
-        if let Some(prefix) = options.progress_prefix {
+        if let Some(prefix) = options.progress_prefix
+            && uncached_count > 0
+        {
             let tir_elapsed = tir_start.elapsed();
             eprintln!(
                 "{prefix}: TIR parallel optimization took {tir_elapsed:.2?} for {uncached_count} functions"
@@ -772,33 +864,21 @@ fn backconvert_changed_tir_module_to_simple_ir(
     }
 }
 
-fn optimize_tir_input<F>(
+fn optimize_tir_input(
     input: TirOptimizationInput,
     target_info: &TargetInfo,
     tir_dump: bool,
     tir_stats: bool,
     verify_lir: bool,
-    preprocess_before_lowering: &F,
-) -> TirOptimizationOutput
-where
-    F: Fn(&mut FunctionIR) + Sync,
-{
+) -> TirOptimizationOutput {
     let idx = input.index;
-    let content_hash = input.content_hash;
-    let mut tmp_func = FunctionIR {
-        name: input.name,
-        params: input.params,
-        ops: input.ops,
-        param_types: input.param_types,
-        source_file: input.source_file,
-        is_extern: false,
-        execution_context: input.execution_context,
-    };
-    trace_tir_function_stage(&tmp_func.name, "start", tmp_func.ops.len());
-    preprocess_before_lowering(&mut tmp_func);
+    let PreparedTirFunction {
+        function: tmp_func,
+        content_hash,
+    } = input.prepared_function;
 
     let func_name = tmp_func.name.clone();
-    let mut tir_func = super::lower_from_simple::lower_to_tir(&tmp_func);
+    let mut tir_func = super::lower_from_simple::lower_to_tir_for_target(&tmp_func, target_info);
     if trace_tir_function_enabled(&func_name) {
         trace_tir_blocks(&func_name, "after_lower_to_tir", &tir_func);
     }
@@ -1032,8 +1112,49 @@ mod tests {
             tir_pipeline_target_fingerprint(&native),
             tir_pipeline_target_fingerprint(&wasm)
         );
+        let native_fingerprint = tir_pipeline_target_fingerprint(&native);
+        let mut semantic_mutations = Vec::new();
+        let mut changed = native.clone();
+        changed.extern_function_linkage = !changed.extern_function_linkage;
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed = changed.with_profile_data(super::super::target_info::ProfileData {
+            hot_functions: std::collections::BTreeSet::from(["hot".to_string()]),
+        });
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed
+            .supported_numeric_semantics
+            .arbitrary_precision_integers = false;
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed
+            .supported_numeric_semantics
+            .exact_integer_literal_max_magnitude = Some(1 << 53);
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed.supported_numeric_semantics.cpython_float_divmod = false;
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed.supported_numeric_semantics.cpython_power = false;
+        semantic_mutations.push(changed);
+        let mut changed = native.clone();
+        changed.supported_runtime_semantics = changed.supported_runtime_semantics.difference(
+            crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER,
+        );
+        semantic_mutations.push(changed);
+        for changed in semantic_mutations {
+            assert_ne!(
+                native_fingerprint,
+                tir_pipeline_target_fingerprint(&changed),
+                "every semantic target field must participate in persistent TIR cache identity"
+            );
+        }
         assert!(tir_pipeline_target_fingerprint(&native).contains(std::env::consts::OS));
         assert!(tir_pipeline_target_fingerprint(&native).contains(std::env::consts::ARCH));
+        let wasm_fingerprint = tir_pipeline_target_fingerprint(&wasm);
+        assert!(wasm_fingerprint.contains("platform=wasm32;ptr=32;endian=little"));
+        assert!(!wasm_fingerprint.contains("host-os="));
         assert_ne!(
             content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
             content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &wasm)
@@ -1100,6 +1221,110 @@ mod tests {
                 "every non-name FunctionIR semantic/ABI field must participate in cache identity"
             );
         }
+    }
+
+    #[test]
+    fn one_semantic_epoch_and_exhaustive_flavor_discriminants_own_cache_invalidation() {
+        assert_eq!(
+            TIR_PIPELINE_SEMANTIC_EPOCH,
+            b"molt-tir-pipeline-semantics-v1"
+        );
+        let discriminants = [
+            TirPipelineCacheFlavor::Native.cache_discriminant(),
+            TirPipelineCacheFlavor::Llvm.cache_discriminant(),
+            TirPipelineCacheFlavor::Wasm.cache_discriminant(),
+            TirPipelineCacheFlavor::Luau.cache_discriminant(),
+            TirPipelineCacheFlavor::FactGraph.cache_discriminant(),
+        ];
+        assert_eq!(
+            discriminants.into_iter().collect::<HashSet<_>>().len(),
+            discriminants.len(),
+            "each cache flavor needs one stable discriminator under the shared semantic epoch"
+        );
+    }
+
+    #[test]
+    fn preprocessing_is_part_of_cache_identity_on_misses_and_hits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let target_info = TargetInfo::native_release_fast();
+        let cache_dir = std::env::temp_dir().join(format!(
+            "molt-tir-prepared-function-cache-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let base = FunctionIR {
+            name: "prepared_cache_identity".to_string(),
+            params: Vec::new(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..Default::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            execution_context: crate::ExecutionContextPolicy::None,
+        };
+        let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
+            target_info: target_info.clone(),
+            cache_flavor: TirPipelineCacheFlavor::FactGraph,
+            cache_dir: Some(cache_dir.to_path_buf()),
+            process_externs: false,
+            verify_lir: false,
+            tir_dump: false,
+            tir_stats: false,
+            progress_prefix: None,
+            resource_plan: TirOptimizationResourcePlan {
+                threads: 1,
+                wave_function_limit: 1,
+                wave_op_budget: 16,
+            },
+        };
+        let preprocessing_calls = AtomicUsize::new(0);
+        let run_with_source = |source_file: &'static str| {
+            let mut functions = vec![base.clone()];
+            run_cached_tir_pipeline(&mut functions, options(&cache_dir), |function| {
+                preprocessing_calls.fetch_add(1, Ordering::Relaxed);
+                function.source_file = Some(source_file.to_string());
+            })
+        };
+        let cached_source = |run: &TirPipelineRun| {
+            run.cached_tir
+                .optimized_tir_by_name
+                .get("prepared_cache_identity")
+                .and_then(|function| function.attrs.get(crate::tir::ops::SOURCE_FILE_ATTR))
+                .cloned()
+        };
+
+        let first_miss = run_with_source("first.py");
+        assert_eq!(first_miss.uncached_count, 1);
+        assert_eq!(
+            cached_source(&first_miss),
+            Some(crate::tir::ops::AttrValue::Str("first.py".to_string()))
+        );
+
+        let changed_preprocessing_miss = run_with_source("second.py");
+        assert_eq!(
+            changed_preprocessing_miss.uncached_count, 1,
+            "identical source IR with different prepared IR must not reuse a stale artifact"
+        );
+        assert_eq!(
+            cached_source(&changed_preprocessing_miss),
+            Some(crate::tir::ops::AttrValue::Str("second.py".to_string()))
+        );
+
+        let matching_preprocessing_hit = run_with_source("second.py");
+        assert_eq!(matching_preprocessing_hit.uncached_count, 0);
+        assert_eq!(
+            cached_source(&matching_preprocessing_hit),
+            Some(crate::tir::ops::AttrValue::Str("second.py".to_string()))
+        );
+        assert_eq!(
+            preprocessing_calls.load(Ordering::Relaxed),
+            3,
+            "preparation must run before every lookup so hits and misses use the same identity"
+        );
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     #[test]

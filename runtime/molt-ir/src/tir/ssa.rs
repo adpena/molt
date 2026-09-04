@@ -190,15 +190,9 @@ impl<'a> SsaContext<'a> {
     }
 
     fn source_op_index_for_op(&self, op_idx: usize) -> usize {
-        let Some(op) = self.ops.get(op_idx) else {
-            return op_idx;
-        };
-        match op.source_op_idx {
-            Some(value) => usize::try_from(value).unwrap_or_else(|_| {
-                panic!("invalid negative source_op_idx {value} at op {op_idx}")
-            }),
-            None => op_idx,
-        }
+        self.ops
+            .get(op_idx)
+            .map_or(op_idx, |op| op.source_op_index_or(op_idx))
     }
 
     fn stamp_source_identity(&self, tir_op: &mut TirOp, op_idx: usize) {

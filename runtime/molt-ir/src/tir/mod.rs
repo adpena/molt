@@ -2,6 +2,7 @@ pub mod blocks;
 pub mod call_targets;
 pub mod cfg;
 pub mod cfg_liveness;
+pub mod clone_support;
 pub mod dominators;
 pub mod effect_proof;
 pub mod function;
@@ -30,7 +31,9 @@ pub use self::blocks::{BlockId, Terminator, TirBlock};
 pub use self::function::{TirFunction, TirModule};
 pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
-pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
+pub use self::target_info::{
+    BuildProfile, NumericTargetCapabilities, ProfileData, SimdCaps, TargetInfo, TargetKind,
+};
 pub use self::types::{FuncSignature, TirType};
 pub use self::value_range::ValueRangeResult;
 pub use self::values::{TirValue, ValueId};

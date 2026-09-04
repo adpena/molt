@@ -29,13 +29,24 @@ from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_runtime_python_imports,
     source_extension_manifest_source_path,
+    validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_extension_link_requirements import (
     materialize_source_extension_link_requirements,
     parse_source_extension_link_requirements,
 )
+from molt.cli.source_extension_manifest_codec import (
+    _compact_source_extension_manifest,
+    _expand_source_extension_manifest_authorities,
+    _validate_compact_source_extension_manifest,
+)
+from molt.cli.source_extension_object_closure import (
+    SourceExtensionObjectClosureError,
+    finalize_source_extension_object_closure,
+    validate_source_extension_object_closure,
+    validate_source_extension_object_closure_sources,
+)
 from molt.target_python import _parse_target_python_version
-from molt.wasm_artifact import read_wasm_function_exports
 
 
 def _load_manifest(path: Path, errors: list[str]) -> dict[str, Any] | None:
@@ -239,42 +250,6 @@ def _support_file_payloads(
             continue
         payloads.append(parsed)
     return payloads
-
-
-def _validate_direct_symbol_exports(
-    *,
-    artifact_path: Path,
-    manifest: Mapping[str, Any],
-    callable_exports: list[dict[str, Any]],
-) -> list[str]:
-    if manifest.get("runtime_linkage") != "static_link":
-        return []
-    if manifest.get("artifact_kind") != "wasm_relocatable_object":
-        return []
-    direct_symbols = sorted(
-        {
-            symbol.strip()
-            for export in callable_exports
-            if export.get("binding") == "direct_symbol"
-            and isinstance((symbol := export.get("symbol")), str)
-            and symbol.strip()
-        }
-    )
-    if not direct_symbols:
-        return []
-    try:
-        exported_symbols = {
-            export.name for export in read_wasm_function_exports(artifact_path)
-        }
-    except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
-        return [f"cannot validate direct_symbol callable exports: {exc}"]
-    missing = [symbol for symbol in direct_symbols if symbol not in exported_symbols]
-    if not missing:
-        return []
-    return [
-        "direct_symbol callable export(s) absent from wasm function exports: "
-        + ", ".join(missing)
-    ]
 
 
 def _canonicalize_object_closure_c_api_requirements(
@@ -551,7 +526,7 @@ def extension_seal(
         manifest,
         manifest_dir=manifest_path.parent,
         wheel_path=None,
-        require_capabilities=True,
+        require_nonempty_capabilities=False,
         required_abi=None,
         require_checksum=False,
         warn_missing_checksum=False,
@@ -571,8 +546,22 @@ def extension_seal(
             "or 'static_archive'"
         )
     object_closure = manifest.get("object_closure")
+    validated_object_closure: tuple[dict[str, Any], str] | None = None
     if not isinstance(object_closure, Mapping) or not object_closure:
         errors.append("extension seal requires non-empty object_closure custody")
+    else:
+        try:
+            validated_object_closure = validate_source_extension_object_closure(
+                manifest
+            )
+            if not _manifest_has_sealed_extension_custody(manifest):
+                validate_source_extension_object_closure_sources(
+                    object_closure,
+                    manifest_dir=manifest_path.parent,
+                    manifest=manifest,
+                )
+        except SourceExtensionObjectClosureError as exc:
+            errors.append(f"extension seal object closure is invalid: {exc}")
     expected_extension_sha = manifest.get("extension_sha256")
     actual_extension_sha = _sha256_file(artifact_path)
     if (
@@ -663,13 +652,26 @@ def extension_seal(
             support_file_sha256=support_file_sha256,
         )
     )
-    errors.extend(
-        _validate_direct_symbol_exports(
-            artifact_path=artifact_path,
-            manifest=manifest,
-            callable_exports=callable_exports,
+    direct_symbols = tuple(
+        sorted(
+            {
+                symbol.strip()
+                for export in callable_exports
+                if export.get("binding") == "direct_symbol"
+                and isinstance((symbol := export.get("symbol")), str)
+                and symbol.strip()
+            }
         )
     )
+    if validated_object_closure is not None:
+        errors.extend(
+            validate_source_extension_artifact_object_closure(
+                artifact_path=artifact_path,
+                manifest=manifest,
+                required_function_exports=direct_symbols,
+                validated_closure=validated_object_closure,
+            )
+        )
     if not python_exports and not callable_exports:
         errors.append(
             "extension seal requires at least one python export or callable export"
@@ -681,7 +683,14 @@ def extension_seal(
             command="extension-seal",
         )
 
-    sealed_manifest = dict(manifest)
+    try:
+        sealed_manifest = _expand_source_extension_manifest_authorities(manifest)
+    except ValueError as exc:
+        return _fail(
+            f"extension seal cannot materialize manifest authority: {exc}",
+            json_output,
+            command="extension-seal",
+        )
     abi_restamp_errors = _restamp_current_runtime_abi(
         sealed_manifest,
         molt_root=_find_molt_root(manifest_path.parent, Path.cwd()),
@@ -794,6 +803,17 @@ def extension_seal(
     sealed_manifest["extension_sha256"] = actual_extension_sha
     sealed_manifest["sealed_from_manifest_sha256"] = _sha256_file(manifest_path)
     sealed_manifest["sealed_from_extension_sha256"] = actual_extension_sha
+    try:
+        finalize_source_extension_object_closure(sealed_manifest)
+        sealed_manifest = _compact_source_extension_manifest(sealed_manifest)
+        _validate_compact_source_extension_manifest(sealed_manifest)
+        validate_source_extension_object_closure(sealed_manifest)
+    except (SourceExtensionObjectClosureError, ValueError) as exc:
+        return _fail(
+            f"extension seal cannot finalize object closure: {exc}",
+            json_output,
+            command="extension-seal",
+        )
 
     root_manifest = dict(sealed_manifest)
     root_manifest["extension"] = dest_artifact_rel.as_posix()

@@ -153,17 +153,24 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'        "{kind}",\n')
     out.append("    }\n")
     out.append(")\n\n")
-    role_constants = [
-        row["constant"] for row in data["simpleir_runtime_requirement_roles"]
-    ]
-    frame_bit = role_constants.index("FRAME_INTROSPECTION")
     out.append(
         "# Explicit acquisition-provenance requirement bits shared with target admission.\n"
     )
     out.append(
-        f"SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << {frame_bit}\n\n"
+        "SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: int = "
+        f"{data['simpleir_runtime_requirement_mask_bits']}\n"
     )
-
+    known_mask = sum(
+        1 << row["bit"] for row in data["simpleir_runtime_requirement_roles"]
+    )
+    out.append(f"SIMPLEIR_RUNTIME_REQUIREMENT_ALL: int = {known_mask}\n")
+    for row in sorted(
+        data["simpleir_runtime_requirement_roles"], key=lambda role: role["bit"]
+    ):
+        out.append(
+            f"SIMPLEIR_RUNTIME_REQUIREMENT_{row['constant']}: int = 1 << {row['bit']}\n"
+        )
+    out.append("\n")
     out.append("SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {\n")
     for row in sorted(
         data.get("simpleir_runtime_qualified_callable", []),

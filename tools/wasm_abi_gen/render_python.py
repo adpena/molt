@@ -10,6 +10,8 @@ from wasm_abi_gen.manifest import (
     _call_indirect_imports,
     generator_cpython_abi_link_import_kinds,
     generator_cpython_abi_link_import_signatures,
+    generator_external_native_artifact_function_signatures,
+    generator_external_native_artifact_import_shapes,
 )
 
 
@@ -253,9 +255,11 @@ def render_py(
             "        return import_name\n",
             "    return None\n\n",
             "def wasm_import_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
-            "    import_name = wasm_import_name(name)\n",
+            "    import_name = wasm_runtime_import_name(name)\n",
             "    if import_name is not None:\n",
-            "        return WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n",
+            "        signature = WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n",
+            "        if signature is not None:\n",
+            "            return signature\n",
             "    return WASM_RUNTIME_HOST_EXPORT_SIGNATURE_BY_NAME.get(name)\n\n",
             "def wasm_import_result_kind(name: str) -> str | None:\n",
             "    signature = wasm_import_signature(name)\n",
@@ -417,13 +421,35 @@ def render_py(
         lines.append(f'    "{name}": "{symbol_kind}",\n')
     lines.append("}\n\n")
     lines.append(
-        "WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES: "
+        "WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES: dict[str, tuple[str, str]] = {\n"
+    )
+    for name, module, kind in generator_external_native_artifact_import_shapes(data):
+        lines.append(f'    "{name}": ("{module}", "{kind}"),\n')
+    lines.append("}\n\n")
+    lines.append(
+        "WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES: "
         "dict[str, dict[str, object]] = {\n"
     )
     for name, params, results in generator_cpython_abi_link_import_signatures():
         result = "nil" if not results else ", ".join(results)
         lines.append(
             f'    "{name}": {{"params": {list(params)!r}, "result": {result!r}}},\n'
+        )
+    lines.append("}\n\n")
+    lines.append(
+        "WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: "
+        "dict[tuple[str, str], dict[str, object]] = {\n"
+    )
+    for (
+        module,
+        name,
+        params,
+        results,
+    ) in generator_external_native_artifact_function_signatures(data):
+        result = "nil" if not results else ", ".join(results)
+        lines.append(
+            f'    ("{module}", "{name}"): '
+            f'{{"params": {list(params)!r}, "result": {result!r}}},\n'
         )
     lines.append("}\n\n")
     lines.append("WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (\n")

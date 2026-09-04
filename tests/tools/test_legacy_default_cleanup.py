@@ -146,7 +146,7 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
 
     assert output_path.read_bytes() == wasm_path.read_bytes()
     assert len(published_sources) == 1
-    assert published_sources[0].name.startswith(".output.wasm.")
+    assert published_sources[0].name.startswith(".stage-")
     assert published_sources[0].name.endswith(".tmp")
     assert list(tmp_path.glob(".*.tmp")) == []
 
@@ -177,7 +177,7 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
         output_index = cmd.index("-o") + 1
         temp_output = Path(cmd[output_index])
         assert temp_output != output_path
-        assert temp_output.name.startswith(".output.wasm.")
+        assert temp_output.name.startswith(".stage-")
         temp_output.write_bytes(b"\x00asm\x01\x00\x00\x00stripped")
         return _Proc()
 
@@ -207,6 +207,6 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
     assert seen_commands
     assert output_path.read_bytes() == b"\x00asm\x01\x00\x00\x00stripped"
     assert len(published_sources) == 1
-    assert published_sources[0].name.startswith(".output.wasm.")
+    assert published_sources[0].name.startswith(".stage-")
     assert published_sources[0].name.endswith(".tmp")
     assert list(tmp_path.glob(".*.tmp")) == []

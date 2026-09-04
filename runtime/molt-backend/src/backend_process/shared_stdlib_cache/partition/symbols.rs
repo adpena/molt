@@ -54,7 +54,10 @@ pub(crate) fn prune_and_partition_native_stdlib(
     // are dead-function-elimination roots here (invariant I5).
     molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
     molt_backend::eliminate_dead_imports(ir);
-    molt_backend::eliminate_dead_ops(ir);
+    molt_backend::eliminate_dead_ops(
+        ir,
+        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
+    );
     let module_context = molt_backend::SimpleBackend::build_module_context(&ir.functions);
     let user_func_set: std::collections::BTreeSet<String> = ir
         .functions

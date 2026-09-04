@@ -51,6 +51,7 @@ from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
 )
+from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
 from molt.cli.wasm_link_cache import (  # noqa: E402
     WasmLinkCacheEntry,
     _default_wasm_link_cache,
@@ -76,6 +77,7 @@ from molt.wasm_artifact import (  # noqa: E402
     parse_wasm_defined_globals,
     parse_wasm_exports,
     read_wasm_split_runtime_callable_layout as read_wasm_split_runtime_callable_layout,
+    skip_wasm_import_description as _parse_import_desc,
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols  # noqa: E402
@@ -117,12 +119,10 @@ from wasm_link_format import (  # noqa: E402
     _count_func_imports as _count_func_imports,
     _ensure_table_export as _ensure_table_export,
     _find_func_import_index as _find_func_import_index,
-    _flatten_rec_groups as _flatten_rec_groups,
     _has_table as _has_table,
     _is_wasm_binary as _is_wasm_binary,
     _parse_custom_section as _parse_custom_section,
     _parse_func_type_indices as _parse_func_type_indices,
-    _parse_import_desc as _parse_import_desc,
     _parse_indexed_symbol as _parse_indexed_symbol,
     _parse_linking_payload as _parse_linking_payload,
     _parse_sections as _parse_sections_raw,
@@ -714,22 +714,7 @@ def _wasm_link_transform_authority_digest() -> str:
 
 
 def _wasm_link_transform_authority_paths() -> tuple[Path, ...]:
-    repo_root = TOOLS_ROOT.parent
-    return tuple(
-        repo_root / relative
-        for relative in (
-            "tools/artifact_publish.py",
-            "tools/wasm_link.py",
-            "tools/wasm_link_edit.py",
-            "tools/wasm_link_facts.py",
-            "tools/wasm_link_format.py",
-            "tools/wasm_link_optimize.py",
-            "tools/wasm_optimize.py",
-            "src/molt/wasm_artifact.py",
-            "src/molt/wasm_linking_symbols.py",
-            "src/molt/wasm_optimization.py",
-        )
-    )
+    return local_python_import_closure(TOOLS_ROOT.parent, (Path(__file__),))
 
 
 def _transform_authority_digest(paths: Sequence[Path]) -> str:
@@ -1565,7 +1550,9 @@ def _native_wasm_import_names(path: Path) -> set[str]:
         return set()
     try:
         return {
-            name for _module, name, kind, _desc in _collect_imports(data) if kind == 0
+            wasm_import.name
+            for wasm_import in _collect_imports(data)
+            if wasm_import.kind == 0
         }
     except ValueError:
         return set()
@@ -1841,9 +1828,9 @@ def _required_native_direct_symbols(output_data: bytes) -> tuple[str, ...]:
     return tuple(
         sorted(
             {
-                name
-                for module, name, kind, _desc in _collect_imports(output_data)
-                if module == "molt_native" and kind == 0
+                wasm_import.name
+                for wasm_import in _collect_imports(output_data)
+                if wasm_import.module == "molt_native" and wasm_import.kind == 0
             }
         )
     )

@@ -12,6 +12,19 @@ use super::clone::{
 use super::wire::wire_fused_loop;
 use super::{FusionCandidate, FusionStats, GEN_CONTROL_BYTES, SlotInfo, attr_value_int};
 
+#[derive(Clone, Copy)]
+enum SlotInitPlan {
+    CallerValue(ValueId),
+    Int(i64),
+    None,
+}
+
+#[derive(Clone, Copy)]
+struct PlannedSlot {
+    offset: i64,
+    init: SlotInitPlan,
+}
+
 /// Collect the set of USER frame-slot offsets (`>= GEN_CONTROL_BYTES`) the poll
 /// body accesses via `ClosureLoad`/`ClosureStore`, in ascending order.
 fn collect_user_frame_slots(poll: &TirFunction) -> Vec<i64> {
@@ -55,6 +68,45 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     candidate: &FusionCandidate,
     stats: &mut FusionStats,
 ) -> bool {
+    let Some(planned_slots) = preflight_fusion(caller, poll, candidate) else {
+        return false;
+    };
+
+    // Cloning and wiring allocate ids and rewrite CFG, type, label, and loop
+    // metadata before every structural surprise can be ruled out. Perform that
+    // whole mutable phase on an owned staging function. A conservative bailout
+    // drops the stage; the caller (including its allocation counters) remains
+    // byte-identical. Successful fusion commits with one move, preserving the
+    // exact deterministic id sequence produced by the former in-place path.
+    let mut staged = caller.clone();
+    if !apply_fusion_staged(&mut staged, poll, candidate, &planned_slots) {
+        return false;
+    }
+
+    // Keep the commit itself infallible: even debug overflow must be detected
+    // before replacing the caller so a panic cannot expose half-committed state.
+    let next_frames_elided = stats
+        .frames_elided
+        .checked_add(1)
+        .expect("generator-fusion frame statistic overflow");
+    let next_yield_sites_spliced = stats
+        .yield_sites_spliced
+        .checked_add(1)
+        .expect("generator-fusion yield statistic overflow");
+    *caller = staged;
+    stats.frames_elided = next_frames_elided;
+    stats.yield_sites_spliced = next_yield_sites_spliced;
+    true
+}
+
+/// Complete every read-only eligibility and slot-initialization check before
+/// allocating the transaction's staging copy. Returning `None` cannot mutate
+/// either the caller or the fusion statistics.
+fn preflight_fusion(
+    caller: &TirFunction,
+    poll: &TirFunction,
+    candidate: &FusionCandidate,
+) -> Option<Vec<PlannedSlot>> {
     // --- Phase-1 gate: exactly one yield site. ---
     let yield_count: usize = poll
         .blocks
@@ -66,7 +118,7 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
         // Multi-yield-site (sequential `yield a; yield b; ...`) needs a
         // return-dispatch over yield-delimited segments — doc-26 Phase-1
         // Finding #1. Conservative bail: the generator stays Tier D.
-        return false;
+        return None;
     }
 
     // --- Consumer-carried-state gate. A function-scope consumer threads its own
@@ -96,7 +148,7 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
             .get(&b)
             .is_some_and(|blk| !blk.args.is_empty())
         {
-            return false;
+            return None;
         }
     }
 
@@ -109,64 +161,89 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     // --- Plan each user slot: offset + caller-space init value. A slot whose
     //     init cannot be resolved soundly bails the whole splice. ---
     let user_slots = collect_user_frame_slots(poll);
-    let mut slot_infos: Vec<SlotInfo> = Vec::with_capacity(user_slots.len());
-    // Pre-materialize init values in the caller. We append const/copy ops into
-    // the AllocTask block before the AllocTask (so they dominate the loop).
-    let mut preheader_init_ops: Vec<TirOp> = Vec::new();
+    let mut planned_slots = Vec::with_capacity(user_slots.len());
     for &offset in &user_slots {
         // Param slot? offset == GEN_CONTROL_BYTES + 8*i, i < alloc_args.len().
         let rel = offset - GEN_CONTROL_BYTES;
         if rel % 8 != 0 {
-            return false; // non-8-aligned slot — unexpected shape, bail.
+            return None; // non-8-aligned slot — unexpected shape, bail.
         }
         let idx = (rel / 8) as usize;
         if idx < alloc_args.len() {
             // Parameter slot: init = the AllocTask arg (already a caller value).
-            slot_infos.push(SlotInfo {
+            planned_slots.push(PlannedSlot {
                 offset,
-                init_caller_val: alloc_args[idx],
+                init: SlotInitPlan::CallerValue(alloc_args[idx]),
             });
             continue;
         }
-        // Local slot: init from the poll entry-block init store, materialized as
-        // a caller const. We only support a const/None init in Phase 1 (the
-        // common `i = 0` / unbound-local case); a non-const local init bails.
-        let init_val = match local_slot_init_const(poll, offset) {
-            Some(LocalInit::Int(v)) => {
-                let nv = caller.fresh_value();
-                caller.value_types.insert(nv, TirType::I64);
-                preheader_init_ops.push(const_int_op(nv, v));
-                nv
+        // Local slot: prove its initializer now, but materialize it only inside
+        // the transaction. Phase 1 supports const/None initialization.
+        let init = match local_slot_init_const(poll, offset) {
+            Some(LocalInit::Int(v)) => SlotInitPlan::Int(v),
+            Some(LocalInit::None_) => SlotInitPlan::None,
+            None => return None, // non-trivial local init — bail (Tier D).
+        };
+        planned_slots.push(PlannedSlot { offset, init });
+    }
+
+    Some(planned_slots)
+}
+
+/// Execute the allocation and CFG-rewrite phase against an unobservable staging
+/// function. `false` discards every mutation made here.
+fn apply_fusion_staged(
+    caller: &mut TirFunction,
+    poll: &TirFunction,
+    candidate: &FusionCandidate,
+    planned_slots: &[PlannedSlot],
+) -> bool {
+    let mut slot_infos: Vec<SlotInfo> = Vec::with_capacity(planned_slots.len());
+    // Materialize local init values in the staged caller. These ops are moved to
+    // the cloned preheader after cloning so they dominate the loop-header phis.
+    let mut preheader_init_ops: Vec<TirOp> = Vec::new();
+    for planned in planned_slots {
+        let init_caller_val = match planned.init {
+            SlotInitPlan::CallerValue(value) => value,
+            SlotInitPlan::Int(value) => {
+                let fresh = caller.fresh_value();
+                caller.value_types.insert(fresh, TirType::I64);
+                preheader_init_ops.push(const_int_op(fresh, value));
+                fresh
             }
-            Some(LocalInit::None_) => {
-                let nv = caller.fresh_value();
-                caller.value_types.insert(nv, TirType::None);
-                preheader_init_ops.push(const_none_op(nv));
-                nv
+            SlotInitPlan::None => {
+                let fresh = caller.fresh_value();
+                caller.value_types.insert(fresh, TirType::None);
+                preheader_init_ops.push(const_none_op(fresh));
+                fresh
             }
-            None => return false, // non-trivial local init — bail (Tier D).
         };
         slot_infos.push(SlotInfo {
-            offset,
-            init_caller_val: init_val,
+            offset: planned.offset,
+            init_caller_val,
         });
     }
 
     // --- Clone + rewrite the poll body into the caller. ---
+    let obsolete_consumer_latch_polls =
+        super::super::async_work_poll::standalone_latch_poll_sites(caller);
     let Some(clone) = clone_and_rewrite_poll(poll, caller, &slot_infos) else {
-        // The clone bailed (e.g. an unpromotable slot store pattern). Any fresh
-        // ids / preheader ops we minted are inert (never inserted into a block),
-        // so the caller is still byte-identical.
+        // The clone bailed (e.g. an unpromotable slot store pattern). The caller
+        // visible to the pass remains untouched because this stage is discarded.
         return false;
     };
 
     // --- Wire the fused loop. ---
-    if !wire_fused_loop(caller, candidate, &clone, &slot_infos, preheader_init_ops) {
+    if !wire_fused_loop(
+        caller,
+        candidate,
+        &clone,
+        &slot_infos,
+        preheader_init_ops,
+        &obsolete_consumer_latch_polls,
+    ) {
         return false;
     }
-
-    stats.frames_elided += 1;
-    stats.yield_sites_spliced += 1;
 
     // SSA-validity is an invariant of the splice, not a hope: a malformed splice
     // panics here rather than silently corrupting the program (mirrors the E1

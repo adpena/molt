@@ -753,6 +753,7 @@ def _prepare_frontend_stage_state(
             json_output=json_output,
             defer_native_artifacts=True,
             target=target,
+            target_python=prepared_build_config.target_python,
         )
     )
     if import_admission_policy_error is not None:
@@ -784,6 +785,7 @@ def _prepare_frontend_stage_state(
             external_module_roots=import_admission_policy.external_roots,
             admitted_packages=import_admission_policy.admitted_external_packages,
             target=target,
+            target_python=prepared_build_config.target_python,
             required_modules=(
                 set(prepared_module_graph.module_graph)
                 | set(prepared_module_graph.explicit_imports)

@@ -299,7 +299,7 @@ pub fn finalize_simple_ir_drops_with_tir_custody(
         }
         let mut tir_func = optimized_tir_by_name
             .remove(&func_ir.name)
-            .unwrap_or_else(|| super::lower_from_simple::lower_to_tir(func_ir));
+            .unwrap_or_else(|| super::lower_from_simple::lower_to_tir_for_target(func_ir, tti));
         // `finalize_function_drops` refines types before the drop pass (the drop
         // placement needs repr facts), so no separate refinement is needed here.
         // The function arriving here already went through the per-function pipeline
@@ -328,27 +328,27 @@ mod tests {
     /// must survive the pass-manager snapshot/restore boundary.
     #[test]
     fn module_finalizer_reports_marker_only_change_for_trivial_function() {
-        // A trivial `return n` function: one param, returns it. No heap temps.
+        // A trivial `return` function has no values whose ownership must move.
         let func_ir = FunctionIR {
             name: "trivial".into(),
-            params: vec!["n".into()],
+            params: vec![],
             ops: vec![OpIR {
-                kind: "ret".into(),
-                args: Some(vec!["n".into()]),
+                kind: "ret_void".into(),
                 ..OpIR::default()
             }],
-            param_types: Some(vec!["Any".into()]),
+            param_types: None,
             source_file: None,
             is_extern: false,
             execution_context: Default::default(),
         };
-        let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = crate::tir::lower_from_simple::lower_to_tir_for_target(&func_ir, &target);
         crate::tir::type_refine::refine_types(&mut tir);
         let mut module = TirModule {
             name: "m".into(),
             functions: vec![tir],
         };
-        let changed = finalize_module_drops(&mut module, &TargetInfo::native_release_fast());
+        let changed = finalize_module_drops(&mut module, &target);
         assert_eq!(changed, vec!["trivial"]);
         assert!(matches!(
             module.functions[0].attrs.get(DROP_INSERTED_ATTR),
@@ -361,7 +361,7 @@ mod tests {
                 .flat_map(|block| block.ops.iter())
                 .all(|op| op.opcode != super::super::ops::OpCode::DecRef
                     && op.opcode != super::super::ops::OpCode::IncRef),
-            "borrowed param return needs no physical RC ops"
+            "ret_void needs no physical RC ops"
         );
     }
 
@@ -569,7 +569,8 @@ mod tests {
         };
 
         let tti = TargetInfo::native_release_fast();
-        let mut optimized_tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
+        let mut optimized_tir =
+            crate::tir::lower_from_simple::lower_to_tir_for_target(&func_ir, &tti);
         crate::tir::type_refine::refine_types(&mut optimized_tir);
         crate::tir::passes::run_pipeline(&mut optimized_tir, &tti);
         crate::tir::type_refine::refine_types(&mut optimized_tir);

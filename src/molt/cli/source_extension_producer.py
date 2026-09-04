@@ -48,6 +48,7 @@ from molt.cli.source_extensions import (
     _meson_target_filename_names,
     _meson_target_output_paths,
     canonicalize_source_extension_manifest_required_capsules,
+    validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_build_environment import (
     LockedSourceBuildEnvironment,
@@ -70,7 +71,10 @@ from molt.cli.source_extension_manifest_codec import (
     _validate_compact_source_extension_manifest,
 )
 from molt.cli.source_extension_object_closure import (
-    source_extension_object_closure_digest,
+    SourceExtensionObjectClosureError,
+    finalize_source_extension_object_closure,
+    validate_source_extension_object_closure,
+    validate_source_extension_object_closure_sources,
 )
 from molt.cli.source_extension_link_requirements import (
     materialize_source_extension_link_requirements,
@@ -1074,7 +1078,7 @@ def _audit_extension_output(
         manifest,
         manifest_dir=output_root,
         wheel_path=None,
-        require_capabilities=False,
+        require_nonempty_capabilities=False,
         required_abi=None,
         require_checksum=True,
         warn_missing_checksum=False,
@@ -1154,13 +1158,18 @@ def _audit_extension_output(
         raise SourceExtensionProducerError(
             f"built extension {module} object closure has no init-symbol owner"
         )
-    closure_digest = source_extension_object_closure_digest(
-        closure, manifest_dir=output_root
-    )
-    if closure.get("closure_sha256") != closure_digest:
-        raise SourceExtensionProducerError(
-            f"built extension {module} object closure checksum mismatch"
+    try:
+        validate_source_extension_object_closure_sources(
+            closure,
+            manifest_dir=output_root,
+            manifest=manifest,
         )
+        validated_object_closure = validate_source_extension_object_closure(manifest)
+        _closure_identity, closure_digest = validated_object_closure
+    except SourceExtensionObjectClosureError as exc:
+        raise SourceExtensionProducerError(
+            f"built extension {module} has invalid object closure: {exc}"
+        ) from exc
     extension = manifest.get("extension")
     if not isinstance(extension, str) or not extension:
         raise SourceExtensionProducerError(
@@ -1173,6 +1182,16 @@ def _audit_extension_output(
     if not artifact_path.is_file() or not artifact_manifest_path.is_file():
         raise SourceExtensionProducerError(
             f"built extension {module} did not publish artifact plus sidecar"
+        )
+    artifact_closure_errors = validate_source_extension_artifact_object_closure(
+        artifact_path=artifact_path,
+        manifest=manifest,
+        validated_closure=validated_object_closure,
+    )
+    if artifact_closure_errors:
+        raise SourceExtensionProducerError(
+            f"built extension {module} artifact/object closure mismatch: "
+            + "; ".join(artifact_closure_errors)
         )
     try:
         artifact_manifest = json.loads(
@@ -1468,6 +1487,8 @@ def _stage_extension(
     canonical_embedded_manifest = _compact_source_extension_manifest(
         canonical_embedded_manifest
     )
+    _validate_compact_source_extension_manifest(canonical_embedded_manifest)
+    validate_source_extension_object_closure(canonical_embedded_manifest)
     _require_location_neutral(
         canonical_embedded_manifest,
         authority=f"embedded extension manifest for {produced.module}",
@@ -1569,16 +1590,20 @@ def _stage_extension(
             for regeneration in raw_regenerations
             if isinstance(regeneration, Mapping)
         ]
-    closure["closure_sha256"] = source_extension_object_closure_digest(
-        closure,
-        manifest_dir=sidecar_path.parent,
-        manifest=manifest,
-    )
-    build = manifest.get("build")
-    if isinstance(build, dict):
-        build["object_closure_sha256"] = closure["closure_sha256"]
+    try:
+        validate_source_extension_object_closure_sources(
+            closure,
+            manifest_dir=sidecar_path.parent,
+            manifest=manifest,
+        )
+        finalize_source_extension_object_closure(manifest)
+    except SourceExtensionObjectClosureError as exc:
+        raise SourceExtensionProducerError(
+            f"cannot finalize source-extension object closure: {exc}"
+        ) from exc
     manifest = _compact_source_extension_manifest(manifest)
     _validate_compact_source_extension_manifest(manifest)
+    validate_source_extension_object_closure(manifest)
     _require_location_neutral(
         manifest,
         authority=f"extension manifest for {produced.module}",
