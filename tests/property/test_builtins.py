@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for Python builtin functions.
 
 Tests range(), len(), bool(), int()/float()/str() conversions,

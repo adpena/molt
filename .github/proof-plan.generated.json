@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "cab2244575e2962e2f43a1c21c3032683a65eb8b9669a1eff069b0c2cdac7191",
+  "authority_sha256": "f7747bc6fa0681fbbd98b4a7a48dd20e8a6fba62f2880a9eddb8e0fca8da4ee2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -1905,6 +1905,31 @@
         "uv",
         "run",
         "python3",
+        "tools/gen_release_matrix.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.release-matrix.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/check_generator_manifest.py",
         "--check"
       ],
@@ -1927,7 +1952,8 @@
         "repository.target-features.generated",
         "repository.browser-assets.generated",
         "repository.cpython-abi-layout.generated",
-        "repository.native-callable-abi.generated"
+        "repository.native-callable-abi.generated",
+        "repository.release-matrix.generated"
       ],
       "family": "repository_policy",
       "id": "repository.generator-manifest",
@@ -3373,7 +3399,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 3300,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2805
+          "repository-policy": 2880
         }
       },
       "rust": {

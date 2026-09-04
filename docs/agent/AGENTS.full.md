@@ -1550,8 +1550,8 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - `python3 tools/check_differential_suite_layout.py`
   - `python3 tools/gen_diff_lanes.py`
 - Expected-failure governance for dynamic semantics:
-  - Register intentional dynamic gaps (for example `exec`/`eval`) only in `tools/stdlib_full_coverage_manifest.py` under `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
-  - Keep `tests/test_molt_diff_expected_failures.py` green so manifest coverage and `XFAIL`/`XPASS` behavior stay enforced.
+  - Declare each intentional dynamic gap (for example `exec`/`eval`) on its test with `# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy`.
+  - Keep `tests/test_molt_diff_expected_failures.py` and `tests/test_check_dynamic_policy.py` green so canonical scope projection and `XFAIL`/`XPASS` behavior stay enforced.
 - Run the core-lane lowering gate with the current manifest path:
   - `python3 tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt`
 - NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.

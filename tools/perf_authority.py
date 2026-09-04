@@ -43,10 +43,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+TOOLS_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = TOOLS_ROOT.parent
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+for import_root in (TOOLS_ROOT, SRC_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from molt.metric_ratios import (  # noqa: E402
     RatioDirection as RatioDirection,
@@ -84,6 +86,7 @@ __all__ = [
     "is_non_canonical_provenance",
     "is_stale_snapshot_metadata",
     "non_canonical_provenance",
+    "release_scoreboard_problems",
     "relative_time_delta",
     "safe_speedup",
     "scoreboard_revision_fields",
@@ -132,6 +135,7 @@ _CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
 # stale. 30 days is generous: the canonical board is regenerated per-release; a
 # month-old hand-written table is lore, not data.
 DEFAULT_STALE_DAYS = 30
+_MAX_FUTURE_SKEW = dt.timedelta(minutes=5)
 
 # The banner stamped at the top of every stale perf markdown. Self-identifies
 # the doc as non-authoritative and points at the live gate.
@@ -403,6 +407,10 @@ def canonical_scoreboard_shape_problems(
         run_benchmarks: set[str] = set()
     else:
         run_benchmarks = set(benchmarks_run)
+        if benchmarks_run != list(CANONICAL_PERF_BENCHMARKS):
+            problems.append(
+                f"{label} benchmarks_run must equal the canonical core suite in order"
+            )
         missing = sorted(expected_benchmarks - run_benchmarks)
         if missing:
             problems.append(
@@ -428,6 +436,14 @@ def canonical_scoreboard_shape_problems(
         if missing:
             problems.append(
                 f"{label} missing backend binary identities: {', '.join(missing)}"
+            )
+        unexpected_identities = sorted(
+            set(binary_identities) - CANONICAL_PERF_BINARY_IDENTITIES
+        )
+        if unexpected_identities:
+            problems.append(
+                f"{label} has noncanonical backend binary identities: "
+                f"{', '.join(unexpected_identities)}"
             )
         non_strings = sorted(
             key
@@ -595,6 +611,136 @@ def current_scoreboard_problems(
                     f"{label} {field} {_short_rev(rev)} != "
                     f"origin/main {_short_rev(origin_rev)}"
                 )
+
+    return problems
+
+
+def release_scoreboard_problems(
+    doc: Mapping[str, Any],
+    *,
+    expected_source_sha: str,
+    label: str = "release scoreboard",
+    now: dt.datetime | None = None,
+    max_age_days: float = DEFAULT_STALE_DAYS,
+) -> list[str]:
+    """Validate one canonical scoreboard for an exact release revision.
+
+    Unlike :func:`current_scoreboard_problems`, this authority never reads an
+    ambient branch tip. The requested release revision is the identity, and
+    every scoreboard revision field must name it exactly. The canonical
+    command is not accepted as caller-authored metadata: its recorded
+    projections (core matrix, native+LLVM release-fast cells, sample/warmup
+    counts, classification, and quiescence custody) must all be present in the
+    scoreboard bytes.
+    """
+
+    problems: list[str] = []
+    schema_problems = perf_schema.validate_board(doc)
+    if schema_problems:
+        problems.append(
+            f"{label} schema invalid: {_sample_schema_problems(schema_problems)}"
+        )
+    problems.extend(canonical_scoreboard_shape_problems(doc, label=label))
+
+    if doc.get("kind") != "cpython_floor_scoreboard":
+        problems.append(f"{label} kind must be 'cpython_floor_scoreboard'")
+
+    provenance = doc.get("provenance")
+    if not isinstance(provenance, Mapping):
+        problems.append(f"{label} provenance must be an object")
+        provenance = {}
+    if provenance.get("authoritative") is not True:
+        problems.append(f"{label} provenance.authoritative must be true")
+    if provenance.get("dirty_tree") is not False:
+        problems.append(f"{label} provenance.dirty_tree must be false")
+    if provenance.get("require_quiescent") is not True:
+        problems.append(f"{label} provenance.require_quiescent must be true")
+    if provenance.get("quiescent") is not True:
+        problems.append(f"{label} provenance.quiescent must be true")
+    quiescence = provenance.get("quiescence")
+    if not isinstance(quiescence, Mapping):
+        problems.append(f"{label} provenance.quiescence must be an object")
+    else:
+        if quiescence.get("quiet") is not True:
+            problems.append(f"{label} provenance.quiescence.quiet must be true")
+        expected_wait = float(CANONICAL_PERF_QUIESCENCE_WAIT)
+        if quiescence.get("quiescence_wait_timeout_s") != expected_wait:
+            problems.append(
+                f"{label} provenance.quiescence.quiescence_wait_timeout_s "
+                f"must be {expected_wait:g}"
+            )
+
+    summary = doc.get("summary")
+    gate_fails = summary.get("gate_fails") if isinstance(summary, Mapping) else None
+    if gate_fails is not False:
+        problems.append(f"{label} gate_fails is not false: {gate_fails!r}")
+
+    methodology = doc.get("methodology")
+    if not isinstance(methodology, Mapping):
+        problems.append(f"{label} methodology must be an object")
+    else:
+        expected_methodology = {
+            "samples_per_phase": int(CANONICAL_PERF_SAMPLES),
+            "warmup_runs": int(CANONICAL_PERF_WARMUP),
+        }
+        for field, expected in expected_methodology.items():
+            if methodology.get(field) != expected:
+                problems.append(
+                    f"{label} methodology.{field} must be {expected}; "
+                    f"got {methodology.get(field)!r}"
+                )
+
+    generated_at = doc.get("generated_at")
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("release scoreboard validation 'now' must be timezone-aware")
+    age = doc_age_days(
+        generated_at if isinstance(generated_at, str) else None,
+        now=current,
+    )
+    if age is None:
+        problems.append(f"{label} generated_at is missing or unparseable")
+    elif age < -(_MAX_FUTURE_SKEW.total_seconds() / 86400.0):
+        problems.append(f"{label} generated_at is unreasonably far in the future")
+    elif age > max_age_days:
+        problems.append(f"{label} generated_at is {age:.0f}d old (>{max_age_days:g}d)")
+
+    from tools.git_identity import is_git_object_id
+
+    if not is_git_object_id(expected_source_sha):
+        raise ValueError("expected_source_sha must be lowercase Git object hex")
+    revision_fields = dict(scoreboard_revision_fields(doc))
+    required_revision_fields = {
+        "git_rev": doc.get("git_rev"),
+        "provenance.local_head_sha": provenance.get("local_head_sha"),
+        "provenance.origin_sha": provenance.get("origin_sha"),
+        "provenance.merge_base_sha": provenance.get("merge_base_sha"),
+    }
+    for field, value in required_revision_fields.items():
+        if value != expected_source_sha:
+            problems.append(
+                f"{label} {field} must equal requested source "
+                f"{_short_rev(expected_source_sha)}; got "
+                f"{_short_rev(value if isinstance(value, str) else None)}"
+            )
+    if set(revision_fields) != {"git_rev", "provenance.local_head_sha"}:
+        problems.append(
+            f"{label} must contain exact git_rev and provenance.local_head_sha"
+        )
+
+    expected_repeats = int(CANONICAL_PERF_REPEAT)
+    for cell in perf_schema.flatten_cells(doc):
+        if not all(
+            cell.get(field) is True for field in ("build_ok", "molt_ok", "cpython_ok")
+        ):
+            continue
+        cell_label = _cell_label(cell)
+        if cell.get("repeat_passes") != expected_repeats:
+            problems.append(
+                f"{label} {cell_label} repeat_passes must be {expected_repeats}"
+            )
+        if cell.get("measured_quiescent") is not True:
+            problems.append(f"{label} {cell_label} measured_quiescent must be true")
 
     return problems
 

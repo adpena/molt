@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Property-based tests for arithmetic operations.
 
 Tests mathematical invariants (commutativity, associativity, identity,

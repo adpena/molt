@@ -173,7 +173,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "budget_seconds": 3600,
         "projected_makespan_seconds": 3300,
         "critical_path_seconds": 1500,
-        "resource_capacity_floor_seconds": {"repository-policy": 2805},
+        "resource_capacity_floor_seconds": {"repository-policy": 2880},
         "headroom_seconds": 300,
     }
     assert timeout_envelopes["wasm"] == {

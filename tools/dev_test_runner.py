@@ -87,9 +87,9 @@ def _build_pytest_command(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--verified-subset",
+        "--check-verified-subset",
         action="store_true",
-        help="Run tools/verified_subset.py after pytest.",
+        help="Validate the verified-subset authority after pytest.",
     )
     parser.add_argument(
         "--random-order",
@@ -109,8 +109,8 @@ def main() -> None:
     if resolved_seed is not None:
         _log(f"pytest random order enabled (seed={resolved_seed})")
     _run(pytest_cmd)
-    if args.verified_subset:
-        _run(["python3", "tools/verified_subset.py", "run"])
+    if args.check_verified_subset:
+        _run([sys.executable, "tools/verified_subset.py", "check"])
 
 
 if __name__ == "__main__":

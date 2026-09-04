@@ -417,16 +417,17 @@ Use this for intentionally unsupported dynamism (for example `exec`/`eval`)
 that is documented by vision/break-policy constraints.
 
 ```bash
-# 1) Declare the planned differential tests in:
-#    tools/stdlib_full_coverage_manifest.py
-#    TOO_DYNAMIC_EXPECTED_FAILURE_TESTS
+# 1) Declare the policy on the differential source itself:
+#    # MOLT_META: verified_subset_scope=dynamic_execution_policy \
+#    #   expect_fail=molt expect_fail_reason=too_dynamic_policy
 #
-# 2) Run differential lane as normal; harness auto-converts fail->pass as XFAIL
-#    only when CPython passes and the test path is in that manifest tuple.
+# 2) Run the differential lane as normal. The shared typed policy converts a
+#    Molt failure to XFAIL only when CPython passes and the source marker applies.
 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
 
-# 3) XPASS is treated as failure; remove stale expected-failure entries when
-#    Molt gains support.
+# 3) XPASS is a failure; remove the source-local expected-failure pair when Molt
+#    gains support. Dynamic-policy guards discover the physical suites from the
+#    verified-subset policy, so there is no second path registry to update.
 ```
 
 ## Build Throughput (Multi-Agent)

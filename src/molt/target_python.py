@@ -42,10 +42,6 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
     version.short: version for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
 }
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
-_CPYTHON_COVERAGE_CONFIG = (
-    Path(__file__).resolve().parents[2] / "config" / "cpython_coverage.toml"
-)
-
 # Single authority for the set of supported target-Python short versions
 # ("3.12", "3.13", ...). This is the `TargetPythonVersion` authority; the
 # stdlib-coverage tooling (tools/stdlib_module_union.py baseline and
@@ -63,43 +59,44 @@ def _target_platform_name(value: str | None = None) -> str:
     return {"win32": "windows", "darwin": "macos"}.get(raw, raw)
 
 
-def verified_target_python_tuples() -> tuple[tuple[str, str], ...]:
-    data = tomllib.loads(_CPYTHON_COVERAGE_CONFIG.read_text(encoding="utf-8"))
+def required_verified_subset_python_tuples() -> tuple[tuple[str, str], ...]:
+    from molt.verified_subset import verified_subset_coordinates
+
     return tuple(
-        (str(row["cpython"]), str(row["platform"])) for row in data["verified"]
+        sorted(
+            {
+                (coordinate.python, coordinate.platform)
+                for coordinate in verified_subset_coordinates()
+            }
+        )
     )
 
 
-def require_known_cpython_coverage_version(
+def require_supported_target_python(
     target: TargetPythonVersion,
 ) -> TargetPythonVersion:
-    data = tomllib.loads(_CPYTHON_COVERAGE_CONFIG.read_text(encoding="utf-8"))
-    known = {
-        str(row["cpython"])
-        for key in ("verified", "candidate")
-        for row in data.get(key, [])
-    }
-    if target.short not in known:
-        rendered = ", ".join(sorted(known))
+    supported = set(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
+    if target.short not in supported:
+        rendered = ", ".join(sorted(supported))
         raise ValueError(
-            f"CPython {target.short} has no coverage-boundary entry; known: {rendered}"
+            f"CPython {target.short} is outside the supported target set: {rendered}"
         )
     return target
 
 
-def require_verified_target_python(
+def require_verified_subset_target(
     target: TargetPythonVersion, *, platform: str | None = None
 ) -> TargetPythonVersion:
     selected = (target.short, _target_platform_name(platform))
-    verified = verified_target_python_tuples()
-    if selected not in verified:
+    required = required_verified_subset_python_tuples()
+    if selected not in required:
         rendered = ", ".join(
-            f"CPython {version} on {name}" for version, name in verified
+            f"CPython {version} on {name}" for version, name in required
         )
         raise ValueError(
-            f"unverified Molt target tuple: CPython {selected[0]} on {selected[1]}; "
-            f"verified tuples: {rendered}. This is an honest coverage boundary, "
-            "not a claim that the tuple is unsupported by CPython."
+            f"Molt target tuple is outside the required verified-subset matrix: "
+            f"CPython {selected[0]} on {selected[1]}; required tuples: {rendered}. "
+            "A tuple is proven only by a passing source-bound receipt."
         )
     return target
 

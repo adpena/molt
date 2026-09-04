@@ -76,6 +76,17 @@ sync_test = "tests/test_proof_plan.py"
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_release_matrix.py"
+outputs = ["src/molt/release_matrix.py"]
+source = "config/release_targets.toml + src/molt/target_python.py + src/molt/file_publication.py"
+check_mode = true
+check_command = "tools/gen_release_matrix.py --check"
+idempotent = true
+sync_test = "tests/tools/test_release_supply_chain.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
   "runtime/molt-cpython-abi/cpython_abi_coverage.generated.json",
@@ -385,7 +396,7 @@ outputs = [
   "tests/differential/stdlib/TESTS.txt",
   "tests/differential/pyperformance/TESTS.txt",
 ]
-source = "tests/differential/COVERAGE_INDEX.yaml + tools/generator_io.py"
+source = "tests/differential/COVERAGE_INDEX.yaml + tests/differential/{basic,stdlib,pyperformance}/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_diff_lanes.py --check"
 idempotent = true

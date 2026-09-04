@@ -19,8 +19,8 @@ exact thing the parity contract forbids. This ratchet makes BOTH loud:
   * a manifest expected-fail that now PASSES    -> RED ("remove the entry -- it's
     fixed"; the ratchet is DOWN-ONLY: an entry leaves only by being fixed).
 
-The two manifests
------------------
+The policy scope and debt manifest
+----------------------------------
   * tools/suite_honesty/differential_expectations.json -- the SINGLE SOURCE OF
     TRUTH for every KNOWN-failing differential test, dimensioned by backend
     (native/llvm/wasm/luau) x CPython version. Each expected-fail entry carries
@@ -39,17 +39,14 @@ the xfail/xpass overlay). The guard NEVER runs the suite itself in --check mode
 the snapshot. molt_diff is the authority on what HAPPENED; this manifest is the
 authority on what we EXPECT.
 
-The relationship to the existing too-dynamic manifest (no parallel truth)
-------------------------------------------------------------------------
-tools/stdlib_full_coverage_manifest.py's TOO_DYNAMIC_EXPECTED_FAILURE_TESTS is a
-DIFFERENT category: exec/eval/compile tests that are excluded BY DESIGN (the
-0215-spec forbids them), permanent, no owner needed -- the analogue of the
-ecosystem ratchet's `incompatible-by-design`. This honesty manifest tracks FIXABLE
-DEBTS (a fail with a tracking task). To keep the two from becoming parallel
-sources of truth, the guard treats the too-dynamic set as authoritative for
-by-design exclusions and SUBTRACTS it from the observed-fail set before checking:
-a by-design test is never required to appear here, and a debt here may never be a
-by-design test. They partition the fail space; neither overlaps the other.
+The relationship to the dynamic-execution scope (no parallel truth)
+-------------------------------------------------------------------
+Per-test `verified_subset_scope=dynamic_execution_policy` metadata marks the
+DIFFERENT category of exec/eval/compile tests excluded BY DESIGN. The canonical
+test-policy projection owns that set; this honesty manifest tracks FIXABLE DEBTS
+(a fail with a tracking task). The guard SUBTRACTS policy-scoped paths from the
+observed-fail set before checking: a by-design test is never required here, and a
+debt here may never be a by-design test. They partition the fail space.
 
 What this guard enforces (fail-closed everywhere)
 -------------------------------------------------
@@ -58,7 +55,7 @@ Manifest lint (always fatal, mirrors the ecosystem feature-manifest lint):
   * a `fail` dimension is missing any of `tracking` / `root_cause` / `evidence`
     (anti-parking-lot: every debt names its owner + cause + how it was verified),
   * a test path does not exist on disk (a stale entry that can never be matched),
-  * a test listed here is ALSO in the too-dynamic by-design set (parallel truth).
+  * a test listed here is ALSO in the dynamic-execution scope (parallel truth).
 
 Against a calibration results file (the reality check, BOTH directions):
   * a test whose RAW status is `fail`/`error`/`oom` for a calibrated dimension,
@@ -98,6 +95,12 @@ import sys
 from pathlib import Path
 
 import harness_memory_guard
+from molt.verified_subset import load_verified_subset_policy
+
+try:
+    from tools.compat import test_policy
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    from compat import test_policy  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
 HONESTY_DIR = Path(__file__).resolve().parent / "suite_honesty"
@@ -106,16 +109,15 @@ BASELINE_PATH = HONESTY_DIR / "honesty_baseline.json"
 # Default calibration snapshot consumed in --check mode (committed so CI is
 # deterministic and does not have to rebuild the world on every PR).
 DEFAULT_RESULTS_PATH = HONESTY_DIR / "native_calibration.jsonl"
-# The WASM dimension's committed snapshot, produced by tools/wasm_diff.py (the
-# wasm analogue of native_calibration.jsonl: each row is a wasm-backend RAW
-# status from a `molt build --target wasm` + `node wasm/run_wasm.js` run). When
+# The WASM dimension's committed snapshot, produced by the canonical
+# tests/molt_diff.py backend matrix. Each row is a wasm-backend RAW status from
+# a `molt build --target wasm` + `node wasm/run_wasm.js` run. When
 # present, cmd_check reality-checks every `wasm` manifest dimension against it,
 # exactly the way native is checked. When absent, wasm `fail` dims cannot be
 # confirmed (fail-closed) and `uncalibrated` wasm dims are simply not checked.
 WASM_RESULTS_PATH = HONESTY_DIR / "wasm_calibration.jsonl"
 MOLT_DIFF_PATH = ROOT / "tests" / "molt_diff.py"
-WASM_DIFF_PATH = ROOT / "tools" / "wasm_diff.py"
-TOO_DYNAMIC_MANIFEST_PATH = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
+DYNAMIC_EXECUTION_SCOPE = "dynamic_execution_policy"
 
 # --- the status vocabulary -------------------------------------------------
 # A per-dimension expected status. "pass" is the implicit default for any test
@@ -141,10 +143,6 @@ EXECUTION_RED_REQUIRED_FIELDS = {
 FAILING_RAW_STATUSES = {"fail", "error", "oom"}
 PASSING_RAW_STATUS = "pass"
 SKIP_RAW_STATUS = "skip"
-
-# The backend dimensions this ratchet tracks. native is calibrated here; the
-# others start `uncalibrated` until their own calibration task runs.
-BACKENDS = ("native", "llvm", "wasm", "luau")
 
 # A `fail` entry MUST carry these provenance fields (anti-parking-lot doctrine).
 REQUIRED_FAIL_FIELDS = ("tracking", "root_cause", "evidence")
@@ -186,62 +184,31 @@ def manifest_tests(data: dict) -> dict[str, dict]:
     return data.get("tests", {})
 
 
-def load_too_dynamic_set() -> frozenset[str]:
-    """The by-design exclusion set (exec/eval/compile), from the canonical
-    too-dynamic manifest. Authoritative; this ratchet only SUBTRACTS it.
-    """
-    if not TOO_DYNAMIC_MANIFEST_PATH.exists():
-        return frozenset()
-    import runpy
-
+def load_dynamic_policy_scope() -> frozenset[str]:
+    """Return canonical by-design dynamic-execution policy exclusions."""
     try:
-        namespace = runpy.run_path(str(TOO_DYNAMIC_MANIFEST_PATH))
-    except Exception as exc:  # pragma: no cover - defensive
-        raise GuardError(
-            f"could not load too-dynamic manifest {TOO_DYNAMIC_MANIFEST_PATH}: {exc}"
-        ) from exc
-    raw = namespace.get("TOO_DYNAMIC_EXPECTED_FAILURE_TESTS", ())
-    out: set[str] = set()
-    for item in raw:
-        if isinstance(item, str):
-            out.add(_normalize(item))
-    return frozenset(out)
+        policy = load_verified_subset_policy()
+        return test_policy.verification_scope_paths(
+            policy.suite_selectors,
+            scope=DYNAMIC_EXECUTION_SCOPE,
+            repo_root=ROOT,
+        )
+    except (OSError, ValueError) as exc:
+        raise GuardError(str(exc)) from exc
 
 
 def _has_inline_expect_fail(path: str) -> bool:
-    """True if the test file carries an inline `# MOLT_META: expect_fail=molt` (or
-    `xfail=molt`) marker. That is the SECOND by-design/tracked channel; a test in
-    this honesty manifest must not also use it (no parallel truth).
+    """Return whether the test carries the canonical expected-failure policy.
+
+    This is the second by-design/tracked channel; a test in the honesty manifest
+    must not also use it.
     """
-    file_path = ROOT / path
-    if not file_path.exists():
-        return False
-    try:
-        text = file_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
-    for line in text.splitlines():
-        s = line.strip()
-        if not s.startswith("# MOLT_META:"):
-            continue
-        payload = s[len("# MOLT_META:") :].strip().lower()
-        for token in payload.split():
-            if token.startswith(("expect_fail=", "xfail=")) and "molt" in token:
-                return True
-    return False
+    return test_policy.parse_metadata(ROOT / path).expect_molt_fail
 
 
 def _normalize(path: str) -> str:
-    """Repo-relative POSIX path, matching tests/molt_diff._normalize_repo_relative."""
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = (ROOT / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
-    try:
-        return candidate.relative_to(ROOT).as_posix()
-    except ValueError:
-        return candidate.as_posix()
+    """Repo-relative POSIX path from the canonical differential policy."""
+    return test_policy.normalize_repo_relative(path, repo_root=ROOT)
 
 
 # --------------------------------------------------------------------------
@@ -249,7 +216,7 @@ def _normalize(path: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def validate_manifest(data: dict, too_dynamic: frozenset[str]) -> list[str]:
+def validate_manifest(data: dict, policy_exclusions: frozenset[str]) -> list[str]:
     """Return a sorted list of manifest defects (fail-closed checks)."""
     problems: list[str] = []
     tests = manifest_tests(data)
@@ -261,18 +228,19 @@ def validate_manifest(data: dict, too_dynamic: frozenset[str]) -> list[str]:
                 f"[{raw_path}] test path is not repo-relative-normalized; expected "
                 f"{path!r}. Use the exact path tests/molt_diff.py emits."
             )
-        if not (ROOT / path).exists():
+        path_exists = (ROOT / path).exists()
+        if not path_exists:
             problems.append(
                 f"[{path}] test file does not exist on disk. A stale entry can "
                 "never be matched against reality -- remove it or fix the path."
             )
-        if path in too_dynamic:
+        if path in policy_exclusions:
             problems.append(
-                f"[{path}] is ALSO in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS (by-design "
-                "exclusion). The honesty manifest tracks FIXABLE DEBTS only; a "
-                "by-design exclusion must not appear here (no parallel truth)."
+                f"[{path}] is ALSO in the dynamic_execution_policy verification "
+                "scope (by-design exclusion). The honesty manifest tracks FIXABLE "
+                "DEBTS only; a by-design exclusion must not appear here."
             )
-        if _has_inline_expect_fail(path):
+        if path_exists and _has_inline_expect_fail(path):
             problems.append(
                 f"[{path}] carries an inline `# MOLT_META: expect_fail=molt` marker, "
                 "which is a SEPARATE expected-fail channel. A test tracked inline "
@@ -416,10 +384,10 @@ def _validate_dimensions(
     for dim_key in sorted(dims):
         status = dims[dim_key]
         backend = dim_key.split("@", 1)[0]
-        if backend not in BACKENDS:
+        if backend not in test_policy.ALL_BACKENDS:
             problems.append(
                 f"[{path}] dimension {dim_key!r} has unknown backend "
-                f"{backend!r}; allowed backends: {list(BACKENDS)} "
+                f"{backend!r}; allowed backends: {list(test_policy.ALL_BACKENDS)} "
                 "(optionally suffixed '@<cpython-version>')."
             )
         if not isinstance(status, dict):
@@ -459,11 +427,11 @@ def load_results(path: Path) -> dict[str, dict]:
 
     Each record is {"raw_status": str, "expect_molt_fail": bool}. raw_status is
     Molt's outcome vs CPython before the xfail/xpass overlay; expect_molt_fail is
-    True iff the test is ALREADY tracked by another expected-fail channel (the
-    too-dynamic manifest OR an inline `# MOLT_META: expect_fail=molt` marker).
-    That flag is what partitions the fail space: this honesty ratchet owns only
-    the failures with expect_molt_fail == False (the SILENT ones), so it never
-    becomes a parallel source of truth with the inline-meta channel.
+    True iff the test declares an inline `# MOLT_META: expect_fail=molt` marker.
+    Dynamic-policy exclusions additionally carry their orthogonal
+    `verified_subset_scope` metadata. The flag partitions the fail space: this
+    honesty ratchet owns only failures with expect_molt_fail == False, so it
+    never becomes a parallel source of truth with per-test metadata.
 
     If the same test appears twice (retries), the WORST status wins so a flaky
     pass can never mask a fail (fail-closed). Order: error/oom/fail beat pass
@@ -532,7 +500,6 @@ def _wasm_results_path() -> Path:
 def reality_check(
     data: dict,
     results: dict[str, dict],
-    too_dynamic: frozenset[str],
     *,
     dim_filter=_dim_matches_native,
     results_backend: str = "native",
@@ -540,10 +507,10 @@ def reality_check(
     """Both-direction reality check of the manifest against observed results.
 
     The fail space is partitioned by each result's `expect_molt_fail` flag: a
-    test that is already tracked by another expected-fail channel (too-dynamic
-    manifest or inline `expect_fail=molt` meta) is OWNED by that channel and is
-    never required (nor allowed) here. This ratchet enforces both directions only
-    over the SILENT failures (expect_molt_fail == False).
+    test that is already tracked by an inline `expect_fail=molt` marker is OWNED
+    by that channel and is never required (nor allowed) here. This ratchet
+    enforces both directions only over the SILENT failures
+    (expect_molt_fail == False).
     """
     failures: list[str] = []
     tests = manifest_tests(data)
@@ -568,9 +535,8 @@ def reality_check(
         if raw not in FAILING_RAW_STATUSES:
             continue
         if rec["expect_molt_fail"]:
-            # Already tracked by the too-dynamic manifest or an inline
-            # `expect_fail=molt` marker; molt_diff xfails it. Owned by that
-            # channel, never by this ratchet (no parallel truth).
+            # Already tracked by an inline `expect_fail=molt` marker; molt_diff
+            # xfails it. Owned by that channel, never by this ratchet.
             continue
         if path not in expected_fail_paths:
             failures.append(
@@ -638,7 +604,7 @@ def _count_fail_dims(data: dict, dim_filter) -> int:
 
 def fail_ceilings(data: dict) -> dict[str, int]:
     """Per-backend count of `fail` dimensions across all tests (the debt size)."""
-    counts = {b: 0 for b in BACKENDS}
+    counts = {b: 0 for b in test_policy.ALL_BACKENDS}
     for entry in manifest_tests(data).values():
         dims = entry.get("dimensions", {})
         if not isinstance(dims, dict):
@@ -678,7 +644,7 @@ def check_baseline(data: dict, baseline: dict) -> list[str]:
     failures: list[str] = []
     counts = fail_ceilings(data)
     ceilings = baseline.get("expected_fail_ceiling", {})
-    for backend in BACKENDS:
+    for backend in test_policy.ALL_BACKENDS:
         ceiling = ceilings.get(backend)
         if ceiling is None:
             continue
@@ -694,8 +660,8 @@ def check_baseline(data: dict, baseline: dict) -> list[str]:
 
 def cmd_update_baseline() -> int:
     data = load_manifest()
-    too_dynamic = load_too_dynamic_set()
-    problems = validate_manifest(data, too_dynamic)
+    policy_exclusions = load_dynamic_policy_scope()
+    problems = validate_manifest(data, policy_exclusions)
     if problems:
         print(
             "REFUSING to update baseline: the manifest has defects that must be "
@@ -709,7 +675,7 @@ def cmd_update_baseline() -> int:
     prev = load_baseline()
     if prev:
         prev_ceilings = prev.get("expected_fail_ceiling", {})
-        for backend in BACKENDS:
+        for backend in test_policy.ALL_BACKENDS:
             prev_v = prev_ceilings.get(backend)
             if prev_v is not None and new["expected_fail_ceiling"][backend] > prev_v:
                 print(
@@ -741,11 +707,11 @@ def cmd_check(
 ) -> int:
     try:
         data = load_manifest()
-        too_dynamic = load_too_dynamic_set()
+        policy_exclusions = load_dynamic_policy_scope()
     except GuardError as exc:
         print(f"\nSUITE HONESTY GUARD FAILED:\n  - {exc}\n", file=sys.stderr)
         return 1
-    problems = validate_manifest(data, too_dynamic)
+    problems = validate_manifest(data, policy_exclusions)
 
     results: dict[str, str] | None = None
     try:
@@ -754,7 +720,7 @@ def cmd_check(
         problems.append(str(exc))
 
     if results is not None:
-        problems += reality_check(data, results, too_dynamic)
+        problems += reality_check(data, results)
 
     if execution_results_path is not None:
         try:
@@ -777,7 +743,6 @@ def cmd_check(
             problems += reality_check(
                 data,
                 wasm_results,
-                too_dynamic,
                 dim_filter=_dim_matches_wasm,
                 results_backend="wasm",
             )
@@ -788,7 +753,7 @@ def cmd_check(
             f"manifest has {wasm_fail_dims} `wasm` fail dimension(s) but no wasm "
             f"calibration snapshot at {_rel(wasm_results_path)}. A wasm debt cannot "
             "be confirmed without it (fail-closed). Generate it with "
-            f"{_rel(WASM_DIFF_PATH)} (MOLT_DIFF_RESULTS_JSONL=...)."
+            "tests/molt_diff.py --target wasm (MOLT_DIFF_RESULTS_JSONL=...)."
         )
 
     baseline = load_baseline()
@@ -803,7 +768,7 @@ def cmd_check(
     if verbose:
         counts = fail_ceilings(data)
         print(f"{'backend':<10} {'known-bad dims':>14}")
-        for backend in BACKENDS:
+        for backend in test_policy.ALL_BACKENDS:
             print(f"{backend:<10} {counts[backend]:>14}")
         print()
         if results is not None:
@@ -862,8 +827,8 @@ def cmd_check(
 
 def cmd_lint_only() -> int:
     data = load_manifest()
-    too_dynamic = load_too_dynamic_set()
-    problems = validate_manifest(data, too_dynamic)
+    policy_exclusions = load_dynamic_policy_scope()
+    problems = validate_manifest(data, policy_exclusions)
     if problems:
         print("\nSUITE HONESTY MANIFEST LINT FAILED:\n", file=sys.stderr)
         for p in sorted(problems):
@@ -950,12 +915,7 @@ def cmd_calibrate(paths: list[str], results_out: Path, jobs: int, profile: str) 
 def cmd_calibrate_wasm(
     paths: list[str], results_out: Path, jobs: int, profile: str
 ) -> int:
-    """Produce the WASM snapshot via tools/wasm_diff.py (the wasm analogue of
-    cmd_calibrate). Each test is built `--target wasm` and run through the
-    canonical node host shim; the raw wasm status is appended to results_out."""
-    if not WASM_DIFF_PATH.exists():
-        print(f"tools/wasm_diff.py not found at {WASM_DIFF_PATH}", file=sys.stderr)
-        return 1
+    """Produce the WASM snapshot through the canonical differential harness."""
     targets = paths or ["tests/differential/basic"]
     results_out.parent.mkdir(parents=True, exist_ok=True)
     if results_out.exists():
@@ -966,7 +926,9 @@ def cmd_calibrate_wasm(
     cmd = [
         sys.executable,
         "-u",
-        str(WASM_DIFF_PATH),
+        str(MOLT_DIFF_PATH),
+        "--target",
+        "wasm",
         "--build-profile",
         profile,
         "--jobs",
@@ -976,7 +938,7 @@ def cmd_calibrate_wasm(
     print(f"calibrating wasm: {' '.join(cmd)}", file=sys.stderr)
     proc = harness_memory_guard.guarded_completed_process(
         cmd,
-        prefix="MOLT_WASM_DIFF",
+        prefix="MOLT_DIFF",
         env=env,
         cwd=ROOT,
         capture_output=False,
@@ -988,7 +950,7 @@ def cmd_calibrate_wasm(
         return 1
     print(
         f"wasm calibration results written to {results_out} "
-        f"(wasm_diff exit {proc.returncode})"
+        f"(molt_diff wasm exit {proc.returncode})"
     )
     return 0
 
@@ -1090,7 +1052,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--calibrate-wasm",
         action="store_true",
-        help="run wasm_diff to produce the WASM snapshot (wasm_calibration.jsonl)",
+        help=(
+            "run molt_diff --target wasm to produce the WASM snapshot "
+            "(wasm_calibration.jsonl)"
+        ),
     )
     ap.add_argument(
         "--calibrate-out",

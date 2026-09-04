@@ -1,0 +1,49 @@
+schema = "molt.release-targets.v1"
+
+[[target]]
+id = "macos-arm64"
+runner = "macos-15"
+platform = "macos"
+arch = "arm64"
+rust_target = "aarch64-apple-darwin"
+archive = "zip"
+
+[[target]]
+id = "macos-x86_64"
+runner = "macos-15-intel"
+platform = "macos"
+arch = "x86_64"
+rust_target = "x86_64-apple-darwin"
+archive = "zip"
+
+[[target]]
+id = "linux-x86_64"
+runner = "ubuntu-24.04"
+platform = "linux"
+arch = "x86_64"
+rust_target = "x86_64-unknown-linux-gnu"
+archive = "zip"
+
+[[target]]
+id = "linux-aarch64"
+runner = "ubuntu-24.04-arm"
+platform = "linux"
+arch = "aarch64"
+rust_target = "aarch64-unknown-linux-gnu"
+archive = "zip"
+
+[[target]]
+id = "windows-x86_64"
+runner = "windows-2022"
+platform = "windows"
+arch = "x86_64"
+rust_target = "x86_64-pc-windows-msvc"
+archive = "zip"
+
+[[target]]
+id = "windows-arm64"
+runner = "windows-11-arm"
+platform = "windows"
+arch = "arm64"
+rust_target = "aarch64-pc-windows-msvc"
+archive = "zip"

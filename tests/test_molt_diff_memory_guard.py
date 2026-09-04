@@ -39,6 +39,19 @@ def _configure_guard(
     monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", str(tree_gb))
     monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", str(global_gb))
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_POLL_SEC", "0.02")
+    guard_root = tmp_path / "diff" / "memory_guard"
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV,
+        str(guard_root / "tripped.json"),
+    )
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV,
+        str(guard_root / "events.jsonl"),
+    )
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV,
+        str(guard_root / "global_samples.jsonl"),
+    )
     config = module._diff_memory_guard_config()
     module._prepare_memory_guard_run(config)
     module._LAST_SENTINEL_SAMPLE_WRITE = 0.0
@@ -145,6 +158,16 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
         ),
     ]
     terminated: list[int] = []
+
+    def fake_terminate_group(
+        pgid: int,
+        *,
+        grace: float,
+        expected_identities: object,
+    ) -> None:
+        del grace, expected_identities
+        terminated.append(pgid)
+
     module.harness_memory_guard._TERMINATED_PGIDS.clear()
     monkeypatch.setattr(
         module.harness_memory_guard.process_sentinel,
@@ -154,7 +177,7 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
     monkeypatch.setattr(
         module.harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        fake_terminate_group,
     )
     sentinel = module.harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
@@ -416,12 +439,12 @@ def test_metadata_stdlib_profile_is_validated(tmp_path: Path) -> None:
     source.write_text("# MOLT_META: stdlib_profile=wide\n", encoding="utf-8")
     profile, error = module._metadata_stdlib_profile(str(source))
     assert profile is None
-    assert error == "MOLT_META stdlib_profile must be 'micro' or 'full'"
+    assert error == "MOLT_META stdlib_profile contains unknown values: wide"
 
     source.write_text("# MOLT_META: stdlib_profile=full,micro\n", encoding="utf-8")
     profile, error = module._metadata_stdlib_profile(str(source))
     assert profile is None
-    assert error == "MOLT_META stdlib_profile must select exactly one profile"
+    assert error == "MOLT_META stdlib_profile must select exactly one value"
 
 
 def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
@@ -507,11 +530,16 @@ def test_run_subprocess_preserves_signal_diagnostic(
     monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "tmp"))
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "0")
 
+    signal_script = (
+        "import os; os._exit(137)"
+        if os.name == "nt"
+        else "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+    )
     result = module._run_subprocess(
         [
             sys.executable,
             "-c",
-            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+            signal_script,
         ],
         env=os.environ.copy(),
         timeout=5,

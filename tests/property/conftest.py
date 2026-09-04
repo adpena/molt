@@ -1,4 +1,3 @@
-# MOLT_META: area=property-testing
 """Shared fixtures for Molt property-based tests.
 
 Provides helpers to compile+run Python snippets through both Molt and CPython,

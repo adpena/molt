@@ -112,7 +112,7 @@ def verdict(
 ) -> list[str]:
     data = check_suite_honesty.load_manifest()
     problems = check_suite_honesty.validate_manifest(
-        data, check_suite_honesty.load_too_dynamic_set()
+        data, check_suite_honesty.load_dynamic_policy_scope()
     )
     rows, receipt_problems = receipt_test_rows(
         binary_receipts, expected_binaries, context
@@ -190,16 +190,16 @@ def load_binary_receipts(
             raise RuntimeError(f"invalid Cargo test binary receipt schema: {path}")
         invocation_id = payload.get("invocation_id")
         if not isinstance(invocation_id, str) or not invocation_id:
-            raise RuntimeError(f"Cargo test binary receipt lacks invocation identity: {path}")
+            raise RuntimeError(
+                f"Cargo test binary receipt lacks invocation identity: {path}"
+            )
         if invocation_id in invocation_ids:
             raise RuntimeError(
                 f"duplicate Cargo test binary invocation identity: {invocation_id}"
             )
         invocation_ids.add(invocation_id)
         if expected_run_id is not None and payload.get("run_id") != expected_run_id:
-            raise RuntimeError(
-                f"Cargo test binary receipt escaped run custody: {path}"
-            )
+            raise RuntimeError(f"Cargo test binary receipt escaped run custody: {path}")
         if (
             expected_source_identity is not None
             and payload.get("source_identity") != expected_source_identity
@@ -265,14 +265,12 @@ def git_source_identity() -> dict[str, object]:
     head = _git_output("rev-parse", "HEAD").decode().strip()
     tree = _git_output("rev-parse", "HEAD^{tree}").decode().strip()
     tracked_patch = _git_output("diff", "--binary", "--no-ext-diff", "HEAD", "--")
-    status = _git_output(
-        "status", "--porcelain=v1", "-z", "--untracked-files=all"
-    )
+    status = _git_output("status", "--porcelain=v1", "-z", "--untracked-files=all")
     untracked_paths = [
         Path(raw.decode("utf-8", errors="surrogateescape"))
-        for raw in _git_output("ls-files", "--others", "--exclude-standard", "-z").split(
-            b"\0"
-        )
+        for raw in _git_output(
+            "ls-files", "--others", "--exclude-standard", "-z"
+        ).split(b"\0")
         if raw
     ]
     untracked_source_paths = [
@@ -283,9 +281,7 @@ def git_source_identity() -> dict[str, object]:
     ]
     untracked_source_digest = hashlib.sha256()
     untracked_source_bytes = 0
-    for relative in sorted(
-        untracked_source_paths, key=lambda path: path.as_posix()
-    ):
+    for relative in sorted(untracked_source_paths, key=lambda path: path.as_posix()):
         path = ROOT / relative
         if not path.is_file():
             continue
@@ -363,12 +359,18 @@ def package_identities_from_metadata(metadata_output: str) -> dict[str, str]:
         package_id = package.get("id")
         name = package.get("name")
         version = package.get("version")
-        if not all(isinstance(value, str) and value for value in (package_id, name, version)):
-            raise RuntimeError("Cargo metadata package lacked id/name/version authority")
+        if not all(
+            isinstance(value, str) and value for value in (package_id, name, version)
+        ):
+            raise RuntimeError(
+                "Cargo metadata package lacked id/name/version authority"
+            )
         identity = f"{name}@{version}"
         previous = identities.setdefault(package_id, identity)
         if previous != identity:
-            raise RuntimeError(f"Cargo metadata contradicted package identity {package_id!r}")
+            raise RuntimeError(
+                f"Cargo metadata contradicted package identity {package_id!r}"
+            )
     return identities
 
 
@@ -526,7 +528,9 @@ def receipt_test_rows(
         receipt_rows: dict[str, str] = {}
         for result in raw_results:
             if not isinstance(result, dict):
-                problems.append("Cargo test binary receipt has a non-object test result")
+                problems.append(
+                    "Cargo test binary receipt has a non-object test result"
+                )
                 continue
             identity = result.get("identity")
             status = result.get("status")
@@ -573,7 +577,9 @@ def receipt_test_rows(
                 )
                 continue
             if namespaced in published_rows:
-                problems.append(f"duplicate namespaced Cargo test result: {namespaced!r}")
+                problems.append(
+                    f"duplicate namespaced Cargo test result: {namespaced!r}"
+                )
                 continue
             published_rows.add(namespaced)
             rows.append(
@@ -862,7 +868,9 @@ def _main() -> int:
         phase_index = len(phases)
         result = run_streamed(
             command,
-            evidence_path=run_dir / "phases" / f"{phase_index:02d}-dependency-prefetch.log",
+            evidence_path=run_dir
+            / "phases"
+            / f"{phase_index:02d}-dependency-prefetch.log",
             retain_cargo_artifacts=True,
             timeout_seconds=FETCH_TIMEOUT_SECONDS,
         )
@@ -902,7 +910,9 @@ def _main() -> int:
         phase_index = len(phases)
         metadata_result = run_streamed(
             metadata_command,
-            evidence_path=run_dir / "phases" / f"{phase_index:02d}-package-metadata.log",
+            evidence_path=run_dir
+            / "phases"
+            / f"{phase_index:02d}-package-metadata.log",
             timeout_seconds=METADATA_TIMEOUT_SECONDS,
         )
         metadata_returncode = metadata_result.returncode
@@ -1043,7 +1053,10 @@ def _main() -> int:
                     "host_target": target,
                     "argv": list(command) if target else list(CANONICAL_COMMAND),
                     "returncode": returncode,
-                    "termination": {"kind": "runner-validation", "returncode": returncode},
+                    "termination": {
+                        "kind": "runner-validation",
+                        "returncode": returncode,
+                    },
                     "diagnostic_tail": output[-16_384:],
                     "binary_timeout_seconds": BINARY_TIMEOUT_SECONDS,
                     "binary_receipt_count": len(binary_receipts),
@@ -1066,13 +1079,16 @@ def _main() -> int:
         binary_receipts, expected_binaries, context
     )
     failures = sorted(row["identity"] for row in rows if row.get("status") == "fail")
-    problems = verdict(
-        output,
-        1 if failed else 0,
-        context,
-        binary_receipts=binary_receipts,
-        expected_binaries=expected_binaries,
-    ) + coverage_problems
+    problems = (
+        verdict(
+            output,
+            1 if failed else 0,
+            context,
+            binary_receipts=binary_receipts,
+            expected_binaries=expected_binaries,
+        )
+        + coverage_problems
+    )
     finished = datetime.now(timezone.utc)
     receipt = {
         "schema": "molt.cargo-test-truth.v2",

@@ -42,15 +42,19 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Protocol
 
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     verify_available_llvm_toolchain,
 )
+from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
+from tools.compat import test_policy
 
 # molt_diff is imported by the harness before adapters are used; we import the
 # already-bootstrapped module here for its capability/CLI-python helpers so the
@@ -60,8 +64,8 @@ from molt.wasm_artifact import wasm_runtime_manifest_path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-# The canonical wasm host shim (same one tools/wasm_diff.py + wasm_run_matrix.py
-# use). wasmtime/wasmer cannot satisfy the env.molt_*_host imports by design, so
+# The canonical wasm host shim (also used by wasm_run_matrix.py).
+# wasmtime/wasmer cannot satisfy the env.molt_*_host imports by design, so
 # node is the supported runner for a Molt wasm module.
 _RUN_WASM_JS = _REPO_ROOT / "wasm" / "run_wasm.js"
 
@@ -94,6 +98,33 @@ class BackendAvailability:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class BackendExecutionContext:
+    """One immutable compiler/runtime policy shared by every backend."""
+
+    target_python: TargetPythonVersion
+    build_profile: str
+    capabilities: str
+    environment: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target_python, TargetPythonVersion):
+            raise TypeError("backend target Python must use TargetPythonVersion")
+        canonical_target = _parse_target_python_version(self.target_python.short)
+        if self.target_python != canonical_target:
+            raise ValueError("backend target Python must be canonical")
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in self.environment.items()
+        ):
+            raise TypeError("backend execution environment must be string-to-string")
+        object.__setattr__(
+            self,
+            "environment",
+            MappingProxyType(dict(sorted(self.environment.items()))),
+        )
+
+
 class BackendAdapter(Protocol):
     """A backend knows how to (a) report availability and (b) build+run a file."""
 
@@ -104,10 +135,8 @@ class BackendAdapter(Protocol):
     def build_and_run(
         self,
         file_path: str,
-        build_profile: str,
         *,
-        extra_env: dict[str, str] | None,
-        capabilities: str,
+        context: BackendExecutionContext,
     ) -> BackendResult: ...
 
 
@@ -183,15 +212,13 @@ class NativeAdapter:
     def build_and_run(
         self,
         file_path: str,
-        build_profile: str,
         *,
-        extra_env: dict[str, str] | None,
-        capabilities: str,
+        context: BackendExecutionContext,
     ) -> BackendResult:
         stdout, stderr, rc = self.run_molt(
             file_path,
-            build_profile,
-            extra_env=extra_env,
+            context.build_profile,
+            execution_context=context,
         )
         return BackendResult(
             stdout=stdout,
@@ -249,25 +276,19 @@ def _guarded_run(
     return proc.stdout, proc.stderr, proc.returncode, timed_out
 
 
-def _cross_build_env(
-    extra_env: dict[str, str] | None, capabilities: str
-) -> dict[str, str]:
-    env = dict(os.environ)
+def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
+    env = dict(context.environment)
     env["PYTHONHASHSEED"] = "0"
-    if capabilities:
-        env.setdefault("MOLT_DIFF_CAPABILITIES", capabilities)
-        env.setdefault("MOLT_CAPABILITIES", capabilities)
-    if extra_env:
-        env.update(extra_env)
+    if context.capabilities:
+        env["MOLT_CAPABILITIES"] = context.capabilities
     return env
 
 
 def _build_cmd(
     file_path: str,
     target: str,
-    build_profile: str,
     out_dir: Path,
-    capabilities: str,
+    context: BackendExecutionContext,
     *,
     extra_build_args: list[str] | None = None,
 ) -> list[str]:
@@ -280,22 +301,22 @@ def _build_cmd(
         "--target",
         target,
         "--build-profile",
-        build_profile,
+        context.build_profile,
+        "--python-version",
+        context.target_python.short,
         "--respect-pythonpath",
         "--out-dir",
         str(out_dir),
     ]
-    if capabilities:
-        cmd.extend(["--capabilities", capabilities])
+    if context.capabilities:
+        cmd.extend(["--capabilities", context.capabilities])
     if extra_build_args:
         cmd.extend(extra_build_args)
     return cmd
 
 
 def _scratch_dir(backend: str, file_path: str) -> Path:
-    import molt_diff
-
-    npath = molt_diff._normalize_repo_relative(file_path)
+    npath = test_policy.normalize_repo_relative(file_path)
     safe = npath.replace("/", "__").replace("\\", "__").replace(".py", "")
     root = _cross_scratch_root() / backend
     out_dir = root / safe
@@ -344,21 +365,18 @@ class WasmAdapter:
     def build_and_run(
         self,
         file_path: str,
-        build_profile: str,
         *,
-        extra_env: dict[str, str] | None,
-        capabilities: str,
+        context: BackendExecutionContext,
     ) -> BackendResult:
         out_dir = _scratch_dir(self.name, file_path)
-        env = _cross_build_env(extra_env, capabilities)
+        env = _cross_build_env(context)
         # Build a linked module so the canonical node shim can run it directly.
         env.setdefault("MOLT_WASM_LINKED", "1")
         cmd = _build_cmd(
             file_path,
             "wasm",
-            build_profile,
             out_dir,
-            capabilities,
+            context,
             extra_build_args=["--linked", "--require-linked"],
         )
         b_out, b_err, b_rc, b_to = _guarded_run(
@@ -438,22 +456,19 @@ class LlvmAdapter:
     def build_and_run(
         self,
         file_path: str,
-        build_profile: str,
         *,
-        extra_env: dict[str, str] | None,
-        capabilities: str,
+        context: BackendExecutionContext,
     ) -> BackendResult:
         out_dir = _scratch_dir(self.name, file_path)
-        env = _cross_build_env(extra_env, capabilities)
+        env = _cross_build_env(context)
 
         stem = Path(file_path).stem
         output_binary = out_dir / f"{stem}_molt"
         cmd = _build_cmd(
             file_path,
             "llvm",
-            build_profile,
             out_dir,
-            capabilities,
+            context,
             extra_build_args=["--emit", "bin", "--output", str(output_binary)],
         )
         b_out, b_err, b_rc, b_to = _guarded_run(
@@ -510,15 +525,13 @@ class LuauAdapter:
     def build_and_run(
         self,
         file_path: str,
-        build_profile: str,
         *,
-        extra_env: dict[str, str] | None,
-        capabilities: str,
+        context: BackendExecutionContext,
     ) -> BackendResult:
         out_dir = _scratch_dir(self.name, file_path)
-        env = _cross_build_env(extra_env, capabilities)
+        env = _cross_build_env(context)
         stem = Path(file_path).stem
-        cmd = _build_cmd(file_path, "luau", build_profile, out_dir, capabilities)
+        cmd = _build_cmd(file_path, "luau", out_dir, context)
         b_out, b_err, b_rc, b_to = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_LUAU_BUILD",
@@ -559,9 +572,8 @@ class LuauAdapter:
 # Registry
 # ---------------------------------------------------------------------------
 
-#: The canonical backend ordering for the matrix (matches the suite-honesty
-#: BACKENDS set: native / llvm / wasm / luau).
-ALL_BACKENDS: tuple[str, ...] = ("native", "llvm", "wasm", "luau")
+#: Re-export the test-policy authority for existing command-line consumers.
+ALL_BACKENDS = test_policy.ALL_BACKENDS
 
 
 def build_registry(run_molt: RunMoltCallable) -> dict[str, BackendAdapter]:

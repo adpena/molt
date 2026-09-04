@@ -28,6 +28,12 @@ known-bad list — is exactly what the parity contract forbids. This ratchet mak
 | `native_calibration.jsonl` | The committed NATIVE reality snapshot: one JSON line per test with its **raw** status (before the xfail/xpass overlay), produced by `tests/molt_diff.py` with `MOLT_DIFF_RESULTS_JSONL` set. |
 | `../check_suite_honesty.py` | The guard. Reconciles the manifest against the snapshot in **both directions** and against the baseline. |
 
+Calibration snapshots measure observed backend debt; they are not
+verified-subset release proof. Release proof requires the complete set of 36
+source-bound Python/version/platform/architecture/native-WASM coordinate
+receipts validated by `tools/verified_subset.py` and the release criterion. A
+green suite-honesty ratchet cannot substitute for any coordinate receipt.
+
 ## How a verdict is reached (no hand-asserted greenness)
 
 The same manifest also owns `execution_reds` for Rust, target, and build lanes.
@@ -38,12 +44,12 @@ the formerly normalized `test_sequences` and
 
 `tests/molt_diff.py` is the authority on what **happened**: for every test it
 records a raw status (`pass`/`fail`/`error`/`oom`/`skip`) and an `expect_molt_fail`
-flag. That flag is `True` iff the test is **already tracked by another channel** —
-either `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS` (exec/eval/compile, excluded by design)
-or an inline `# MOLT_META: expect_fail=molt` marker. Those channels own their
-tests; this ratchet owns only the **silent** failures (`expect_molt_fail == False`).
-The three channels **partition** the fail space — no test is tracked twice (the
-guard's lint enforces it).
+flag. That flag is `True` iff the test declares an inline
+`# MOLT_META: expect_fail=molt` marker. By-design exec/eval/compile exclusions
+also declare `verified_subset_scope=dynamic_execution_policy` and
+`expect_fail_reason=too_dynamic_policy` on that same metadata line. The dynamic
+scope, other inline debts, and this manifest **partition** the fail space; the
+guard forbids manifest overlap with either per-test channel.
 
 This manifest is the authority on what we **expect**: every silent failure must
 have a `fail` entry here, and every `fail` entry must still be failing.
@@ -58,7 +64,7 @@ have a `fail` entry here, and every `fail` entry must still be failing.
 
 ## What the ratchet enforces (fail-closed)
 
-The guard (`python3 tools/check_suite_honesty.py`) exits non-zero when:
+The guard (`uv run --python 3.12 python tools/check_suite_honesty.py`) exits non-zero when:
 
 **Manifest lint** (always fatal):
 - a dimension status is invalid, or a backend is unknown;
@@ -66,8 +72,8 @@ The guard (`python3 tools/check_suite_honesty.py`) exits non-zero when:
   (**anti-parking-lot**: every debt names its owner, a one-line cause, and how it
   was verified — a failure can never be silently parked);
 - a test path does not exist on disk (a stale entry can never be matched);
-- a test here is **also** in `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS` **or** carries an
-  inline `expect_fail=molt` marker (**no parallel truth**).
+- a test here is **also** in the projected `dynamic_execution_policy` scope
+  **or** carries any inline `expect_fail=molt` marker (**no parallel truth**).
 
 **Reality check** (both directions, against `native_calibration.jsonl`):
 - a **silent** failure (raw `fail`/`error`/`oom`, `expect_molt_fail == False`) with
@@ -87,8 +93,9 @@ run the guard with `--execution-results FILE`; it fails on every unregistered
 failure, registered-but-absent result, unexpected pass, incomplete owner record,
 or expired entry.
 
-1. Confirm it is genuinely a fixable debt (not a by-design exclusion — those go in
-   `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`; not an inline-`expect_fail` case).
+1. Confirm it is genuinely a fixable debt (not a by-design exclusion, which
+   declares `verified_subset_scope=dynamic_execution_policy` on the test, and
+   not another inline-`expect_fail` case).
 2. Add it to `differential_expectations.json` under `tests`:
    ```json
    "tests/differential/basic/foo.py": {
@@ -104,7 +111,7 @@ or expired entry.
    ```
 3. Re-run calibration so the snapshot agrees (`--calibrate`, or re-run
    `tests/molt_diff.py` with `MOLT_DIFF_RESULTS_JSONL=tools/suite_honesty/native_calibration.jsonl`).
-4. `python3 tools/check_suite_honesty.py --update-baseline` — refused unless the
+4. `uv run --python 3.12 python tools/check_suite_honesty.py --update-baseline` — refused unless the
    ceiling stays flat or **falls**. Adding a debt without fixing one is rejected by
    design; the honest path when a real regression lands is to **fix it**, not widen
    the baseline.
@@ -113,7 +120,7 @@ or expired entry.
 
 1. Fix the test so it matches CPython.
 2. Re-calibrate; the test now records raw `pass`.
-3. `python3 tools/check_suite_honesty.py` will go **RED** with "remove the entry —
+3. `uv run --python 3.12 python tools/check_suite_honesty.py` will go **RED** with "remove the entry —
    it's fixed" until you delete the `fail` dimension.
 4. Delete it, then `--update-baseline` (the ceiling falls — always allowed).
 
@@ -128,14 +135,13 @@ seed a dimension you have not actually run — mark it `uncalibrated` (loud) ins
 ### WASM dimension (task #55)
 
 The WASM backend has its **own committed snapshot**, `wasm_calibration.jsonl`,
-produced by `tools/wasm_diff.py` — the wasm analogue of `native_calibration.jsonl`.
-`wasm_diff.py` builds each test with `molt build --target wasm` and runs the linked
+produced by the canonical `tests/molt_diff.py --target wasm` matrix.
+The WASM adapter builds each test with `molt build --target wasm` and runs the linked
 module through the **canonical Node host shim** (`node wasm/run_wasm.js
 <output_linked.wasm>`); bare wasmtime/wasmer cannot satisfy the `env.molt_*_host`
-imports by design (see `tools/wasm_run_matrix.py`). It REUSES `tests/molt_diff.py`'s
-CPython oracle, `# MOLT_META` gating, stdout/stderr canonicalization, and the
-`expect_molt_fail` partition verbatim, so the wasm verdict is byte-identical in
-semantics to the native lane — only the build+run is wasm-specific. When
+imports by design (see `tools/wasm_run_matrix.py`). Test discovery, metadata
+policy, CPython oracle, and comparison semantics are shared directly with native;
+only the registered backend adapter differs. When
 `wasm_calibration.jsonl` is present, `cmd_check` reality-checks every `wasm`
 manifest dimension against it exactly as it does native (both directions); when it
 is absent, a `wasm` *fail* dim is a fail-closed gap (cannot be confirmed) and a
@@ -155,24 +161,24 @@ from the isolated re-run.
 ## Commands
 
 ```bash
-python3 tools/check_suite_honesty.py                 # check vs snapshot+baseline (CI gate)
-python3 tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
-python3 tools/check_suite_honesty.py --show TEST     # one test's expectations
-python3 tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
-python3 tools/check_suite_honesty.py --execution-results execution.json
+uv run --python 3.12 python tools/check_suite_honesty.py                 # check vs snapshot+baseline (CI gate)
+uv run --python 3.12 python tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
+uv run --python 3.12 python tools/check_suite_honesty.py --show TEST     # one test's expectations
+uv run --python 3.12 python tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
+uv run --python 3.12 python tools/check_suite_honesty.py --execution-results execution.json
         # exact Rust/target/build red-set check
-python3 tools/check_suite_honesty.py --update-baseline   # down-only
-python3 tools/check_suite_honesty.py --reconcile --results FILE
+uv run --python 3.12 python tools/check_suite_honesty.py --update-baseline   # down-only
+uv run --python 3.12 python tools/check_suite_honesty.py --reconcile --results FILE
         # rewrite native dims FROM a calibration run (placeholders to fill)
-python3 tools/check_suite_honesty.py --calibrate [paths...]
+uv run --python 3.12 python tools/check_suite_honesty.py --calibrate [paths...]
         # run molt_diff to (re)generate native_calibration.jsonl
-python3 tools/check_suite_honesty.py --calibrate-wasm [paths...]
-        # run wasm_diff to (re)generate wasm_calibration.jsonl
+uv run --python 3.12 python tools/check_suite_honesty.py --calibrate-wasm [paths...]
+        # run molt_diff --target wasm to (re)generate wasm_calibration.jsonl
 
 # Long serial calibration that survives the launcher (poll RUN.done for exit code):
 MOLT_DIFF_RESULTS_JSONL=/tmp/stdlib.jsonl MOLT_DIFF_RETRY_ISOLATED=0 \
-python3 tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
-  python3 tests/molt_diff.py --build-profile release --jobs 1 \
+uv run --python 3.12 python tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
+  uv run --python 3.12 python tests/molt_diff.py --build-profile release --jobs 1 \
     --files-from STDLIB_LIST.txt
 ```
 
@@ -184,7 +190,7 @@ gate in `pyproject.toml`, alongside `check_ecosystem_compat` / `check_dynamic_po
 
 | Channel | Owns | Tracking | Mechanism |
 |---|---|---|---|
-| `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS` (`tools/stdlib_full_coverage_manifest.py`) | exec/eval/compile — **excluded by design** | none needed (permanent) | `molt_diff` xfails → resolved `pass` |
+| per-test `verified_subset_scope=dynamic_execution_policy` + `expect_fail=molt` + `expect_fail_reason=too_dynamic_policy` | exec/eval/compile — **excluded by design** | source metadata | `molt_diff` xfails; verified-subset projection excludes |
 | inline `# MOLT_META: expect_fail=molt` | per-test known gaps with an inline `expect_fail_reason` | the inline reason | `molt_diff` xfails → resolved `pass` |
 | **this ratchet** | **silent fixable debts** | `tracking` + `root_cause` + `evidence`, machine-checked | down-only manifest gate |
 

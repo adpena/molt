@@ -33,7 +33,7 @@ def test_dev_test_runner_main_forwards_random_order_flags(monkeypatch) -> None:
         "argv",
         [
             "tools/dev_test_runner.py",
-            "--verified-subset",
+            "--check-verified-subset",
             "--random-order",
             "--random-seed",
             "23",
@@ -53,7 +53,7 @@ def test_dev_test_runner_main_forwards_random_order_flags(monkeypatch) -> None:
             "--molt-random-seed",
             "23",
         ],
-        ["python3", "tools/verified_subset.py", "run"],
+        [module.sys.executable, "tools/verified_subset.py", "check"],
     ]
 
 

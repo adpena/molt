@@ -54,11 +54,12 @@ Top-level + submodule name coverage is enforced against the CPython
   - non-attested modules are classified as `intrinsic-partial` by default
 
 ## Too-Dynamic Differential Policy
-- Intentional unsupported dynamism cases are tracked in
-  `tools/stdlib_full_coverage_manifest.py` via
-  `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
-- `tests/molt_diff.py` auto-applies expected-failure behavior for listed tests:
+- Intentional unsupported dynamism cases declare their policy at the test source:
+  `# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy`.
+- `tools/compat/test_policy.py` projects that scope for verified-subset and
+  suite-honesty consumers; there is no separate stdlib path manifest.
+- `tests/molt_diff.py` applies expected-failure behavior from the metadata:
   - Molt fail + CPython pass => `[XFAIL]` (counted as pass)
   - Molt pass + CPython pass => `[XPASS]` (counted as failure)
-- Current high-confidence policy scope is `exec`/`eval` planned differential
+- Current high-confidence policy scope is `exec`/`eval` differential
   tests, matching the project break policy against maximal runtime dynamism.

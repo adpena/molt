@@ -45,6 +45,11 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import tokenize
 
+try:
+    from tools import release_criterion_receipt as release_receipt
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import release_criterion_receipt as release_receipt  # type: ignore
+
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 BASELINE_PATH_REL = "tools/structural_audit_baseline.json"
 BOARD_PATH_REL = "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
@@ -2212,6 +2217,7 @@ def format_path_scope_report(
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -2249,9 +2255,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="regenerate docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md",
     )
-    args = ap.parse_args(argv)
+    release_receipt.add_receipt_arguments(ap)
+    args = ap.parse_args(raw_argv)
 
     root: Path = args.root.resolve()
+    if args.receipt is not None and (
+        args.path or args.update_baseline or args.write_board
+    ):
+        ap.error(
+            "--receipt cannot be combined with --path, --update-baseline, "
+            "or --write-board"
+        )
+    try:
+        receipt_destination = release_receipt.prepare_receipt_destination(
+            repo_root=root,
+            receipt_path=args.receipt,
+            source_sha=args.source_sha,
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
     path_scope: frozenset[str] | None = None
     if args.path:
         if args.check or args.update_baseline or args.write_board:
@@ -2293,6 +2315,70 @@ def main(argv: list[str] | None = None) -> int:
     if wrote_artifact and not args.json and not args.check:
         return 0
 
+    baseline: dict[str, float] | None = None
+    regressions: list[tuple[str, float, float]] = []
+    improved: list[str] = []
+    if args.check or receipt_destination is not None:
+        if not baseline_path.is_file():
+            print(
+                f"ERROR: no baseline at {baseline_path}; run --update-baseline",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            raw_baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f"ERROR: invalid baseline at {baseline_path}: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(raw_baseline, dict):
+            print(
+                f"ERROR: baseline root is not an object: {baseline_path}",
+                file=sys.stderr,
+            )
+            return 2
+        baseline = raw_baseline
+        for key in _RATCHET_DOWN:
+            cur = metrics.get(key, 0.0)
+            base = baseline.get(key, 0.0)
+            if cur > base:
+                regressions.append((key, base, cur))
+        regressions.sort(key=lambda item: item[0])
+        improved = sorted(
+            key for key in _RATCHET_DOWN if metrics.get(key, 0) < baseline.get(key, 0)
+        )
+
+    if receipt_destination is not None:
+        assert baseline is not None
+        status = (
+            release_receipt.STATUS_PASS
+            if not regressions
+            else release_receipt.STATUS_FAIL
+        )
+        try:
+            receipt = release_receipt.build_receipt(
+                kind=release_receipt.KIND_STRUCTURAL_AUDIT,
+                source_sha=receipt_destination.source_sha,
+                status=status,
+                argv=raw_argv,
+                tool_path=Path(__file__),
+                facts={
+                    "baseline_metrics": baseline,
+                    "baseline_path": BASELINE_PATH_REL,
+                    "findings_count": len(findings),
+                    "improved_metrics": improved,
+                    "metrics": metrics,
+                    "regressed_metrics": [
+                        key for key, _base, _cur in regressions
+                    ],
+                },
+                input_paths=[baseline_path],
+                repo_root=root,
+            )
+            release_receipt.write_receipt(receipt, receipt_destination)
+        except ValueError as exc:
+            print(f"structural audit receipt: ERROR: {exc}", file=sys.stderr)
+            return 2
+
     if args.json:
         payload = {
             "metrics": metrics,
@@ -2301,22 +2387,9 @@ def main(argv: list[str] | None = None) -> int:
         if path_scope is not None:
             payload["path_scope"] = sorted(path_scope)
         print(json.dumps(payload, indent=2))
-        return 0
+        return 1 if receipt_destination is not None and regressions else 0
 
-    if args.check:
-        if not baseline_path.is_file():
-            print(
-                f"ERROR: no baseline at {baseline_path}; run --update-baseline",
-                file=sys.stderr,
-            )
-            return 2
-        baseline = json.loads(baseline_path.read_text())
-        regressions = []
-        for key in _RATCHET_DOWN:
-            cur = metrics.get(key, 0.0)
-            base = baseline.get(key, 0.0)
-            if cur > base:
-                regressions.append((key, base, cur))
+    if args.check or receipt_destination is not None:
         if regressions:
             print(
                 "STRUCTURAL RATCHET REGRESSED — new structural debt added:",
@@ -2330,11 +2403,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        improved = [k for k in _RATCHET_DOWN if metrics.get(k, 0) < baseline.get(k, 0)]
         print(
             f"structural ratchet OK ({len(findings)} findings; "
             f"{len(improved)} metric(s) improved)"
         )
+        if receipt_destination is not None:
+            print(
+                f"structural audit receipt written: {receipt_destination.output_path}"
+            )
         return 0
 
     if path_scope is not None:
