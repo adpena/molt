@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import molt.cli as cli
+from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
@@ -1019,7 +1020,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1110,7 +1111,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
 
     def fake_run_cargo(
@@ -1260,8 +1261,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=True,
         output_binary=output_binary,
@@ -1638,7 +1638,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1998,7 +1998,7 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -2085,7 +2085,7 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -2253,7 +2253,7 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True
+        CARGO_EXECUTION, "_maybe_enable_sccache", lambda _env: None, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,

@@ -17,8 +17,8 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt;
-use std::io::Write;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
 pub mod refcount_verify;
@@ -70,6 +70,48 @@ pub struct AuditEvent {
     pub decision: AuditDecision,
     /// Fully-qualified Python module that triggered the check.
     pub module: String,
+    /// Digest of the complete resolved runtime policy, or explicit absence for
+    /// directly embedded runtimes that did not provide a sealed policy.
+    pub capability_policy_digest: Option<Arc<str>>,
+}
+
+static CAPABILITY_POLICY_DIGEST: RwLock<Option<Arc<str>>> = RwLock::new(None);
+
+/// Install the immutable resolved-policy digest for the current runtime
+/// lifecycle. Reinitializing a runtime replaces the prior lifecycle value.
+pub fn set_capability_policy_digest(digest: Option<&str>) -> Result<(), String> {
+    let digest = digest
+        .map(str::trim)
+        .map(|value| {
+            let Some(hex) = value.strip_prefix("sha256:") else {
+                return Err(
+                    "capability policy digest must use the canonical sha256:<64hex> form"
+                        .to_owned(),
+                );
+            };
+            if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(
+                    "capability policy digest must use the canonical sha256:<64hex> form"
+                        .to_owned(),
+                );
+            }
+            if hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                return Err("capability policy digest hex must be lowercase".to_owned());
+            }
+            Ok(Arc::<str>::from(value))
+        })
+        .transpose()?;
+    *CAPABILITY_POLICY_DIGEST
+        .write()
+        .map_err(|_| "capability policy digest lock poisoned".to_owned())? = digest;
+    Ok(())
+}
+
+fn capability_policy_digest() -> Option<Arc<str>> {
+    CAPABILITY_POLICY_DIGEST
+        .read()
+        .unwrap_or_else(|_| panic!("capability policy digest lock poisoned"))
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +226,7 @@ impl AuditEvent {
             args,
             decision,
             module,
+            capability_policy_digest: capability_policy_digest(),
         }
     }
 
@@ -203,6 +246,7 @@ impl AuditEvent {
             args,
             decision,
             module,
+            capability_policy_digest: capability_policy_digest(),
         }
     }
 
@@ -221,6 +265,11 @@ impl AuditEvent {
         self.decision.append_json(&mut buf);
         buf.push_str("},\"module\":");
         json_escape(&self.module, &mut buf);
+        buf.push_str(",\"capability_policy_digest\":");
+        match &self.capability_policy_digest {
+            Some(digest) => json_escape(digest, &mut buf),
+            None => buf.push_str("null"),
+        }
         buf.push('}');
         buf
     }
@@ -236,8 +285,14 @@ impl fmt::Display for AuditEvent {
         };
         write!(
             f,
-            "[audit] {} {} cap={} mod={}",
-            status, self.operation, self.capability, self.module
+            "[audit] {} {} cap={} policy={} mod={}",
+            status,
+            self.operation,
+            self.capability,
+            self.capability_policy_digest
+                .as_deref()
+                .unwrap_or("unsealed"),
+            self.module
         )
     }
 }
@@ -252,10 +307,12 @@ impl fmt::Display for AuditEvent {
 pub trait AuditSink: Send + Sync {
     /// Process a single event.  Implementations should be cheap; expensive
     /// work (network I/O, disk flushes) should be batched or deferred.
-    fn emit(&self, event: &AuditEvent);
+    fn emit(&self, event: &AuditEvent) -> io::Result<()>;
 
     /// Flush any buffered output.  Called on graceful shutdown.
-    fn flush(&self) {}
+    fn flush(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +324,9 @@ pub struct NullSink;
 
 impl AuditSink for NullSink {
     #[inline]
-    fn emit(&self, _event: &AuditEvent) {}
+    fn emit(&self, _event: &AuditEvent) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Writes one JSON object per line to an arbitrary `std::io::Write` destination.
@@ -284,18 +343,20 @@ impl<W: Write + Send + Sync> JsonLinesSink<W> {
 }
 
 impl<W: Write + Send + Sync> AuditSink for JsonLinesSink<W> {
-    fn emit(&self, event: &AuditEvent) {
-        let line = event.to_json();
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(line.as_bytes());
-            let _ = w.write_all(b"\n");
-        }
+    fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+        let mut line = event.to_json();
+        line.push('\n');
+        self.writer
+            .lock()
+            .map_err(|_| io::Error::other("audit JSON-lines writer lock poisoned"))?
+            .write_all(line.as_bytes())
     }
 
-    fn flush(&self) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.flush();
-        }
+    fn flush(&self) -> io::Result<()> {
+        self.writer
+            .lock()
+            .map_err(|_| io::Error::other("audit JSON-lines writer lock poisoned"))?
+            .flush()
     }
 }
 
@@ -313,15 +374,19 @@ impl BufferedSink {
 
     /// Return a snapshot of all buffered events.
     pub fn events(&self) -> Vec<AuditEvent> {
-        self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        self.events
+            .lock()
+            .expect("audit event buffer lock poisoned")
+            .clone()
     }
 
     /// Drain and return all buffered events, leaving the buffer empty.
     pub fn drain(&self) -> Vec<AuditEvent> {
-        self.events
+        let mut events = self
+            .events
             .lock()
-            .map(|mut e| std::mem::take(&mut *e))
-            .unwrap_or_default()
+            .expect("audit event buffer lock poisoned");
+        std::mem::take(&mut *events)
     }
 }
 
@@ -332,10 +397,12 @@ impl Default for BufferedSink {
 }
 
 impl AuditSink for BufferedSink {
-    fn emit(&self, event: &AuditEvent) {
-        if let Ok(mut events) = self.events.lock() {
-            events.push(event.clone());
-        }
+    fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+        self.events
+            .lock()
+            .map_err(|_| io::Error::other("audit event buffer lock poisoned"))?
+            .push(event.clone());
+        Ok(())
     }
 }
 
@@ -343,8 +410,8 @@ impl AuditSink for BufferedSink {
 pub struct StderrSink;
 
 impl AuditSink for StderrSink {
-    fn emit(&self, event: &AuditEvent) {
-        eprintln!("{event}");
+    fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+        writeln!(io::stderr().lock(), "{event}")
     }
 }
 
@@ -352,12 +419,13 @@ impl AuditSink for StderrSink {
 // Global fallback sink
 // ---------------------------------------------------------------------------
 
-/// Global audit sink, set once by the first call to [`set_audit_sink`].
+/// Global audit sink inherited by threads created in the current runtime
+/// lifecycle.
 ///
 /// Threads that never call `set_audit_sink` will inherit this sink
 /// automatically on their first use of [`audit_emit`], instead of silently
 /// dropping events via [`NullSink`].
-static GLOBAL_AUDIT_SINK: OnceLock<Arc<dyn AuditSink + Send + Sync>> = OnceLock::new();
+static GLOBAL_AUDIT_SINK: RwLock<Option<Arc<dyn AuditSink + Send + Sync>>> = RwLock::new(None);
 
 // ---------------------------------------------------------------------------
 // Thread-local accessor
@@ -367,11 +435,11 @@ static GLOBAL_AUDIT_SINK: OnceLock<Arc<dyn AuditSink + Send + Sync>> = OnceLock:
 struct ArcSinkAdapter(Arc<dyn AuditSink + Send + Sync>);
 
 impl AuditSink for ArcSinkAdapter {
-    fn emit(&self, event: &AuditEvent) {
-        self.0.emit(event);
+    fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+        self.0.emit(event)
     }
-    fn flush(&self) {
-        self.0.flush();
+    fn flush(&self) -> io::Result<()> {
+        self.0.flush()
     }
 }
 
@@ -379,8 +447,12 @@ impl AuditSink for ArcSinkAdapter {
 /// another thread calling `set_audit_sink`), use it; otherwise fall back to
 /// `NullSink`.
 fn make_default_sink() -> Box<dyn AuditSink> {
-    match GLOBAL_AUDIT_SINK.get() {
-        Some(arc) => Box::new(ArcSinkAdapter(Arc::clone(arc))),
+    let sink = GLOBAL_AUDIT_SINK
+        .read()
+        .unwrap_or_else(|_| panic!("global audit sink lock poisoned"))
+        .clone();
+    match sink {
+        Some(arc) => Box::new(ArcSinkAdapter(arc)),
         None => Box::new(NullSink),
     }
 }
@@ -392,44 +464,49 @@ thread_local! {
 /// Emit an audit event through the thread-local sink.
 ///
 /// This is the primary entry point for all audit logging in the runtime.
-/// If no sink has been installed via [`set_audit_sink`], the event is silently
-/// dropped by the default [`NullSink`].
+/// If audit logging is disabled, the default [`NullSink`] deliberately drops
+/// the event. Any configured sink failure terminates the operation rather than
+/// silently losing a security record.
 pub fn audit_emit(event: AuditEvent) {
     AUDIT_SINK.with(|cell| {
-        cell.borrow().emit(&event);
+        cell.borrow()
+            .emit(&event)
+            .unwrap_or_else(|error| panic!("audit event emission failed: {error}"));
     });
 }
 
 /// Replace the thread-local audit sink.
 ///
-/// On the **first** call (across all threads), the sink is also stored as the
-/// global default.  Subsequent threads that never call `set_audit_sink` will
-/// inherit this global sink automatically, eliminating the silent-drop problem
-/// where spawned threads would fall back to [`NullSink`].
-///
-/// Must be called before any capability checks run.  Typically invoked once
-/// during runtime initialization on the main thread.
+/// This changes only the calling thread. Runtime initialization should use
+/// [`set_global_audit_sink`] so the calling thread and future threads share one
+/// sink.
 pub fn set_audit_sink(sink: Box<dyn AuditSink>) {
     AUDIT_SINK.with(|cell| {
         *cell.borrow_mut() = sink;
     });
 }
 
-/// Set the global default audit sink that all new threads will inherit.
-///
-/// This uses [`OnceLock`], so only the first call takes effect.  Typically
-/// called once during host initialization, before spawning worker threads.
+/// Install one shared audit sink for the calling thread and all future threads.
 ///
 /// Unlike [`set_audit_sink`] (which only affects the calling thread), this
-/// ensures every thread created *after* this call inherits the sink.
-pub fn set_global_audit_sink(sink: Arc<dyn AuditSink + Send + Sync>) {
-    let _ = GLOBAL_AUDIT_SINK.set(sink);
+/// ensures every thread created *after* this call inherits the sink. Replacing
+/// runtime initialization replaces the previous lifecycle's sink before user
+/// code or worker threads run.
+pub fn set_global_audit_sink(sink: Arc<dyn AuditSink + Send + Sync>) -> io::Result<()> {
+    *GLOBAL_AUDIT_SINK
+        .write()
+        .map_err(|_| io::Error::other("global audit sink lock poisoned"))? =
+        Some(Arc::clone(&sink));
+    set_audit_sink(Box::new(ArcSinkAdapter(sink)));
+    Ok(())
 }
 
 /// Flush the thread-local audit sink.  Call on graceful shutdown.
 pub fn audit_flush() {
     AUDIT_SINK.with(|cell| {
-        cell.borrow().flush();
+        cell.borrow()
+            .flush()
+            .unwrap_or_else(|error| panic!("audit sink flush failed: {error}"));
     });
 }
 
@@ -443,8 +520,8 @@ pub fn audit_flush() {
 /// It accepts `&'static str` for the operation and capability names,
 /// keeping allocations to the bare minimum on the hot path.
 ///
-/// `operation`  — dot-separated name such as `"process.signal"`, `"net.connect"`.
-/// `capability` — the capability that was tested, e.g. `"process"`, `"net"`.
+/// `operation`  — dot-separated name such as `"signal.signal"`, `"net.connect"`.
+/// `capability` — the exact capability tested, e.g. `"signal.signal"`, `"net.connect"`.
 /// `args`       — operation-specific arguments (use `AuditArgs::None` when N/A).
 /// `allowed`    — whether the capability check passed.
 pub fn audit_capability_decision(
@@ -555,8 +632,8 @@ mod tests {
         // We need a wrapper that delegates to the Arc so we can read back.
         struct ArcSink(Arc<BufferedSink>);
         impl AuditSink for ArcSink {
-            fn emit(&self, event: &AuditEvent) {
-                self.0.emit(event);
+            fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+                self.0.emit(event)
             }
         }
         let arc_sink = Arc::clone(&sink);
@@ -625,7 +702,8 @@ mod tests {
             },
             AuditDecision::Allowed,
             "config".into(),
-        ));
+        ))
+        .expect("buffered audit emit");
         assert_eq!(sink.events().len(), 1);
         let drained = sink.drain();
         assert_eq!(drained.len(), 1);
@@ -641,6 +719,7 @@ mod tests {
             args: AuditArgs::Path("/tmp/out.txt".into()),
             decision: AuditDecision::Allowed,
             module: "writer".into(),
+            capability_policy_digest: Some(Arc::from(format!("sha256:{}", "a".repeat(64)))),
         };
         let json = event.to_json();
         assert!(json.starts_with('{'));
@@ -649,6 +728,10 @@ mod tests {
         assert!(json.contains("\"status\":\"allowed\""));
         assert!(json.contains("\"path\":\"/tmp/out.txt\""));
         assert!(json.contains("\"module\":\"writer\""));
+        assert!(json.contains(&format!(
+            "\"capability_policy_digest\":\"sha256:{}\"",
+            "a".repeat(64)
+        )));
         // Must not contain newlines (JSON Lines requirement).
         assert!(!json.contains('\n'));
     }
@@ -664,6 +747,7 @@ mod tests {
                 error: "too\nmany".into(),
             },
             module: "esc\test".into(),
+            capability_policy_digest: None,
         };
         let json = event.to_json();
         // Newlines and tabs must be escaped.
@@ -673,6 +757,7 @@ mod tests {
         assert!(json.contains("\\t"));
         assert!(json.contains("\\\""));
         assert!(json.contains("\\\\"));
+        assert!(json.contains("\"capability_policy_digest\":null"));
     }
 
     #[test]
@@ -685,7 +770,8 @@ mod tests {
             AuditArgs::Db { query_hash: 0xDEAD },
             AuditDecision::Allowed,
             "dal".into(),
-        ));
+        ))
+        .expect("JSON-lines audit emit");
         let output = sink.writer.lock().unwrap();
         let text = String::from_utf8_lossy(&output);
         assert!(text.ends_with('\n'));
@@ -711,6 +797,98 @@ mod tests {
     }
 
     #[test]
+    fn policy_digest_is_canonical_and_reinitialized_per_lifecycle() {
+        let first = format!("sha256:{}", "a".repeat(64));
+        set_capability_policy_digest(Some(&first)).expect("install first policy digest");
+        let first_event = AuditEvent::new(
+            "fs.read",
+            "fs.read",
+            AuditArgs::None,
+            AuditDecision::Allowed,
+            "test".into(),
+        );
+        assert_eq!(
+            first_event.capability_policy_digest.as_deref(),
+            Some(first.as_str())
+        );
+
+        let second = format!("sha256:{}", "b".repeat(64));
+        set_capability_policy_digest(Some(&second)).expect("replace lifecycle policy digest");
+        let second_event = AuditEvent::new(
+            "fs.read",
+            "fs.read",
+            AuditArgs::None,
+            AuditDecision::Allowed,
+            "test".into(),
+        );
+        assert_eq!(
+            second_event.capability_policy_digest.as_deref(),
+            Some(second.as_str())
+        );
+
+        assert!(set_capability_policy_digest(Some(&"a".repeat(64))).is_err());
+        assert!(set_capability_policy_digest(Some(&format!("sha256:{}", "A".repeat(64)))).is_err());
+    }
+
+    #[test]
+    fn json_lines_sink_reports_write_failures() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("intentional audit writer failure"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::other("intentional audit flush failure"))
+            }
+        }
+
+        let sink = JsonLinesSink::new(FailingWriter);
+        let event = AuditEvent::new(
+            "fs.write",
+            "fs.write",
+            AuditArgs::None,
+            AuditDecision::Allowed,
+            "test".into(),
+        );
+
+        let emit_error = sink.emit(&event).expect_err("write failure must surface");
+        assert!(
+            emit_error
+                .to_string()
+                .contains("intentional audit writer failure")
+        );
+        let flush_error = sink.flush().expect_err("flush failure must surface");
+        assert!(
+            flush_error
+                .to_string()
+                .contains("intentional audit flush failure")
+        );
+    }
+
+    #[test]
+    fn json_lines_sink_reports_poisoned_writer_lock() {
+        let sink = Arc::new(JsonLinesSink::new(Vec::<u8>::new()));
+        let poisoning_sink = Arc::clone(&sink);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning_sink.writer.lock().expect("writer lock");
+            panic!("poison audit writer lock");
+        })
+        .join();
+        let event = AuditEvent::new(
+            "fs.write",
+            "fs.write",
+            AuditArgs::None,
+            AuditDecision::Allowed,
+            "test".into(),
+        );
+
+        let error = sink.emit(&event).expect_err("poisoned lock must surface");
+        assert!(error.to_string().contains("writer lock poisoned"));
+    }
+
+    #[test]
     fn all_args_variants_serialize() {
         let variants = vec![
             AuditArgs::Path("/a".into()),
@@ -731,6 +909,7 @@ mod tests {
                 args,
                 decision: AuditDecision::Allowed,
                 module: "t".into(),
+                capability_policy_digest: None,
             };
             let json = event.to_json();
             assert!(json.starts_with('{'));
@@ -772,17 +951,15 @@ mod tests {
 
         struct SharedSink(Arc<BufferedSink>);
         impl AuditSink for SharedSink {
-            fn emit(&self, event: &AuditEvent) {
-                self.0.emit(event);
+            fn emit(&self, event: &AuditEvent) -> io::Result<()> {
+                self.0.emit(event)
             }
         }
 
-        // Install as global default (OnceLock: first call wins across
-        // the entire test process, so this test must run with
-        // `--test-threads=1` or accept that if another test set it first,
-        // the OnceLock is already occupied).
+        // Install as the current lifecycle's global default.
         let shared: Arc<dyn AuditSink + Send + Sync> = Arc::new(SharedSink(Arc::clone(&sink)));
-        set_global_audit_sink(Arc::clone(&shared));
+        set_global_audit_sink(Arc::clone(&shared))
+            .unwrap_or_else(|_| panic!("install global audit sink"));
 
         // Spawn a thread that NEVER calls set_audit_sink.
         // Its thread-local will be initialized from make_default_sink(),

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from molt.exact_json import ExactJsonError, loads_exact
+from molt._host_capabilities_generated import EXPLICIT_CAPABILITY_TIER
 from molt.file_publication import is_link_like
 from molt import python_interpreter
 from molt.verified_subset import (
@@ -628,7 +629,7 @@ def run_differential_suites(
     env["MOLT_DIFF_PYTHON"] = sys.executable
     env["MOLT_VERIFIED_SUBSET_COORDINATE"] = coordinate.id
     env["MOLT_DIFF_TRUSTED"] = "0"
-    env["MOLT_TRUSTED"] = "0"
+    env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
     env.pop("MOLT_DIFF_CAPABILITIES", None)
     env.pop("MOLT_CAPABILITIES", None)
     cmd = [

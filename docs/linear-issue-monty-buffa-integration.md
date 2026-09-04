@@ -1,5 +1,9 @@
 # Linear Issue: Monty + Buffa Integration Roadmap
 
+> Historical issue draft. Use `docs/ROADMAP_MONTY_BUFFA_INTEGRATION.md` for the
+> current authority boundary and acceptance matrix; estimates and unchecked
+> implementation details below are archival context only.
+
 **Title:** Epic: Python Edge Platform — Monty + Buffa + Molt Integration
 
 **Priority:** High

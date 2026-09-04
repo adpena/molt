@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence, cast
 
+from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
@@ -284,8 +285,7 @@ def _validate_darwin_link_output(
 def _prepare_native_link(
     *,
     output_artifact: Path,
-    trusted: bool,
-    capabilities_list: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     artifacts_root: Path,
     json_output: bool,
     output_binary: Path | None,
@@ -355,8 +355,7 @@ def _prepare_native_link(
             command="build",
         )
     main_c_content = _render_native_main_stub(
-        trusted=trusted,
-        capabilities_list=capabilities_list,
+        resolved_capability_policy=resolved_capability_policy,
         runtime_module_roots=tuple(
             dict.fromkeys(
                 artifact.runtime_root for artifact in staged_external_native_artifacts

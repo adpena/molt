@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.backend_diagnostics import (
@@ -126,7 +127,6 @@ _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_MODULE_ROOTS",
     "MOLT_DEAD_MODULE_ELIMINATION",
     STATIC_IMPORT_MODULES_ENV,
-    "MOLT_TRUSTED",
     "PYTHONHASHSEED",
     "PYTHONPATH",
 )
@@ -290,8 +290,8 @@ def _wrapper_build_cache_input(
     source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
-    capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(
-        env
+    capability_config_digest = (
+        resolve_runtime_policy_from_env(env).digest().removeprefix("sha256:")
     )
     closure_fingerprints = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,

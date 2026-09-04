@@ -662,7 +662,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     server_hostname_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.connect", "net"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeClient).is_err() {
             return MoltObject::none().bits();
         }
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
@@ -728,7 +728,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     server_hostname_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.connect", "net"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeClient).is_err() {
             return MoltObject::none().bits();
         }
         let Some(fd_raw) = to_i64(obj_from_bits(fd_bits)) else {
@@ -783,7 +783,7 @@ pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.listen", "net.bind", "net"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeServer).is_err() {
             return MoltObject::none().bits();
         }
         let bool_true_bits = MoltObject::from_bool(true).bits();
@@ -874,7 +874,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     keyfile_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.listen", "net.bind", "net"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeServer).is_err() {
             return MoltObject::none().bits();
         }
         let Some(fd_raw) = to_i64(obj_from_bits(fd_bits)) else {
@@ -938,12 +938,10 @@ pub unsafe extern "C" fn molt_ws_connect(
         if url_ptr.is_null() && url_len != 0 {
             return 1;
         }
-        let ws_allowed = has_capability(_py, "websocket.connect");
-        audit_capability_decision(
-            "net.websocket_connect",
-            "websocket.connect",
+        let ws_allowed = crate::operation_allowed(
+            _py,
+            crate::OperationId::NetWebsocketConnect,
             AuditArgs::None,
-            ws_allowed,
         );
         if !ws_allowed {
             return 6;
@@ -1050,12 +1048,10 @@ pub unsafe extern "C" fn molt_ws_connect(
             if url_ptr.is_null() && url_len != 0 {
                 return 1;
             }
-            let ws_allowed = has_capability(_py, "websocket.connect");
-            audit_capability_decision(
-                "net.websocket_connect",
-                "websocket.connect",
+            let ws_allowed = crate::operation_allowed(
+                _py,
+                crate::OperationId::NetWebsocketConnect,
                 AuditArgs::None,
-                ws_allowed,
             );
             if !ws_allowed {
                 return 6;
@@ -1094,7 +1090,7 @@ pub unsafe extern "C" fn molt_ws_connect(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
         let ws_ptr = ptr_from_bits(ws_bits);
@@ -1136,7 +1132,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
         let ws_ptr = ptr_from_bits(ws_bits);

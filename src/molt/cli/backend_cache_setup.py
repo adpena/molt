@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from molt.cli import build_inputs as _build_inputs
+from molt.capability_manifest import (
+    ResolvedRuntimePolicy,
+    resolve_runtime_policy_from_env,
+)
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
@@ -95,9 +99,7 @@ def _stdlib_cache_key_material_authority_hash(
         "cache_compiler_fingerprint": cache_compiler_fingerprint,
         "cache_tooling_fingerprint": cache_tooling_fingerprint,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -310,10 +312,7 @@ def _prepare_backend_cache_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     runtime_callable_symbols_digest: str = "",
-    capabilities_list: Sequence[str] | None = None,
-    capability_profiles: Sequence[str] | None = None,
-    manifest_env_vars: Mapping[str, str] | None = None,
-    capability_config_digest: str | None = None,
+    resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendCacheSetup:
@@ -340,7 +339,9 @@ def _prepare_backend_cache_setup(
     # the same feature mapping the build dispatch uses, so the stamped identity
     # matches the actual daemon executable for this target/profile.
     stage_start = time.perf_counter()
-    backend_features = _backend_features_for_build_target(target=target, is_wasm=is_wasm)
+    backend_features = _backend_features_for_build_target(
+        target=target, is_wasm=is_wasm
+    )
     backend_bin = _backend_bin_path(
         project_root,
         backend_cargo_profile,
@@ -354,12 +355,15 @@ def _prepare_backend_cache_setup(
     )
 
     stage_start = time.perf_counter()
-    if capability_config_digest is None:
-        capability_config_digest = _build_inputs._capability_config_cache_digest(
-            capabilities_list=capabilities_list,
-            capability_profiles=capability_profiles,
-            manifest_env_vars=manifest_env_vars,
+    capability_config_digest = (
+        (
+            resolved_capability_policy
+            if resolved_capability_policy is not None
+            else resolve_runtime_policy_from_env(os.environ)
         )
+        .digest()
+        .removeprefix("sha256:")
+    )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_capability_config_digest",

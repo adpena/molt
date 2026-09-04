@@ -329,6 +329,7 @@ const initWasmAssets = () => {
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = { ...process.env };
+  wasmEnv.MOLT_EXECUTION_TARGET = 'wasi';
   implicitBundlePreopen = null;
   if (!Object.prototype.hasOwnProperty.call(wasmEnv, 'MOLT_VFS_BUNDLE')) {
     const bundleDescriptor = runtimeManifest?.modules?.bundle;

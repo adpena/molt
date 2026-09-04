@@ -25,6 +25,12 @@ source_type = "module"
 authority = "browser-loader"
 
 [[asset]]
+path = "host_capabilities_generated.js"
+role = "browser"
+source_type = "module"
+authority = "host-capability-manifest"
+
+[[asset]]
 path = "browser_gpu_dispatch.js"
 role = "browser"
 source_type = "module"

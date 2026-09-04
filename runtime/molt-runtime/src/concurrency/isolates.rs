@@ -18,7 +18,7 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::GilGuard;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::builtins::attr::attr_name_bits_from_bytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,7 +35,7 @@ use crate::state::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     TYPE_ID_BYTES, alloc_bytes, alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits,
-    exception_pending, format_exception_with_traceback, has_capability, inc_ref_bits, is_truthy,
+    exception_pending, format_exception_with_traceback, inc_ref_bits, is_truthy,
     molt_exception_clear, molt_exception_last, molt_module_get_attr, obj_from_bits, object_type_id,
     ptr_from_bits, string_obj_to_owned, to_i64,
 };
@@ -524,11 +524,6 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
-        audit_capability_decision("thread.spawn", "thread", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
-        }
         let isolated_override = matches!(
             std::env::var("MOLT_THREAD_ISOLATED")
                 .ok()
@@ -536,12 +531,17 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
                 .map(|value| value.to_ascii_lowercase()),
             Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
         );
-        // Default to shared-runtime threads for CPython parity of thread-visible
-        // global/module state; keep an escape hatch for isolate-only mode.
-        let shared_runtime = !isolated_override
-            && (has_capability(_py, "thread.shared")
-                || has_capability(_py, "thread")
-                || has_capability(_py, "thread.spawn"));
+        let operation = if isolated_override {
+            crate::OperationId::ThreadSpawnIsolated
+        } else {
+            crate::OperationId::ThreadSpawn
+        };
+        if let Err(err) = crate::require_operation(_py, operation, AuditArgs::None) {
+            return err;
+        }
+        // Shared runtime is the CPython-parity default. Isolated execution is
+        // selected explicitly rather than emerging as a missing-grant fallback.
+        let shared_runtime = !isolated_override;
         let payload = match payload_from_bits(_py, payload_bits) {
             Ok(val) => val,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
@@ -590,10 +590,10 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
-        audit_capability_decision("thread.spawn_shared", "thread", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::ThreadSpawnShared, AuditArgs::None)
+        {
+            return err;
         }
         let isolated_override = matches!(
             std::env::var("MOLT_THREAD_ISOLATED")

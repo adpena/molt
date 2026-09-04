@@ -9,6 +9,8 @@ use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Mutex, MutexGuard, Once};
 
+use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_TIER;
+
 thread_local! {
     static EXPECTED_PANIC_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
@@ -87,21 +89,21 @@ fn process_global_test_state() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-struct TrustedTestEnvironment(Option<std::ffi::OsString>);
+struct MaximumCapabilityTierTestEnvironment(Option<std::ffi::OsString>);
 
-impl TrustedTestEnvironment {
+impl MaximumCapabilityTierTestEnvironment {
     fn enter() -> Self {
-        let prior = std::env::var_os("MOLT_TRUSTED");
-        unsafe { std::env::set_var("MOLT_TRUSTED", "1") };
+        let prior = std::env::var_os("MOLT_CAPABILITY_TIER");
+        unsafe { std::env::set_var("MOLT_CAPABILITY_TIER", MAXIMUM_BUILTIN_CAPABILITY_TIER) };
         Self(prior)
     }
 }
 
-impl Drop for TrustedTestEnvironment {
+impl Drop for MaximumCapabilityTierTestEnvironment {
     fn drop(&mut self) {
         match self.0.take() {
-            Some(value) => unsafe { std::env::set_var("MOLT_TRUSTED", value) },
-            None => unsafe { std::env::remove_var("MOLT_TRUSTED") },
+            Some(value) => unsafe { std::env::set_var("MOLT_CAPABILITY_TIER", value) },
+            None => unsafe { std::env::remove_var("MOLT_CAPABILITY_TIER") },
         }
     }
 }
@@ -182,7 +184,7 @@ impl RuntimeTestTransaction {
     pub(crate) fn with_trusted_fresh_runtime<R>(f: impl FnOnce() -> R) -> R {
         let _process_state = process_global_test_state();
         let mut restart = RuntimeTestRestartCustody::enter();
-        let _trusted_environment = TrustedTestEnvironment::enter();
+        let _capability_environment = MaximumCapabilityTierTestEnvironment::enter();
         let mut pending_calls = PendingCallTestCustody::enter();
 
         if crate::state::runtime_state::runtime_is_initialized() {

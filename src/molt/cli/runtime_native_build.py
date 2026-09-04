@@ -31,7 +31,6 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
 )
 from molt.cli.build_locks import _build_lock
-from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.cargo_execution import (
     CargoExecutionResult,
     _build_slot,
@@ -485,8 +484,10 @@ def _native_runtime_cargo_command(
     ]
     if concrete_stdlib_profile != "full":
         cmd.append("--no-default-features")
-        concrete_features = _dedupe_preserve_order(
-            list(runtime_features) + list(builtin_features) + [concrete_stdlib_feature]
+        concrete_features = list(
+            dict.fromkeys(
+                [*runtime_features, *builtin_features, concrete_stdlib_feature]
+            )
         )
         cmd.extend(["--features", ",".join(concrete_features)])
     elif target_triple and "wasm" in target_triple:
@@ -506,8 +507,8 @@ def _native_runtime_cargo_command(
         ]
         cmd.extend(["--features", ",".join(wasm_features)])
     else:
-        full_features = _dedupe_preserve_order(
-            list(runtime_features) + [concrete_stdlib_feature]
+        full_features = list(
+            dict.fromkeys([*runtime_features, concrete_stdlib_feature])
         )
         cmd.extend(["--features", ",".join(full_features)])
     if target_triple:
@@ -750,7 +751,7 @@ def _prepare_native_runtime_build(
         runtime_state.native_runtime_build_failure = None
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = tuple(
-        _dedupe_preserve_order(
+        dict.fromkeys(
             [*_runtime_cargo_features(target_triple), *(extra_runtime_features or ())]
         )
     )

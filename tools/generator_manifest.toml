@@ -147,6 +147,23 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_host_capabilities.py"
+outputs = [
+  "src/molt/_host_capabilities_generated.py",
+  "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+  "wasm/host_capabilities_generated.js",
+  "docs/spec/areas/security/host_capabilities.generated.md",
+]
+source = "runtime/host_capabilities.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_host_capabilities.py --check"
+toolchains = ["rustfmt"]
+idempotent = true
+sync_test = "tests/test_gen_host_capabilities.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_native_callable_abi.py"
 outputs = [
   "src/molt/native_callable_abi.py",

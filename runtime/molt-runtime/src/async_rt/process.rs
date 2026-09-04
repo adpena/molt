@@ -202,7 +202,7 @@ pub unsafe extern "C" fn molt_process_spawn(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         ignore_sigpipe();
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
         let args = match argv_from_bits(_py, args_bits) {
@@ -246,18 +246,18 @@ pub unsafe extern "C" fn molt_process_spawn(
             if trace_process_io() {
                 let mut has_entry = false;
                 let mut has_spawn = false;
-                let mut has_trusted = false;
+                let mut has_capability_tier = false;
                 for (key, _value) in env_entries {
                     if key == "MOLT_ENTRY_MODULE" {
                         has_entry = true;
                     } else if key == "MOLT_MP_SPAWN" {
                         has_spawn = true;
-                    } else if key == "MOLT_TRUSTED" {
-                        has_trusted = true;
+                    } else if key == "MOLT_CAPABILITY_TIER" {
+                        has_capability_tier = true;
                     }
                 }
                 eprintln!(
-                    "molt_process_env overlay={overlay_env} entry={has_entry} spawn={has_spawn} trusted={has_trusted}"
+                    "molt_process_env overlay={overlay_env} entry={has_entry} spawn={has_spawn} capability_tier={has_capability_tier}"
                 );
             }
             for (key, value) in env_entries {
@@ -355,7 +355,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         ignore_sigpipe();
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
         let args = match argv_from_bits(_py, args_bits) {

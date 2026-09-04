@@ -171,20 +171,20 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     }
     assert timeout_envelopes["repository_policy"] == {
         "budget_seconds": 3600,
-        "projected_makespan_seconds": 3300,
+        "projected_makespan_seconds": 3420,
         "critical_path_seconds": 1500,
-        "resource_capacity_floor_seconds": {"repository-policy": 2880},
-        "headroom_seconds": 300,
+        "resource_capacity_floor_seconds": {"repository-policy": 2955},
+        "headroom_seconds": 180,
     }
     assert timeout_envelopes["wasm"] == {
         "budget_seconds": 6300,
-        "projected_makespan_seconds": 5700,
+        "projected_makespan_seconds": 6000,
         "critical_path_seconds": 3000,
         "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 5700,
+            "compiler-build-resource": 6000,
             "wasm-runtime": 450,
         },
-        "headroom_seconds": 600,
+        "headroom_seconds": 300,
     }
     assert timeout_envelopes["llvm"] == {
         "budget_seconds": 4500,
@@ -536,6 +536,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
         in {
             "wasm.build.host",
             "native.integration.bench-cli",
+            "native.integration.capability-manifest",
             "rust.check.tir-wasi32",
             "rust.test.default-truth",
             "llvm.build.backend",
@@ -544,6 +545,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     } == {
         "wasm.build.host": ("cold", 1200),
         "native.integration.bench-cli": ("cold", 1200),
+        "native.integration.capability-manifest": ("warm", 300),
         "rust.check.tir-wasi32": ("cross-check", 240),
         "rust.test.default-truth": ("suite", 1800),
         "llvm.build.backend": ("cold", 1200),

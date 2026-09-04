@@ -9,8 +9,6 @@ import enum as _enum
 
 _require_intrinsic("molt_stdlib_probe")
 _MOLT_SIGNAL_RAISE = _require_intrinsic("molt_signal_raise")
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 # Signal constants from Rust intrinsics
 _MOLT_SIGNAL_SIG_DFL = _require_intrinsic("molt_signal_sig_dfl")
@@ -150,12 +148,6 @@ __all__ = [
 ]
 
 
-def _require_cap() -> None:
-    if _MOLT_CAPABILITIES_TRUSTED():
-        return
-    _MOLT_CAPABILITIES_REQUIRE("process.signal")
-
-
 class Signals(_enum.IntEnum):
     SIGINT = SIGINT
     SIGTERM = SIGTERM
@@ -191,7 +183,6 @@ default_int_handler = _MOLT_SIGNAL_DEFAULT_INT_HANDLER
 
 
 def getsignal(sig: int) -> object:
-    _require_cap()
     signum = int(sig)
     current = _MOLT_SIGNAL_GETSIGNAL(signum)
     if signum == SIGINT and current == SIG_DFL:
@@ -200,7 +191,6 @@ def getsignal(sig: int) -> object:
 
 
 def signal(sig: int, handler: object) -> object:
-    _require_cap()
     signum = int(sig)
     old_handler = _MOLT_SIGNAL_SIGNAL(signum, handler)
     if signum == SIGINT and old_handler == SIG_DFL:
@@ -209,27 +199,22 @@ def signal(sig: int, handler: object) -> object:
 
 
 def raise_signal(sig: int) -> None:
-    _require_cap()
     _MOLT_SIGNAL_RAISE_SIGNAL(int(sig))
 
 
 def alarm(seconds: int) -> int:
-    _require_cap()
     return int(_MOLT_SIGNAL_ALARM(int(seconds)))
 
 
 def pause() -> None:
-    _require_cap()
     _MOLT_SIGNAL_PAUSE()
 
 
 def set_wakeup_fd(fd: int) -> int:
-    _require_cap()
     return int(_MOLT_SIGNAL_SET_WAKEUP_FD(int(fd)))
 
 
 def valid_signals() -> set[int]:
-    _require_cap()
     result = _MOLT_SIGNAL_VALID_SIGNALS()
     if isinstance(result, (list, tuple)):
         return set(int(s) for s in result)
@@ -238,7 +223,6 @@ def valid_signals() -> set[int]:
 
 def strsignal(signalnum: int) -> str | None:
     """Return the system description of the given signal."""
-    _require_cap()
     result = _MOLT_SIGNAL_STRSIGNAL(int(signalnum))
     if result is None:
         return None
@@ -247,7 +231,6 @@ def strsignal(signalnum: int) -> str | None:
 
 def pthread_sigmask(how: int, mask: Iterable[int]) -> set[int]:
     """Fetch and/or change the signal mask of the calling thread."""
-    _require_cap()
     result = _MOLT_SIGNAL_PTHREAD_SIGMASK(int(how), list(mask))
     if isinstance(result, (list, tuple)):
         return set(int(s) for s in result)
@@ -256,13 +239,11 @@ def pthread_sigmask(how: int, mask: Iterable[int]) -> set[int]:
 
 def pthread_kill(thread_id: int, signalnum: int) -> None:
     """Send a signal to a thread."""
-    _require_cap()
     _MOLT_SIGNAL_PTHREAD_KILL(int(thread_id), int(signalnum))
 
 
 def sigpending() -> set[int]:
     """Examine pending signals."""
-    _require_cap()
     result = _MOLT_SIGNAL_SIGPENDING()
     if isinstance(result, (list, tuple)):
         return set(int(s) for s in result)
@@ -271,7 +252,6 @@ def sigpending() -> set[int]:
 
 def sigwait(sigset: Iterable[int]) -> int:
     """Wait for a signal."""
-    _require_cap()
     return int(_MOLT_SIGNAL_SIGWAIT(list(sigset)))
 
 

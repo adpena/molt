@@ -70,8 +70,10 @@ def test_canonical_browser_and_node_entries_close_over_declared_roles() -> None:
         "browser_host.js",
         "browser_target_features.js",
         "callable_table_abi_generated.js",
+        "host_capabilities_generated.js",
         "loader_bridge.js",
         "molt_vfs_browser.js",
+        "native_callable_abi_generated.js",
         "target_feature_constants.generated.js",
     )
     assert wasm_loader_asset_closure(ROOT / "wasm", NODE_RUNNER_ENTRY_ASSETS) == (

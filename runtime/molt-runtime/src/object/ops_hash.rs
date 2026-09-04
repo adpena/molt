@@ -26,13 +26,22 @@ fn hash_modulus_big() -> &'static BigInt {
 }
 
 fn hash_secret(_py: &PyToken<'_>) -> &'static HashSecret {
-    runtime_state(_py).hash_secret.get_or_init(init_hash_secret)
+    runtime_state(_py)
+        .hash_secret
+        .get_or_init(|| init_hash_secret(_py))
 }
 
-fn init_hash_secret() -> HashSecret {
+fn init_hash_secret(_py: &PyToken<'_>) -> HashSecret {
     match std::env::var("PYTHONHASHSEED") {
         Ok(value) => {
             if value == "random" {
+                if !crate::operation_allowed(
+                    _py,
+                    crate::OperationId::RandomEntropy,
+                    crate::audit::AuditArgs::None,
+                ) {
+                    fatal_hash_seed_capability_denied();
+                }
                 if !os_random_supported() {
                     fatal_hash_seed_unavailable();
                 }
@@ -49,7 +58,12 @@ fn init_hash_secret() -> HashSecret {
             }
         }
         Err(_) => {
-            if os_random_supported() {
+            if crate::operation_allowed(
+                _py,
+                crate::OperationId::RandomEntropy,
+                crate::audit::AuditArgs::None,
+            ) && os_random_supported()
+            {
                 random_hash_secret()
             } else {
                 HashSecret { k0: 0, k1: 0 }
@@ -69,6 +83,12 @@ pub(crate) fn fatal_hash_seed(value: &str) -> ! {
 fn fatal_hash_seed_unavailable() -> ! {
     eprintln!("Fatal Python error: PYTHONHASHSEED=random is unavailable on wasm-freestanding");
     eprintln!("Use PYTHONHASHSEED=0 or an explicit integer seed.");
+    std::process::exit(1);
+}
+
+fn fatal_hash_seed_capability_denied() -> ! {
+    eprintln!("Fatal Python error: PYTHONHASHSEED=random requires the 'random' capability");
+    eprintln!("Grant MOLT_CAPABILITIES=random or select MOLT_CAPABILITY_TIER=full.");
     std::process::exit(1);
 }
 

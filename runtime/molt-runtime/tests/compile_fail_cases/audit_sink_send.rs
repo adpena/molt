@@ -7,7 +7,9 @@ use std::rc::Rc;
 struct BadSink(Rc<()>); // Rc is !Send
 
 impl molt_runtime::audit::AuditSink for BadSink {
-    fn emit(&self, _event: &molt_runtime::audit::AuditEvent) {}
+    fn emit(&self, _event: &molt_runtime::audit::AuditEvent) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn main() {

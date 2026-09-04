@@ -12,7 +12,7 @@ from pathlib import Path
 from collections.abc import Iterable, Sequence
 from typing import Any, Mapping
 
-from molt.cli.capability_spec import _split_tokens
+from molt.capability_policy import split_capability_tokens
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
 from molt.cli.source_extension_link_requirements import (
@@ -153,7 +153,7 @@ def _normalize_effects(value: Any) -> list[str]:
                     normalized.append(stripped)
         return normalized
     if isinstance(value, str):
-        return _split_tokens(value)
+        return split_capability_tokens(value)
     return []
 
 

@@ -9,13 +9,15 @@ Product board for the crate-cut enforcement fact (doc 56 FACT-A / Phase 1a). Gen
 
 | metric | value |
 | --- | --- |
-| crate_layer_backedges | 0 |
+| crate_layer_backedges | 1 |
 | max_crate_blast_radius | 31 |
 | undeclared_crates | 0 |
 
-## Layer back-edges (0)
+## Layer back-edges (1)
 
-None  -  every dependency edge respects the declared layer ordering.
+| offending edge |
+| --- |
+| `molt-lang-cpython-abi (L2) -> molt-runtime-platform (L3) [normal]  (layer 2 < 3: a crate may depend only on STRICTLY LOWER layers)` |
 
 ## Recompile blast radius (ranked)
 
@@ -28,6 +30,7 @@ None  -  every dependency edge respects the declared layer ordering.
 | 6 | `molt-passes` | L1 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-tir |
 | 5 | `molt-db` | L0 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host, molt-worker |
 | 5 | `molt-gpu` | L0 | molt-embed, molt-ffi, molt-gpu-runtime, molt-runtime, molt-wasm-host |
+| 5 | `molt-runtime-platform` | L3 | molt-embed, molt-ffi, molt-lang-cpython-abi, molt-runtime, molt-wasm-host |
 | 5 | `molt-tir` | L2 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm |
 | 4 | `molt-gpu-runtime` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-lang-cpython-abi` | L2 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
@@ -45,7 +48,6 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-runtime-math` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-net` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-path` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
-| 4 | `molt-runtime-platform` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-regex` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-resource` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-serial` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
@@ -69,13 +71,12 @@ None  -  every dependency edge respects the declared layer ordering.
 | 0 | `molt-harness` | L0 |  |
 | 0 | `molt-runtime-protobuf` | L0 |  |
 | 0 | `molt-snapshot` | L0 |  |
-| 0 | `molt-tier` | L0 |  |
 | 0 | `molt-wasm-host` | L5 |  |
 | 0 | `molt-worker` | L1 |  |
 
 ## Declared layer map (`runtime/crate_graph.toml`)
 
-- **Layer 0:** `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-runtime-protobuf`, `molt-snapshot`, `molt-tier`, `molt-wasm-facts`
+- **Layer 0:** `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-runtime-protobuf`, `molt-snapshot`, `molt-wasm-facts`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
 - **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
 - **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-gpu-runtime`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-constants`, `molt-runtime-crypto`, `molt-runtime-diagnostics`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-platform`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-difflib`, `molt-stdlib-graphlib`, `molt-stdlib-text`

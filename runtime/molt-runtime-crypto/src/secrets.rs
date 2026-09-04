@@ -45,6 +45,9 @@ fn base64url_encode(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 fn fill_random(_py: &PyToken, buf: &mut [u8]) -> Result<(), u64> {
+    if !require_random_entropy(_py) {
+        return Err(MoltObject::none().bits());
+    }
     fill_os_random(buf).map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))
 }
 
@@ -269,6 +272,9 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
             "ValueError",
             "upper must be > 0",
         ));
+    }
+    if !require_random_entropy(_py) {
+        return Err(MoltObject::none().bits());
     }
     // Use 8 random bytes (u64) and rejection-sample to avoid modulo bias.
     let mut buf = [0u8; 8];

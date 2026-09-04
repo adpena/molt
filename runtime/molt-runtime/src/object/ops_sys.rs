@@ -486,16 +486,16 @@ pub(crate) fn env_non_negative_i64(var: &str) -> Option<i64> {
         .filter(|value| *value >= 0)
 }
 
-pub(crate) fn sys_flags_hash_randomization() -> i64 {
+pub(crate) fn sys_flags_hash_randomization(_py: &PyToken<'_>) -> i64 {
     match std::env::var("PYTHONHASHSEED") {
         Ok(value) => {
             if value == "random" {
-                return 1;
+                return i64::from(crate::has_capability(_py, "random"));
             }
             let seed: u32 = value.parse().unwrap_or_else(|_| fatal_hash_seed(&value));
             if seed == 0 { 0 } else { 1 }
         }
-        Err(_) => 1,
+        Err(_) => i64::from(crate::has_capability(_py, "random")),
     }
 }
 
@@ -873,32 +873,78 @@ mod runtime_resource_env_tests {
 
 /// Initialize the audit sink from environment variables.
 ///
-/// Reads: MOLT_AUDIT_ENABLED, MOLT_AUDIT_SINK
+/// Reads: MOLT_AUDIT_ENABLED, MOLT_AUDIT_SINK, MOLT_AUDIT_OUTPUT, and
+/// MOLT_CAPABILITY_POLICY_DIGEST.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_audit() {
-    use crate::audit::{JsonLinesSink, NullSink, StderrSink, set_audit_sink};
+    use crate::audit::{
+        AuditSink, JsonLinesSink, NullSink, StderrSink, set_capability_policy_digest,
+        set_global_audit_sink,
+    };
 
-    let enabled = std::env::var("MOLT_AUDIT_ENABLED")
-        .ok()
-        .map(|s| s == "1")
-        .unwrap_or(false);
+    let env_utf8_or = |name: &str, default: &str| match std::env::var(name) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => default.to_owned(),
+        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} is not valid Unicode"),
+    };
+    let policy_digest = match std::env::var("MOLT_CAPABILITY_POLICY_DIGEST") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("MOLT_CAPABILITY_POLICY_DIGEST is not valid Unicode")
+        }
+    };
+    set_capability_policy_digest(policy_digest.as_deref())
+        .unwrap_or_else(|error| panic!("invalid MOLT_CAPABILITY_POLICY_DIGEST: {error}"));
+
+    let enabled = match std::env::var("MOLT_AUDIT_ENABLED") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "" | "0" | "false" | "no" | "off" => false,
+            _ => panic!("invalid MOLT_AUDIT_ENABLED value {value:?}; expected a boolean"),
+        },
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("MOLT_AUDIT_ENABLED is not valid Unicode")
+        }
+    };
 
     if !enabled {
+        set_global_audit_sink(std::sync::Arc::new(NullSink))
+            .unwrap_or_else(|error| panic!("cannot disable global audit sink: {error}"));
         return;
     }
 
-    let sink_type = std::env::var("MOLT_AUDIT_SINK").unwrap_or_else(|_| "stderr".into());
-    match sink_type.as_str() {
-        "jsonl" => {
-            set_audit_sink(Box::new(JsonLinesSink::new(std::io::stderr())));
-        }
+    let sink_type = env_utf8_or("MOLT_AUDIT_SINK", "stderr");
+    let output = env_utf8_or("MOLT_AUDIT_OUTPUT", "stderr");
+    let sink: std::sync::Arc<dyn AuditSink + Send + Sync> = match sink_type.as_str() {
+        "jsonl" => match output.as_str() {
+            "stderr" => std::sync::Arc::new(JsonLinesSink::new(std::io::stderr())),
+            "stdout" => std::sync::Arc::new(JsonLinesSink::new(std::io::stdout())),
+            "null" => panic!("MOLT_AUDIT_OUTPUT cannot be 'null' for the jsonl sink"),
+            path => {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap_or_else(|error| {
+                        panic!("cannot open audit JSON-lines output {path:?}: {error}")
+                    });
+                std::sync::Arc::new(JsonLinesSink::new(file))
+            }
+        },
         "stderr" => {
-            set_audit_sink(Box::new(StderrSink));
+            assert_eq!(
+                output, "stderr",
+                "MOLT_AUDIT_OUTPUT must be 'stderr' for the stderr sink"
+            );
+            std::sync::Arc::new(StderrSink)
         }
-        _ => {
-            set_audit_sink(Box::new(NullSink));
-        }
-    }
+        "null" => std::sync::Arc::new(NullSink),
+        _ => panic!("invalid MOLT_AUDIT_SINK value {sink_type:?}; expected null, stderr, or jsonl"),
+    };
+    set_global_audit_sink(sink)
+        .unwrap_or_else(|error| panic!("cannot install global audit sink: {error}"));
 }
 
 /// Initialize IO mode from environment variable.
@@ -2117,7 +2163,7 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
             (b"verbose", env_flag_level("PYTHONVERBOSE").unwrap_or(0)),
             (b"bytes_warning", 0),
             (b"quiet", 0),
-            (b"hash_randomization", sys_flags_hash_randomization()),
+            (b"hash_randomization", sys_flags_hash_randomization(_py)),
             (b"isolated", 0),
             (b"dev_mode", env_flag_bool("PYTHONDEVMODE").unwrap_or(0)),
             (b"utf8_mode", env_flag_bool("PYTHONUTF8").unwrap_or(0)),
@@ -2348,7 +2394,7 @@ pub extern "C" fn molt_time_time() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if require_time_wall_capability::<u64>(_py).is_err() {
+            if require_time_wall_capability::<u64>(_py, OperationId::TimeTime).is_err() {
                 return MoltObject::none().bits();
             }
         }
@@ -2367,7 +2413,7 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if require_time_wall_capability::<u64>(_py).is_err() {
+            if require_time_wall_capability::<u64>(_py, OperationId::TimeTimeNs).is_err() {
                 return MoltObject::none().bits();
             }
         }
@@ -2424,7 +2470,9 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
         let obj = obj_from_bits(secs_bits);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+            if obj.is_none()
+                && require_time_wall_capability::<u64>(_py, OperationId::TimeLocaltime).is_err()
+            {
                 return MoltObject::none().bits();
             }
         }
@@ -2462,7 +2510,9 @@ pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
         let obj = obj_from_bits(secs_bits);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+            if obj.is_none()
+                && require_time_wall_capability::<u64>(_py, OperationId::TimeGmtime).is_err()
+            {
                 return MoltObject::none().bits();
             }
         }
@@ -2769,7 +2819,8 @@ pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
             "process_time" => ("process_time", "molt", 1e-9f64, true, false),
             "time" => {
                 #[cfg(not(target_arch = "wasm32"))]
-                if require_time_wall_capability::<u64>(_py).is_err() {
+                if require_time_wall_capability::<u64>(_py, OperationId::TimeGetClockInfo).is_err()
+                {
                     return MoltObject::none().bits();
                 }
                 ("time", "molt", 1e-6f64, false, true)

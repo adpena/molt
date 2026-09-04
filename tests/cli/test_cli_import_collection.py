@@ -26,6 +26,7 @@ import pytest
 
 import molt.cli as cli
 from molt import c_api_symbols as cli_c_api_symbols
+from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
@@ -9593,8 +9594,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -9656,8 +9656,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
 
     first, first_error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -9685,8 +9684,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
 
     second, second_error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -9750,8 +9748,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -9880,8 +9877,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=output_binary,
@@ -9951,8 +9947,7 @@ def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
     runtime_root = tmp_path / "artifacts" / "external_static_packages" / "digest"
 
     stub_content = cli._render_native_main_stub(
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_module_roots=(runtime_root,),
     )
 
@@ -9991,8 +9986,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
 
     prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
-        trusted=False,
-        capabilities_list=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
         json_output=False,
         output_binary=tmp_path / "app",
@@ -10059,8 +10053,7 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
         output_binary=tmp_path / "app",
         deterministic=False,
         trusted=False,
-        capabilities_list=None,
-        capability_profiles=None,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         capabilities_source=None,
         sysroot_path=None,
         cache_info={},
@@ -20106,6 +20099,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "linked_output_path": linked_wasm,
         "output_artifact": output_wasm,
         "json_output": True,
+        "resolved_capability_policy": CapabilityManifest().resolve(),
         "runtime_state": runtime_state,
         "ensure_runtime_wasm_both": lambda required=None: True,
         "runtime_cargo_profile": "dev-fast",
@@ -20227,6 +20221,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: (
             pair_required.append(frozenset(required or set())) or True
@@ -20392,9 +20387,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         "_effective_split_worker_table_base",
         lambda **kwargs: 8192,
     )
-    monkeypatch.setattr(
-        cli_non_native_output, "_generate_split_worker_js", lambda **kwargs: "// worker"
-    )
+    resolved_policy = CapabilityManifest(allow=["fs.bundle.read"]).resolve(tier="safe")
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
@@ -20406,6 +20399,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=resolved_policy,
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: (
             pair_required.append(frozenset(required or set())) or True
@@ -20501,6 +20495,16 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert "webnn.graph" in target_features["excluded_features"]
     assert manifest["assets"]["bundle"]["path"] == "bundle.tar"
     assert manifest["assets"]["bundle"]["file_count"] == len(bundle_manifest["files"])
+    assert manifest["capability_policy"] == resolved_policy.canonical_payload()
+    assert manifest["capability_policy_digest"] == resolved_policy.digest()
+    worker_source = (output_wasm.parent / "worker.js").read_text(encoding="utf-8")
+    expected_worker_env = [
+        f"{name}={value}"
+        for name, value in sorted(
+            {**resolved_policy.to_env_vars(), "MOLT_EXECUTION_TARGET": "cloudflare"}.items()
+        )
+    ]
+    assert json.dumps(expected_worker_env, ensure_ascii=True) in worker_source
     native_callables = manifest["abi"]["browser_embed"]["native_callables"]
     assert native_callables["module"] == "molt_native"
     assert native_callables["symbols"] == {}
@@ -20620,6 +20624,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
@@ -20821,6 +20826,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: (
             pair_required.append(set(required or ())) or True
@@ -20967,6 +20973,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: (
             pair_required.append(set(required or ())) or True
@@ -21226,6 +21233,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=False,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
@@ -21310,6 +21318,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
@@ -21717,11 +21726,8 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         backend_profile="dev",
         runtime_cargo_profile="release",
         backend_cargo_profile="dev",
-        capabilities_list=None,
-        capability_profiles=[],
+        resolved_capability_policy=CapabilityManifest().resolve(),
         capabilities_source=None,
-        manifest_env_vars={},
-        capability_config_cache_digest="",
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         target_sys_platform=None,
     )
@@ -27355,7 +27361,9 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     cli_non_native_output._generate_snapshot_header(
         output_wasm=wasm_path,
         target_profile="edge",
-        capabilities_list=["fs.bundle.read"],
+        resolved_capability_policy=CapabilityManifest(
+            allow=["fs.bundle.read"]
+        ).resolve(),
         verbose=False,
     )
 

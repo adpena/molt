@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import builtins
-
 import pytest
 
 from molt import capabilities
@@ -25,27 +23,25 @@ def test_format_caps() -> None:
     assert formatted == "a,b"
 
 
-def test_capability_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MOLT_CAPABILITIES", "")
-    monkeypatch.setenv("MOLT_TRUSTED", "1")
-    assert capabilities.trusted()
-    assert capabilities.has("fs.read")
-    capabilities.require("fs.read")
-
-
-def test_capability_trusted_short_circuits_stale_require_intrinsic(
+def test_legacy_trusted_environment_does_not_grant_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry = getattr(builtins, "_molt_intrinsics", None)
-    if not isinstance(registry, dict):
-        registry = {}
-        monkeypatch.setattr(builtins, "_molt_intrinsics", registry, raising=False)
     monkeypatch.setenv("MOLT_CAPABILITIES", "")
     monkeypatch.setenv("MOLT_TRUSTED", "1")
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "none")
+    assert not capabilities.trusted()
+    assert not capabilities.has("fs.read")
+    with pytest.raises(PermissionError):
+        capabilities.require("fs.read")
 
-    def _deny(_cap: str) -> None:
-        raise PermissionError("stale intrinsic should be ignored when trusted")
 
-    monkeypatch.setitem(registry, "molt_capabilities_require", _deny)
+def test_maximum_builtin_tier_is_finite_and_does_not_short_circuit_intrinsics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
+    assert capabilities.trusted()
+    assert capabilities.has("fs.read")
+    assert not capabilities.has("future.unregistered")
 
-    capabilities.require("fs.read")
+    with pytest.raises(PermissionError):
+        capabilities.require("future.unregistered")

@@ -1,12 +1,11 @@
 {
-  "total": 269,
+  "total": 267,
   "note": "encoding-unsafe call sites keyed file::rule; each count is monotonic non-increasing (burn down to zero, never up). See tools/encoding_gate.py.",
   "by_site": {
     "src/molt/backend_daemon_custody.py::subprocess-text-no-encoding": 1,
     "src/molt/cli/artifact_sync.py::read_text-no-encoding": 1,
     "src/molt/cli/atomic_io.py::read_text-no-encoding": 1,
     "src/molt/cli/build_inputs.py::read_text-no-encoding": 3,
-    "src/molt/cli/capability_spec.py::read_text-no-encoding": 2,
     "src/molt/cli/cargo_execution.py::subprocess-text-no-encoding": 2,
     "src/molt/cli/command_runtime.py::subprocess-text-no-encoding": 1,
     "src/molt/cli/compiler_metadata.py::read_text-no-encoding": 1,

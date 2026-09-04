@@ -1,6 +1,6 @@
 """Purpose: focused `_tkinter`/`tkinter` Phase-0 + wrapper surface checks."""
 
-# MOLT_ENV: MOLT_TRUSTED=0 MOLT_CAPABILITIES=
+# MOLT_ENV: MOLT_CAPABILITY_TIER=none MOLT_CAPABILITIES=
 
 from __future__ import annotations
 

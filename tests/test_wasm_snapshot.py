@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from molt.capability_manifest import CapabilityManifest
+
 
 def test_snapshot_header_valid_json(tmp_path):
     """Snapshot header should be valid JSON with required fields."""
@@ -154,7 +156,9 @@ def test_generate_snapshot_header_function(tmp_path):
     _generate_snapshot_header(
         output_wasm=wasm_path,
         target_profile="cloudflare",
-        capabilities_list=["fs.bundle.read", "fs.tmp.read"],
+        resolved_capability_policy=CapabilityManifest(
+            allow=["fs.bundle.read", "fs.tmp.read"]
+        ).resolve(),
         verbose=False,
     )
 
@@ -165,6 +169,27 @@ def test_generate_snapshot_header_function(tmp_path):
     assert loaded["abi_version"] == "0.1.0"
     assert loaded["target_profile"] == "cloudflare"
     assert loaded["module_hash"].startswith("sha256:")
-    assert len(loaded["mount_plan"]) == 3
+    assert loaded["mount_plan"] == []
     assert loaded["capability_manifest"] == ["fs.bundle.read", "fs.tmp.read"]
+    assert loaded["capability_policy_digest"].startswith("sha256:")
+    assert loaded["determinism_stamp"] == "1980-01-01T00:00:00Z"
     assert loaded["init_state_size"] == 0
+
+
+def test_explicit_empty_snapshot_capabilities_do_not_regain_defaults(
+    tmp_path, monkeypatch
+):
+    from molt.cli.non_native_output import _generate_snapshot_header
+
+    wasm_path = tmp_path / "output.wasm"
+    wasm_path.write_bytes(b"\x00asm" + b"\x00" * 100)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
+    _generate_snapshot_header(
+        output_wasm=wasm_path,
+        target_profile="cloudflare",
+        resolved_capability_policy=CapabilityManifest(allow=[]).resolve(),
+        verbose=False,
+    )
+    loaded = json.loads((tmp_path / "molt.snapshot.json").read_text())
+    assert loaded["capability_manifest"] == []
+    assert loaded["determinism_stamp"] == "1970-01-01T00:00:00Z"

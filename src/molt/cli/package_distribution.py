@@ -17,12 +17,12 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
     _atomic_zip_file,
 )
-from molt.cli.capability_spec import (
+from molt.capability_policy import (
     CapabilityInput,
-    CapabilityManifest,
-    _allowed_capabilities_for_package,
-    _allowed_effects_for_package,
-    _parse_capabilities_spec,
+    CapabilityPolicy,
+    allowed_capabilities_for_package,
+    allowed_effects_for_package,
+    parse_capability_input,
 )
 from molt.cli.extension_manifest import (
     ExtensionManifestValidation,
@@ -163,23 +163,25 @@ def package(
         return lock_error
     capabilities_list = None
     capability_profiles: list[str] = []
-    capability_manifest: CapabilityManifest | None = None
+    capability_policy: CapabilityPolicy | None = None
     if capabilities is not None:
-        spec = _parse_capabilities_spec(capabilities)
+        spec = parse_capability_input(capabilities)
         if spec.errors:
             return _fail(
                 "Invalid capabilities: " + ", ".join(spec.errors),
                 json_output,
                 command="package",
             )
-        capabilities_list = spec.capabilities
-        capability_profiles = spec.profiles
-        capability_manifest = spec.manifest
+        capabilities_list = (
+            None if spec.capabilities is None else list(spec.capabilities)
+        )
+        capability_profiles = list(spec.profiles)
+        capability_policy = spec.policy
     if capabilities_list is not None:
         required = manifest.get("capabilities", [])
         pkg_name = manifest.get("name")
-        allowlist = _allowed_capabilities_for_package(
-            capabilities_list, capability_manifest, pkg_name
+        allowlist = allowed_capabilities_for_package(
+            capabilities_list, capability_policy, pkg_name
         )
         missing = [cap for cap in required if cap not in allowlist]
         if missing:
@@ -189,7 +191,7 @@ def package(
                 command="package",
             )
         required_effects = _normalize_effects(manifest.get("effects"))
-        allowed_effects = _allowed_effects_for_package(capability_manifest, pkg_name)
+        allowed_effects = allowed_effects_for_package(capability_policy, pkg_name)
         if allowed_effects is not None:
             missing_effects = [
                 effect for effect in required_effects if effect not in allowed_effects
@@ -621,23 +623,25 @@ def verify(
     extension_validation: ExtensionManifestValidation | None = None
     capabilities_list = None
     capability_profiles: list[str] = []
-    capability_manifest: CapabilityManifest | None = None
+    capability_policy: CapabilityPolicy | None = None
     signature_meta: dict[str, Any] | None = None
     signature_bytes: bytes | None = None
     signature_name: str | None = None
     trust_policy: TrustPolicy | None = None
 
     if capabilities is not None:
-        spec = _parse_capabilities_spec(capabilities)
+        spec = parse_capability_input(capabilities)
         if spec.errors:
             return _fail(
                 "Invalid capabilities: " + ", ".join(spec.errors),
                 json_output,
                 command="verify",
             )
-        capabilities_list = spec.capabilities
-        capability_profiles = spec.profiles
-        capability_manifest = spec.manifest
+        capabilities_list = (
+            None if spec.capabilities is None else list(spec.capabilities)
+        )
+        capability_profiles = list(spec.profiles)
+        capability_policy = spec.policy
     if trusted_signers:
         try:
             trust_policy = _load_trust_policy(Path(trusted_signers))
@@ -786,8 +790,8 @@ def verify(
                     )
                 if capabilities_list is not None:
                     pkg_name = manifest.get("name")
-                    allowlist = _allowed_capabilities_for_package(
-                        capabilities_list, capability_manifest, pkg_name
+                    allowlist = allowed_capabilities_for_package(
+                        capabilities_list, capability_policy, pkg_name
                     )
                     missing = [cap for cap in required_caps if cap not in allowlist]
                     if missing:
@@ -818,16 +822,16 @@ def verify(
                 )
             if capabilities_list is not None:
                 pkg_name = manifest.get("name")
-                allowlist = _allowed_capabilities_for_package(
-                    capabilities_list, capability_manifest, pkg_name
+                allowlist = allowed_capabilities_for_package(
+                    capabilities_list, capability_policy, pkg_name
                 )
                 missing = [cap for cap in required_caps if cap not in allowlist]
                 if missing:
                     errors.append(
                         "capabilities missing from allowlist: " + ", ".join(missing)
                     )
-                allowed_effects = _allowed_effects_for_package(
-                    capability_manifest, pkg_name
+                allowed_effects = allowed_effects_for_package(
+                    capability_policy, pkg_name
                 )
                 if allowed_effects is not None:
                     missing_effects = [

@@ -469,13 +469,10 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
         }
         Err(bits) => return Err(bits),
     }
-    let ext_allowed =
-        has_capability(_py, "module.extension.exec") || has_capability(_py, "module.exec");
-    audit_capability_decision(
-        "importlib.exec.extension.module",
-        "module.extension.exec",
+    let ext_allowed = crate::operation_allowed(
+        _py,
+        crate::OperationId::ImportlibExecExtensionModule,
         AuditArgs::None,
-        ext_allowed,
     );
     if !ext_allowed {
         return Err(raise_exception::<_>(

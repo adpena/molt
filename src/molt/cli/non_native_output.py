@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection, TypedDict
 
+from molt.capability_manifest import ResolvedRuntimePolicy
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
@@ -171,6 +172,16 @@ class _ExternalStaticBundleManifest(TypedDict):
     total_bytes: int
 
 
+class _RuntimeImportAbiManifest(TypedDict):
+    module: str
+    names: list[str]
+    canonical_names: dict[str, str]
+    export_names: dict[str, str]
+    signatures: dict[str, dict[str, object]]
+    runtime_export_signatures: dict[str, dict[str, object]]
+    result_kinds: dict[str, str]
+
+
 def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
     if not path.is_file() or path.is_symlink():
         return None
@@ -278,7 +289,7 @@ def _runtime_export_signatures_for_imports(
 
 def _runtime_import_abi_manifest(
     runtime_module: Path, import_names: Collection[str]
-) -> dict[str, object]:
+) -> _RuntimeImportAbiManifest:
     names = set(import_names)
     runtime_export_signatures = _runtime_export_signatures_for_imports(
         runtime_module, names
@@ -397,7 +408,7 @@ def _generate_snapshot_header(
     *,
     output_wasm: Path,
     target_profile: str,
-    capabilities_list: list[str] | None,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     verbose: bool,
 ) -> None:
     """Generate a molt.snapshot.json header alongside the WASM output.
@@ -419,22 +430,31 @@ def _generate_snapshot_header(
                 h.update(chunk)
         module_hash = f"sha256:{h.hexdigest()}"
 
-    # Default mount plan matching the spec Layer 4 snapshot format.
     mount_plan = [
-        {"path": "/bundle", "mount_type": "bundle", "hash": module_hash},
-        {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
-        {"path": "/dev", "mount_type": "dev"},
+        {
+            "path": mount.path,
+            "mount_type": mount.type,
+            "max_size": mount.max_size,
+            "source": mount.source,
+        }
+        for mount in resolved_capability_policy.mounts
     ]
 
-    caps = (
-        list(capabilities_list)
-        if capabilities_list
-        else [
-            "fs.bundle.read",
-            "fs.tmp.read",
-            "fs.tmp.write",
-        ]
-    )
+    source_date_epoch_raw = os.environ.get("SOURCE_DATE_EPOCH", "315532800")
+    try:
+        source_date_epoch = int(source_date_epoch_raw)
+        if source_date_epoch < 0:
+            raise ValueError
+        determinism_stamp = (
+            dt.datetime.fromtimestamp(source_date_epoch, tz=dt.timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValueError(
+            "SOURCE_DATE_EPOCH must be a non-negative representable integer"
+        ) from exc
 
     header = {
         "snapshot_version": 1,
@@ -442,11 +462,10 @@ def _generate_snapshot_header(
         "target_profile": target_profile,
         "module_hash": module_hash,
         "mount_plan": mount_plan,
-        "capability_manifest": caps,
-        "determinism_stamp": dt.datetime.now(dt.timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "capability_manifest": list(resolved_capability_policy.grants.capabilities),
+        "capability_policy": resolved_capability_policy.canonical_payload(),
+        "capability_policy_digest": resolved_capability_policy.digest(),
+        "determinism_stamp": determinism_stamp,
         "init_state_size": 0,
     }
 
@@ -654,6 +673,7 @@ def _prepare_non_native_build_result(
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     runtime_state: _RuntimeArtifactState,
     ensure_runtime_wasm_both: (
         Callable[[set[str] | frozenset[str] | None], bool] | None
@@ -1442,6 +1462,8 @@ def _prepare_non_native_build_result(
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
+                "capability_policy": resolved_capability_policy.canonical_payload(),
+                "capability_policy_digest": resolved_capability_policy.digest(),
             }
             if bundle_manifest is not None:
                 bundle_size = bundle_tar.stat().st_size
@@ -1460,6 +1482,7 @@ def _prepare_non_native_build_result(
             _atomic_write_text(
                 worker_js,
                 _generate_split_worker_js(
+                    resolved_capability_policy=resolved_capability_policy,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     shared_table_base=effective_wasm_table_base,

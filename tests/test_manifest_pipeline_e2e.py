@@ -1,14 +1,13 @@
 """End-to-end test: molt build --capability-manifest pipeline.
 
 Tests the full workflow: manifest -> build -> run -> enforcement.
-Falls back to env-var-only tests if molt CLI is unavailable.
+The build proof always enters through the current checkout's CLI module.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -20,7 +19,6 @@ from tests import process_guard_common
 
 sys.path.insert(0, "src")
 
-MOLT = shutil.which("molt")
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
@@ -117,57 +115,11 @@ def test_manifest_deny_removes_capabilities():
     )
     effective = m.effective_capabilities()
     assert "time.wall" in effective
-    assert "net" in effective
-    # "net" profile expands to net + websocket.connect + websocket.listen
-    # but websocket.connect is denied
+    assert "net" not in effective
+    assert "net.connect" in effective
+    # The profile expands to exact operation grants; deny removes one grant
+    # without preserving the old broad bypass token.
     assert "websocket.connect" not in effective
-
-
-# ---------------------------------------------------------------------------
-# Test 4: DoS guard on large exponentiation
-# ---------------------------------------------------------------------------
-
-
-def test_dos_pow_rejected_by_guard():
-    """2**10_000_000 triggers the pre-emptive DoS guard in ops_arith.rs.
-
-    This tests the Rust-side guard, not the manifest pipeline.
-    The guard works regardless of manifest -- it is always active.
-    """
-    result = run_native_test_process(
-        [sys.executable, "-c", "x = 2 ** 10_000_000; print(len(str(x)))"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    # CPython computes this (slowly). Molt's guard rejects it.
-    # Either outcome is acceptable for this baseline test.
-    assert result.returncode == 0 or "Error" in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# Test 5: Deep recursion raises RecursionError
-# ---------------------------------------------------------------------------
-
-
-def test_recursion_caught():
-    """Deep recursion raises RecursionError."""
-    result = run_native_test_process(
-        [
-            sys.executable,
-            "-c",
-            "def f(n): return f(n+1)\n"
-            "try:\n"
-            "    f(0)\n"
-            "except RecursionError:\n"
-            '    print("caught")\n',
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0
-    assert "caught" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +195,9 @@ def test_parse_size_and_duration_from_manifest():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_molt_build_with_manifest():
-    """If molt is available, test the actual build pipeline."""
-    if not MOLT:
-        print("  SKIP (molt not in PATH)")
-        return
-
+    """Build and execute through the current checkout's complete CLI graph."""
     with process_guard_common.guarded_temporary_directory(
         prefix="molt-manifest-build-"
     ) as tmpdir:
@@ -260,211 +209,44 @@ def test_molt_build_with_manifest():
 
         result = run_native_test_process(
             [
-                MOLT,
+                sys.executable,
+                "-m",
+                "molt.cli",
                 "build",
+                "--profile",
+                "dev",
                 "--capability-manifest",
                 str(manifest),
                 str(src),
                 "--out-dir",
                 str(tmpdir),
+                "--json",
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=600,
             cwd=str(PROJECT_ROOT),
         )
-
-        if result.returncode == 0:
-            print("  BUILD OK")
-            # Find the output binary
-            bins = list(tmpdir.glob("*_molt")) + list(tmpdir.glob("*.wasm"))
-            if bins:
-                # Run it with manifest env vars
-                from molt.capability_manifest import load_manifest
-
-                m = load_manifest(str(manifest))
-                env = {**os.environ, **m.to_env_vars()}
-                run_result = run_native_test_process(
-                    [str(bins[0])],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env=env,
-                )
-                if "hello" in run_result.stdout:
-                    print(f"  RUN OK: {run_result.stdout.strip()}")
-                else:
-                    print(f"  RUN output: {run_result.stdout[:200]}")
-                    print(f"  RUN stderr: {run_result.stderr[:200]}")
-            else:
-                print("  BUILD OK but no output binary found")
-        else:
-            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
-            # Build failure is not a test failure -- molt may not be fully set up.
-            # The important thing is the manifest was parsed and passed to the builder.
-
-
-# ---------------------------------------------------------------------------
-# Test 10: Build with recursion-heavy program (skipped if molt unavailable)
-# ---------------------------------------------------------------------------
-
-
-def test_molt_build_recursion_program():
-    """If molt is available, build a recursion-heavy program and verify limits."""
-    if not MOLT:
-        print("  SKIP (molt not in PATH)")
-        return
-
-    with process_guard_common.guarded_temporary_directory(
-        prefix="molt-manifest-recursion-"
-    ) as tmpdir:
-        manifest = tmpdir / "test.capabilities.toml"
-        _write_manifest(manifest)  # max_recursion_depth = 100
-
-        src = tmpdir / "recurse.py"
-        src.write_text(
-            "import sys\n"
-            "def f(n):\n"
-            "    if n <= 0:\n"
-            "        return 0\n"
-            "    return f(n - 1)\n"
-            "try:\n"
-            "    f(200)\n"
-            "except RecursionError:\n"
-            '    print("recursion_limit_hit")\n'
-            "else:\n"
-            '    print("recursion_ok")\n'
+        assert result.returncode == 0, (
+            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
         )
+        payload = json.loads(result.stdout)
+        output = Path(payload["data"]["output"])
+        assert output.is_file()
 
-        try:
-            result = run_native_test_process(
-                [
-                    MOLT,
-                    "build",
-                    "--capability-manifest",
-                    str(manifest),
-                    str(src),
-                    "--out-dir",
-                    str(tmpdir),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                cwd=str(PROJECT_ROOT),
-            )
-        except subprocess.TimeoutExpired:
-            print("  BUILD timed out")
-            return
+        from molt.capability_manifest import load_manifest
 
-        if result.returncode == 0:
-            bins = list(tmpdir.glob("*_molt")) + list(tmpdir.glob("*.wasm"))
-            if bins:
-                from molt.capability_manifest import load_manifest
-
-                m = load_manifest(str(manifest))
-                env = {**os.environ, **m.to_env_vars()}
-                try:
-                    run_result = run_native_test_process(
-                        [str(bins[0])],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        env=env,
-                    )
-                except subprocess.TimeoutExpired:
-                    print("  RUN timed out")
-                    return
-                output = run_result.stdout + run_result.stderr
-                if "recursion_limit_hit" in output:
-                    print("  Recursion limit enforced correctly")
-                elif "recursion_ok" in output:
-                    print(
-                        "  Recursion completed (limit not enforced at runtime "
-                        "-- env var may not be wired yet)"
-                    )
-                else:
-                    print(f"  Unexpected output: {output[:200]}")
-            else:
-                print("  BUILD OK but no output binary found")
-        else:
-            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
-
-
-# ---------------------------------------------------------------------------
-# Test 11: Build with DoS program (skipped if molt unavailable)
-# ---------------------------------------------------------------------------
-
-
-def test_molt_build_dos_program():
-    """If molt is available, build a DoS-heavy program and verify guard."""
-    if not MOLT:
-        print("  SKIP (molt not in PATH)")
-        return
-
-    with process_guard_common.guarded_temporary_directory(
-        prefix="molt-manifest-dos-"
-    ) as tmpdir:
-        manifest = tmpdir / "test.capabilities.toml"
-        _write_manifest(manifest)
-
-        src = tmpdir / "dos_pow.py"
-        src.write_text(
-            "try:\n"
-            "    x = 2 ** 10_000_000\n"
-            '    print("computed")\n'
-            "except (OverflowError, MemoryError, ValueError) as e:\n"
-            '    print(f"rejected: {type(e).__name__}")\n'
+        loaded = load_manifest(str(manifest))
+        env = {**os.environ, **loaded.to_env_vars()}
+        run_result = run_native_test_process(
+            [str(output)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
         )
-
-        try:
-            result = run_native_test_process(
-                [
-                    MOLT,
-                    "build",
-                    "--capability-manifest",
-                    str(manifest),
-                    str(src),
-                    "--out-dir",
-                    str(tmpdir),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                cwd=str(PROJECT_ROOT),
-            )
-        except subprocess.TimeoutExpired:
-            print("  BUILD timed out (expected for heavy computation)")
-            return
-
-        if result.returncode == 0:
-            bins = list(tmpdir.glob("*_molt")) + list(tmpdir.glob("*.wasm"))
-            if bins:
-                from molt.capability_manifest import load_manifest
-
-                m = load_manifest(str(manifest))
-                env = {**os.environ, **m.to_env_vars()}
-                try:
-                    run_result = run_native_test_process(
-                        [str(bins[0])],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        env=env,
-                    )
-                except subprocess.TimeoutExpired:
-                    print("  RUN timed out (DoS guard may not have fired)")
-                    return
-                output = run_result.stdout + run_result.stderr
-                if "rejected" in output:
-                    print(f"  DoS guard active: {output.strip()}")
-                elif "computed" in output:
-                    print("  DoS guard did not fire (guard may be disabled)")
-                else:
-                    print(f"  Unexpected output: {output[:200]}")
-            else:
-                print("  BUILD OK but no output binary found")
-        else:
-            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
+        assert run_result.returncode == 0, run_result.stderr
+        assert run_result.stdout.strip() == "hello from molt"
 
 
 # ---------------------------------------------------------------------------

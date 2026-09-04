@@ -23,10 +23,7 @@ from molt.cli.atomic_io import (
     _atomic_write_bytes,
     _atomic_write_json,
 )
-from molt.cli.capability_spec import (
-    CapabilityInput,
-    _parse_capabilities_spec,
-)
+from molt.capability_policy import CapabilityInput, parse_capability_input
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.command_runtime import (
     _run_completed_command,
@@ -622,12 +619,12 @@ def extension_build(
     capabilities_list: list[str] = []
     capability_profiles: list[str] = []
     if capability_input is not None:
-        spec = _parse_capabilities_spec(capability_input)
+        spec = parse_capability_input(capability_input)
         if spec.errors:
             errors.append("Invalid capabilities: " + ", ".join(spec.errors))
         else:
-            capabilities_list = spec.capabilities or []
-            capability_profiles = spec.profiles
+            capabilities_list = list(spec.capabilities or ())
+            capability_profiles = list(spec.profiles)
     python_exports, callable_exports = _extension_manifest_public_exports(
         extension_export_meta,
         package=_extension_export_package(module_parts),

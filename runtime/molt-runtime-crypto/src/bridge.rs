@@ -339,11 +339,16 @@ pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    fn __molt_crypto_require_random_entropy() -> i32;
     fn __molt_crypto_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FillOsRandomError;
+
+pub fn require_random_entropy(_py: &PyToken) -> bool {
+    unsafe { __molt_crypto_require_random_entropy() != 0 }
+}
 
 pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     let ok = unsafe { __molt_crypto_fill_os_random(buf.as_mut_ptr(), buf.len()) };

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Iterable, Mapping
 
-from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -19,11 +18,14 @@ from molt._wasm_abi_generated import (
     wasm_runtime_callable_spec,
     wasm_runtime_import_name,
 )
+from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
+from molt.capability_manifest import ResolvedRuntimePolicy
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
 )
+
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 __all__ = (
@@ -263,6 +265,7 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
 
 def _generate_split_worker_js(
     *,
+    resolved_capability_policy: ResolvedRuntimePolicy,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
     shared_table_base: int | None,
@@ -316,6 +319,18 @@ def _generate_split_worker_js(
     reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
     reserved_runtime_shared_prefix_len = (
         reserved_runtime_callable_base + WASM_RESERVED_RUNTIME_CALLABLE_COUNT * 2
+    )
+    resolved_policy_env_json = json.dumps(
+        [
+            f"{name}={value}"
+            for name, value in sorted(
+                {
+                    **resolved_capability_policy.to_env_vars(),
+                    "MOLT_EXECUTION_TARGET": "cloudflare",
+                }.items()
+            )
+        ],
+        ensure_ascii=True,
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
@@ -387,7 +402,7 @@ export default {
     const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
 
     const envVars = [
-      "MOLT_TRUSTED=1",
+      ...__MOLT_RESOLVED_POLICY_ENV__,
       ...(__MOLT_SHARED_TABLE_BASE__ !== null
         ? [`MOLT_WASM_TABLE_BASE=${__MOLT_SHARED_TABLE_BASE__}`]
         : []),
@@ -1383,6 +1398,7 @@ export default {
         worker_js.replace(
             "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
         )
+        .replace("__MOLT_RESOLVED_POLICY_ENV__", resolved_policy_env_json)
         .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
         .replace(
             "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__",

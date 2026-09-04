@@ -32,6 +32,10 @@ if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402  (must follow the sys.path self-bootstrap above)
+from molt._host_capabilities_generated import (  # noqa: E402
+    EXPLICIT_CAPABILITY_TIER,
+    MAXIMUM_BUILTIN_CAPABILITY_TIER,
+)
 from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap above)
     harness_memory_guard,
     memory_guard,
@@ -1169,7 +1173,11 @@ def _backend_execution_context(
 ) -> compat_backends.BackendExecutionContext:
     resolved_target = _resolve_molt_target_python(python_exe, target_python)
     env = os.environ.copy()
-    env["MOLT_TRUSTED"] = "1" if _diff_trusted_default() else "0"
+    env["MOLT_CAPABILITY_TIER"] = (
+        MAXIMUM_BUILTIN_CAPABILITY_TIER
+        if _diff_trusted_default()
+        else EXPLICIT_CAPABILITY_TIER
+    )
     env.update(_collect_env_overrides(file_path))
     metadata_error = _apply_metadata_env_overrides(
         file_path,
@@ -3052,7 +3060,11 @@ def _run_molt(
     # MOLT_DIFF_CARGO_TARGET_DIR) instead of inheriting unrelated shell state.
     env["CARGO_TARGET_DIR"] = str(_diff_cargo_target_root())
     if execution_context is None:
-        env["MOLT_TRUSTED"] = "1" if _diff_trusted_default() else "0"
+        env["MOLT_CAPABILITY_TIER"] = (
+            MAXIMUM_BUILTIN_CAPABILITY_TIER
+            if _diff_trusted_default()
+            else EXPLICIT_CAPABILITY_TIER
+        )
         env.update(_collect_env_overrides(file_path))
         metadata_error = _apply_metadata_env_overrides(file_path, env)
         if metadata_error is not None:

@@ -3,7 +3,7 @@ import base64
 import hashlib
 import os
 
-os.environ.setdefault("MOLT_TRUSTED", "1")
+os.environ.setdefault("MOLT_CAPABILITY_TIER", "full")
 os.environ.setdefault("MOLT_CAPABILITIES", "net,net.poll,websocket.connect")
 
 from molt import net

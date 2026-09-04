@@ -47,7 +47,7 @@ def _default_molt_cache() -> Path:
 
 
 def _format_capabilities_input(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._format_capabilities_input(*args, **kwargs)
+    return _cli_module().format_capability_input(*args, **kwargs)
 
 
 def _json_payload(*args: Any, **kwargs: Any) -> Any:

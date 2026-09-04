@@ -9,7 +9,7 @@ Molt is designed for:
 ## 2. Sandboxing
 - **WASM Isolation**: Packages compiled to WASM cannot access memory outside their linear memory space.
 - **Capability-based Security**: Every capability (File, Network, Time) must be explicitly granted in the application manifest.
-- **Trusted override**: `MOLT_TRUSTED=1` disables capability checks for trusted native deployments only; never use for untrusted code or sandboxed targets.
+- **Maximum built-in tier**: explicit `--trusted` resolves the finite generated `full` tier; it does not disable checks or grant unknown/future capabilities.
 - **Runtime Guards**: Even in native code, Molt inserts bounds checks for all collection accesses (unless proven safe by the compiler).
 
 ## 3. Supply Chain Security

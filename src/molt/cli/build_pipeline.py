@@ -17,21 +17,6 @@ from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _PYTHON_WARNING_RE as _PYTHON_WARNING_RE,
 )
-from molt.cli.capability_spec import (
-    CAPABILITY_PROFILES as CAPABILITY_PROFILES,
-    CAPABILITY_TOKEN_RE as CAPABILITY_TOKEN_RE,
-    CapabilityGrant as CapabilityGrant,
-    CapabilitySpec as CapabilitySpec,
-    _coerce_effects_list as _coerce_effects_list,
-    _coerce_token_list as _coerce_token_list,
-    _expand_capabilities as _expand_capabilities,
-    _merge_optional_list as _merge_optional_list,
-    _parse_capability_manifest_dict as _parse_capability_manifest_dict,
-    _parse_fs_block as _parse_fs_block,
-    _parse_package_grant as _parse_package_grant,
-    _parse_package_grants as _parse_package_grants,
-    _resolve_capability_manifest as _resolve_capability_manifest,
-)
 from molt.cli.frontend_execution import (
     _run_frontend_pipeline,
 )
@@ -212,11 +197,9 @@ def _run_build_pipeline(
             return prepared_backend_ir_error
         assert prepared_backend_ir is not None
         if prepared_build_preamble.diagnostics_enabled:
-            backend_ir_analysis = (
-                _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
-                    project_root=prepared_build_roots.project_root,
-                    ir=prepared_backend_ir.ir,
-                )
+            backend_ir_analysis = _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+                project_root=prepared_build_roots.project_root,
+                ir=prepared_backend_ir.ir,
             )
             record_binary_image_analysis(
                 "backend_ir",

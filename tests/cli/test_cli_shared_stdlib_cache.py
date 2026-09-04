@@ -10,9 +10,9 @@ from typing import Mapping
 import pytest
 
 import molt.cli as cli
+from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
-from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -252,10 +252,8 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
         stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
     )
     base_variant = _cache_variant()
-    caps_digest = cli_build_inputs._capability_config_cache_digest(
-        capabilities_list=["fs.read"],
-        capability_profiles=["fs"],
-        manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
+    caps_digest = (
+        CapabilityManifest(allow=["fs.read"]).resolve().digest().removeprefix("sha256:")
     )
     variant_with_caps = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
@@ -292,17 +290,9 @@ def test_capability_config_digest_changes_with_ambient_capability_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read")
-    digest_fs = cli_build_inputs._capability_config_cache_digest(
-        capabilities_list=None,
-        capability_profiles=None,
-        manifest_env_vars=None,
-    )
+    digest_fs = resolve_runtime_policy_from_env(os.environ).digest()
     monkeypatch.setenv("MOLT_CAPABILITIES", "env.read")
-    digest_env = cli_build_inputs._capability_config_cache_digest(
-        capabilities_list=None,
-        capability_profiles=None,
-        manifest_env_vars=None,
-    )
+    digest_env = resolve_runtime_policy_from_env(os.environ).digest()
 
     assert digest_fs != digest_env
 
@@ -348,9 +338,7 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
     )
     setup_caps = cli_backend_cache_setup._prepare_backend_cache_setup(
         output_artifact=tmp_path / "caps.o",
-        capabilities_list=["fs.read"],
-        capability_profiles=["fs"],
-        manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
+        resolved_capability_policy=CapabilityManifest(allow=["fs.read"]).resolve(),
         **common,
     )
 

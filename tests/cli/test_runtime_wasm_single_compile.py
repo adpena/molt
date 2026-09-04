@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.capability_manifest import CapabilityManifest
 from molt.cli import artifact_state as runtime_artifact_state
 from molt.cli import (
     runtime_build_identity,
@@ -860,6 +861,7 @@ def _run_app_ensure_routing(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_RuntimeArtifactState(
             runtime_wasm=runtime_shared_missing,
             runtime_reloc_wasm=runtime_reloc,
@@ -943,6 +945,7 @@ def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
+        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_RuntimeArtifactState(),
         ensure_runtime_wasm_both=ensure_pair,
         runtime_cargo_profile="release",
