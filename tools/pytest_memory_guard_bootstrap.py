@@ -26,9 +26,12 @@ from tools.process_spawn import (  # noqa: E402
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
 )
-from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from tools.memory_guard_core.paths import (  # noqa: E402
+    active_guard_marker_dir,
+    pytest_guard_summary_dir,
+)
 
-PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
+PYTEST_OUTER_GUARD_SUMMARY_DIR = pytest_guard_summary_dir(ROOT)
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
 PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
 WINDOWS_PYTEST_TEMP_ROOT_NAME = "pytest-temproot"
@@ -199,6 +202,16 @@ def _pytest_custody_artifact_path(
 
 def pytest_current_test_file_path(*, pid: int | None = None) -> Path:
     return _pytest_custody_artifact_path("pytest", "current-test", pid=pid)
+
+
+def pytest_outer_guard_summary_dir(
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Project pytest evidence from the active memory-guard custody root."""
+
+    if environ is None:
+        return PYTEST_OUTER_GUARD_SUMMARY_DIR
+    return pytest_guard_summary_dir(ROOT, environ)
 
 
 def _path_is_under(path: Path, root: Path) -> bool:

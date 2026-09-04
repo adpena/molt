@@ -103,10 +103,11 @@ def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     if _is_xdist_run(session):
         return
     from tools import harness_memory_guard
+    from tools.pytest_memory_guard_bootstrap import pytest_outer_guard_summary_dir
 
     sentinel = harness_memory_guard.repo_process_sentinel(
         repo_root=ROOT,
-        artifact_root=ROOT / "tmp" / "pytest-memory-guard",
+        artifact_root=pytest_outer_guard_summary_dir(),
         label=f"pytest-{os.getpid()}",
         limits=harness_memory_guard.limits_from_env("MOLT_PYTEST"),
         drain_on_exit=True,

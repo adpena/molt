@@ -152,6 +152,27 @@ def _synthetic_v3_custody(
     ).as_dict()
     binary = Path(str(binary_artifact["path"])).resolve(strict=True)
     command = [str(binary), "capability", "leaf"]
+    fixed_images = [
+        {
+            "role": "root-command",
+            "path": str(binary),
+            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        }
+    ]
+    for name, raw_identity in toolchains.items():
+        if isinstance(raw_identity, dict) and isinstance(
+            raw_identity.get("process_images"), list
+        ):
+            for image in process_image_capture.toolchain_images(name, raw_identity):
+                fixed_image = {
+                    key: image[key]
+                    for key in ("role", "path", "sha256")
+                }
+                if "root_exit_disposition" in image:
+                    fixed_image["root_exit_disposition"] = image[
+                        "root_exit_disposition"
+                    ]
+                fixed_images.append(fixed_image)
     policy = {
         "schema": "molt.proof-process-closure.v2",
         "nonce": nonce,
@@ -160,13 +181,7 @@ def _synthetic_v3_custody(
         "command": command,
         "environment": dict(environment or {}),
         "root_role": "root-command",
-        "fixed_images": [
-            {
-                "role": "root-command",
-                "path": str(binary),
-                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-            }
-        ],
+        "fixed_images": fixed_images,
         "derived_roots": [],
     }
     policy_path = directory / "synthetic-supervisor-policy.json"
@@ -802,13 +817,40 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 89
+    assert len(plan.commands) == 93
     for command in plan.commands:
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
         assert envelope["toolchains"] == list(plan.required_toolchains(command))
         assert envelope["toolchains"], command.id
+
+
+@pytest.mark.parametrize(
+    "command_id",
+    [
+        "wasm.test.freestanding-e2e",
+        "wasm.test.finally-pending-observer-parity",
+    ],
+)
+def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
+    command_id: str,
+) -> None:
+    plan = proof_plan.ProofPlan.load()
+    command = next(item for item in plan.commands if item.id == command_id)
+    envelope = command_admission.envelope_for_command(command.argv)
+
+    assert envelope["kind"] == "proof-plan"
+    assert envelope["proof_plan_command_ids"] == [command_id]
+    assert envelope["process_closure"] == {
+        "kind": "proof-plan",
+        "descendants": "declared-toolchains",
+        "toolchains": list(plan.required_toolchains(command)),
+    }
+
+    near_match = command_admission.envelope_for_command([*command.argv, "--tb=short"])
+    assert near_match["kind"] == "python"
+    assert near_match["process_closure"]["descendants"] == "forbidden"
 
 
 @pytest.mark.parametrize(
@@ -2036,9 +2078,17 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
         json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     envelope = command_admission.envelope_for_command([sys.executable, "-c", "pass"])
+    python_image = process_image_capture.capture_image(
+        "python", Path(sys.executable), preserve_path=True
+    )
     synthetic_toolchains, compact_custody, v3 = _synthetic_v3_custody(
         tmp_path,
-        {"python": {"identity_sha256": "b" * 64}},
+        {
+            "python": {
+                "identity_sha256": "b" * 64,
+                "process_images": [python_image],
+            }
+        },
         environment={"MOLT_TEST_VALUE": "alpha"},
     )
     supervisor_policy_path = Path(str(v3["supervisor"]["policy"]["path"]))

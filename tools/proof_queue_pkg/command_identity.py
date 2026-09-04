@@ -660,6 +660,11 @@ def _tool_identity(
                     if isinstance(policy.data.get("linker_process_helpers"), Mapping)
                     else {}
                 ),
+                linker_build_tools=(
+                    policy.data.get("linker_build_tools")
+                    if isinstance(policy.data.get("linker_build_tools"), Mapping)
+                    else {}
+                ),
             )
         )
         process_images.extend(linker_images)
