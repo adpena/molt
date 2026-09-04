@@ -892,6 +892,30 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     assert payload["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] == "1"
 
 
+def test_run_context_fallback_preserves_checkout_family_artifact_custody(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    custody_root = tmp_path / "Molt"
+    worktree = custody_root / "worktrees" / "lane"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    monkeypatch.setattr(
+        dx, "require_external_artifact_root", lambda *args, **kwargs: None
+    )
+
+    env = RunContext(
+        worktree,
+        session_prefix="proof-rust",
+        prefer_external_artifacts=True,
+    ).dx_env({}, create_dirs=False)
+
+    assert env["MOLT_EXT_ROOT"] == str(custody_root.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(custody_root.resolve() / "target")
+
+
 def test_toolchain_root_is_child_of_canonical_custody_root(tmp_path: Path) -> None:
     custody = tmp_path / "custody"
     worktree = custody / "worktrees" / "lane"
