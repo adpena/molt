@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=process.signal
+# MOLT_ENV: MOLT_CAPABILITIES=signal.signal
 """Purpose: differential coverage for signal basics."""
 
 import signal

@@ -110,6 +110,7 @@ authoritative when a design claim drifts.
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](areas/compat/contracts/verified_subset_contract.md)
 
 ## Security
+- Capability policy and enforcement ownership: [docs/CAPABILITIES.md](../CAPABILITIES.md)
 - 0010 Security: [docs/spec/areas/security/0010-security.md](areas/security/0010-security.md)
 - 0020 Runtime Safety Invariants: [docs/spec/areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md](areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md)
 

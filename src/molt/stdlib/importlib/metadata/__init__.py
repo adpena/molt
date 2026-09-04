@@ -57,7 +57,6 @@ _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME = _require_intrinsic(
 _MOLT_IMPORTLIB_METADATA_TYPES_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_types_payload"
 )
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
@@ -379,8 +378,6 @@ def _normalize(name: str) -> str:
 
 
 def _ensure_fs_read() -> None:
-    if _MOLT_CAPABILITIES_TRUSTED():
-        return
     _MOLT_CAPABILITIES_REQUIRE("fs.read")
 
 

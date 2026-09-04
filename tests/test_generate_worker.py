@@ -12,6 +12,11 @@ from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     wasm_loader_asset_closure,
 )
+from molt.capability_manifest import CapabilityManifest
+
+
+def _default_runtime_policy():
+    return CapabilityManifest().resolve()
 
 
 def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
@@ -173,6 +178,7 @@ def test_generate_split_worker_bootstrap_import_surface() -> None:
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -189,6 +195,7 @@ def test_generate_split_worker_contains_vfs_adapter_import() -> None:
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -202,6 +209,7 @@ def test_generate_split_worker_contains_vfs_host_imports() -> None:
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -217,6 +225,7 @@ def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -230,6 +239,7 @@ def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -244,6 +254,7 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -264,6 +275,7 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -287,9 +299,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     from molt.cli import _generate_split_wrangler_jsonc
 
     root = Path(__file__).resolve().parents[1]
-    browser_assets = wasm_loader_asset_closure(
-        root / "wasm", BROWSER_WASM_ENTRY_ASSETS
-    )
+    browser_assets = wasm_loader_asset_closure(root / "wasm", BROWSER_WASM_ENTRY_ASSETS)
     content = _generate_split_wrangler_jsonc("2026-04-11", browser_assets)
     payload = json.loads(content)
 
@@ -307,6 +317,7 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -335,6 +346,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -540,6 +552,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -712,8 +725,14 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert "generatedRuntimeExportByImport" not in run_wasm
     assert run_wasm.count("const runtimeExportNameForImport =") == 1
     assert "const runtimeExportNameForImport = (importName) => {" in run_wasm
-    assert "const enterName = runtimeImportExportNames.runtime_execution_enter;" in run_wasm
-    assert "const leaveName = runtimeImportExportNames.runtime_execution_leave;" in run_wasm
+    assert (
+        "const enterName = runtimeImportExportNames.runtime_execution_enter;"
+        in run_wasm
+    )
+    assert (
+        "const leaveName = runtimeImportExportNames.runtime_execution_leave;"
+        in run_wasm
+    )
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
     assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
@@ -1159,6 +1178,7 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
     }
 
     worker_js = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
         shared_table_base=None,
@@ -1173,6 +1193,7 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
     assert "exportCandidates" not in worker_js
     assert "`molt_${entry.name}`" not in worker_js
     public_worker_js = _generate_split_worker_js(
+        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
         shared_table_base=None,

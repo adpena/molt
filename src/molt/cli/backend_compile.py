@@ -6,8 +6,9 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Mapping, Sequence
+from typing import Any, Callable, ContextManager, Mapping
 
+from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -134,10 +135,7 @@ def _prepare_backend_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     resolved_modules: set[str] | frozenset[str] | None = None,
-    capabilities_list: Sequence[str] | None = None,
-    capability_profiles: Sequence[str] | None = None,
-    manifest_env_vars: Mapping[str, str] | None = None,
-    capability_config_digest: str | None = None,
+    resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     extra_runtime_features: tuple[str, ...] = ()
@@ -224,10 +222,7 @@ def _prepare_backend_setup(
         native_artifact_plan=native_artifact_plan,
         runtime_callable_symbols_digest=runtime_callable_symbols_digest,
         backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
-        manifest_env_vars=manifest_env_vars,
-        capability_config_digest=capability_config_digest,
+        resolved_capability_policy=resolved_capability_policy,
         stage_timings_ms=stage_timings_ms,
     )
     _record_pipeline_stage_ms(

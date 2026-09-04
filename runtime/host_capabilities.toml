@@ -1,0 +1,753 @@
+# Canonical host-permission grant families shared by Python configuration and
+# the native/WASM runtime. Capability tokens remain namespace-extensible: this
+# authority owns only built-in profiles and runtime tiers, not a closed token
+# universe.
+
+schema_version = 1
+default_tier = "none"
+explicit_policy_tier = "none"
+maximum_builtin_tier = "full"
+
+[[profile]]
+name = "core"
+description = "No host permissions."
+grants = []
+
+[[profile]]
+name = "fs"
+description = "Broad filesystem read and write permission aliases."
+grants = ["fs.read", "fs.write"]
+
+[[profile]]
+name = "env"
+description = "Broad environment read and write permission aliases."
+grants = ["env.read", "env.write"]
+
+[[profile]]
+name = "net"
+description = "Exact network, TLS, WebSocket, polling, and asyncio operations."
+grants = [
+  "net.socket",
+  "net.socketpair",
+  "net.resolve",
+  "net.bind",
+  "net.listen",
+  "net.connect",
+  "net.poll",
+  "net.asyncio",
+  "ssl.connect",
+  "ssl.listen",
+  "ssl.read",
+  "ssl.write",
+  "websocket.connect",
+  "websocket.listen",
+]
+
+[[profile]]
+name = "db"
+description = "Broad database read and write permission aliases."
+grants = ["db.read", "db.write"]
+
+[[profile]]
+name = "time"
+description = "Wall-clock access."
+grants = ["time.wall"]
+
+[[profile]]
+name = "random"
+description = "Nondeterministic randomness."
+grants = ["random"]
+
+[[tier]]
+name = "none"
+description = "No ambient host permission; explicit grants only."
+inherits = []
+grants = []
+
+[[tier]]
+name = "safe"
+description = "Read-only development host surface."
+inherits = ["none"]
+grants = [
+  "env.read",
+  "env.len",
+  "env.snapshot",
+  "fs.read",
+  "fs.stat",
+  "fs.readdir",
+  "glob.glob",
+  "os.access",
+  "os.getcwd",
+  "os.getpid",
+  "os.getppid",
+  "os.getuid",
+  "os.geteuid",
+  "os.getgid",
+  "os.getegid",
+  "os.getlogin",
+  "os.getpgrp",
+  "os.getloadavg",
+  "os.uname",
+  "os.readlink",
+  "os.listdir",
+  "os.scandir",
+  "os.walk",
+  "shutil.which",
+  "time.wall",
+]
+
+[[tier]]
+name = "standard"
+description = "Safe plus ordinary local-development mutation and concurrency."
+inherits = ["safe"]
+grants = [
+  "env.write",
+  "env.clear",
+  "env.popitem",
+  "env.expanduser",
+  "env.expandvars",
+  "fs.write",
+  "os.mkdir",
+  "os.makedirs",
+  "os.rmdir",
+  "os.removedirs",
+  "os.link",
+  "os.symlink",
+  "os.chmod",
+  "os.utime",
+  "os.chdir",
+  "os.umask",
+  "os.truncate",
+  "os.ftruncate",
+  "os.lseek",
+  "shutil.copy",
+  "shutil.copyfile",
+  "shutil.copytree",
+  "shutil.move",
+  "tempfile.mkdtemp",
+  "tempfile.mkstemp",
+  "tempfile.named",
+  "tempfile.tempdir",
+  "tempfile.cleanup",
+  "signal.signal",
+  "signal.raise",
+  "signal.alarm",
+  "signal.pause",
+  "signal.set_wakeup_fd",
+  "thread.spawn",
+  "thread.shared",
+]
+
+[[tier]]
+name = "full"
+description = "Standard plus built-in network, process, database, and FFI permissions."
+inherits = ["standard"]
+grants = [
+  "net.socket",
+  "net.socketpair",
+  "net.resolve",
+  "net.bind",
+  "net.listen",
+  "net.connect",
+  "net.poll",
+  "net.asyncio",
+  "ssl.connect",
+  "ssl.listen",
+  "ssl.read",
+  "ssl.write",
+  "websocket.connect",
+  "websocket.listen",
+  "process.exec",
+  "process.asyncio",
+  "process.spawn",
+  "gui.window",
+  "module.extension.exec",
+  "random",
+  "os.kill",
+  "os.waitpid",
+  "os.sendfile",
+  "os.setpgrp",
+  "os.setsid",
+  "select.select",
+  "select.poll",
+  "select.epoll",
+  "select.devpoll",
+  "db.read",
+  "db.write",
+  "db.query",
+  "db.exec",
+  "ffi.unsafe",
+  "ffi.require",
+  "ffi.sizeof",
+  "fcntl.fcntl",
+  "python.bridge",
+]
+
+# Exact audited operations. Profiles expand only at policy resolution; runtime
+# enforcement consumes this generated operation-to-capability relation.
+[[operation]]
+name = "net.socket"
+capabilities = ["net.socket"]
+
+[[operation]]
+name = "net.socketpair"
+capabilities = ["net.socketpair"]
+
+[[operation]]
+name = "net.resolve"
+capabilities = ["net.resolve"]
+
+[[operation]]
+name = "net.bind"
+capabilities = ["net.bind"]
+
+[[operation]]
+name = "net.listen"
+capabilities = ["net.listen"]
+
+[[operation]]
+name = "net.connect"
+capabilities = ["net.connect"]
+
+[[operation]]
+name = "net.poll"
+capabilities = ["net.poll"]
+
+[[operation]]
+name = "net.asyncio"
+capabilities = ["net.asyncio"]
+
+[[operation]]
+name = "net.websocket_connect"
+capabilities = ["websocket.connect"]
+
+[[operation]]
+name = "process.exec"
+capabilities = ["process.exec"]
+
+[[operation]]
+name = "process.asyncio"
+capabilities = ["process.asyncio"]
+
+[[operation]]
+name = "shutil.make_archive"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.make_archive.external"
+capabilities = ["process.exec"]
+
+[[operation]]
+name = "shutil.unpack_archive"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.unpack_archive.external"
+capabilities = ["process.exec"]
+
+[[operation]]
+name = "fcntl.fcntl"
+capabilities = ["fcntl.fcntl"]
+
+[[operation]]
+name = "signal.signal"
+capabilities = ["signal.signal"]
+
+[[operation]]
+name = "signal.getsignal"
+capabilities = ["signal.signal"]
+
+[[operation]]
+name = "signal.raise"
+capabilities = ["signal.raise"]
+
+[[operation]]
+name = "signal.alarm"
+capabilities = ["signal.alarm"]
+
+[[operation]]
+name = "signal.pause"
+capabilities = ["signal.pause"]
+
+[[operation]]
+name = "signal.set_wakeup_fd"
+capabilities = ["signal.set_wakeup_fd"]
+
+[[operation]]
+name = "signal.pthread_sigmask"
+capabilities = ["signal.signal"]
+targets = ["native"]
+platforms = ["linux", "macos"]
+
+[[operation]]
+name = "signal.pthread_kill"
+capabilities = ["signal.raise"]
+targets = ["native"]
+platforms = ["linux", "macos"]
+
+[[operation]]
+name = "signal.sigpending"
+capabilities = ["signal.signal"]
+targets = ["native"]
+platforms = ["linux", "macos"]
+
+[[operation]]
+name = "signal.sigwait"
+capabilities = ["signal.pause"]
+targets = ["native"]
+platforms = ["linux", "macos"]
+
+[[operation]]
+name = "thread.spawn"
+capabilities = ["thread.spawn", "thread.shared"]
+targets = ["native"]
+
+[[operation]]
+name = "thread.spawn_isolated"
+capabilities = ["thread.spawn"]
+targets = ["native"]
+
+[[operation]]
+name = "thread.spawn_shared"
+capabilities = ["thread.spawn", "thread.shared"]
+targets = ["native"]
+
+[[operation]]
+name = "random.entropy"
+capabilities = ["random"]
+
+[[operation]]
+name = "time.time"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "time.time_ns"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "time.localtime"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "time.gmtime"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "time.get_clock_info"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "time.uuid1"
+capabilities = ["time.wall"]
+
+[[operation]]
+name = "importlib.exec.extension.module"
+capabilities = ["module.extension.exec"]
+
+[[operation]]
+name = "select.select"
+capabilities = ["select.select"]
+
+[[operation]]
+name = "select.poll"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.epoll"
+capabilities = ["select.epoll"]
+targets = ["native"]
+platforms = ["linux"]
+
+[[operation]]
+name = "select.devpoll"
+capabilities = ["select.devpoll"]
+
+[[operation]]
+name = "select.selector_new"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.selector_register"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.selector_register_fd"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.selector_modify"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.selector_modify_obj"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "select.selector_poll"
+capabilities = ["select.poll"]
+
+[[operation]]
+name = "ssl.load_cert_chain"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "ssl.load_verify_locations"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "ssl.wrap_client"
+capabilities = ["ssl.connect"]
+
+[[operation]]
+name = "ssl.wrap_server"
+capabilities = ["ssl.listen"]
+
+[[operation]]
+name = "ssl.handshake_client"
+capabilities = ["ssl.connect"]
+
+[[operation]]
+name = "ssl.handshake_server"
+capabilities = ["ssl.listen"]
+
+[[operation]]
+name = "ssl.read"
+capabilities = ["ssl.read"]
+
+[[operation]]
+name = "ssl.write"
+capabilities = ["ssl.write"]
+
+[[operation]]
+name = "gui.window"
+capabilities = ["gui.window"]
+targets = ["native"]
+
+[[operation]]
+name = "process.spawn"
+capabilities = ["process.spawn"]
+targets = ["native"]
+
+[[operation]]
+name = "compileall.compile.dir"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "compileall.compile.file"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "compileall.compile.path"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "contextlib.chdir_enter"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "contextlib.chdir_exit"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "db.exec"
+capabilities = ["db.write"]
+
+[[operation]]
+name = "db.query"
+capabilities = ["db.read"]
+
+[[operation]]
+name = "env.clear"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "env.contains"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.expanduser"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.expandvars"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.get"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.len"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.popitem"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "env.putenv"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "env.set"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "env.snapshot"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.unset"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "env.unsetenv"
+capabilities = ["env.write"]
+
+[[operation]]
+name = "ffi.bridge"
+capabilities = ["python.bridge"]
+
+[[operation]]
+name = "importlib.exec.extension"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.extension_loader_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.find_spec.from_path_hooks_impl"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.find_spec.payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.find_spec.with_runtime_state_bits"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.find.in_path_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.dist_paths"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.distributions_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.entry_points_filter_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.entry_points_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.entry_points_select_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.packages_distributions_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.metadata.record_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.namespace_paths"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.read_file"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.contents_from_package"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.contents_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.files_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.is_resource_from_package"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.is_resource_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.open_resource_bytes_from_package"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.open_resource_bytes_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.package_info"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.path_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.read_text_from_package"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.read_text_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.reader.contents_from_roots"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.reader.is_resource_from_roots"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.reader.open_resource_bytes_from_roots"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.reader.resource_path_from_roots"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.resource_path_from_package"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.resources.resource_path_from_package_parts"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.zip.read_entry"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "importlib.zip.source_exec_payload"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.link_at"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.lstat_at"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.rename_at"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.replace_at"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.stat_at"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pkgutil.iter.modules"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pkgutil.walk.packages"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "py.compile.compile"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "runpy.run_path"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "shutil.chown"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "shutil.copy"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.copy2"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.copyfile"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.copymode"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.copystat"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.copytree"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.disk_usage"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "shutil.move"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "shutil.rmtree"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "shutil.which"
+capabilities = ["env.read", "fs.read"]
+
+[[operation]]
+name = "tempfile.cleanup"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "tempfile.mkdtemp"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "tempfile.mkstemp"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "tempfile.named"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "tempfile.tempdir"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "traceback.source_line"
+capabilities = ["fs.read"]

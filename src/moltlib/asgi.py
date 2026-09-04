@@ -8,8 +8,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from molt import capabilities
-
 if TYPE_CHECKING:
     from moltlib.net import Request, Stream
 
@@ -98,7 +96,6 @@ def asgi_adapter(
         if scope_type != "http":
             raise RuntimeError(f"Unsupported ASGI scope '{scope_type}'")
 
-        capabilities.require("net")
         body_bytes = await _read_body(receive)
         body_stream = Stream([body_bytes]) if body_bytes else Stream([])
         request = Request(

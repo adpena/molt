@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The math crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::audit::AuditArgs;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
@@ -718,6 +719,14 @@ pub extern "C" fn __molt_math_molt_mul(a: u64, b: u64) -> u64 {
 // ---------------------------------------------------------------------------
 // OS randomness
 // ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_require_random_entropy() -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::require_operation::<u64>(_py, crate::OperationId::RandomEntropy, AuditArgs::None)
+            .is_ok() as i32
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {

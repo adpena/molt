@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "c9cc80f2c1bfe4d731dd33569f044c13f61d4f8eccdd095db7745455cdf73feb",
+  "authority_sha256": "386063919cccd872442408eb4f112b21b449923e09f43eeca50b4cf521990d51",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -298,6 +298,7 @@
         "src/**",
         "tests/test_bench_tool.py",
         "tests/test_bench_harness.py",
+        "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_native_link_*.py",
         "runtime/**"
       ],
@@ -1474,6 +1475,34 @@
       "dependencies": [],
       "family": "repository_policy",
       "id": "repository.python-effects.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustfmt"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "tools/gen_host_capabilities.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.host-capabilities.generated",
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
@@ -2683,6 +2712,51 @@
       "argv": [
         "uv",
         "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend",
+        "wasm.build.host",
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.split-runtime",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "warm",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "ty",
         "check",
         "src"
@@ -2762,6 +2836,36 @@
       ],
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "native_integration",
+      "id": "native.integration.capability-manifest",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -3360,10 +3464,10 @@
       "native_integration": {
         "budget_seconds": 1500,
         "critical_path_seconds": 1200,
-        "headroom_seconds": 300,
-        "projected_makespan_seconds": 1200,
+        "headroom_seconds": 0,
+        "projected_makespan_seconds": 1500,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 1200
+          "compiler-build-resource": 1500
         }
       },
       "python_security": {
@@ -3396,10 +3500,10 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 300,
-        "projected_makespan_seconds": 3300,
+        "headroom_seconds": 180,
+        "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2880
+          "repository-policy": 2955
         }
       },
       "rust": {
@@ -3423,10 +3527,10 @@
       "wasm": {
         "budget_seconds": 6300,
         "critical_path_seconds": 3000,
-        "headroom_seconds": 600,
-        "projected_makespan_seconds": 5700,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 6000,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 5700,
+          "compiler-build-resource": 6000,
           "wasm-runtime": 450
         }
       }
@@ -3594,6 +3698,8 @@
       "local.gpu-runtime.1": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.heap-kind-lifetime-authority.0": "python3 tools/gen_heap_kinds.py --check",
       "local.heap-kind-lifetime-authority.1": "python3 -m pytest -q tests/test_gen_heap_kinds.py",
+      "local.host-capability-authority.0": "uv run --python 3.12 python tools/gen_host_capabilities.py --check",
+      "local.host-capability-authority.1": "uv run --python 3.12 pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
       "local.intrinsic-registry.0": "python3 tools/gen_intrinsics.py --check",
       "local.intrinsic-registry.1": "python3 -m pytest -q tests/test_gen_intrinsics.py",
       "local.llvm-runtime-abi.0": "python3 tools/llvm_runtime_abi_audit.py --check",
@@ -3870,6 +3976,27 @@
           "tests/test_gen_python_effects.py"
         ],
         "name": "python-effect-capability-authority"
+      },
+      {
+        "command_ids": [
+          "local.host-capability-authority.0",
+          "local.host-capability-authority.1"
+        ],
+        "description": "CLI profiles plus native, CPython fallback, and WASM runtime tiers share one generated host-permission authority.",
+        "gates": [
+          "uv run --python 3.12 python tools/gen_host_capabilities.py --check",
+          "uv run --python 3.12 pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py"
+        ],
+        "globs": [
+          "runtime/host_capabilities.toml",
+          "tools/gen_host_capabilities.py",
+          "src/molt/_host_capabilities_generated.py",
+          "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+          "wasm/host_capabilities_generated.js",
+          "docs/spec/areas/security/host_capabilities.generated.md",
+          "tests/test_gen_host_capabilities.py"
+        ],
+        "name": "host-capability-authority"
       },
       {
         "command_ids": [

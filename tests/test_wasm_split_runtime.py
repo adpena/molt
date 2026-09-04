@@ -215,8 +215,10 @@ def test_split_worker_popen_kwargs_apply_child_rlimit(
 
 def test_generate_split_worker_js_lifecycle_contract() -> None:
     from molt.cli import _generate_split_worker_js
+    from molt.capability_manifest import CapabilityManifest
 
     worker_js = _generate_split_worker_js(
+        resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=4096,
@@ -262,7 +264,7 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
 
 
 def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
-    from molt.cli import _isolate_import_module_order
+    from molt.cli.backend_ir import _isolate_import_module_order
 
     assert _isolate_import_module_order(
         ["__main__", "json", "json.decoder", "sys"],
@@ -286,7 +288,6 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "--profile",
         "cloudflare",
         "--split-runtime",
-        "--no-cache",
         "--out-dir",
         str(output_dir),
     ]
@@ -437,6 +438,7 @@ def _run_split_worker_live(
                 proc.wait(timeout=10)
 
 
+@pytest.mark.slow
 def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
     tmp_path: Path,
 ) -> None:
@@ -839,6 +841,7 @@ def test_split_runtime_host_export_calls_preserve_owned_results(
     assert results[2]["result_repr"] == "[4, 5, 6]"
 
 
+@pytest.mark.slow
 def test_linked_host_export_attribute_error_does_not_return_none(
     tmp_path: Path,
 ) -> None:
@@ -890,6 +893,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     assert "foo" in run.stderr
 
 
+@pytest.mark.slow
 def test_linked_host_export_imports_tinygrad_dtype_class(
     tmp_path: Path,
 ) -> None:
@@ -945,6 +949,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     assert results[0]["result_repr"] == "'x'"
 
 
+@pytest.mark.slow
 def test_linked_host_export_imports_tinygrad_tensor_module(
     tmp_path: Path,
 ) -> None:
@@ -1004,6 +1009,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     assert results[0]["result_repr"] == "'Tensor'"
 
 
+@pytest.mark.slow
 def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     tmp_path: Path,
 ) -> None:

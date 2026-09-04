@@ -121,18 +121,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(
-            _py,
-            &[
-                "net",
-                "net.poll",
-                "net.outbound",
-                "net.listen",
-                "net.inbound",
-            ],
-        )
-        .is_err()
-        {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
         let socket_ptr = socket_ptr_from_bits_or_fd(socket_bits);
@@ -170,18 +159,7 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_net_capability::<u64>(
-            _py,
-            &[
-                "net",
-                "net.poll",
-                "net.outbound",
-                "net.listen",
-                "net.inbound",
-            ],
-        )
-        .is_err()
-        {
+        if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
         let socket_obj = obj_from_bits(socket_bits);

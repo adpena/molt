@@ -23,7 +23,11 @@ from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_DEFAULTS,
 )
-from molt.cli.config_resolution import _coerce_bool, resolve_stdlib_profile
+from molt.cli.config_resolution import (
+    _coerce_bool,
+    _select_capability_input,
+    resolve_stdlib_profile,
+)
 from molt.cli.deps import deps, install, install_add, vendor
 from molt.cli.dx_cli import handle_dx_command
 from molt.cli.extension_audit import extension_audit
@@ -243,8 +247,8 @@ def _dispatch_entrypoint_command(
             or build_cfg.get("build_diagnostics_verbosity")
             or build_cfg.get("build-diagnostics-verbosity")
         )
-        capabilities = (
-            args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
+        capabilities = _select_capability_input(
+            args.capabilities, build_cfg.get("capabilities"), cfg_capabilities
         )
         cfg_lib_paths = build_cfg.get("lib_paths") or build_cfg.get("lib-paths") or []
         if isinstance(cfg_lib_paths, str):
@@ -411,10 +415,8 @@ def _dispatch_entrypoint_command(
                 if args.deterministic is not None
                 else _coerce_bool(extension_cfg.get("deterministic"), True)
             )
-            capabilities = (
-                args.capabilities
-                or extension_cfg.get("capabilities")
-                or cfg_capabilities
+            capabilities = _select_capability_input(
+                args.capabilities, extension_cfg.get("capabilities"), cfg_capabilities
             )
             molt_abi = (
                 args.molt_abi
@@ -654,8 +656,8 @@ def _dispatch_entrypoint_command(
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(run_cfg.get("trusted"), False)
-        capabilities = (
-            args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
+        capabilities = _select_capability_input(
+            args.capabilities, run_cfg.get("capabilities"), cfg_capabilities
         )
         if run_target in ("wasm", "luau"):
             # Inject --target into build_args so run_script_cross handles it
@@ -765,11 +767,11 @@ def _dispatch_entrypoint_command(
                 compare_cfg.get("trusted", run_cfg.get("trusted")),
                 False,
             )
-        capabilities = (
-            args.capabilities
-            or compare_cfg.get("capabilities")
-            or run_cfg.get("capabilities")
-            or cfg_capabilities
+        capabilities = _select_capability_input(
+            args.capabilities,
+            compare_cfg.get("capabilities"),
+            run_cfg.get("capabilities"),
+            cfg_capabilities,
         )
         return _script_commands.compare(
             args.file,
@@ -911,7 +913,7 @@ def _dispatch_entrypoint_command(
                 or build_cfg.get("deterministic-warn"),
                 False,
             )
-        capabilities = args.capabilities or cfg_capabilities
+        capabilities = _select_capability_input(args.capabilities, cfg_capabilities)
         sbom_enabled = args.sbom
         if sbom_enabled is None:
             sbom_enabled = True
@@ -988,8 +990,8 @@ def _dispatch_entrypoint_command(
                     args.json,
                     command="publish",
                 )
-        capabilities = (
-            args.capabilities or publish_cfg.get("capabilities") or cfg_capabilities
+        capabilities = _select_capability_input(
+            args.capabilities, publish_cfg.get("capabilities"), cfg_capabilities
         )
         return publish(
             args.package,
@@ -1025,7 +1027,7 @@ def _dispatch_entrypoint_command(
             args.json,
             args.verbose,
             args.require_deterministic,
-            args.capabilities or cfg_capabilities,
+            _select_capability_input(args.capabilities, cfg_capabilities),
             require_signature,
             verify_signature,
             args.trusted_signers,

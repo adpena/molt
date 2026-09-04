@@ -1416,9 +1416,9 @@ class Process:
                 env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
             except Exception:
                 pass
-        trusted = _get_env_value("MOLT_TRUSTED", "")
-        if trusted:
-            env["MOLT_TRUSTED"] = trusted
+        capability_tier = _get_env_value("MOLT_CAPABILITY_TIER", "")
+        if capability_tier:
+            env["MOLT_CAPABILITY_TIER"] = capability_tier
         caps = _get_env_value("MOLT_CAPABILITIES", "")
         if caps:
             env["MOLT_CAPABILITIES"] = caps
@@ -1958,9 +1958,9 @@ class _Worker:
                 env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
             except Exception:
                 pass
-        trusted = _get_env_value("MOLT_TRUSTED", "")
-        if trusted:
-            env["MOLT_TRUSTED"] = trusted
+        capability_tier = _get_env_value("MOLT_CAPABILITY_TIER", "")
+        if capability_tier:
+            env["MOLT_CAPABILITY_TIER"] = capability_tier
         caps = _get_env_value("MOLT_CAPABILITIES", "")
         if caps:
             env["MOLT_CAPABILITIES"] = caps

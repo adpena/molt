@@ -19,6 +19,9 @@ if str(ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.import_file import load_module_from_path  # noqa: E402
+from molt._host_capabilities_generated import (  # noqa: E402
+    MAXIMUM_BUILTIN_CAPABILITY_TIER,
+)
 
 
 def _load_dx_module():
@@ -150,7 +153,7 @@ def _apply_dev_trusted(env: dict[str, str]) -> None:
     raw = env.get("MOLT_DEV_TRUSTED", "").strip().lower()
     if raw and raw in {"0", "false", "no", "off"}:
         return
-    env.setdefault("MOLT_TRUSTED", "1")
+    env.setdefault("MOLT_CAPABILITY_TIER", MAXIMUM_BUILTIN_CAPABILITY_TIER)
 
 
 def _parse_test_runner_flags(args: list[str]) -> tuple[list[str], bool, str | None]:

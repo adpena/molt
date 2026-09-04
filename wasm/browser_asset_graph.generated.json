@@ -107,6 +107,13 @@
         {
           "column": 1,
           "kind": "module",
+          "line": 9,
+          "request": "./host_capabilities_generated.js",
+          "target": "host_capabilities_generated.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
           "line": 2,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
@@ -114,7 +121,7 @@
         {
           "column": 31,
           "kind": "dynamic-import",
-          "line": 119,
+          "line": 120,
           "request": "./molt_vfs_browser.js",
           "target": "molt_vfs_browser.js"
         }
@@ -123,11 +130,12 @@
         "browser_gpu_dispatch.js",
         "browser_target_features.js",
         "callable_table_abi_generated.js",
+        "host_capabilities_generated.js",
         "loader_bridge.js",
         "molt_vfs_browser.js"
       ],
       "role": "browser",
-      "sha256": "081247eab5c9ab5f2cc424f5b3a622fd3b5b75d75d49ea0570da0655619e484d",
+      "sha256": "e8a4eea2ebd70102a89fc19237d9669fc4552d67a9acc9c5ab8ae3b383989de1",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -157,6 +165,15 @@
       "role": "shared",
       "sha256": "7e0c94edc9861ac1e6be19140bf543e5b16bfc38be34828132008693f73e625e",
       "source_type": "script"
+    },
+    "host_capabilities_generated.js": {
+      "authority": "host-capability-manifest",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "browser",
+      "sha256": "aa48dd685643e11c564a7015db6f4d96f039723733dd2eaf3a51d5e0be731c0a",
+      "source_type": "module"
     },
     "loader_bridge.js": {
       "authority": "wasm-loader-bridge",
@@ -324,7 +341,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "6d51b325e0ba998afedbb206f47522214a9937379c48512625656a8613fc8062",
+      "sha256": "3c42186602535e7bdbf221b6d2434e9d5212ebf350f3d4352abd0da19b1dcaf6",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {

@@ -2,7 +2,7 @@ use molt_obj_model::MoltObject;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::GilReleaseGuard;
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 #[cfg(all(not(windows), not(target_arch = "wasm32")))]
 use crate::raise_os_error;
 use crate::{
@@ -23,20 +23,13 @@ use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-/// Checks the "net" capability and emits an audit event. Returns `Err(bits)`
-/// with a PermissionError if the capability is denied.
+/// Checks one exact polling capability and emits an audit event.
 #[inline]
-fn require_net_capability(_py: &crate::PyToken<'_>, operation: &'static str) -> Result<(), u64> {
-    let allowed = crate::has_capability(_py, "net");
-    audit_capability_decision(operation, "net", AuditArgs::None, allowed);
-    if !allowed {
-        return Err(raise_exception::<u64>(
-            _py,
-            "PermissionError",
-            "missing net capability for select/poll operations",
-        ));
-    }
-    Ok(())
+fn require_select_capability(
+    _py: &crate::PyToken<'_>,
+    operation: crate::OperationId,
+) -> Result<(), u64> {
+    crate::require_operation(_py, operation, AuditArgs::None)
 }
 
 const SELECT_KIND_POLL: i64 = 0;
@@ -782,7 +775,7 @@ pub extern "C" fn molt_select_constants() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_poll() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.poll") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectPoll) {
             return err;
         }
         match select_construct_private_object(_py, b"_PollObject") {
@@ -795,7 +788,7 @@ pub extern "C" fn molt_select_poll() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.epoll") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectEpoll) {
             return err;
         }
         if to_i64(obj_from_bits(sizehint_bits)).is_none() {
@@ -814,7 +807,7 @@ pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_devpoll() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.devpoll") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectDevpoll) {
             return err;
         }
         match select_construct_private_object(_py, b"_DevpollObject") {
@@ -884,7 +877,7 @@ pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_new") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectSelectorNew) {
             return err;
         }
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
@@ -958,7 +951,8 @@ pub extern "C" fn molt_select_selector_register(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_register") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectSelectorRegister)
+        {
             return err;
         }
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
@@ -1003,7 +997,9 @@ pub extern "C" fn molt_select_selector_register_fd(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_register_fd") {
+        if let Err(err) =
+            require_select_capability(_py, crate::OperationId::SelectSelectorRegisterFd)
+        {
             return err;
         }
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
@@ -1087,7 +1083,7 @@ pub extern "C" fn molt_select_selector_modify(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_modify") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectSelectorModify) {
             return err;
         }
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
@@ -1118,7 +1114,9 @@ pub extern "C" fn molt_select_selector_modify_obj(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_modify_obj") {
+        if let Err(err) =
+            require_select_capability(_py, crate::OperationId::SelectSelectorModifyObj)
+        {
             return err;
         }
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
@@ -1145,7 +1143,7 @@ pub extern "C" fn molt_select_selector_modify_obj(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.selector_poll") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectSelectorPoll) {
             return err;
         }
         let selector = match selector_state(_py, handle_bits) {
@@ -1317,7 +1315,7 @@ pub extern "C" fn molt_select_select(
     timeout_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Err(err) = require_net_capability(_py, "select.select") {
+        if let Err(err) = require_select_capability(_py, crate::OperationId::SelectSelect) {
             return err;
         }
         let r_objects = match collect_iterable(_py, rlist_bits) {

@@ -474,8 +474,9 @@ compatibility"* contradicts the shipped bridge. Decide and document the
 ABI-dlopen = explicit, allowlisted, capability-gated bridge for unmodifiable
 wheels) so the codebase and spec stop disagreeing. Per CLAUDE.md, a code/spec
 divergence is itself a defect to fix.
-(c) **Capability gating**: route Track-2 loads through the existing capability
-manifest (`src/molt/capability_manifest.py`) and `MOLT_EXTENSION_PATH` allowlist,
+(c) **Capability gating**: route Track-2 loads through the canonical capability
+policy (`src/molt/capability_policy.py`), its signed manifest envelope
+(`src/molt/capability_manifest.py`), and the `MOLT_EXTENSION_PATH` allowlist,
 fail-closed.
 **Complete piece** = one real wheel proven on each supported native target + the
 two-track policy documented + capability-gated. This flips D23 packages (pydantic

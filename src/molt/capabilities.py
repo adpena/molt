@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from molt import intrinsics as _intrinsics
+from molt._host_capabilities_generated import (
+    CAPABILITY_TIERS,
+    DEFAULT_CAPABILITY_TIER,
+    MAXIMUM_BUILTIN_CAPABILITY_TIER,
+    capabilities_for_tier,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -47,21 +53,32 @@ def _env_get(key: str, default: str = "") -> str:
 
 
 def capabilities() -> set[str]:
-    raw = _env_get("MOLT_CAPABILITIES", "")
-    return _parse_caps(raw)
+    tier = _env_get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER)
+    tier_capabilities = capabilities_for_tier(tier)
+    # Unknown tiers are an invalid configuration and therefore grant nothing;
+    # a typo must never select a more permissive fallback.
+    return set(tier_capabilities or ()) | _parse_caps(_env_get("MOLT_CAPABILITIES", ""))
 
 
 def trusted() -> bool:
+    """Report whether the explicit finite ``full`` tier is selected.
+
+    This is diagnostic state only.  Capability enforcement always checks the
+    exact resolved grant set; selecting ``full`` never bypasses future or
+    package-scoped permissions.
+    """
+
     fn = _load_intrinsic("molt_capabilities_trusted")
     if fn is not None:
         return bool(fn())
-    raw = _env_get("MOLT_TRUSTED", "")
-    return raw.strip() not in ("", "0", "false", "no")
+    tier = _env_get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER)
+    return (
+        tier.strip().casefold() == MAXIMUM_BUILTIN_CAPABILITY_TIER
+        and MAXIMUM_BUILTIN_CAPABILITY_TIER in CAPABILITY_TIERS
+    )
 
 
 def has(capability: str) -> bool:
-    if trusted():
-        return True
     fn = _load_intrinsic("molt_capabilities_has")
     if fn is not None:
         return bool(fn(capability))
@@ -69,8 +86,6 @@ def has(capability: str) -> bool:
 
 
 def require(capability: str) -> None:
-    if trusted():
-        return None
     fn = _load_intrinsic("molt_capabilities_require")
     if fn is not None:
         fn(capability)

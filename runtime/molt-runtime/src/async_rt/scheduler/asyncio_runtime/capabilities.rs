@@ -1,29 +1,20 @@
 use crate::PyToken;
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::object::ops::string_obj_to_owned;
 use crate::{MoltObject, obj_from_bits, raise_exception, to_i64};
 
-use super::super::super::channels::has_capability;
-
-fn asyncio_has_any_net_capability(_py: &PyToken<'_>) -> bool {
-    let allowed = has_capability(_py, "net")
-        || has_capability(_py, "net.connect")
-        || has_capability(_py, "net.listen")
-        || has_capability(_py, "net.bind");
-    audit_capability_decision("net.asyncio", "net", AuditArgs::None, allowed);
-    allowed
+fn asyncio_has_net_capability(_py: &PyToken<'_>) -> bool {
+    crate::operation_allowed(_py, crate::OperationId::NetAsyncio, AuditArgs::None)
 }
 
-fn asyncio_has_any_process_capability(_py: &PyToken<'_>) -> bool {
-    let allowed = has_capability(_py, "process") || has_capability(_py, "process.exec");
-    audit_capability_decision("process.asyncio", "process", AuditArgs::None, allowed);
-    allowed
+fn asyncio_has_process_capability(_py: &PyToken<'_>) -> bool {
+    crate::operation_allowed(_py, crate::OperationId::ProcessAsyncio, AuditArgs::None)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_ssl_transport_support() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !asyncio_has_any_net_capability(_py) {
+        if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
                 "PermissionError",
@@ -151,7 +142,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
                 "you have to pass server_hostname when using ssl",
             );
         }
-        if !asyncio_has_any_net_capability(_py) {
+        if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
                 "PermissionError",
@@ -218,7 +209,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !asyncio_has_any_net_capability(_py) {
+        if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
                 "PermissionError",
@@ -259,7 +250,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !asyncio_has_any_process_capability(_py) {
+        if !asyncio_has_process_capability(_py) {
             return raise_exception::<u64>(
                 _py,
                 "PermissionError",

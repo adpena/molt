@@ -824,19 +824,17 @@ pub extern "C" fn molt_shutil_make_archive(
                 }
             }
             "tar" | "gztar" | "bztar" | "xztar" => {
-                // tar requires spawning a subprocess — gate on "process" capability.
-                let allowed = has_capability(_py, "process");
-                audit_capability_decision(
-                    "shutil.make_archive",
-                    "process",
+                // External archive helpers require the exact process execution grant.
+                let allowed = crate::operation_allowed(
+                    _py,
+                    crate::OperationId::ShutilMakeArchiveExternal,
                     AuditArgs::Path(archive_path.clone()),
-                    allowed,
                 );
                 if !allowed {
                     return raise_exception::<u64>(
                         _py,
                         "PermissionError",
-                        "missing process capability for archive operations",
+                        "missing 'process.exec' capability for archive operations",
                     );
                 }
                 // Use std::process to invoke tar(1) which is universally available.
@@ -960,19 +958,17 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
             || name_lower.ends_with(".tar.xz")
             || name_lower.ends_with(".txz")
         {
-            // tar requires spawning a subprocess — gate on "process" capability.
-            let allowed = has_capability(_py, "process");
-            audit_capability_decision(
-                "shutil.unpack_archive",
-                "process",
+            // External archive helpers require the exact process execution grant.
+            let allowed = crate::operation_allowed(
+                _py,
+                crate::OperationId::ShutilUnpackArchiveExternal,
                 AuditArgs::Path(filename.to_string_lossy().into_owned()),
-                allowed,
             );
             if !allowed {
                 return raise_exception::<u64>(
                     _py,
                     "PermissionError",
-                    "missing process capability for archive operations",
+                    "missing 'process.exec' capability for archive operations",
                 );
             }
             let mut cmd = std::process::Command::new("tar");

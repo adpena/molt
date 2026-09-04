@@ -1,6 +1,5 @@
-use super::channels::has_capability;
 use crate::PyToken;
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::*;
 
 // Re-export network utilities so that `sockets::*` includes them
@@ -255,33 +254,11 @@ fn socket_handle_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i64, String> 
     Err(format!("socket handle must be int, not {obj_type}"))
 }
 
-pub(crate) fn require_capability<T: ExceptionSentinel>(
-    _py: &PyToken<'_>,
-    caps: &[&str],
-    label: &str,
-) -> Result<(), T> {
-    let allowed = caps.iter().any(|cap| has_capability(_py, cap));
-    // Emit an audit event for every capability gate that flows through here
-    // (net, process, time).  Map the known label set to static strings.
-    let (op, cap): (&'static str, &'static str) = match label {
-        "net" => ("net.require", "net"),
-        "process" => ("process.require", "process"),
-        "time.wall" => ("time.require", "time.wall"),
-        _ => ("capability.require", "unknown"),
-    };
-    audit_capability_decision(op, cap, AuditArgs::None, allowed);
-    if allowed {
-        Ok(())
-    } else {
-        let msg = format!("missing {label} capability");
-        Err(raise_exception::<T>(_py, "PermissionError", &msg))
-    }
-}
-
 pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
+    operation: OperationId,
 ) -> Result<(), T> {
-    require_capability(_py, &["time.wall", "time"], "time.wall")
+    require_operation(_py, operation, AuditArgs::None)
 }
 
 // Native no-net keeps this symbol for the existing crate-root helper surface;
@@ -289,16 +266,16 @@ pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
 #[allow(dead_code)]
 pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
-    caps: &[&str],
+    operation: OperationId,
 ) -> Result<(), T> {
-    require_capability(_py, caps, "net")
+    require_operation(_py, operation, AuditArgs::None)
 }
 
 pub(crate) fn require_process_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
-    caps: &[&str],
+    operation: OperationId,
 ) -> Result<(), T> {
-    require_capability(_py, caps, "process")
+    require_operation(_py, operation, AuditArgs::None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

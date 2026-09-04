@@ -6,13 +6,12 @@ use super::tcl::TclInterpreter;
 use crate::bridge::{
     alloc_string_result, dec_ref_bits, has_capability, inc_ref_bits, raise_exception_u64, to_i64,
 };
+use molt_runtime_core::host_capabilities_generated::CapabilityId;
 use molt_runtime_core::prelude::{PyToken, obj_from_bits};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 pub(super) const TK_UNAVAILABLE_LABEL: &str = "tkinter runtime support is not implemented yet";
-pub(super) const TK_CAPABILITY_GUI_WINDOW: &str = "gui.window";
-pub(super) const TK_CAPABILITY_PROCESS_SPAWN: &str = "process.spawn";
 pub(super) const TK_BLOCKER_WASM_TARGET: &str = "target.wasm32";
 pub(super) const TK_BLOCKER_BACKEND_UNIMPLEMENTED: &str = "backend.not_implemented";
 pub(super) const TK_BLOCKER_CAP_GUI_WINDOW: &str = "capability.gui.window";
@@ -414,11 +413,11 @@ pub(super) enum TkExprLiteral {
 }
 
 pub(super) fn has_gui_window_capability(py: &PyToken) -> bool {
-    has_capability(py, TK_CAPABILITY_GUI_WINDOW) || has_capability(py, "gui")
+    has_capability(py, CapabilityId::GuiWindow.as_str())
 }
 
 pub(super) fn has_process_spawn_capability(py: &PyToken) -> bool {
-    has_capability(py, TK_CAPABILITY_PROCESS_SPAWN) || has_capability(py, "process")
+    has_capability(py, CapabilityId::ProcessSpawn.as_str())
 }
 
 #[cfg(target_os = "linux")]
@@ -526,10 +525,10 @@ pub(super) fn format_tk_unavailable_message(op: TkOperation, state: &TkGateState
 pub(super) fn format_permission_error_message(state: &TkGateState) -> String {
     let mut missing = Vec::new();
     if state.missing_gui_window {
-        missing.push(TK_CAPABILITY_GUI_WINDOW);
+        missing.push(CapabilityId::GuiWindow.as_str());
     }
     if state.missing_process_spawn {
-        missing.push(TK_CAPABILITY_PROCESS_SPAWN);
+        missing.push(CapabilityId::ProcessSpawn.as_str());
     }
     debug_assert!(!missing.is_empty());
     if missing.len() == 1 {

@@ -34,6 +34,7 @@ from molt.cli.project_roots import (
     _find_molt_root,
     _require_molt_root,
 )
+from molt._host_capabilities_generated import MAXIMUM_BUILTIN_CAPABILITY_TIER
 
 from molt.cli.process_execution import _run_command
 
@@ -287,7 +288,7 @@ def test(
         return root_error
     env = _base_env(root, molt_root=root)
     if trusted:
-        env["MOLT_TRUSTED"] = "1"
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     if suite == "dev":
         cmd = [sys.executable, "tools/dev.py", "test"]
     elif suite == "diff":

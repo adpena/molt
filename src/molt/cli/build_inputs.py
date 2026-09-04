@@ -2,23 +2,40 @@ from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
 import functools
-import hashlib
-import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import time
 import tomllib
 import tracemalloc
-from typing import Any
+from typing import Any, cast
 
-from molt.capability_manifest import load_manifest
+from molt.capability_manifest import (
+    VALID_AUDIT_SINKS as _VALID_AUDIT_SINKS,
+    AuditConfig,
+    AuditSink,
+    CapabilityManifest,
+    IoMode,
+    load_manifest,
+    resolve_runtime_policy_from_env,
+    validate_manifest,
+)
+from molt.capability_policy import (
+    CapabilityInput,
+    CapabilityPolicy,
+    merge_capability_policies,
+    parse_capability_input,
+)
+from molt._host_capabilities_generated import (
+    DEFAULT_CAPABILITY_TIER,
+    MAXIMUM_BUILTIN_CAPABILITY_TIER,
+)
 from molt.cli.build_diagnostics import (
     _build_allocation_diagnostics_enabled,
     _build_diagnostics_enabled,
     _resolve_build_diagnostics_verbosity,
 )
 from molt.cli.build_output_layout import _resolve_sysroot
-from molt.cli.capability_spec import CapabilityInput, _parse_capabilities
 from molt.cli.cargo_profiles import (
     _resolve_backend_cargo_profile_name,
     _resolve_backend_profile,
@@ -421,6 +438,9 @@ def _prepare_build_config(
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
     require_signed_manifest: bool = False,
+    trusted: bool = False,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
 ) -> tuple[_PreparedBuildConfig | None, _CliFailure | None]:
@@ -524,50 +544,69 @@ def _prepare_build_config(
     if backend_profile_err:
         return None, _fail(backend_profile_err, json_output, command="build")
 
-    capabilities_list: list[str] | None = None
     capabilities_source = None
-    capability_profiles: list[str] = []
+    cli_capability_policy: CapabilityPolicy | None = None
     if capabilities is not None:
-        parsed, profiles, source, errors = _parse_capabilities(capabilities)
-        if errors:
+        resolved_input = parse_capability_input(capabilities)
+        if resolved_input.errors:
             return None, _fail(
-                "Invalid capabilities: " + ", ".join(errors),
+                "Invalid capabilities: " + ", ".join(resolved_input.errors),
                 json_output,
                 command="build",
             )
-        capabilities_list = parsed
-        capability_profiles = profiles
-        capabilities_source = source
+        cli_capability_policy = resolved_input.policy
+        capabilities_source = resolved_input.source
 
-    # Load capability manifest if --capability-manifest was provided
-    manifest_env_vars: dict[str, str] = {}
+    manifest: CapabilityManifest | None = None
+    resolved_runtime_policy = None
     if capability_manifest is not None:
         try:
             manifest = load_manifest(
                 capability_manifest, require_signed=require_signed_manifest
             )
-            manifest_env_vars = manifest.to_env_vars()
-            # Merge manifest capabilities with --capabilities flag
-            if capabilities_list is None:
-                capabilities_list = sorted(manifest.effective_capabilities())
+            if capabilities_source is None:
                 capabilities_source = str(capability_manifest)
-            else:
-                # CLI --capabilities takes precedence; manifest adds
-                manifest_caps = manifest.effective_capabilities()
-                merged = sorted(set(capabilities_list) | manifest_caps)
-                capabilities_list = merged
         except Exception as e:
             return None, _fail(
                 f"Invalid capability manifest: {e}",
                 json_output,
                 command="build",
             )
-    capability_config_cache_digest = _capability_config_cache_digest(
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
-        manifest_env_vars=manifest_env_vars,
-    )
 
+    combined_policy = merge_capability_policies(cli_capability_policy, manifest)
+    try:
+        if combined_policy is not None:
+            envelope = manifest if manifest is not None else CapabilityManifest()
+            if audit_log is not None:
+                audit_env = _parse_audit_log_flag(audit_log)
+                envelope = replace(
+                    envelope,
+                    audit=AuditConfig(
+                        enabled=True,
+                        sink=cast(AuditSink, audit_env["MOLT_AUDIT_SINK"]),
+                        output=audit_env["MOLT_AUDIT_OUTPUT"],
+                    ),
+                )
+            if io_mode is not None:
+                _parse_io_mode_flag(io_mode)
+                envelope = replace(
+                    envelope,
+                    io=replace(envelope.io, mode=cast(IoMode, io_mode)),
+                )
+            tier = (
+                MAXIMUM_BUILTIN_CAPABILITY_TIER
+                if trusted
+                else os.environ.get(
+                    "MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER
+                ).strip().casefold()
+            )
+            resolved_runtime_policy = envelope.resolve(combined_policy, tier=tier)
+        else:
+            resolved_runtime_policy = resolve_runtime_policy_from_env(os.environ)
+    except Exception as exc:
+        return None, _fail(
+            f"Invalid capability policy: {exc}", json_output, command="build"
+        )
     return _PreparedBuildConfig(
         pgo_profile_summary=pgo_profile_summary,
         pgo_profile_path=pgo_profile_path,
@@ -584,11 +623,8 @@ def _prepare_build_config(
         backend_profile=backend_profile,
         runtime_cargo_profile=runtime_cargo_profile,
         backend_cargo_profile=backend_cargo_profile,
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
+        resolved_capability_policy=resolved_runtime_policy,
         capabilities_source=capabilities_source,
-        manifest_env_vars=manifest_env_vars,
-        capability_config_cache_digest=capability_config_cache_digest,
         target_python=target_python,
         target_sys_platform=_target_sys_platform(target),
     ), None
@@ -767,6 +803,9 @@ def _prepare_build_inputs(
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
     require_signed_manifest: bool = False,
+    trusted: bool = False,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
     respect_pythonpath: bool = False,
     lib_paths: list[str] | None = None,
     python_version: str | None = None,
@@ -815,6 +854,9 @@ def _prepare_build_inputs(
         capabilities=capabilities,
         capability_manifest=capability_manifest,
         require_signed_manifest=require_signed_manifest,
+        trusted=trusted,
+        audit_log=audit_log,
+        io_mode=io_mode,
         python_version=python_version,
         build_config=build_config,
     )
@@ -1079,9 +1121,6 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
     return config
 
 
-_VALID_AUDIT_SINKS = frozenset({"jsonl", "stderr", "null", "buffered"})
-
-
 def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """Parse --audit-log flag value into environment variables.
 
@@ -1095,6 +1134,9 @@ def _parse_audit_log_flag(value: str) -> dict[str, str]:
             f"Must be one of: {', '.join(sorted(_VALID_AUDIT_SINKS))}"
         )
     output = parts[1] if len(parts) > 1 else "stderr"
+    validate_manifest(
+        CapabilityManifest(audit=AuditConfig(enabled=True, sink=sink, output=output))
+    )
     return {
         "MOLT_AUDIT_ENABLED": "1",
         "MOLT_AUDIT_SINK": sink,
@@ -1157,63 +1199,6 @@ def _enable_native_arch_rustflags() -> bool:
         return False
     _append_rustflags(os.environ, flag)
     return True
-
-
-def _capability_ambient_env_for_cache(env: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in sorted(env.items())
-        if key in {"MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_IO_MODE"}
-        or key.startswith("MOLT_RESOURCE_")
-        or key.startswith("MOLT_AUDIT_")
-    }
-
-
-def _capability_config_cache_digest_from_env(env: Mapping[str, str]) -> str:
-    ambient_env = _capability_ambient_env_for_cache(env)
-    if not ambient_env:
-        return ""
-    payload = {
-        "ambient_env": ambient_env,
-        "capabilities": None,
-        "capability_profiles": [],
-        "manifest_env": {},
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _capability_config_cache_digest(
-    *,
-    capabilities_list: Sequence[str] | None,
-    capability_profiles: Sequence[str] | None,
-    manifest_env_vars: Mapping[str, str] | None,
-) -> str:
-    ambient_env = _capability_ambient_env_for_cache(os.environ)
-    if (
-        capabilities_list is None
-        and not capability_profiles
-        and not manifest_env_vars
-        and not ambient_env
-    ):
-        return ""
-    payload = {
-        "ambient_env": ambient_env,
-        "capabilities": (
-            sorted(str(capability) for capability in capabilities_list)
-            if capabilities_list is not None
-            else None
-        ),
-        "capability_profiles": sorted(
-            str(profile) for profile in (capability_profiles or ())
-        ),
-        "manifest_env": {
-            str(key): str(value)
-            for key, value in sorted((manifest_env_vars or {}).items())
-        },
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:

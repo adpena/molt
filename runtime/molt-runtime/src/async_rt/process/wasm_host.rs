@@ -223,7 +223,7 @@ pub unsafe extern "C" fn molt_process_spawn(
     stderr_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
         let args = match argv_from_bits_wasm(_py, args_bits) {

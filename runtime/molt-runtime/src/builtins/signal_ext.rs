@@ -11,7 +11,7 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::sync::Mutex;
@@ -295,14 +295,10 @@ fn handler_bits_to_py(_py: &PyToken<'_>, signum: i32, bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("signal.signal", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for signal operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalSignal, AuditArgs::None)
+        {
+            return err;
         }
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
@@ -350,6 +346,11 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalGetsignal, AuditArgs::None)
+        {
+            return err;
+        }
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -364,14 +365,10 @@ pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("signal.raise", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for signal operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalRaise, AuditArgs::None)
+        {
+            return err;
         }
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
@@ -402,14 +399,10 @@ pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("signal.alarm", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for signal operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalAlarm, AuditArgs::None)
+        {
+            return err;
         }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
@@ -432,14 +425,10 @@ pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pause() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("signal.pause", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for signal operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalPause, AuditArgs::None)
+        {
+            return err;
         }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
@@ -460,14 +449,10 @@ pub extern "C" fn molt_signal_pause() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("signal.set_wakeup_fd", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for signal operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalSetWakeupFd, AuditArgs::None)
+        {
+            return err;
         }
         let new_fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1) as i32;
         let state = runtime_state(_py);
@@ -910,6 +895,13 @@ pub extern "C" fn molt_signal_strsignal(signum_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(err) = crate::require_operation(
+            _py,
+            crate::OperationId::SignalPthreadSigmask,
+            AuditArgs::None,
+        ) {
+            return err;
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let how_obj = obj_from_bits(how_bits);
@@ -965,6 +957,11 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalPthreadKill, AuditArgs::None)
+        {
+            return err;
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let tid_obj = obj_from_bits(thread_id_bits);
@@ -1007,6 +1004,11 @@ pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigpending() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalSigpending, AuditArgs::None)
+        {
+            return err;
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
@@ -1030,6 +1032,11 @@ pub extern "C" fn molt_signal_sigpending() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::SignalSigwait, AuditArgs::None)
+        {
+            return err;
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let sigset_obj = obj_from_bits(sigset_bits);

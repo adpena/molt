@@ -106,7 +106,12 @@ Static import graph: runtime `sys.modules`/`module.__dict__` patching cannot be 
 
 `src/molt/compat.py:15-61` (`CompatibilityIssue`, `CompatibilityError`); raise sites: builtins.py:302 (eval/exec), doctest.py:~260, sys.py + _sys_impl.py (breakpointhook). Structured error format with feature/location/tier/impact/replace fields; `MOLT_COMPAT_WARNINGS=0` suppression.
 
-**Capability registry:** `src/molt/capability_manifest.py:43-58` — `net, websocket.connect, websocket.listen, fs.read, fs.write, env.read, env.write, db.read, db.write, time.wall, time, random`. **No package→capabilities mapping exists.**
+**Capability policy:** `src/molt/capability_policy.py` owns profiles, token
+validation, and global/package allow-deny intersection;
+`src/molt/capability_manifest.py` owns the signed file envelope. Package-scoped
+grants exist and are constrained to the resolved global grant set. Runtime and
+ecosystem capability namespaces remain extensible rather than being limited by
+a stale handwritten token registry.
 
 ---
 

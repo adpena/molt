@@ -300,7 +300,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted deployments (native only).",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     build_parser.add_argument(
         "--cache",
@@ -1189,7 +1189,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted deployments.",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     run_parser.add_argument(
         "--backend",
@@ -1295,7 +1295,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted deployments.",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     compare_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -1384,7 +1384,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted deployments.",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     test_parser.add_argument("path", nargs="?", help="Optional test path.")
     test_parser.add_argument(
@@ -1426,7 +1426,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Disable capability checks for trusted deployments.",
+        help="Select the finite generated maximum built-in capability tier.",
     )
     diff_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."

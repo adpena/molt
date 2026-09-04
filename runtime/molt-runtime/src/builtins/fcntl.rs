@@ -7,7 +7,7 @@
 //! On WASM all fds are already non-blocking (I/O goes through host imports),
 //! so fcntl is a sensible no-op: F_GETFL returns 0, F_SETFL succeeds silently.
 
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 
@@ -89,14 +89,10 @@ pub extern "C" fn molt_fcntl_o_nonblock() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "process");
-        audit_capability_decision("fcntl.fcntl", "process", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing process capability for fcntl operations",
-            );
+        if let Err(err) =
+            crate::require_operation(_py, crate::OperationId::FcntlFcntl, AuditArgs::None)
+        {
+            return err;
         }
 
         let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1) as i32;

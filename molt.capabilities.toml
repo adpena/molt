@@ -1,7 +1,7 @@
 # Molt Capability Manifest v2.0
 #
 # Unified format for capability grants, resource limits, audit config,
-# IO mode, and Monty interoperability.
+# IO mode. Interpreter/compiler coordination cannot grant host authority.
 #
 # Load with: molt build --capability-manifest molt.capabilities.toml main.py
 # Supported formats: TOML, YAML, JSON (auto-detected by extension).
@@ -20,7 +20,7 @@ description = "Example capability manifest for edge deployment"
 # Granted capabilities -- explicit allowlist.
 # Accepts individual tokens ("net", "fs.read") or profile names ("fs", "env").
 # Profiles expand to their member capabilities (see docs/CAPABILITIES.md).
-allow = ["net", "fs.read", "env.read", "time.wall"]
+allow = ["net", "fs", "env.read", "time.wall"]
 
 # Revoked capabilities -- overrides entries in `allow`.
 # Use this to grant a broad profile but exclude specific items.
@@ -82,8 +82,8 @@ max_string_result = "10MB"
 [io]
 # "real" (default): real filesystem/network/env access (production default).
 # "virtual": all I/O goes to in-memory VFS (sandbox mode, no real I/O).
-# "callback": every I/O operation yields to host for decision (Monty-style).
-mode = "real"
+# "callback": every I/O operation yields to the embedding host for decision.
+mode = "virtual"
 
 # Virtual filesystem mounts (only used when mode = "virtual").
 # Each mount maps a guest path to a backing store configuration.
@@ -104,26 +104,7 @@ enabled = false
 #   "null"     -- no-op (default, zero overhead)
 #   "stderr"   -- compact human-readable lines to stderr
 #   "jsonl"    -- one JSON object per line (for log aggregation)
-#   "buffered" -- in-memory collection (for testing/batch export)
 sink = "null"
-# Output destination for the jsonl sink. Currently supports "stderr".
-# Future: file paths, Unix sockets, HTTP endpoints.
+# Output destination for jsonl: "stderr", "stdout", or a validated append-only
+# file path beneath the process working directory.
 output = "stderr"
-
-# -- Monty Interoperability ----------------------------------------------------
-# Enables tiered execution: Monty interprets cold code, Molt AOT-compiles hot
-# paths. This section configures the boundary between the two runtimes.
-
-[monty]
-# When true, the compiled module includes Monty-compatible metadata for
-# interop (shared type stubs, compatible object layouts).
-compatible = true
-# Directory containing type stubs shared between Monty and Molt.
-shared_stubs = "stubs/"
-# Execution tier strategy:
-#   "auto"      -- start interpreted, tier-up after threshold
-#   "interpret" -- always interpret (Monty only)
-#   "compile"   -- always AOT compile (Molt only)
-execution_tier = "auto"
-# Number of function calls before AOT compilation (only with tier = "auto").
-tier_up_threshold = 100

@@ -617,7 +617,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker integration smoke isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/cli/test_native_link_*.py", "runtime/**"]
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "runtime/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -1186,6 +1186,18 @@ argv = ["uv", "run", "python3", "tools/gen_python_effects.py", "--check"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
+id = "repository.host-capabilities.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "tools/gen_host_capabilities.py", "--check"]
+toolchains = ["python", "uv", "rustfmt"]
+
+[[command]]
 id = "repository.runtime-profile.generated"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
@@ -1661,6 +1673,19 @@ argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
+id = "wasm.integration.split-runtime"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "warm"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
 id = "python.static.ty"
 family = "python_static"
 cell = "linux-x86_64-py312-static"
@@ -1694,6 +1719,18 @@ timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+
+[[command]]
+id = "native.integration.capability-manifest"
+family = "native_integration"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "warm"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
@@ -2150,6 +2187,23 @@ gates = [
   "python3 tools/gen_python_effects.py --check",
   "python3 -m pytest -q tests/test_gen_python_effects.py",
   "cargo test --locked -p molt-ir --lib python_effects_generated",
+]
+
+[[rule]]
+name = "host-capability-authority"
+description = "CLI profiles plus native, CPython fallback, and WASM runtime tiers share one generated host-permission authority."
+globs = [
+  "runtime/host_capabilities.toml",
+  "tools/gen_host_capabilities.py",
+  "src/molt/_host_capabilities_generated.py",
+  "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+  "wasm/host_capabilities_generated.js",
+  "docs/spec/areas/security/host_capabilities.generated.md",
+  "tests/test_gen_host_capabilities.py",
+]
+gates = [
+  "uv run --python 3.12 python tools/gen_host_capabilities.py --check",
+  "uv run --python 3.12 pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
 ]
 
 [[rule]]

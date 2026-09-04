@@ -25,6 +25,7 @@ from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 
 if TYPE_CHECKING:
+    from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog
@@ -1658,13 +1659,26 @@ class _PreparedBuildConfig:
     backend_profile: BuildProfile
     runtime_cargo_profile: str
     backend_cargo_profile: str
-    capabilities_list: list[str] | None
-    capability_profiles: list[str]
+    resolved_capability_policy: ResolvedRuntimePolicy
     capabilities_source: str | None
-    manifest_env_vars: dict[str, str]
-    capability_config_cache_digest: str
     target_python: TargetPythonVersion
     target_sys_platform: str | None
+
+    @property
+    def capabilities_list(self) -> list[str]:
+        return list(self.resolved_capability_policy.grants.capabilities)
+
+    @property
+    def capability_profiles(self) -> list[str]:
+        return list(self.resolved_capability_policy.grants.profiles)
+
+    @property
+    def manifest_env_vars(self) -> dict[str, str]:
+        return self.resolved_capability_policy.to_env_vars()
+
+    @property
+    def capability_config_cache_digest(self) -> str:
+        return self.resolved_capability_policy.digest().removeprefix("sha256:")
 
 
 @dataclass(frozen=True)

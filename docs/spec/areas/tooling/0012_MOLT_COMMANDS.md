@@ -37,7 +37,7 @@ Key flags:
 - `--profile {dev,release}` (default: `release`)
 - `--deterministic/--no-deterministic` (lockfile enforcement)
 - `--deterministic-warn/--no-deterministic-warn` (warn instead of failing on lockfile enforcement)
-- `--trusted/--no-trusted` (disable capability checks for trusted native deployments)
+- `--trusted/--no-trusted` (select the finite generated maximum built-in capability tier)
 - `--cache/--no-cache` (use `$MOLT_CACHE` for IR artifacts)
 - `--cache-dir <dir>` (override the cache directory; defaults to `$MOLT_CACHE`)
 - `--cache-report` (print cache hit/miss details)
@@ -133,7 +133,7 @@ Key flags:
 - `--rebuild` (disable build cache for the compiled run)
 - `--timing` (emit compile/run timing)
 - `--capabilities <file|profile|list>` (capability profiles/tokens or manifest path)
-- `--trusted/--no-trusted` (disable capability checks for trusted deployments).
+- `--trusted/--no-trusted` (select the finite generated maximum built-in capability tier).
 - Script args are forwarded by default; use `--` to separate.
 
 ### 2.4 `molt compare`
@@ -156,7 +156,7 @@ Purpose: Run Molt-aware test suites (`tools/dev.py test` by default, or diff/pyt
 Key flags:
 - `--suite {dev,diff,pytest}`
 - `--python-version <ver>` (diff suite)
-- `--trusted/--no-trusted` (disable capability checks for trusted deployments).
+- `--trusted/--no-trusted` (select the finite generated maximum built-in capability tier).
 
 ### 2.6 `molt diff`
 **Status:** Implemented (initial; wraps `tests/molt_diff.py`).
@@ -165,7 +165,7 @@ Purpose: Differential testing against CPython using the Molt compiler.
 
 Key flags:
 - `--python-version <ver>`
-- `--trusted/--no-trusted` (disable capability checks for trusted deployments).
+- `--trusted/--no-trusted` (select the finite generated maximum built-in capability tier).
 
 ### 2.7 `molt profile`
 **Status:** Implemented (initial; wraps `tools/profile.py`).

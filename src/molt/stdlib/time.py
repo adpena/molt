@@ -32,15 +32,13 @@ _MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime")
 _MOLT_TIME_TIMEGM = _require_intrinsic("molt_time_timegm")
 _MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info")
 
-_CAP_TRUSTED = None
 _CAP_HAS = None
 
 
 def _ensure_capabilities() -> None:
-    global _CAP_TRUSTED, _CAP_HAS
-    if _CAP_TRUSTED is not None or _CAP_HAS is not None:
+    global _CAP_HAS
+    if _CAP_HAS is not None:
         return
-    _CAP_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
     _CAP_HAS = _require_intrinsic("molt_capabilities_has")
 
 
@@ -316,12 +314,10 @@ def get_clock_info(name: str) -> ClockInfo:
 
 def _has_time_wall() -> bool:
     _ensure_capabilities()
-    if _CAP_TRUSTED is None or _CAP_HAS is None:
-        return True
+    if _CAP_HAS is None:
+        return False
     try:
-        if _CAP_TRUSTED():
-            return True
-        return bool(_CAP_HAS("time.wall") or _CAP_HAS("time"))
+        return bool(_CAP_HAS("time.wall"))
     except Exception:
         return False
 

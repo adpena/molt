@@ -102,9 +102,9 @@ layer = 0
 role = "snapshot primitive"
 
 [[crate]]
-name = "molt-tier"
+name = "molt-runtime-platform"
 layer = 0
-role = "tiering primitive"
+role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-in"
 
 # ---------------------------------------------------------------------------
 # Layer 1 -- direct consumers of the layer-0 fixpoints.
@@ -266,11 +266,6 @@ role = "runtime-local bind/table constants and counters satellite"
 name = "molt-runtime-diagnostics"
 layer = 3
 role = "runtime diagnostics policy satellite"
-
-[[crate]]
-name = "molt-runtime-platform"
-layer = 3
-role = "runtime platform support satellite"
 
 [[crate]]
 name = "molt-runtime-resource"

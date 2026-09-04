@@ -1,6 +1,6 @@
 # Monty-Molt Tiered Execution: Architectural Vision
 
-**Status:** North Star Design Document
+**Status:** historical design exploration; superseded by `docs/ROADMAP_MONTY_BUFFA_INTEGRATION.md` and current generated authorities
 **Date:** 2026-03-28
 **Authors:** Molt Core Team
 
@@ -17,7 +17,7 @@ This document describes a **V8-style tiered execution architecture** that unifie
 
 The two runtimes share a **contract surface** -- a capability manifest (`molt.capabilities.toml`), type stubs, exception semantics, resource error behavior, and a conformance test suite -- so that tier-up from interpreted to compiled is invisible to user code. A function starts life in Monty's eval loop; when call-count thresholds are crossed, Molt compiles it in the background; an atomic pointer swap replaces the interpreted entry point with the compiled one. The user program never observes the transition.
 
-This is not theoretical. The shared capability manifest already exists (`molt.capabilities.toml` v2.0 with a `[monty]` section), the `ResourceTracker` trait and `AuditSink` are implemented in `molt-runtime`, Molt's TIR pipeline runs a multi-phase optimization sequence (lowering → canonicalization → redundancy → memory → value → cleanup; see `runtime/molt-passes/src/tir/passes/mod.rs`) with deoptimization infrastructure, and the compilation cache (`tir/cache.rs`) provides content-addressed artifact storage. What remains is the plumbing between the two runtimes: call counters, background compilation, and the atomic swap.
+This is not theoretical. The strict v2 capability manifest, generated host-operation registry, `ResourceTracker`, and `AuditSink` already exist. Interpreter/compiler tier selection is deliberately not part of that permission manifest: a future execution-plan authority may consume the same resolved policy but cannot redefine or grant host permissions. Molt's TIR pipeline and content-addressed compilation cache provide the remaining compiler foundation for call counters, background compilation, and atomic replacement.
 
 ---
 
@@ -51,7 +51,7 @@ This is not theoretical. The shared capability manifest already exists (`molt.ca
 │    - Shared ResourceTracker + AuditSink across both tiers           │
 │                                                                      │
 │  Shared Contracts                                                    │
-│    - molt.capabilities.toml (v2.0, [monty] section)                │
+│    - strict v2 capability manifest + generated operation registry │
 │    - Type stubs (stubs/ directory, shared type vocabulary)           │
 │    - Python subset: no exec/eval/compile, no unrestricted reflect   │
 │    - Conformance test suite (parity/ directory)                     │
@@ -144,7 +144,7 @@ counter > T_compile  ->  interpret until compiled version ready
 compiled ready       ->  atomic swap to Tier 1
 ```
 
-**Default threshold:** `tier_up_threshold = 100` (configurable in `molt.capabilities.toml` under `[monty]`). This is deliberately lower than V8's Sparkplug threshold (~200 calls) because Molt's compilation is ahead-of-time quality -- there is no Maglev-equivalent middle tier to amortize. One compilation, full optimization.
+**Initial design threshold:** `tier_up_threshold = 100`, to be owned by a future typed execution-plan authority rather than the capability manifest. This is deliberately lower than V8's Sparkplug threshold (~200 calls) because Molt's compilation is ahead-of-time quality -- there is no Maglev-equivalent middle tier to amortize. One compilation, full optimization.
 
 ### 3.2 Size Heuristics
 
@@ -213,14 +213,9 @@ max_repeat_result = "10MB"
 [io]
 mode = "virtual"   # "real" | "virtual" | "callback"
 
-[monty]
-compatible = true
-shared_stubs = "stubs/"
-execution_tier = "auto"   # "auto" | "interpret" | "compile"
-tier_up_threshold = 100
 ```
 
-Both runtimes parse this manifest at initialization. Monty checks capabilities in its eval loop; Molt checks them at WASM host import boundaries described by `wasm_abi_manifest.toml` and the generated ABI facade. The `ResourceTracker` trait (`runtime/molt-runtime/src/resource.rs`) is the enforcement mechanism on both sides.
+Both runtimes may consume the same resolved manifest at initialization. Monty checks capabilities in its eval loop; Molt checks them at generated native/WASM host-operation boundaries. Tier selection and shared-stub location belong to a separate typed execution plan so execution strategy cannot silently expand authority. The `ResourceTracker` is the enforcement mechanism on both sides.
 
 ### 4.2 Type Stub Format
 
@@ -362,7 +357,7 @@ section bytes; the retired `tir/wasm_split.rs` estimate path is not a shipped ca
 
 ### Phase 0: Shared Capability Manifest -- COMPLETE
 
-- `molt.capabilities.toml` v2.0 with `[monty]` section
+- strict `molt.capabilities.toml` v2.0 permission/resource envelope with no execution-tier fields
 - `ResourceTracker` trait in `molt-runtime/src/resource.rs` (5 error variants, thread-local dispatch)
 - `AuditSink` trait in `molt-runtime/src/audit.rs` (4 sink implementations, zero-overhead NullSink default)
 - Pre-emptive operation guards in `[resources.operation_limits]`

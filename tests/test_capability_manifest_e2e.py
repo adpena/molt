@@ -40,10 +40,6 @@ output = "stderr"
 [io]
 mode = "virtual"
 
-[monty]
-compatible = true
-execution_tier = "auto"
-tier_up_threshold = 50
 """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
         f.write(toml)
@@ -61,9 +57,6 @@ tier_up_threshold = 50
         assert m.audit.enabled is True
         assert m.audit.sink == "jsonl"
         assert m.io.mode == "virtual"
-        assert m.monty.compatible is True
-        assert m.monty.tier_up_threshold == 50
-
         env = m.to_env_vars()
         assert env["MOLT_RESOURCE_MAX_MEMORY"] == str(32 * 1024 * 1024)
         assert env["MOLT_RESOURCE_MAX_DURATION_MS"] == "5000"
@@ -152,6 +145,24 @@ def test_invalid_manifest_raises():
         os.unlink(path)
 
 
+def test_unknown_json_manifest_version_fails_closed():
+    """Unknown schema versions cannot be interpreted as the current contract."""
+    from molt.capability_manifest import ManifestError, load_manifest
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('{"version":"99.0","capabilities":[]}')
+        path = f.name
+
+    try:
+        try:
+            load_manifest(path)
+            assert False, "unknown manifest version must fail closed"
+        except ManifestError as exc:
+            assert "unrecognized manifest version '99.0'" in str(exc)
+    finally:
+        os.unlink(path)
+
+
 def test_manifest_with_virtual_mounts():
     """Virtual mount configuration parses correctly."""
     from molt.capability_manifest import load_manifest
@@ -178,6 +189,24 @@ mode = "virtual"
         tmp_mount = next(v for v in m.io.virtual_mounts if v.path == "/tmp")
         assert tmp_mount.type == "memory"
         assert tmp_mount.max_size == 16 * 1024 * 1024
+    finally:
+        os.unlink(path)
+
+
+def test_removed_monty_tiering_fields_fail_closed():
+    """Orphaned execution-tier compatibility config is not silently ignored."""
+    from molt.capability_manifest import ManifestError, load_manifest
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write('[manifest]\nversion = "2.0"\n\n[monty]\nexecution_tier = "auto"\n')
+        path = f.name
+
+    try:
+        try:
+            load_manifest(path)
+            assert False, "removed [monty] fields must fail closed"
+        except ManifestError as exc:
+            assert "unsupported field(s): monty" in str(exc)
     finally:
         os.unlink(path)
 

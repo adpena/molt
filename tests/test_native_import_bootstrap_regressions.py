@@ -247,7 +247,7 @@ def test_native_external_static_package_import_uses_staged_runtime_root_after_so
         "PYTHONHOME",
         "VIRTUAL_ENV",
         "MOLT_CAPABILITIES",
-        "MOLT_TRUSTED",
+        "MOLT_CAPABILITY_TIER",
     ):
         run_env.pop(key, None)
 
