@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
-use super::exception_labels::{build_label_remap, remap_exception_label_attr};
+use crate::tir::clone_support::{
+    build_label_remap, remap_exception_label_attr, remap_terminator, transfer_label_id_map,
+};
 
 /// The product of cloning a callee body into a caller: the block id the call's
 /// predecessor half must branch into (the cloned callee entry), and the set of
@@ -344,7 +346,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
                     &mut occupied_vars,
                     &inline_var_namespace,
                 );
-                remap_exception_label_attr(op.opcode, &mut attrs, &label_remap);
+                remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &callee.name);
                 Some(TirOp {
                     dialect: op.dialect,
                     opcode: op.opcode,
@@ -359,7 +361,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
         // Cloned terminator with targets + value operands remapped. `Return`s
         // stay `Return` (the splicer rewrites them); every other terminator's
         // block targets and value args remap.
-        let new_term = clone_terminator(&src.terminator, &value_map, &block_map, callee);
+        let new_term = remap_terminator(&src.terminator, &value_map, &block_map, &callee.name);
 
         caller.blocks.insert(
             new_bid,
@@ -399,82 +401,6 @@ pub(super) fn clone_function_body_with_fresh_ids(
     }
 }
 
-/// Clone a terminator, remapping value operands and block targets. `Return`
-/// terminators are cloned verbatim (values remapped) - the splicer rewrites them
-/// into branches once it owns the continuation block id.
-fn clone_terminator(
-    term: &Terminator,
-    value_map: &HashMap<ValueId, ValueId>,
-    block_map: &HashMap<BlockId, BlockId>,
-    callee: &TirFunction,
-) -> Terminator {
-    let rv = |v: ValueId| -> ValueId {
-        *value_map.get(&v).unwrap_or_else(|| {
-            panic!(
-                "inliner: callee '{}' terminator uses value {} with no remap",
-                callee.name, v
-            )
-        })
-    };
-    let rb = |b: BlockId| -> BlockId {
-        *block_map.get(&b).unwrap_or_else(|| {
-            panic!(
-                "inliner: callee '{}' terminator targets block {} with no remap",
-                callee.name, b
-            )
-        })
-    };
-    match term {
-        Terminator::Branch { target, args } => Terminator::Branch {
-            target: rb(*target),
-            args: args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::CondBranch {
-            cond,
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-        } => Terminator::CondBranch {
-            cond: rv(*cond),
-            then_block: rb(*then_block),
-            then_args: then_args.iter().map(|v| rv(*v)).collect(),
-            else_block: rb(*else_block),
-            else_args: else_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Switch {
-            value,
-            cases,
-            default,
-            default_args,
-        } => Terminator::Switch {
-            value: rv(*value),
-            cases: cases
-                .iter()
-                .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
-                .collect(),
-            default: rb(*default),
-            default_args: default_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::StateDispatch {
-            cases,
-            default,
-            default_args,
-        } => Terminator::StateDispatch {
-            cases: cases
-                .iter()
-                .map(|(s, blk, args)| (*s, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
-                .collect(),
-            default: rb(*default),
-            default_args: default_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Return { values } => Terminator::Return {
-            values: values.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Unreachable => Terminator::Unreachable,
-    }
-}
-
 /// Transfer `label_id_map` + `loop_roles` + `loop_pairs` + `loop_break_kinds` +
 /// `loop_cond_blocks` from the callee into the caller, remapping every block-id
 /// key (and any block-id-valued entry) through `block_map`. `label_id_map` LABEL
@@ -491,12 +417,7 @@ fn transfer_loop_metadata(
     // label_id_map is keyed by BlockId.0 (a raw u32). Remap the key through the
     // block map AND the label value through `label_remap` so the cloned
     // exception/jump targets carry collision-free labels in the merged function.
-    for (old_block_u32, label_val) in &callee.label_id_map {
-        if let Some(new_bid) = block_map.get(&BlockId(*old_block_u32)) {
-            let new_label = label_remap.get(label_val).copied().unwrap_or(*label_val);
-            caller.label_id_map.entry(new_bid.0).or_insert(new_label);
-        }
-    }
+    transfer_label_id_map(callee, caller, block_map, label_remap, &callee.name);
     // loop_roles: BlockId -> LoopRole.
     for (old_bid, role) in &callee.loop_roles {
         if let Some(new_bid) = block_map.get(old_bid) {

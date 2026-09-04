@@ -18,7 +18,10 @@ if str(WASM_ABI_GEN_ROOT) not in sys.path:
     sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
 
 from wasm_abi_gen import manifest  # noqa: E402
-from wasm_abi_gen.paths import OUT_RUNTIME_CALLABLES_RS  # noqa: E402
+from wasm_abi_gen.paths import (  # noqa: E402
+    OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
+    OUT_RUNTIME_CALLABLES_RS,
+)
 
 _GEN_CACHE: object | None = None
 _MANIFEST_CACHE: dict | None = None
@@ -295,6 +298,64 @@ def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
     }
 
 
+def test_external_native_function_signature_authority_is_complete() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    cpython_signatures = {
+        name: (params, results)
+        for name, params, results in (
+            manifest.generator_cpython_abi_link_import_signatures()
+        )
+    }
+    assert cpython_signatures["PyObject_Init"] == (("i32", "i32"), ("i32",))
+    assert cpython_signatures["PyLong_FromLongLong"] == (("i64",), ("i32",))
+    assert cpython_signatures["PyFloat_FromDouble"] == (("f64",), ("i32",))
+    assert cpython_signatures["PyBuffer_Release"] == (("i32",), ())
+    assert cpython_signatures["PyComplex_AsCComplex"] == (
+        ("i32", "i32"),
+        (),
+    )
+    assert cpython_signatures["PyCapsule_New"] == (
+        ("i32", "i32", "i32"),
+        ("i32",),
+    )
+    assert cpython_signatures["PyArg_ParseTuple"] == (
+        ("i32", "i32", "i32"),
+        ("i32",),
+    )
+
+    namespace = _exec_rendered_py(gen.render_py(data))
+    shapes = namespace["WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES"]
+    signatures = namespace["WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES"]
+    wasm_import_signature = namespace["wasm_import_signature"]
+    assert signatures[("wasi_snapshot_preview1", "fd_write")] == {
+        "params": ["i32", "i32", "i32", "i32"],
+        "result": "i32",
+    }
+    assert signatures[("wasi_snapshot_preview1", "clock_time_get")] == {
+        "params": ["i32", "i64", "i32"],
+        "result": "i32",
+    }
+    assert signatures[("wasi_snapshot_preview1", "path_readlink")] == {
+        "params": ["i32", "i32", "i32", "i32", "i32", "i32"],
+        "result": "i32",
+    }
+    assert wasm_import_signature("path_readlink") == (("i64",), ("i64",))
+    assert signatures[("env", "molt_call_indirect3")] == {
+        "params": ["i64", "i64", "i64", "i64"],
+        "result": "i64",
+    }
+    assert wasm_import_signature("molt_cbor_parse_scalar_obj") is not None
+    signatureless = sorted(
+        name
+        for name, (module, kind) in shapes.items()
+        if kind == "function"
+        and (module, name) not in signatures
+        and wasm_import_signature(name) is None
+    )
+    assert signatureless == []
+
+
 def test_wasm_abi_manifest_owns_static_type_section() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -467,11 +528,20 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     exec(rendered_py, rendered_namespace)
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
-    assert rendered_namespace["wasm_import_signature"]("molt_none") == ((), ("i64",))
+    assert rendered_namespace["wasm_import_signature"]("molt_none") == (
+        (),
+        ("i64",),
+    )
+    assert rendered_namespace["WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES"][
+        ("env", "molt_none")
+    ] == {"params": [], "result": "i64"}
     assert rendered_namespace["wasm_import_signature"]("molt_bool_from_i32") == (
         ("i32",),
         ("i64",),
     )
+    assert rendered_namespace["WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES"][
+        ("env", "molt_bool_from_i32")
+    ] == {"params": ["i32"], "result": "i64"}
 
 
 def test_runtime_export_sources_follow_cargo_dependency_authority() -> None:
@@ -1085,6 +1155,13 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
     assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
+    finally_observer = op_loop_calls["exception_finally_pending_observer"]
+    assert finally_observer["import_name"] == "exception_last_pending"
+    assert (
+        finally_observer["marked_import_name"]
+        == "async_work_poll_and_exception_last_pending"
+    )
+    assert finally_observer["required_imports"] == ["exception_last_pending"]
     assert op_loop_calls["gpu_thread_id"] == {
         "kind": "gpu_thread_id",
         "import_name": "gpu_thread_id",
@@ -1115,6 +1192,52 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert "self.import().name()" not in rendered_lir_rs
     assert "lir_fixed_runtime_call" in rendered_lir_rs
     assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_lir_rs
+    assert "pub(crate) fn op_loop_runtime_call(" in rendered_lir_rs
+    assert "marked: bool" in rendered_lir_rs
+    assert (
+        '"exception_finally_pending_observer" if marked => '
+        "Some(OpLoopRuntimeCallSpec {" in rendered_lir_rs
+    )
+    assert (
+        "import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending"
+        in rendered_lir_rs
+    )
+    native_rows = gen._native_marked_op_loop_symbol_rows(data)
+    assert native_rows == (
+        (
+            "exception_finally_pending_observer",
+            "molt_exception_last_pending",
+            "molt_async_work_poll_and_exception_last_pending",
+        ),
+        ("exception_last_pending", "molt_exception_last_pending", None),
+    )
+    rendered_native_rs = gen.render_native_exception_observer_abi_rs(data)
+    assert "@generated by tools/gen_wasm_abi.py" in rendered_native_rs
+    assert '"exception_finally_pending_observer" if marked' in rendered_native_rs
+    assert (
+        'Some("molt_async_work_poll_and_exception_last_pending")' in rendered_native_rs
+    )
+    assert (
+        '"exception_finally_pending_observer" | "exception_last_pending"'
+        in rendered_native_rs
+    )
+    assert 'Some("molt_exception_last_pending")' in rendered_native_rs
+    assert OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS.read_text(encoding="utf-8") == (
+        rendered_native_rs
+    )
+
+    second_marked = copy.deepcopy(data)
+    synthetic = copy.deepcopy(finally_observer)
+    synthetic["kind"] = "synthetic_marked_observer"
+    second_marked["op_loop_runtime_call"].append(synthetic)
+    assert (
+        "synthetic_marked_observer",
+        "molt_exception_last_pending",
+        "molt_async_work_poll_and_exception_last_pending",
+    ) in gen._native_marked_op_loop_symbol_rows(second_marked)
+    assert "synthetic_marked_observer" in (
+        gen.render_native_exception_observer_abi_rs(second_marked)
+    )
 
     broken = copy.deepcopy(data)
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
@@ -1126,6 +1249,25 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed_operand_count"):
         manifest.validate_loaded_manifest(broken_count)
+
+    broken_marked_import = copy.deepcopy(data)
+    next(
+        entry
+        for entry in broken_marked_import["op_loop_runtime_call"]
+        if entry["kind"] == "exception_finally_pending_observer"
+    )["marked_import_name"] = "not_a_real_import"
+    with pytest.raises(manifest.WasmAbiManifestError, match="unknown marked import"):
+        manifest.validate_loaded_manifest(broken_marked_import)
+
+    duplicate_marked_import = copy.deepcopy(data)
+    observer = next(
+        entry
+        for entry in duplicate_marked_import["op_loop_runtime_call"]
+        if entry["kind"] == "exception_finally_pending_observer"
+    )
+    observer["marked_import_name"] = observer["import_name"]
+    with pytest.raises(manifest.WasmAbiManifestError, match="must differ"):
+        manifest.validate_loaded_manifest(duplicate_marked_import)
 
     local_facade = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"

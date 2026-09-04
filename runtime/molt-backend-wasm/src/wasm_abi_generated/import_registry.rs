@@ -370,6 +370,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
+        name: "async_work_poll_and_exception_last_pending",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMatchBuiltin,
         name: "exception_match_builtin",
         type_idx: 3,
@@ -15081,6 +15086,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_exception_last" => Some(WasmRuntimeImport::ExceptionLast),
         "exception_last_pending" => Some(WasmRuntimeImport::ExceptionLastPending),
         "molt_exception_last_pending" => Some(WasmRuntimeImport::ExceptionLastPending),
+        "async_work_poll_and_exception_last_pending" => {
+            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending)
+        }
+        "molt_async_work_poll_and_exception_last_pending" => {
+            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending)
+        }
         "exception_match_builtin" => Some(WasmRuntimeImport::ExceptionMatchBuiltin),
         "molt_exception_match_builtin" => Some(WasmRuntimeImport::ExceptionMatchBuiltin),
         "exception_resolve_captured" => Some(WasmRuntimeImport::ExceptionResolveCaptured),

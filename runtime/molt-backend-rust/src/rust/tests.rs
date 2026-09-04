@@ -157,36 +157,63 @@ fn compile_checked_keeps_ordinary_programs_available() {
 }
 
 #[test]
-fn compile_checked_rejects_async_work_poll_without_runtime_boundary() {
-    let mut backend = RustBackend::new();
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "async_work_poll_test".to_string(),
-            params: vec![],
-            ops: vec![OpIR {
+fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary() {
+    use molt_tir::tir::op_kinds_generated::EXCEPTION_REQUIREMENT_REASON;
+
+    let cases = [
+        (
+            "async_work_poll",
+            OpIR {
                 kind: "async_work_poll".to_string(),
                 value: Some(0),
                 ..OpIR::default()
-            }],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
+            },
+            Some(EXCEPTION_REQUIREMENT_REASON),
+        ),
+        (
+            "exception_finally_pending_observer",
+            OpIR {
+                kind: "exception_finally_pending_observer".to_string(),
+                out: Some("pending".to_string()),
+                async_work_poll: true,
+                ..OpIR::default()
+            },
+            None,
+        ),
+    ];
 
-    let err = backend
-        .compile_checked(&ir)
-        .expect_err("Rust must not erase the pending-call/eval-breaker poll");
-    assert!(
-        err.contains("async_work_poll"),
-        "diagnostic must name the op: {err}"
-    );
-    assert!(
-        err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
-        "diagnostic must name the missing target capability: {err}"
-    );
+    for (kind, op, expected_reason) in cases {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("{kind}_test"),
+                params: vec![],
+                ops: vec![op],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let err = RustBackend::new()
+            .compile_checked(&ir)
+            .expect_err("Rust must not erase an async-work observation");
+        assert!(
+            err.contains(kind),
+            "diagnostic must name the carrier `{kind}`: {err}"
+        );
+        assert!(
+            err.contains("rust target rejected before source generation"),
+            "target admission must reject before emitting Rust source: {err}"
+        );
+        if let Some(expected_reason) = expected_reason {
+            assert!(
+                err.contains(expected_reason),
+                "diagnostic must name the missing target capability: {err}"
+            );
+        }
+    }
 }
 
 #[test]

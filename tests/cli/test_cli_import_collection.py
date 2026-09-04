@@ -25,6 +25,13 @@ from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import pytest
 
 import molt.cli as cli
+import molt.wasm_artifact as wasm_artifact
+from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
+    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
+    wasm_import_signature,
+)
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt import c_api_symbols as cli_c_api_symbols
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
@@ -74,6 +81,16 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkProviderKind,
     SourceExtensionLinkRequirements,
 )
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+    source_extension_wasm_import_receipts,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.target_python import TargetPythonVersion
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
@@ -107,6 +124,9 @@ PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_NATIVE_BUILD = importlib.import_module("molt.cli.runtime_native_build")
 RUNTIME_WASM_BUILD = importlib.import_module("molt.cli.runtime_wasm_build")
+RUNTIME_WASM_BUILD_SUPPORT = importlib.import_module(
+    "molt.cli.runtime_wasm_build_support"
+)
 RUNTIME_WASM_BUILD_SPEC = importlib.import_module("molt.cli.runtime_wasm_build_spec")
 RUNTIME_WASM_BUILD_POLICY = importlib.import_module(
     "molt.cli.runtime_wasm_build_policy"
@@ -120,24 +140,26 @@ NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TARGET_PYTHON = importlib.import_module("molt.target_python")
 
 
-_STATIC_ARCHIVE_SYMBOL_FACTS: dict[Path, tuple[frozenset[str], frozenset[str]]] = {}
+_STATIC_ARCHIVE_SYMBOL_FACTS: dict[Path, BACKEND_CACHE._NativeGlobalSymbolFacts] = {}
 
 
 @pytest.fixture(autouse=True)
 def _external_static_archive_symbol_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    def read_symbol_facts(path: Path) -> tuple[set[str], set[str]] | None:
-        facts = _STATIC_ARCHIVE_SYMBOL_FACTS.get(path.resolve())
-        if facts is None:
-            return None
-        defined, undefined = facts
-        return set(defined), set(undefined)
+    def read_symbol_facts(
+        path: Path,
+        *,
+        nm_command: Sequence[str] | None = None,
+        target_triple: str | None = None,
+    ) -> BACKEND_CACHE._NativeGlobalSymbolFacts | None:
+        del nm_command, target_triple
+        return _STATIC_ARCHIVE_SYMBOL_FACTS.get(path.resolve())
 
     _STATIC_ARCHIVE_SYMBOL_FACTS.clear()
     monkeypatch.setattr(
-        cli_external_native,
-        "_native_archive_global_symbol_sets",
+        BACKEND_CACHE,
+        "_native_archive_global_symbol_facts",
         read_symbol_facts,
     )
     yield
@@ -2316,11 +2338,16 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
         encoding="utf-8",
     )
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    artifact_bytes = _wasm_exporting_i64_unary_symbols(
+        ("PyInit__nd_image", "PyInit__ni_label")
+    )
+    artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
     _write_external_native_artifact(
         external_root,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=artifact_bytes,
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -2335,15 +2362,41 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
             "object_closure": {
                 "objects": [
                     {
+                        "source": "_nd_image.molt.wasm",
+                        "object": "_nd_image.o",
+                        "source_sha256": artifact_sha256,
+                        "object_sha256": artifact_sha256,
+                        "defined_symbols": ["PyInit__nd_image"],
+                        "undefined_symbols": [],
+                        "compile_command": [
+                            "fixture-compiler",
+                            "-c",
+                            "_nd_image.molt.wasm",
+                        ],
+                        "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+                        "dependencies": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [],
+                        "project_generated_c_api_symbols": [],
+                    },
+                    {
                         "source": str(manifest_source),
                         "object": "_ni_label.o",
                         "source_sha256": source_sha,
                         "object_sha256": "0" * 64,
                         "defined_symbols": ["PyInit__ni_label"],
                         "undefined_symbols": [],
+                        "compile_command": [
+                            "fixture-compiler",
+                            "-c",
+                            str(manifest_source),
+                        ],
+                        "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+                        "dependencies": [],
                         "required_c_api_symbols": [],
                         "required_capsules": [],
-                    }
+                        "project_generated_c_api_symbols": [],
+                    },
                 ],
             },
             "callable_exports": [
@@ -2404,6 +2457,121 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     assert [
         artifact.module for artifact in import_plan.native_artifact_plan.artifacts
     ] == ["nativepkg.ndimage._nd_image"]
+
+
+def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    support_path = external_root / "nativepkg" / "ndimage" / "_measurements.py"
+    support_path.parent.mkdir(parents=True)
+    support_path.write_text(
+        "from . import _injected\n\n"
+        "def label(value):\n"
+        "    return _injected.label(value)\n",
+        encoding="utf-8",
+    )
+    support_sha256 = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    _artifact_path, manifest_path = _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "support_files": [
+                {
+                    "path": "nativepkg/ndimage/_measurements.py",
+                    "sha256": support_sha256,
+                }
+            ],
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "label",
+                    "binding": "module_attr",
+                    "provider_module": "nativepkg.ndimage._measurements",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        target="wasm",
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact_plan = policy.native_artifact_plan
+    artifact = artifact_plan.artifacts[0]
+    planned_identity = artifact_plan.digest()
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.ndimage.label"}),
+    )
+
+    # This source and its forged closure receipt would satisfy the support
+    # import above if the manifest path became a fresh discovery authority.
+    injected_source = tmp_path / "unplanned" / "_injected.c"
+    injected_source.parent.mkdir()
+    injected_source.write_text("int injected(void) { return 0; }\n", encoding="utf-8")
+    injected_sha256 = hashlib.sha256(injected_source.read_bytes()).hexdigest()
+    mutated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutated_manifest["sources"] = [str(injected_source)]
+    mutated_closure_object = mutated_manifest["object_closure"]["objects"][0]
+    mutated_closure_object["source"] = str(injected_source)
+    mutated_closure_object["source_sha256"] = injected_sha256
+    manifest_path.write_text(
+        json.dumps(mutated_manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    observed_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert observed_sha256 != artifact.manifest_sha256
+    assert artifact_plan.digest() == planned_identity
+
+    with pytest.raises(
+        ValueError,
+        match="external native artifact manifest changed after plan validation",
+    ) as exc_info:
+        cli._materialize_import_plan(
+            prepared_module_graph=prepared,
+            module_reasons=module_reasons,
+            stdlib_root=cli_module_resolution._stdlib_root_path(),
+            artifacts_root=tmp_path,
+            entry_module="demo",
+            diagnostics_enabled=False,
+        )
+
+    message = str(exc_info.value)
+    assert artifact.manifest_sha256 in message
+    assert observed_sha256 in message
+    assert str(manifest_path.resolve()) in message
+    assert "Rebuild the native artifact plan before module discovery" in message
 
 
 def test_native_support_source_stdlib_imports_join_compile_closure(
@@ -4204,12 +4372,43 @@ def _libmolt_source_manifest_fields(
         if artifact_name.endswith(".molt.wasm")
         else "static_archive"
     )
-    return {
+    wasm_artifact_kind = resolved_artifact_kind == "wasm_relocatable_object"
+    if wasm_artifact_kind:
+        import_interface = wasm_artifact.parse_wasm_import_interface(artifact_bytes)
+        linking_symbols = parse_wasm_linking_symbols(
+            artifact_bytes,
+            wasm_imports=import_interface.imports,
+        )
+        defined_symbols = sorted(linking_symbols.defined_names)
+        undefined_symbols = sorted(linking_symbols.undefined_names)
+        wasm_imports = list(
+            source_extension_wasm_import_receipts(import_interface.imports)
+        )
+        runtime_symbols = list(
+            wasm_static_link_runtime_symbols_for_imports(
+                (
+                    *undefined_symbols,
+                    *(receipt["name"] for receipt in wasm_imports),
+                ),
+                typed_imports=(
+                    (receipt["module"], receipt["name"]) for receipt in wasm_imports
+                ),
+            )
+        )
+        symbol_authority = SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
+    else:
+        defined_symbols = [init_symbol]
+        undefined_symbols = []
+        wasm_imports = None
+        runtime_symbols = []
+        symbol_authority = SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY
+    manifest: dict[str, Any] = {
         "schema_version": 1,
         "module": module,
         "molt_c_api_version": "1",
         "abi_tag": "molt_abi1",
         "python_tag": "py3",
+        "target_python": "py312",
         "target_triple": resolved_target_triple,
         "platform_tag": cli._wheel_token(resolved_target_triple),
         "capabilities": ["module.extension.exec"],
@@ -4226,33 +4425,62 @@ def _libmolt_source_manifest_fields(
         },
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": init_symbol,
             "init_symbol_owner": object_name,
-            "closure_sha256": digest,
-            "runtime_symbols": [],
+            "defined_symbols": defined_symbols,
+            "undefined_symbols": undefined_symbols,
+            "runtime_symbols": runtime_symbols,
+            "required_c_api_symbols": [],
             "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            **({"wasm_imports": wasm_imports} if wasm_imports is not None else {}),
             "objects": [
                 {
+                    "source": artifact_name,
                     "object": object_name,
                     "source_sha256": digest,
                     "object_sha256": digest,
-                    "defined_symbols": [init_symbol],
-                    "undefined_symbols": [],
+                    "defined_symbols": defined_symbols,
+                    "undefined_symbols": undefined_symbols,
+                    "compile_command": ["fixture-compiler", "-c", artifact_name],
+                    "symbol_authority": symbol_authority,
+                    **(
+                        {"symbol_command": ["fixture-nm"]}
+                        if not wasm_artifact_kind
+                        else {}
+                    ),
+                    "dependencies": [],
                     "required_c_api_symbols": [],
                     "required_capsules": [],
                 }
             ],
         },
+        "build": {},
     }
+    finalize_source_extension_object_closure(manifest)
+    return manifest
 
 
 def _apply_manifest_overrides(
     manifest: dict[str, Any],
     manifest_overrides: dict[str, Any] | None,
+    *,
+    intentionally_invalid_object_closure: bool = False,
 ) -> None:
     if not manifest_overrides:
         return
+    initial_closure = manifest.get("object_closure")
+    initial_objects = (
+        initial_closure.get("objects") if isinstance(initial_closure, dict) else None
+    )
+    initial_object = (
+        dict(initial_objects[0])
+        if isinstance(initial_objects, list)
+        and initial_objects
+        and isinstance(initial_objects[0], dict)
+        else {}
+    )
     for key, value in manifest_overrides.items():
         if (
             key == "object_closure"
@@ -4265,6 +4493,94 @@ def _apply_manifest_overrides(
     link_requirements = manifest.get("link_requirements")
     if isinstance(link_requirements, dict):
         link_requirements["target_triple"] = manifest["target_triple"]
+    sources = manifest.get("sources")
+    closure = manifest.get("object_closure")
+    objects = closure.get("objects") if isinstance(closure, dict) else None
+    if (
+        isinstance(sources, list)
+        and isinstance(objects, list)
+        and len(sources) == len(objects)
+    ):
+        for source, item in zip(sources, objects, strict=True):
+            if isinstance(source, str) and isinstance(item, dict):
+                item["source"] = source
+                source_path = Path(source)
+                if source_path.is_file():
+                    item["source_sha256"] = hashlib.sha256(
+                        source_path.read_bytes()
+                    ).hexdigest()
+    if intentionally_invalid_object_closure:
+        return
+    closure_overrides = manifest_overrides.get("object_closure")
+    if isinstance(objects, list):
+        for index, item in enumerate(objects):
+            if not isinstance(item, dict):
+                continue
+            default_source = str(initial_object.get("source", "fixture-source.c"))
+            source = item.setdefault(
+                "source",
+                default_source if index == 0 else f"{index}_{default_source}",
+            )
+            item.setdefault("source_sha256", initial_object.get("source_sha256"))
+            item.setdefault("object_sha256", initial_object.get("object_sha256"))
+            item.setdefault(
+                "defined_symbols", list(initial_object.get("defined_symbols", ()))
+            )
+            item.setdefault(
+                "undefined_symbols", list(initial_object.get("undefined_symbols", ()))
+            )
+            item.setdefault("compile_command", ["fixture-compiler", "-c", source])
+            item.setdefault("symbol_authority", initial_object.get("symbol_authority"))
+            item.setdefault("dependencies", [])
+            item.setdefault("required_c_api_symbols", [])
+            item.setdefault("required_capsules", [])
+            item.setdefault("project_generated_c_api_symbols", [])
+            if item.get("symbol_authority") == SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY:
+                item.setdefault("symbol_command", ["fixture-nm"])
+            else:
+                item.pop("symbol_command", None)
+        if isinstance(closure, dict):
+            root_symbol = closure.get("root_symbol")
+            root_owners = [
+                item.get("object")
+                for item in objects
+                if isinstance(item, dict)
+                and root_symbol in item.get("defined_symbols", ())
+            ]
+            if len(root_owners) == 1:
+                closure["init_symbol_owner"] = root_owners[0]
+    if (
+        isinstance(closure_overrides, dict)
+        and isinstance(objects, list)
+        and len(objects) == 1
+        and isinstance(objects[0], dict)
+    ):
+        for field in (
+            "defined_symbols",
+            "undefined_symbols",
+            "required_c_api_symbols",
+            "required_capsules",
+            "project_generated_c_api_symbols",
+        ):
+            values = closure_overrides.get(field)
+            if isinstance(values, list):
+                objects[0][field] = sorted(set(values))
+    if isinstance(closure, dict) and isinstance(objects, list):
+        for field in (
+            "required_c_api_symbols",
+            "required_capsules",
+            "project_generated_c_api_symbols",
+        ):
+            closure[field] = sorted(
+                {
+                    value
+                    for item in objects
+                    if isinstance(item, dict)
+                    for value in item.get(field, [])
+                    if isinstance(value, str) and value
+                }
+            )
+    finalize_source_extension_object_closure(manifest)
 
 
 def _record_static_archive_symbol_facts(
@@ -4273,15 +4589,17 @@ def _record_static_archive_symbol_facts(
 ) -> None:
     if manifest.get("artifact_kind") != "static_archive":
         return
+    defined = frozenset(
+        cli_external_native._manifest_object_closure_defined_symbols(manifest)
+    )
     _STATIC_ARCHIVE_SYMBOL_FACTS[artifact_path.resolve()] = (
-        frozenset(
-            cli_external_native._manifest_object_closure_defined_symbols(manifest)
-        ),
-        frozenset(
-            cli_external_native._manifest_object_closure_external_undefined_symbols(
-                manifest
-            )
-        ),
+        BACKEND_CACHE._NativeGlobalSymbolFacts(
+            defined=defined,
+            undefined=frozenset(
+                cli_external_native._manifest_object_closure_undefined_symbols(manifest)
+            ),
+            defined_functions=defined,
+        )
     )
 
 
@@ -4294,6 +4612,7 @@ def _write_external_native_package(
     write_manifest: bool = True,
     checksum_override: str | None = None,
     manifest_overrides: dict[str, Any] | None = None,
+    intentionally_invalid_object_closure: bool = False,
     shim_source: str | None = None,
 ) -> tuple[Path, Path, Path]:
     external_root = tmp_path / "site"
@@ -4321,7 +4640,11 @@ def _write_external_native_package(
         )
         if checksum_override is not None:
             manifest["extension_sha256"] = checksum_override
-        _apply_manifest_overrides(manifest, manifest_overrides)
+        _apply_manifest_overrides(
+            manifest,
+            manifest_overrides,
+            intentionally_invalid_object_closure=(intentionally_invalid_object_closure),
+        )
         _record_static_archive_symbol_facts(artifact_path, manifest)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     if shim_source is not None:
@@ -4340,6 +4663,7 @@ def _write_external_native_artifact(
     artifact_name: str | None = None,
     artifact_bytes: bytes | None = None,
     manifest_overrides: dict[str, Any] | None = None,
+    intentionally_invalid_object_closure: bool = False,
 ) -> tuple[Path, Path]:
     package_dir = external_root.joinpath(*package.split("."))
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -4369,7 +4693,11 @@ def _write_external_native_artifact(
         artifact_name=artifact_path.name,
         artifact_bytes=payload,
     )
-    _apply_manifest_overrides(manifest, manifest_overrides)
+    _apply_manifest_overrides(
+        manifest,
+        manifest_overrides,
+        intentionally_invalid_object_closure=intentionally_invalid_object_closure,
+    )
     _record_static_archive_symbol_facts(artifact_path, manifest)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return artifact_path, manifest_path
@@ -4379,14 +4707,18 @@ def _wasm_exporting_i64_unary_symbol(
     symbol: str,
     *,
     imports: tuple[str, ...] = (),
+    memory_imports: tuple[str, ...] = (),
 ) -> bytes:
-    return _wasm_exporting_i64_unary_symbols((symbol,), imports=imports)
+    return _wasm_exporting_i64_unary_symbols(
+        (symbol,), imports=imports, memory_imports=memory_imports
+    )
 
 
 def _wasm_exporting_i64_unary_symbols(
     symbols: Sequence[str],
     *,
     imports: tuple[str, ...] = (),
+    memory_imports: tuple[str, ...] = (),
 ) -> bytes:
     if not symbols:
         raise ValueError("at least one exported symbol is required")
@@ -4407,15 +4739,67 @@ def _wasm_exporting_i64_unary_symbols(
     def section(section_id: int, payload: bytes) -> bytes:
         return bytes([section_id]) + uleb(len(payload)) + payload
 
-    type_section = uleb(1) + b"\x60" + uleb(1) + b"\x7e" + uleb(1) + b"\x7e"
+    value_types = {"i32": b"\x7f", "i64": b"\x7e", "f32": b"\x7d", "f64": b"\x7c"}
+
+    def expected_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        module = WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
+            name, ("env", "function")
+        )[0]
+        external = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get((module, name))
+        if external is not None:
+            result = str(external["result"])
+            return (
+                tuple(str(value) for value in external["params"]),
+                () if result == "nil" else tuple(result.split(", ")),
+            )
+        runtime = wasm_import_signature(name)
+        return runtime if runtime is not None else (("i64",), ("i64",))
+
+    def type_entry(signature: tuple[tuple[str, ...], tuple[str, ...]]) -> bytes:
+        params, results = signature
+        return (
+            b"\x60"
+            + uleb(len(params))
+            + b"".join(value_types[value] for value in params)
+            + uleb(len(results))
+            + b"".join(value_types[value] for value in results)
+        )
+
+    defined_signature = (("i64",), ("i64",))
+    type_signatures = [defined_signature]
+    import_signatures = [expected_signature(name) for name in imports]
+    for signature in import_signatures:
+        if signature not in type_signatures:
+            type_signatures.append(signature)
+    type_section = uleb(len(type_signatures)) + b"".join(
+        type_entry(signature) for signature in type_signatures
+    )
     import_section = b""
-    if imports:
+    import_count = len(imports) + len(memory_imports)
+    if import_count:
         import_section = section(
             2,
-            uleb(len(imports))
+            uleb(import_count)
             + b"".join(
-                wasm_string("env") + wasm_string(import_name) + b"\x00" + uleb(0)
-                for import_name in imports
+                wasm_string(
+                    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
+                        import_name, ("env", "function")
+                    )[0]
+                )
+                + wasm_string(import_name)
+                + b"\x00"
+                + uleb(type_signatures.index(signature))
+                for import_name, signature in zip(
+                    imports, import_signatures, strict=True
+                )
+            )
+            + b"".join(
+                wasm_string("env")
+                + wasm_string(import_name)
+                + b"\x02"
+                + b"\x00"
+                + uleb(1)
+                for import_name in memory_imports
             ),
         )
     function_section = uleb(len(symbols)) + (uleb(0) * len(symbols))
@@ -4425,13 +4809,44 @@ def _wasm_exporting_i64_unary_symbols(
     )
     body = uleb(0) + b"\x42\x00\x0b"
     code_section = uleb(len(symbols)) + (uleb(len(body)) + body) * len(symbols)
+    linking_entries = [
+        b"\x00" + uleb(0) + uleb(len(imports) + index) + wasm_string(symbol)
+        for index, symbol in enumerate(symbols)
+    ]
+    linking_entries.extend(
+        b"\x00" + uleb(0x50) + uleb(index) + wasm_string(import_name)
+        for index, import_name in enumerate(imports)
+    )
+    linking_symbol_table = uleb(len(linking_entries)) + b"".join(linking_entries)
+    linking_payload = (
+        wasm_string("linking")
+        + uleb(2)
+        + b"\x08"
+        + uleb(len(linking_symbol_table))
+        + linking_symbol_table
+    )
     return (
         b"\x00asm\x01\x00\x00\x00"
+        + section(0, linking_payload)
         + section(1, type_section)
         + import_section
         + section(3, function_section)
         + section(7, export_section)
         + section(10, code_section)
+    )
+
+
+def _wasm_extension_artifact(
+    module: str,
+    *symbols: str,
+    imports: tuple[str, ...] = (),
+    memory_imports: tuple[str, ...] = (),
+) -> bytes:
+    init_symbol = f"PyInit_{module.rsplit('.', 1)[-1]}"
+    return _wasm_exporting_i64_unary_symbols(
+        tuple(dict.fromkeys((init_symbol, *symbols))),
+        imports=imports,
+        memory_imports=memory_imports,
     )
 
 
@@ -4499,6 +4914,126 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
         ]
         == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     )
+
+
+@pytest.mark.parametrize("masquerade", ["init", "direct"])
+def test_native_archive_data_symbol_cannot_satisfy_callable_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    masquerade: str,
+) -> None:
+    artifact_path = tmp_path / "nativepkg" / "_native.molt.a"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_bytes = b"!<arch>\ndata-symbol-fixture"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest = _libmolt_source_manifest_fields(
+        module="nativepkg._native",
+        artifact_name=artifact_path.name,
+        artifact_bytes=artifact_bytes,
+    )
+    closure = manifest["object_closure"]
+    assert isinstance(closure, dict)
+    objects = closure["objects"]
+    assert isinstance(objects, list) and isinstance(objects[0], dict)
+    defined = {"PyInit__native"}
+    if masquerade == "direct":
+        defined.add("invoke")
+    closure["defined_symbols"] = sorted(defined)
+    objects[0]["defined_symbols"] = sorted(defined)
+    finalize_source_extension_object_closure(manifest)
+    function_symbols = frozenset(
+        {"PyInit__native"} if masquerade == "direct" else set()
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_native_archive_global_symbol_facts",
+        lambda *_args, **_kwargs: BACKEND_CACHE._NativeGlobalSymbolFacts(
+            defined=frozenset(defined),
+            undefined=frozenset(),
+            defined_functions=function_symbols,
+        ),
+    )
+
+    errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
+        artifact_path=artifact_path,
+        manifest=manifest,
+        required_function_exports=({"invoke"} if masquerade == "direct" else ()),
+    )
+
+    expected = (
+        "direct_symbol callable export(s)"
+        if masquerade == "direct"
+        else "root_symbol 'PyInit__native' is not a defined function"
+    )
+    assert any(expected in error for error in errors)
+
+
+def test_wasm_data_symbol_cannot_satisfy_init_function_custody(
+    tmp_path: Path,
+) -> None:
+    artifact_path = tmp_path / "nativepkg" / "_native.molt.wasm"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_bytes = _wasm_extension_artifact("nativepkg._native")
+    artifact_path.write_bytes(artifact_bytes)
+    manifest = _libmolt_source_manifest_fields(
+        module="nativepkg._native",
+        artifact_name=artifact_path.name,
+        artifact_bytes=artifact_bytes,
+        target_triple="wasm32-wasip1",
+        artifact_kind="wasm_relocatable_object",
+    )
+    inspection = cli_source_extensions._SourceExtensionArtifactSymbolInspection(
+        defined_symbols=frozenset({"PyInit__native"}),
+        undefined_symbols=frozenset(),
+        defined_function_symbols=frozenset(),
+        symbol_authority=SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+        wasm_imports=(),
+        wasm_function_import_signatures=(),
+        wasm_function_exports=(),
+        artifact_bytes=artifact_bytes,
+    )
+
+    errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
+        artifact_path=artifact_path,
+        manifest=manifest,
+        inspection=inspection,
+    )
+
+    assert any(
+        "root_symbol 'PyInit__native' is not a defined function" in error
+        for error in errors
+    )
+
+
+def test_external_native_plan_rejects_manifest_mutation_after_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    original_loader = cli_external_native._load_external_artifact_manifest
+
+    def mutate_after_snapshot(**kwargs: object):
+        snapshot, errors = original_loader(**kwargs)
+        assert snapshot is not None
+        manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+        return snapshot, errors
+
+    monkeypatch.setattr(
+        cli_external_native,
+        "_load_external_artifact_manifest",
+        mutate_after_snapshot,
+    )
+
+    plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="native",
+    )
+
+    assert plan is None
+    assert any("manifest changed while its artifact plan" in error for error in errors)
 
 
 def test_external_static_package_wasm_artifact_plan_is_manifest_led(
@@ -4659,14 +5194,7 @@ def test_external_package_artifact_specific_manifests_allow_same_directory_modul
             module=f"nativepkg.ndimage.{module}",
             artifact_name=artifact_path.name,
             artifact_bytes=payload,
-        )
-        manifest.update(
-            {
-                "target_triple": "wasm32-wasip1",
-                "platform_tag": "wasm32_wasip1",
-                "runtime_linkage": "static_link",
-                "artifact_kind": "wasm_relocatable_object",
-            }
+            target_triple="wasm32-wasip1",
         )
         artifact_path.with_name(
             artifact_path.name + ".extension_manifest.json"
@@ -4754,7 +5282,9 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(native_symbol),
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image", native_symbol
+        ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -5073,6 +5603,8 @@ def test_external_native_artifact_plan_rejects_duplicate_module_roots(
         ),
         encoding="utf-8",
     )
+    source_support_path = source_root / "nativepkg" / "ndimage" / "_filters.py"
+    source_support_path.write_bytes(support_path.read_bytes())
     _write_external_native_artifact(
         source_root,
         package="nativepkg",
@@ -5084,11 +5616,18 @@ def test_external_native_artifact_plan_rejects_duplicate_module_roots(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "sources": [str(stale_source)],
+            "support_files": [
+                {
+                    "path": "nativepkg/ndimage/_filters.py",
+                    "sha256": support_sha,
+                }
+            ],
             "callable_exports": [
                 {
                     "module": "nativepkg.ndimage",
                     "name": "gaussian_filter",
                     "binding": "module_attr",
+                    "provider_module": "nativepkg.ndimage._filters",
                     "abi": "molt.object_callargs_v1",
                 }
             ],
@@ -5311,7 +5850,9 @@ def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol("molt_nativepkg_other"),
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image", "molt_nativepkg_other"
+        ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -5338,11 +5879,10 @@ def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
 
     assert plan is None
     assert any(
-        "direct_symbol callable exports are absent from "
-        "_nd_image.molt.wasm function exports: "
+        "direct_symbol callable export(s) are absent from artifact function exports: "
         "molt_nativepkg_ndimage_distance_transform_edt" in error
         for error in errors
-    )
+    ), errors
 
 
 def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_closure(
@@ -5355,9 +5895,8 @@ def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_c
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.a",
         artifact_bytes=b"archive-bytes",
+        intentionally_invalid_object_closure=True,
         manifest_overrides={
-            "target_triple": "wasm32-wasip1",
-            "platform_tag": "wasm32_wasip1",
             "runtime_linkage": "static_link",
             "artifact_kind": "static_archive",
             "object_closure": {"defined_symbols": [], "objects": []},
@@ -5376,16 +5915,15 @@ def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_c
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target="native",
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
     assert plan is None
     assert any(
-        "static_archive direct_symbol callable exports require "
-        "object_closure.defined_symbols" in error
+        "object_closure is invalid: extension object_closure.objects is empty" in error
         for error in errors
-    )
+    ), errors
 
 
 def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
@@ -5402,7 +5940,7 @@ def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
         manifest_overrides={
             "runtime_linkage": "static_link",
             "artifact_kind": "static_archive",
-            "object_closure": {"defined_symbols": [native_symbol]},
+            "object_closure": {"defined_symbols": ["PyInit__nd_image", native_symbol]},
             "callable_exports": [
                 {
                     "module": "nativepkg.ndimage",
@@ -5473,7 +6011,8 @@ def test_external_native_artifact_plan_records_c_api_symbol_board(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("PyLong_FromLong",),
         ),
@@ -5504,9 +6043,9 @@ def test_external_native_artifact_plan_records_c_api_symbol_board(
     }
     assert board["PyLong_FromLong"] == {
         "symbol": "PyLong_FromLong",
-        "status": "runtime_backed",
+        "status": "cpython_abi_link",
         "primitive_class": "numeric_scalars",
-        "source": "required_c_api_symbols+undefined_symbols",
+        "source": "required_c_api_symbols+runtime_symbols+undefined_symbols",
     }
     assert board["PyArray_NDIM"] == {
         "symbol": "PyArray_NDIM",
@@ -5562,7 +6101,9 @@ def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol("molt_nativepkg_placeholder"),
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.core._multiarray_umath", "molt_nativepkg_placeholder"
+        ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -5613,50 +6154,6 @@ def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
     }
 
 
-def test_external_native_artifact_plan_records_imported_numpy_c_api_package_native(
-    tmp_path: Path,
-) -> None:
-    external_root = tmp_path / "site"
-    _write_external_native_artifact(
-        external_root,
-        package="nativepkg",
-        relative_module="core._multiarray_umath",
-        artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
-            "molt_nativepkg_placeholder",
-            imports=("npy_cabs",),
-        ),
-        manifest_overrides={
-            "target_triple": "wasm32-wasip1",
-            "platform_tag": "wasm32_wasip1",
-            "runtime_linkage": "static_link",
-            "artifact_kind": "wasm_relocatable_object",
-            "object_closure": {
-                "runtime_symbols": ["npy_cabs"],
-                "undefined_symbols": ["npy_cabs"],
-            },
-        },
-    )
-
-    plan, errors = cli._resolve_external_package_native_artifact_plan(
-        external_module_roots=(external_root,),
-        admitted_packages={"nativepkg"},
-        target="wasm",
-        required_modules={"nativepkg.core._multiarray_umath"},
-    )
-
-    assert errors == []
-    assert plan is not None
-    assert [symbol.digest_payload() for symbol in plan.artifacts[0].c_api_symbols] == [
-        {
-            "symbol": "npy_cabs",
-            "status": "package_native",
-            "primitive_class": "numpy_c_api",
-            "source": "runtime_symbols+undefined_symbols",
-        }
-    ]
-
-
 def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
     tmp_path: Path,
 ) -> None:
@@ -5666,7 +6163,8 @@ def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.core._multiarray_umath",
             "molt_nativepkg_placeholder",
             imports=("PyOS_strtol",),
         ),
@@ -5711,7 +6209,8 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("PyLong_FromLong",),
         ),
@@ -5722,7 +6221,8 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
                 "required_c_api_symbols": ["PyLong_FromLong"],
-                "undefined_symbols": [],
+                "undefined_symbols": ["PyLong_FromLong"],
+                "wasm_imports": [],
             },
         },
     )
@@ -5736,23 +6236,29 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
 
     assert plan is None
     assert any(
-        "_nd_image.molt.wasm imports symbols absent from "
-        "object_closure.undefined_symbols: PyLong_FromLong" in error
+        "_nd_image.molt.wasm import records absent from "
+        "object_closure.wasm_imports: [('env', 'PyLong_FromLong', 'function')]" in error
         for error in errors
-    )
+    ), errors
 
 
 def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
+    entry_source = tmp_path / "sources" / "entry.c"
+    filters_source = tmp_path / "sources" / "filters.c"
+    entry_source.parent.mkdir()
+    entry_source.write_text("int PyInit__nd_image(void) { return 0; }\n")
+    filters_source.write_text("int NI_Correlate(void) { return 0; }\n")
     _write_external_native_artifact(
         external_root,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
-            "molt_nativepkg_placeholder",
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
+            "NI_Correlate",
             imports=("PyLong_FromLong",),
         ),
         manifest_overrides={
@@ -5764,6 +6270,10 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
                 "required_c_api_symbols": ["PyLong_FromLong"],
                 "objects": [
                     {
+                        "source": str(entry_source),
+                        "source_sha256": hashlib.sha256(
+                            entry_source.read_bytes()
+                        ).hexdigest(),
                         "object": "0_entry.o",
                         "defined_symbols": ["PyInit__nd_image"],
                         "undefined_symbols": [
@@ -5773,6 +6283,10 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
                         "required_capsules": [],
                     },
                     {
+                        "source": str(filters_source),
+                        "source_sha256": hashlib.sha256(
+                            filters_source.read_bytes()
+                        ).hexdigest(),
                         "object": "1_filters.o",
                         "defined_symbols": ["NI_Correlate"],
                         "undefined_symbols": [],
@@ -5806,7 +6320,9 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol("molt_nativepkg_placeholder"),
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image", "molt_nativepkg_placeholder"
+        ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -5828,10 +6344,11 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
 
     assert plan is None
     assert any(
-        "object_closure.undefined_symbols names symbols absent from "
-        "_nd_image.molt.wasm imports: PyLong_FromLong" in error
+        "_nd_image.molt.wasm undefined-symbol closure differs from "
+        "object_closure.undefined_symbols; missing=[]; stale=['PyLong_FromLong']"
+        in error
         for error in errors
-    )
+    ), errors
 
 
 def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
@@ -5843,7 +6360,8 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("molt_alloc",),
         ),
@@ -5885,7 +6403,7 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
     monkeypatch.setattr(
         cli_external_native,
         "wasm_external_link_provider_symbol_classes",
-        lambda: {"malloc": "wasm_libc_link_import"},
+        lambda _target_triple=None: {"malloc": "wasm_libc_link_import"},
     )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
@@ -5893,7 +6411,8 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("malloc",),
         ),
@@ -5903,7 +6422,6 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
-                "runtime_symbols": ["malloc"],
                 "undefined_symbols": ["malloc"],
             },
         },
@@ -5923,7 +6441,7 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
             "symbol": "malloc",
             "status": "external_link",
             "primitive_class": "wasm_libc_link_import",
-            "source": "runtime_symbols+undefined_symbols",
+            "source": "undefined_symbols",
         }
     ]
 
@@ -5935,7 +6453,9 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
     monkeypatch.setattr(
         cli_external_native,
         "wasm_external_link_provider_symbol_classes",
-        lambda: {"_ZNSt11logic_errorC2EPKc": "wasm_libcxx_link_import"},
+        lambda _target_triple=None: {
+            "_ZNSt11logic_errorC2EPKc": "wasm_libcxx_link_import"
+        },
     )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
@@ -5943,7 +6463,8 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.core._multiarray_umath",
             "molt_nativepkg_placeholder",
             imports=("_ZNSt11logic_errorC2EPKc",),
         ),
@@ -5953,7 +6474,6 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
-                "runtime_symbols": ["_ZNSt11logic_errorC2EPKc"],
                 "undefined_symbols": ["_ZNSt11logic_errorC2EPKc"],
             },
         },
@@ -5973,7 +6493,7 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
             "symbol": "_ZNSt11logic_errorC2EPKc",
             "status": "external_link",
             "primitive_class": "wasm_libcxx_link_import",
-            "source": "runtime_symbols+undefined_symbols",
+            "source": "undefined_symbols",
         }
     ]
 
@@ -5987,7 +6507,8 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.core._multiarray_umath",
             "molt_nativepkg_placeholder",
             imports=("molt_capi_semantic_type", "molt_cpython_abi_date_from_date"),
         ),
@@ -6043,7 +6564,8 @@ def test_external_native_artifact_plan_rejects_package_native_symbol_without_own
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.core._multiarray_umath",
             "molt_nativepkg_placeholder",
             imports=("BOOL_absolute",),
         ),
@@ -6090,7 +6612,8 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("molt_alloc",),
         ),
@@ -6100,6 +6623,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
+                "runtime_symbols": [],
                 "undefined_symbols": ["molt_alloc"],
             },
         },
@@ -6129,7 +6653,8 @@ def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("molt_future_magic",),
         ),
@@ -6255,7 +6780,8 @@ def test_external_native_artifact_plan_rejects_undefined_numpy_c_api_symbol(
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
             imports=("PyArray_NDIM",),
         ),
@@ -6400,6 +6926,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
             "platform_tag": "wasm32_wasip1",
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["scipy.ndimage"],
         },
     )
     scipy_dir = external_root / "scipy"
@@ -6518,6 +7045,7 @@ def test_external_static_package_native_artifact_requires_sidecar_manifest(
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        artifact_name="_native.pyd",
         write_manifest=False,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -6577,6 +7105,31 @@ def test_external_static_package_native_artifact_rejects_module_mismatch(
     assert "does not match native artifact module" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("artifact_target", ["py313", "py314"])
+def test_external_native_artifact_plan_rejects_target_python_mismatch(
+    tmp_path: Path,
+    artifact_target: str,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        manifest_overrides={"target_python": artifact_target},
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="native",
+        target_python=TargetPythonVersion(3, 12, 0),
+        required_modules={"nativepkg._native"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert "native artifact target Python" in errors[0]
+    assert repr(artifact_target) in errors[0]
+    assert repr("py312") in errors[0]
+
+
 def test_external_static_package_native_artifact_rejects_extension_path_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6584,7 +7137,8 @@ def test_external_static_package_native_artifact_rejects_extension_path_mismatch
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
-        manifest_overrides={"extension": "nested/_native.a"},
+        artifact_name="_native.so",
+        manifest_overrides={"extension": "nested/_native.so"},
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
 
@@ -6604,7 +7158,8 @@ def test_external_static_package_native_artifact_rejects_invalid_manifest_json(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, _artifact_path, manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        artifact_name="_native.so",
     )
     manifest_path.write_text("{", encoding="utf-8")
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -6638,6 +7193,7 @@ def test_external_native_artifact_plan_filters_to_required_modules(
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        artifact_name="_native.pyd",
         write_manifest=False,
     )
 
@@ -6742,6 +7298,7 @@ def test_external_static_package_admission_can_defer_native_artifact_validation(
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        artifact_name="_native.so",
         write_manifest=False,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -7112,6 +7669,8 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
         for name, _abi in operations
     )
     for relative_module, operations in provider_operations.items():
+        module_leaf = relative_module.rsplit(".", 1)[-1]
+        direct_symbols = [f"molt_nativepkg_ndimage_{name}" for name, _abi in operations]
         _write_external_native_artifact(
             external_root,
             package="nativepkg",
@@ -7127,6 +7686,12 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
                     }
                     for name, abi in operations
                 ],
+                "object_closure": {
+                    "defined_symbols": [
+                        f"PyInit_{module_leaf}",
+                        *direct_symbols,
+                    ]
+                },
             },
         )
 
@@ -7276,7 +7841,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
             package="nativepkg",
             relative_module=relative_module,
             artifact_name=f"{module_tail}.molt.wasm",
-            artifact_bytes=_wasm_exporting_i64_unary_symbols(symbols),
+            artifact_bytes=_wasm_extension_artifact(relative_module, *symbols),
             manifest_overrides={
                 "target_triple": "wasm32-wasip1",
                 "platform_tag": "wasm32_wasip1",
@@ -8186,6 +8751,13 @@ def test_module_graph_policy_digest_includes_native_artifact_plan(
     manifest["extension_sha256"] = hashlib.sha256(
         artifact_path.read_bytes()
     ).hexdigest()
+    object_closure = manifest["object_closure"]
+    assert isinstance(object_closure, dict)
+    objects = object_closure["objects"]
+    assert isinstance(objects, list) and isinstance(objects[0], dict)
+    objects[0]["source_sha256"] = manifest["extension_sha256"]
+    objects[0]["object_sha256"] = manifest["extension_sha256"]
+    finalize_source_extension_object_closure(manifest)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     second_policy, second_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -19813,7 +20385,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     # Shared-mode (reloc=False) export validation routes through the
     # split-runtime authority.
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_split_runtime_wasm_exports_satisfy",
         lambda path, req: True,
     )
@@ -21346,7 +21918,7 @@ def _install_generated_runtime_export_signatures(
                 or RUNTIME_WASM_VALIDATION.wasm_runtime_import_name(name)
                 or name
             )
-            expected = RUNTIME_WASM_VALIDATION.WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES.get(
+            expected = RUNTIME_WASM_VALIDATION.WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES.get(
                 canonical_name
             )
             if expected is None:

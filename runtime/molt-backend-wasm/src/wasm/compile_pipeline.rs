@@ -77,6 +77,7 @@ impl WasmBackend {
 
     pub fn compile_with_diagnostics(self, ir: SimpleIR) -> WasmCompileOutput {
         let mut ir = ir;
+        let target_info = crate::tir::target_info::TargetInfo::wasm_release_fast();
         crate::apply_profile_order(&mut ir);
         for func_ir in ir
             .functions
@@ -116,7 +117,7 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
-        super::tir_pipeline::run_tir_pipeline(&mut ir);
+        super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info);
 
         // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
         // callargs_push_pos + call_bind) into a single allocation-free
@@ -156,7 +157,9 @@ impl WasmBackend {
             .unwrap_or_default();
         crate::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
         apply_defined_function_ir_pass(&mut ir, crate::eliminate_dead_imports);
-        apply_defined_function_ir_pass(&mut ir, crate::eliminate_dead_ops);
+        apply_defined_function_ir_pass(&mut ir, |defined_ir| {
+            crate::eliminate_dead_ops(defined_ir, &target_info);
+        });
 
         if let Some(config) = crate::should_dump_ir() {
             for func_ir in &ir.functions {

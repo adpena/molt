@@ -259,6 +259,9 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
     let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
     let original_label_to_block = HashMap::from([(99_i64, raise_block), (100_i64, cleanup_block)]);
     let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
+    let trampoline_label_id = |_bid: &BlockId| -> i64 {
+        panic!("guard raise-path fixture must not need a conditional trampoline")
+    };
 
     emit_guard_raise_path(
         raise_block,
@@ -267,6 +270,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         &func,
         &block_param_vars,
         &block_label_id,
+        &trampoline_label_id,
         &HashSet::new(),
         &HashMap::new(),
         &original_label_to_block,

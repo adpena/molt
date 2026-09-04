@@ -4363,6 +4363,7 @@ mod tests {
     }
 
     unsafe extern "C" fn pending_call_test_runtime_type_error(_arg: *mut c_void) -> c_int {
+        PENDING_CALL_TEST_CALLBACKS.fetch_add(1, AtomicOrdering::Relaxed);
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::builtins::exceptions::raise_exception::<u64>(
                 _py,
@@ -5725,6 +5726,60 @@ mod tests {
             pending_exception_message_for_assertion(),
             "exact runtime pending-call TypeError"
         );
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(attachment) };
+    }
+
+    #[test]
+    fn fused_finally_poll_services_callback_and_returns_owned_pending_exception() {
+        let _test_guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        PENDING_CALL_TEST_CALLBACKS.store(0, AtomicOrdering::Relaxed);
+        let attachment = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(pending_call_test_runtime_type_error),
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let exc_bits =
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_last_pending();
+        assert_eq!(PENDING_CALL_TEST_CALLBACKS.load(AtomicOrdering::Relaxed), 1);
+        assert!(
+            !MoltObject::from_bits(exc_bits).is_none(),
+            "the fused observer must return the callback exception object"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            ptr::null_mut(),
+            "the runtime safepoint must consume the C exception indicator"
+        );
+
+        with_gil(|_py| {
+            assert!(crate::exception_pending(&_py));
+            let exc_ptr = MoltObject::from_bits(exc_bits)
+                .as_ptr()
+                .expect("fused observer returned a heap exception");
+            assert_eq!(
+                crate::format_exception_message(&_py, exc_ptr),
+                "exact runtime pending-call TypeError"
+            );
+
+            crate::clear_exception(&_py);
+            assert!(
+                !crate::exception_pending(&_py),
+                "finally arbitration owns whether the pending slot is cleared"
+            );
+            assert_eq!(
+                crate::format_exception_message(&_py, exc_ptr),
+                "exact runtime pending-call TypeError",
+                "the fused result must own the exception independently of the pending slot"
+            );
+            crate::dec_ref_bits(&_py, exc_bits);
+        });
         unsafe { molt_cpython_abi::api::object::PyGILState_Release(attachment) };
     }
 

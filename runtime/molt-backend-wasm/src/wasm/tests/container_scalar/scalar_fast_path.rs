@@ -74,7 +74,7 @@ fn scalar_fast_path_ignores_transport_hints() {
     add.fast_int = Some(true);
     add.type_hint = Some("int".to_string());
     let func = wasm_test_function("hinted", vec!["lhs", "rhs"], None, vec![add.clone()]);
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &add));
 }
@@ -90,7 +90,7 @@ fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
         Some(vec!["int", "int"]),
         vec![add.clone(), mul.clone(), div.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert!(wasm_scalar_integer_fast_path_for_op(&plan, &add));
     assert!(wasm_scalar_integer_fast_path_for_op(&plan, &mul));
@@ -277,7 +277,7 @@ fn scalar_fast_path_keeps_list_repeat_on_runtime_mul() {
         Some(vec!["bool", "int"]),
         vec![list_new, repeat.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &repeat));
 }

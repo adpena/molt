@@ -236,6 +236,11 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "simpleir_frame_introspection_runtime_symbols must use exact canonical molt_* spellings"
             )
 
+    requirement_storage_bits = data.get("simpleir_runtime_requirement_mask_bits")
+    if requirement_storage_bits not in {8, 16, 32}:
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_mask_bits must be one of 8, 16, or 32"
+        )
     requirement_roles = data.get("simpleir_runtime_requirement_roles", [])
     if not requirement_roles or not all(
         isinstance(row, dict)
@@ -243,10 +248,14 @@ def load_table(table_path: Path = TABLE) -> dict:
         and row["table"]
         and isinstance(row.get("constant"), str)
         and row["constant"]
+        and isinstance(row.get("bit"), int)
+        and not isinstance(row["bit"], bool)
+        and isinstance(row.get("reason"), str)
+        and row["reason"]
         for row in requirement_roles
     ):
         raise OpKindTableError(
-            "simpleir_runtime_requirement_roles requires non-empty table/constant rows"
+            "simpleir_runtime_requirement_roles requires table, constant, bit, and reason rows"
         )
     if len({row["table"] for row in requirement_roles}) != len(requirement_roles):
         raise OpKindTableError(
@@ -256,11 +265,22 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_runtime_requirement_roles has duplicate constants"
         )
-    if len(requirement_roles) > 16:
+    if len({row["bit"] for row in requirement_roles}) != len(requirement_roles):
+        raise OpKindTableError("simpleir_runtime_requirement_roles has duplicate bits")
+    if len(requirement_roles) > requirement_storage_bits:
         raise OpKindTableError(
-            "simpleir_runtime_requirement_roles exceeds u16 storage width"
+            "simpleir_runtime_requirement_roles exceeds "
+            f"u{requirement_storage_bits} storage width"
         )
     for row in requirement_roles:
+        if set(row) != {"table", "constant", "bit", "reason"}:
+            raise OpKindTableError(
+                "runtime requirement role rows require exactly table, constant, bit, and reason"
+            )
+        if not 0 <= row["bit"] < requirement_storage_bits:
+            raise OpKindTableError(
+                "runtime requirement bit must fit the generated storage width"
+            )
         if re.fullmatch(r"[A-Z][A-Z0-9_]*", row["constant"]) is None:
             raise OpKindTableError(
                 "runtime requirement constants must be canonical uppercase identifiers"
@@ -274,6 +294,62 @@ def load_table(table_path: Path = TABLE) -> dict:
             )
     if "FRAME_INTROSPECTION" not in {row["constant"] for row in requirement_roles}:
         raise OpKindTableError("runtime requirement roles must own FRAME_INTROSPECTION")
+
+    requirement_constants = {row["constant"] for row in requirement_roles}
+    target_profiles = data.get("simpleir_target_runtime_profiles", [])
+    expected_targets = {"native", "wasm", "llvm", "luau", "rust", "mlir"}
+    if not isinstance(target_profiles, list):
+        raise OpKindTableError(
+            "simpleir_target_runtime_profiles must be an array of tables"
+        )
+    seen_targets: set[str] = set()
+    seen_rust_variants: set[str] = set()
+    for profile in target_profiles:
+        if not isinstance(profile, dict) or set(profile) != {
+            "target",
+            "rust_variant",
+            "supported",
+        }:
+            raise OpKindTableError(
+                "simpleir_target_runtime_profiles rows require target, rust_variant, and supported"
+            )
+        target = profile.get("target")
+        rust_variant = profile.get("rust_variant")
+        supported = profile.get("supported")
+        if not isinstance(target, str) or target not in expected_targets:
+            raise OpKindTableError(f"unknown target runtime profile {target!r}")
+        if target in seen_targets:
+            raise OpKindTableError(f"duplicate target runtime profile {target!r}")
+        seen_targets.add(target)
+        if (
+            not isinstance(rust_variant, str)
+            or re.fullmatch(r"[A-Z][A-Za-z0-9]*", rust_variant) is None
+        ):
+            raise OpKindTableError(
+                f"target runtime profile {target!r} has invalid Rust variant {rust_variant!r}"
+            )
+        if rust_variant in seen_rust_variants:
+            raise OpKindTableError(f"duplicate target Rust variant {rust_variant!r}")
+        seen_rust_variants.add(rust_variant)
+        if not isinstance(supported, list) or not all(
+            isinstance(constant, str) for constant in supported
+        ):
+            raise OpKindTableError(
+                f"target runtime profile {target!r} supported must be a string list"
+            )
+        if len(set(supported)) != len(supported):
+            raise OpKindTableError(
+                f"target runtime profile {target!r} has duplicate requirements"
+            )
+        if unknown := set(supported) - requirement_constants:
+            raise OpKindTableError(
+                f"target runtime profile {target!r} has unknown requirements {sorted(unknown)}"
+            )
+    if seen_targets != expected_targets:
+        raise OpKindTableError(
+            "target runtime profiles must cover exactly "
+            f"{sorted(expected_targets)}, got {sorted(seen_targets)}"
+        )
 
     qualified_callables = data.get("simpleir_runtime_qualified_callable", [])
     if not isinstance(qualified_callables, list) or not all(
@@ -1872,6 +1948,17 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             "SimpleIR label kinds cannot both define and reference labels: "
             f"{sorted(overlap)}"
         )
+    exception_label_opcodes = set(data.get("exception_label_attr_opcodes", []))
+    exception_label_kinds = {
+        row["canonical"]
+        for row in data.get("kind", [])
+        if row.get("mapper_opcode") in exception_label_opcodes
+    }
+    if missing := exception_label_kinds - label_references:
+        raise OpKindTableError(
+            "SimpleIR exception-label kinds must be verifier label references: "
+            f"{sorted(missing)}"
+        )
     for region, roles in region_roles.items():
         if "start" not in roles or "end" not in roles:
             raise OpKindTableError(
@@ -2182,6 +2269,7 @@ def _validate_terminators(data: dict) -> None:
             f"table-only={sorted(seen - set(_TERMINATOR_VARIANTS))} "
             f"enum-only={sorted(set(_TERMINATOR_VARIANTS) - seen)}"
         )
+
 
 __all__ = [
     name

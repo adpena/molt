@@ -52,6 +52,7 @@ pub(super) fn emit_structured_loop_region(
     rpo: &[BlockId],
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    trampoline_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
     original_to_new_label: &HashMap<i64, i64>,
     label_to_block: &HashMap<i64, BlockId>,
@@ -294,6 +295,7 @@ pub(super) fn emit_structured_loop_region(
                                 func,
                                 block_param_vars,
                                 block_label_id,
+                                trampoline_label_id,
                                 if_inlined_blocks,
                                 original_to_new_label,
                                 label_to_block,
@@ -407,6 +409,7 @@ pub(super) fn emit_structured_loop_region(
                 rpo,
                 block_param_vars,
                 block_label_id,
+                trampoline_label_id,
                 if_inlined_blocks,
                 original_to_new_label,
                 label_to_block,
@@ -542,6 +545,7 @@ pub(super) fn emit_structured_loop_region(
                     body_block,
                     block_param_vars,
                     block_label_id,
+                    trampoline_label_id,
                     &loop_inline_blocks,
                     out,
                     original_has_ret,
@@ -563,6 +567,7 @@ pub(super) fn emit_structured_loop_region(
             func,
             block_param_vars,
             block_label_id,
+            trampoline_label_id,
             &loop_inline_blocks,
             original_to_new_label,
             label_to_block,
@@ -635,6 +640,7 @@ pub(super) fn emit_structured_loop_region(
             body_block,
             block_param_vars,
             block_label_id,
+            trampoline_label_id,
             if_inlined_blocks,
             out,
             original_has_ret,
@@ -655,6 +661,7 @@ pub(super) fn emit_guard_raise_path(
     func: &TirFunction,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    trampoline_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
     original_to_new_label: &HashMap<i64, i64>,
     label_to_block: &HashMap<i64, BlockId>,
@@ -718,6 +725,7 @@ pub(super) fn emit_guard_raise_path(
                     blk,
                     block_param_vars,
                     block_label_id,
+                    trampoline_label_id,
                     if_inlined_blocks,
                     out,
                     original_has_ret,
@@ -730,6 +738,7 @@ pub(super) fn emit_guard_raise_path(
                     blk,
                     block_param_vars,
                     block_label_id,
+                    trampoline_label_id,
                     if_inlined_blocks,
                     out,
                     original_has_ret,
@@ -747,6 +756,7 @@ pub(super) fn emit_guard_raise_path(
                     blk,
                     block_param_vars,
                     block_label_id,
+                    trampoline_label_id,
                     if_inlined_blocks,
                     out,
                     original_has_ret,
@@ -825,6 +835,7 @@ pub(super) fn emit_terminator(
     block: &TirBlock,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    trampoline_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
@@ -893,11 +904,7 @@ pub(super) fn emit_terminator(
             // Then-block = body (continue), else-block = exit (break).
             let needs_trampoline = !then_args.is_empty();
             if needs_trampoline {
-                // Allocate a fresh label for the then-path trampoline.
-                let trampoline_label = {
-                    let max_label = out.iter().filter_map(|op| op.value).max().unwrap_or(0);
-                    max_label + 1000
-                };
+                let trampoline_label = trampoline_label_id(&block.id);
                 out.push(OpIR {
                     kind: "br_if".to_string(),
                     args: Some(vec![value_var(*cond)]),

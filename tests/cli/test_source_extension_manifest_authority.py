@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shutil
 import threading
 from contextlib import contextmanager
@@ -24,6 +25,17 @@ from molt.cli.source_extension_reproducibility import (
     _require_location_neutral,
     _residual_producer_paths,
 )
+from molt.cli.source_extension_object_closure import (
+    SourceExtensionObjectClosureError,
+    finalize_source_extension_object_closure,
+    source_extension_object_closure_digest,
+    validate_source_extension_object_closure_sources,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
 from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
     _source_extension_reproduction_comparison,
@@ -36,6 +48,103 @@ from molt.cli.source_extension_publication import (
 )
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.cli.source_package_seal import SourcePackageSealVerificationError
+
+
+@pytest.mark.parametrize(
+    ("field", "stale_symbol"),
+    (("defined_symbols", "stale_defined"), ("undefined_symbols", "stale_undefined")),
+)
+def test_native_object_closure_rejects_stale_aggregate_symbol_provenance(
+    field: str, stale_symbol: str
+) -> None:
+    manifest: dict[str, Any] = {
+        "module": "pkg._native",
+        "init_symbol": "PyInit__native",
+        "artifact_kind": "static_archive",
+        "object_closure": {
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+            "root_symbol": "PyInit__native",
+            "init_symbol_owner": "native.o",
+            "defined_symbols": ["PyInit__native"],
+            "undefined_symbols": [],
+            "runtime_symbols": [],
+            "required_c_api_symbols": [],
+            "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "objects": [
+                {
+                    "source": "native.c",
+                    "object": "native.o",
+                    "source_sha256": "1" * 64,
+                    "object_sha256": "2" * 64,
+                    "compile_command": ["cc", "-c", "native.c"],
+                    "symbol_command": ["nm", "native.o"],
+                    "symbol_authority": SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+                    "dependencies": [],
+                    "defined_symbols": ["PyInit__native"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                    "project_generated_c_api_symbols": [],
+                }
+            ],
+        },
+        "build": {},
+    }
+    finalize_source_extension_object_closure(manifest)
+    manifest["object_closure"][field].append(stale_symbol)
+
+    with pytest.raises(
+        SourceExtensionObjectClosureError,
+        match=rf"{field} differs from the exact object projection.*{stale_symbol}",
+    ):
+        source_extension_object_closure_digest(
+            manifest["object_closure"], manifest=manifest
+        )
+
+
+@pytest.mark.parametrize("escape_field", ["source", "dependency"])
+def test_published_object_closure_rejects_payload_escape(
+    tmp_path: Path,
+    escape_field: str,
+) -> None:
+    publish_root = tmp_path / "publish"
+    manifest_dir = publish_root / "pkg"
+    provenance = publish_root / "provenance"
+    manifest_dir.mkdir(parents=True)
+    provenance.mkdir()
+    inside_source = provenance / "native.c"
+    inside_source.write_bytes(b"int native(void) { return 0; }\n")
+    outside = tmp_path / ("outside.c" if escape_field == "source" else "outside.h")
+    outside.write_bytes(b"outside\n")
+    source = outside if escape_field == "source" else inside_source
+    dependencies = []
+    if escape_field == "dependency":
+        dependencies.append(
+            {
+                "path": "../../outside.h",
+                "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+            }
+        )
+    closure = {
+        "objects": [
+            {
+                "source": os.path.relpath(source, manifest_dir).replace(os.sep, "/"),
+                "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "dependencies": dependencies,
+            }
+        ]
+    }
+
+    with pytest.raises(
+        SourceExtensionObjectClosureError,
+        match="escapes sealed payload root",
+    ):
+        validate_source_extension_object_closure_sources(
+            closure,
+            manifest_dir=manifest_dir,
+            allowed_root=publish_root,
+        )
 
 
 @contextmanager
@@ -67,10 +176,13 @@ def _recover_publication(
 
 
 def _manifest(object_count: int = 132) -> dict[str, object]:
-    shared_dependencies = [
-        {"path": f"../../inputs/header-{index}.h", "sha256": f"{index:064x}"}
-        for index in range(64)
-    ]
+    shared_dependencies = sorted(
+        (
+            {"path": f"../../inputs/header-{index}.h", "sha256": f"{index:064x}"}
+            for index in range(64)
+        ),
+        key=lambda dependency: (dependency["path"], dependency["sha256"]),
+    )
     objects = []
     for index in range(object_count):
         objects.append(
@@ -79,7 +191,13 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
                 "object": f"{index}.o",
                 "source_sha256": hashlib.sha256(f"source-{index}".encode()).hexdigest(),
                 "object_sha256": hashlib.sha256(f"object-{index}".encode()).hexdigest(),
-                "defined_symbols": ["shared_defined", f"defined_{index}"],
+                "defined_symbols": sorted(
+                    {
+                        "shared_defined",
+                        f"defined_{index}",
+                        *({"PyInit__native"} if index == 0 else set()),
+                    }
+                ),
                 "undefined_symbols": ["shared_undefined"],
                 "compile_command": [
                     "clang",
@@ -96,12 +214,17 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
                     "-Xclang",
                     "-fsemantic-order-matters",
                 ],
-                "symbol_command": ["llvm-nm", "--defined-only"],
+                "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": copy.deepcopy(shared_dependencies),
+                "required_c_api_symbols": [],
+                "required_capsules": [],
+                "project_generated_c_api_symbols": [],
             }
         )
-    return {
+    manifest: dict[str, Any] = {
         "module": "pkg._native",
+        "init_symbol": "PyInit__native",
+        "artifact_kind": "wasm_relocatable_object",
         "target_triple": "wasm32-wasip1",
         "link_requirements": {
             "target_triple": "wasm32-wasip1",
@@ -114,12 +237,23 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
             "include_dirs": ["@source/include", "@source/include", "@build/include"],
         },
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__native",
+            "init_symbol_owner": "0.o",
+            "defined_symbols": sorted(
+                {symbol for item in objects for symbol in item["defined_symbols"]}
+            ),
+            "undefined_symbols": ["shared_undefined"],
             "runtime_symbols": [],
+            "required_c_api_symbols": [],
+            "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "wasm_imports": [],
             "objects": objects,
         },
     }
+    finalize_source_extension_object_closure(manifest)
+    return manifest
 
 
 def test_132_unit_manifest_compaction_reconstructs_exact_commands_and_content() -> None:
@@ -151,10 +285,8 @@ def test_132_unit_manifest_compaction_reconstructs_exact_commands_and_content() 
             _manifest_sequence(compact, current, "compile_command")
             == before["compile_command"]
         )
-        assert (
-            _manifest_sequence(compact, current, "symbol_command")
-            == before["symbol_command"]
-        )
+        assert _manifest_sequence(compact, current, "symbol_command") is None
+        assert current["symbol_authority"] == before["symbol_authority"]
         assert _manifest_dependencies(compact, current) == before["dependencies"]
 
 
@@ -293,6 +425,7 @@ def _write_identity_fixture(
         "schema_version": 1,
         "version": "1.0.0",
         "module": "pkg._native",
+        "init_symbol": "PyInit__native",
         "extension_sha256": artifact_sha256,
         "wheel_sha256": "b" * 64,
         "python_tag": "py3",
@@ -311,10 +444,16 @@ def _write_identity_fixture(
         "source_plan": {"target_selector": "_native"},
         "build": {"producer_root": producer_root},
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__native",
             "init_symbol_owner": "0.o",
+            "defined_symbols": ["PyInit__native"],
+            "undefined_symbols": [],
             "runtime_symbols": [],
+            "required_c_api_symbols": [],
+            "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "wasm_imports": [],
             "objects": [
                 {
                     "source": "../inputs/native.c",
@@ -325,11 +464,15 @@ def _write_identity_fixture(
                     "undefined_symbols": [],
                     "dependencies": [],
                     "compile_command": ["clang", "-c", "../inputs/native.c"],
-                    "symbol_command": ["llvm-nm"],
+                    "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                    "project_generated_c_api_symbols": [],
                 }
             ],
         },
     }
+    finalize_source_extension_object_closure(payload)
     payload = _compact_source_extension_manifest(payload)
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
     set_manifest = {
@@ -476,6 +619,85 @@ def test_canonical_identity_is_cross_platform_while_attestation_remains_exact(
         candidate_identity=divergent_identity,
     )
     assert comparison["reproduced"] is False
+
+
+def test_extension_callable_abi_is_canonical_content_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "callable-abi"
+    inventory = _write_identity_fixture(
+        root,
+        producer_root="/producer/host",
+        artifact="a" * 64,
+    )
+    sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    export = {
+        "module": "pkg._native",
+        "name": "invoke",
+        "binding": "module_attr",
+        "abi": "molt.object_call_v1",
+        "effects": [],
+        "deterministic": True,
+    }
+    payload["callable_exports"] = [export]
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    relative = sidecar.relative_to(root).as_posix()
+    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    object_call_identity = _source_extension_set_identity(
+        root,
+        inventory_sha256=inventory,
+    )
+
+    export["abi"] = "molt.object_callargs_v1"
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    callargs_identity = _source_extension_set_identity(
+        root,
+        inventory_sha256=inventory,
+    )
+
+    assert (
+        object_call_identity["canonical_sha256"]
+        != callargs_identity["canonical_sha256"]
+    )
+
+
+def test_extension_support_destination_is_canonical_content_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "support-destination"
+    inventory = _write_identity_fixture(
+        root,
+        producer_root="/producer/host",
+        artifact="a" * 64,
+    )
+    sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    support_sha256 = hashlib.sha256(b"VALUE = 1\n").hexdigest()
+    for name in ("a.py", "b.py"):
+        support = root / "pkg" / name
+        support.write_bytes(b"VALUE = 1\n")
+        inventory[support.relative_to(root).as_posix()] = support_sha256
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    support_entry = {"path": "pkg/a.py", "sha256": support_sha256}
+    payload["support_files"] = [support_entry]
+    relative = sidecar.relative_to(root).as_posix()
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    first_identity = _source_extension_set_identity(
+        root,
+        inventory_sha256=inventory,
+    )
+
+    support_entry["path"] = "pkg/b.py"
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    second_identity = _source_extension_set_identity(
+        root,
+        inventory_sha256=inventory,
+    )
+
+    assert first_identity["canonical_sha256"] != second_identity["canonical_sha256"]
 
 
 def test_producer_attestation_covers_complete_verified_inventory(

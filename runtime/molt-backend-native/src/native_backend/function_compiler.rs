@@ -26,6 +26,7 @@ impl SimpleBackend {
     pub(crate) fn compile_func(
         &mut self,
         func_ir: FunctionIR,
+        target_info: &crate::tir::target_info::TargetInfo,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
@@ -105,6 +106,7 @@ impl SimpleBackend {
         }
         self.compile_func_inner(
             func_ir,
+            target_info,
             task_kinds,
             task_closure_sizes,
             defined_functions,
@@ -136,6 +138,7 @@ impl SimpleBackend {
     pub(crate) fn compile_func_inner(
         &mut self,
         func_ir: FunctionIR,
+        target_info: &crate::tir::target_info::TargetInfo,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
@@ -150,7 +153,11 @@ impl SimpleBackend {
             let ce_count = func_ir
                 .ops
                 .iter()
-                .filter(|op| matches!(op.kind.as_str(), "check_exception" | "async_work_poll"))
+                .filter(|op| {
+                    crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(
+                        op.kind.as_str(),
+                    )
+                })
                 .count();
             if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok()
                 && (ce_count > 0
@@ -167,7 +174,8 @@ impl SimpleBackend {
         }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
-        let representation_plan_storage = ScalarRepresentationPlan::for_function_ir(&func_ir);
+        let representation_plan_storage =
+            ScalarRepresentationPlan::for_function_ir_for_target(&func_ir, target_info);
         let representation_plan = &representation_plan_storage;
         let FunctionPreanalysis {
             has_ret,

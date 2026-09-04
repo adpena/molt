@@ -89,6 +89,7 @@ pub fn build_mlir_module<'c>(
 }
 
 fn preflight_tir_function(tir_func: &TirFunction) -> Result<(), String> {
+    let target = molt_backend::tir::TargetInfo::mlir_release_fast();
     let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|block| block.0);
     if let Some(entry) = block_ids
@@ -119,10 +120,13 @@ fn preflight_tir_function(tir_func: &TirFunction) -> Result<(), String> {
                     tir_func.name, block_id.0
                 ));
             }
-            if op.is_async_work_poll() {
+            if op.is_async_work_poll() && !target.supports_pending_call_eval_breaker_poll() {
                 return Err(format!(
-                    "{} ^bb{} op #{op_index} async_work_poll cannot lower because the canonical pending-call/eval-breaker runtime boundary is unavailable for MLIR",
-                    tir_func.name, block_id.0
+                    "{} ^bb{} op #{op_index} async_work_poll cannot lower for {}: {}",
+                    tir_func.name,
+                    block_id.0,
+                    target.target.as_str(),
+                    molt_backend::tir::op_kinds_generated::PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON,
                 ));
             }
             if op.opcode == OpCode::Copy {

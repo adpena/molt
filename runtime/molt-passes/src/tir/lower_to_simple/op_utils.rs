@@ -52,13 +52,14 @@ pub(super) fn annotate_lowered_op(
     }
     if let Some(AttrValue::Int(bits)) = tir_op.attrs.get("runtime_requirement_bits") {
         opir.runtime_requirement_bits = (*bits).try_into().unwrap_or_else(|_| {
-            panic!("TIR runtime_requirement_bits must be a non-negative u16: {bits}")
+            panic!("TIR runtime_requirement_bits is outside the generated bitset domain: {bits}")
         });
     }
     opir.passes_execution_context = matches!(
         tir_op.attrs.get("passes_execution_context"),
         Some(AttrValue::Bool(true))
     );
+    opir.async_work_poll = tir_op.opcode != OpCode::CheckException && tir_op.is_async_work_poll();
     // Result-lifetime facts are TIR attrs, not opcode-local syntax. Preserve
     // them through every TIR -> SimpleIR custody boundary so native's
     // optimize-roundtrip -> terminal-drop relift sees the same finalizer facts
@@ -69,10 +70,9 @@ pub(super) fn annotate_lowered_op(
     {
         opir.defines_del = Some(true);
     }
-    if matches!(
-        opir.kind.as_str(),
-        "check_exception" | "async_work_poll" | "try_start" | "try_end"
-    ) && let Some(orig_id) = opir.value
+    if (molt_ir::tir::op_kinds_generated::simpleir_kind_is_exception_check(opir.kind.as_str())
+        || matches!(opir.kind.as_str(), "try_start" | "try_end"))
+        && let Some(orig_id) = opir.value
         && let Some(&new_id) = original_to_new_label.get(&orig_id)
     {
         opir.value = Some(new_id);

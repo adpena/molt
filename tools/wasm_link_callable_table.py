@@ -187,10 +187,10 @@ def _resolve_callable_table_entry_plan(
     named_indices: dict[str, set[int]] = {}
     if entry_symbol_names is not None:
         function_import_index = 0
-        for _module, import_name, import_kind, _description in _collect_imports(data):
-            if import_kind != 0:
+        for wasm_import in _collect_imports(data):
+            if wasm_import.kind != 0:
                 continue
-            named_indices.setdefault(import_name, set()).add(function_import_index)
+            named_indices.setdefault(wasm_import.name, set()).add(function_import_index)
             function_import_index += 1
         for function_index, function_name in _collect_func_names(data).items():
             named_indices.setdefault(function_name, set()).add(function_index)

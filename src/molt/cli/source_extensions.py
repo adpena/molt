@@ -7,11 +7,17 @@ import platform
 import re
 import shlex
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
+    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
+    wasm_import_signature,
+)
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
@@ -23,6 +29,9 @@ from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
 from molt.cli.extension_scan_surface import _parse_preprocessor_argument_definition
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
+from molt.cli.external_link_providers import (
+    wasm_external_link_provider_symbol_classes,
+)
 from molt.file_hashing import _sha256_file
 from molt.cli.native_link_plan import (
     native_link_capabilities,
@@ -30,6 +39,18 @@ from molt.cli.native_link_plan import (
     native_linker_name_from_driver_command,
     resolve_native_target_spec,
 )
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
+from molt.cli.source_extension_object_closure import (
+    SourceExtensionObjectClosureError,
+    source_extension_wasm_import_receipts,
+    validate_source_extension_object_closure,
+    validate_source_extension_wasm_import_shapes,
+)
+from molt.wasm_artifact import WasmImport
 
 
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
@@ -81,6 +102,14 @@ _SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES = frozenset(
         "npy_import",
     }
 )
+_SOURCE_EXTENSION_SIGNATURED_WASM_IMPORTS = frozenset(
+    {name for _module, name in WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES}
+    | {
+        name
+        for name, (_module, kind) in WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.items()
+        if kind == "function" and wasm_import_signature(name) is not None
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +122,18 @@ class _SourceExtensionDependencyFact:
 
 
 @dataclass(frozen=True)
+class _SourceExtensionArtifactSymbolInspection:
+    defined_symbols: frozenset[str]
+    undefined_symbols: frozenset[str]
+    defined_function_symbols: frozenset[str]
+    symbol_authority: str
+    wasm_imports: tuple[WasmImport, ...] | None
+    wasm_function_import_signatures: tuple[tuple[str, str, tuple[str, ...], str], ...]
+    wasm_function_exports: tuple[str, ...] = ()
+    artifact_bytes: bytes | None = None
+
+
+@dataclass(frozen=True)
 class _SourceExtensionObjectFact:
     source_path: Path
     object_path: Path
@@ -100,7 +141,9 @@ class _SourceExtensionObjectFact:
     object_sha256: str
     defined_symbols: tuple[str, ...]
     undefined_symbols: tuple[str, ...]
+    defined_function_symbols: tuple[str, ...]
     compile_command: tuple[str, ...]
+    symbol_authority: str
     symbol_command: tuple[str, ...]
     dependencies: tuple[_SourceExtensionDependencyFact, ...] = ()
 
@@ -111,7 +154,7 @@ class _SourceExtensionObjectFact:
         required_capsules: Sequence[str] = (),
         project_generated_c_api_symbols: Sequence[str] = (),
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "source": str(self.source_path),
             "object": self.object_path.name,
             "source_sha256": self.source_sha256,
@@ -119,7 +162,7 @@ class _SourceExtensionObjectFact:
             "defined_symbols": list(self.defined_symbols),
             "undefined_symbols": list(self.undefined_symbols),
             "compile_command": list(self.compile_command),
-            "symbol_command": list(self.symbol_command),
+            "symbol_authority": self.symbol_authority,
             "dependencies": [
                 dependency.manifest_payload() for dependency in self.dependencies
             ],
@@ -127,6 +170,9 @@ class _SourceExtensionObjectFact:
             "required_capsules": list(required_capsules),
             "project_generated_c_api_symbols": list(project_generated_c_api_symbols),
         }
+        if self.symbol_command:
+            payload["symbol_command"] = list(self.symbol_command)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -135,11 +181,13 @@ class _SourceExtensionObjectClosure:
     init_symbol_owner: _SourceExtensionObjectFact
     objects: tuple[_SourceExtensionObjectFact, ...]
     undefined_symbols: tuple[str, ...]
-    closure_sha256: str
 
     def manifest_payload(
         self,
         *,
+        defined_symbols: Sequence[str] | None = None,
+        undefined_symbols: Sequence[str] | None = None,
+        wasm_imports: Sequence[Mapping[str, str]] | None = None,
         runtime_symbols: Sequence[str] | None = None,
         required_c_api_by_source: Mapping[Path, Sequence[str]] | None = None,
         required_capsules_by_source: Mapping[Path, Sequence[str]] | None = None,
@@ -156,19 +204,47 @@ class _SourceExtensionObjectClosure:
                 for capsule in capsules_by_source.get(fact.source_path.resolve(), ())
             }
         )
+        required_c_api_symbols = sorted(
+            {
+                symbol
+                for fact in self.objects
+                for symbol in c_api_by_source.get(fact.source_path.resolve(), ())
+            }
+        )
+        project_generated_c_api_symbols = sorted(
+            {
+                symbol
+                for fact in self.objects
+                for symbol in generated_by_source.get(fact.source_path.resolve(), ())
+            }
+        )
         return {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": self.init_symbol,
             "init_symbol_owner": self.init_symbol_owner.object_path.name,
-            "closure_sha256": self.closure_sha256,
-            "defined_symbols": sorted(
-                {symbol for fact in self.objects for symbol in fact.defined_symbols}
+            "defined_symbols": list(
+                sorted(
+                    {symbol for fact in self.objects for symbol in fact.defined_symbols}
+                )
+                if defined_symbols is None
+                else defined_symbols
             ),
-            "undefined_symbols": list(self.undefined_symbols),
+            "undefined_symbols": list(
+                self.undefined_symbols
+                if undefined_symbols is None
+                else undefined_symbols
+            ),
             "runtime_symbols": list(
                 self.undefined_symbols if runtime_symbols is None else runtime_symbols
             ),
+            **(
+                {"wasm_imports": [dict(item) for item in wasm_imports]}
+                if wasm_imports is not None
+                else {}
+            ),
             "required_capsules": required_capsules,
+            "required_c_api_symbols": required_c_api_symbols,
+            "project_generated_c_api_symbols": project_generated_c_api_symbols,
             "project_generated_c_api_prefixes": list(
                 sorted(project_generated_c_api_prefixes)
             ),
@@ -1185,10 +1261,11 @@ def _load_meson_intro_targets_source_extension_plan(
     # relocatable object of a statically-linked package into ONE wasm module, so
     # a second private copy of those global ``npy_*`` definitions is a fatal
     # ``wasm-ld: duplicate symbol`` at the final witness link. Excluding the
-    # shared static library here keeps its symbols UNDEFINED in this extension's
-    # object closure (recorded as runtime_symbols), so they resolve against the
-    # primary extension's exported definitions at final link — the same thin
-    # shape ``scipy.ndimage._nd_image`` already relies on for numpy's C-API.
+    # shared static library here keeps its symbols UNDEFINED in this artifact.
+    # Final package planning must prove each symbol against a concrete sibling
+    # object/archive owner; ``runtime_symbols`` remains solely the generated
+    # Molt-runtime projection. This is the same thin shape
+    # ``scipy.ndimage._nd_image`` already relies on for numpy's C-API.
     excluded: set[str] = set()
     if excluded_linked_static_libraries:
         excluded = {name.strip().lower() for name in excluded_linked_static_libraries}
@@ -1742,23 +1819,22 @@ def _source_extension_object_fact(
     compile_command: Sequence[str] = (),
     dependency_paths: Sequence[Path] = (),
     nm_command: Sequence[str] | None = None,
+    target_triple: str | None = None,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
-    # Reading a native object file's global symbols is a backend/native-link
-    # concern; import it lazily so this module stays off the frontend import path.
-    from molt.cli.backend_cache import _native_object_global_symbol_sets
-
-    symbol_sets = (
-        _native_object_global_symbol_sets(object_path, nm_command=nm_command)
-        if nm_command is not None
-        else _native_object_global_symbol_sets(object_path)
+    symbol_inspection = _inspect_source_extension_artifact_symbols(
+        object_path,
+        nm_command=nm_command,
+        target_triple=target_triple,
     )
-    if symbol_sets is None:
+    if symbol_inspection is None:
         return (
             None,
             "unable to read global symbol table for compiled extension object "
-            f"{object_path}; canonical LLVM/WASI nm authority is unavailable",
+            f"{object_path}; canonical symbol authority is unavailable",
         )
-    defined, undefined = symbol_sets
+    defined = symbol_inspection.defined_symbols
+    undefined = symbol_inspection.undefined_symbols
+    symbol_authority = symbol_inspection.symbol_authority
     object_root = object_path.parent.resolve()
     canonical_compile_command_parts: list[str] = []
     transient_value_flags = {"-o", "-MF"}
@@ -1800,12 +1876,267 @@ def _source_extension_object_fact(
             object_sha256=_sha256_file(object_path),
             defined_symbols=tuple(sorted(defined)),
             undefined_symbols=tuple(sorted(undefined)),
+            defined_function_symbols=tuple(
+                sorted(symbol_inspection.defined_function_symbols)
+            ),
             compile_command=canonical_compile_command,
-            symbol_command=tuple(nm_command or ()),
+            symbol_authority=symbol_authority,
+            symbol_command=(
+                tuple(nm_command or ())
+                if symbol_authority == SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY
+                else ()
+            ),
             dependencies=tuple(dependencies),
         ),
         None,
     )
+
+
+def _inspect_source_extension_artifact_symbols(
+    artifact_path: Path,
+    *,
+    nm_command: Sequence[str] | None = None,
+    target_triple: str | None = None,
+    aggregate_linker_closure: bool = False,
+) -> _SourceExtensionArtifactSymbolInspection | None:
+    try:
+        with artifact_path.open("rb") as stream:
+            header = stream.read(8)
+            is_wasm = header == b"\0asm\x01\0\0\0"
+            artifact_bytes = header + stream.read() if is_wasm else None
+    except OSError:
+        return None
+    if is_wasm:
+        from molt.wasm_artifact import parse_wasm_relocatable_object_interface
+
+        try:
+            assert artifact_bytes is not None
+            interface = parse_wasm_relocatable_object_interface(
+                artifact_bytes,
+                signature_import_names=_SOURCE_EXTENSION_SIGNATURED_WASM_IMPORTS,
+            )
+        except (OSError, UnicodeDecodeError, ValueError, IndexError):
+            return None
+        defined = set(interface.linking_symbols.defined_names)
+        undefined = set(interface.linking_symbols.undefined_names)
+        if aggregate_linker_closure:
+            undefined.difference_update(defined)
+        return _SourceExtensionArtifactSymbolInspection(
+            defined_symbols=frozenset(defined),
+            undefined_symbols=frozenset(undefined),
+            defined_function_symbols=interface.linking_symbols.defined_functions,
+            symbol_authority=SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+            wasm_imports=interface.imports,
+            wasm_function_import_signatures=interface.function_import_signatures,
+            wasm_function_exports=tuple(
+                sorted(export.name for export in interface.function_exports)
+            ),
+            artifact_bytes=artifact_bytes,
+        )
+
+    # Reading a native object file's global symbols is a backend/native-link
+    # concern; import it lazily so this module stays off the frontend import path.
+    from molt.cli.backend_cache import _native_object_global_symbol_facts
+
+    if not nm_command:
+        return None
+    symbol_facts = _native_object_global_symbol_facts(
+        artifact_path,
+        nm_command=nm_command,
+        target_triple=target_triple,
+    )
+    if symbol_facts is None:
+        return None
+    defined = set(symbol_facts.defined)
+    undefined = set(symbol_facts.undefined)
+    if aggregate_linker_closure:
+        undefined.difference_update(defined)
+    return _SourceExtensionArtifactSymbolInspection(
+        defined_symbols=frozenset(defined),
+        undefined_symbols=frozenset(undefined),
+        defined_function_symbols=symbol_facts.defined_functions,
+        symbol_authority=SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+        wasm_imports=None,
+        wasm_function_import_signatures=(),
+    )
+
+
+def validate_source_extension_artifact_object_closure(
+    *,
+    artifact_path: Path,
+    manifest: Mapping[str, Any],
+    required_function_exports: Collection[str] = (),
+    inspection: _SourceExtensionArtifactSymbolInspection | None = None,
+    external_link_provider_classes: Mapping[str, str] | None = None,
+    validated_closure: tuple[Mapping[str, Any], str] | None = None,
+) -> list[str]:
+    """Validate the signed closure against one exact artifact inspection."""
+
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, Mapping):
+        return ["extension manifest has no object_closure"]
+    try:
+        identity, _closure_digest = (
+            validate_source_extension_object_closure(manifest)
+            if validated_closure is None
+            else validated_closure
+        )
+    except SourceExtensionObjectClosureError as exc:
+        return [f"object_closure is invalid: {exc}"]
+    artifact_kind = manifest.get("artifact_kind")
+    target_triple = manifest.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple:
+        return ["extension manifest has no target_triple"]
+
+    if artifact_kind == "wasm_relocatable_object":
+        if inspection is None:
+            inspection = _inspect_source_extension_artifact_symbols(
+                artifact_path,
+                target_triple=target_triple,
+                aggregate_linker_closure=True,
+            )
+        if inspection is None or inspection.wasm_imports is None:
+            return [
+                f"cannot read WASM linking/import closure from {artifact_path.name}"
+            ]
+        actual_defined = set(inspection.defined_symbols)
+        actual_undefined = set(inspection.undefined_symbols)
+        actual_defined_functions = set(inspection.defined_function_symbols)
+    elif artifact_kind == "static_archive":
+        if inspection is not None:
+            actual_defined = set(inspection.defined_symbols)
+            actual_undefined = set(inspection.undefined_symbols) - actual_defined
+            actual_defined_functions = set(inspection.defined_function_symbols)
+        else:
+            from molt.cli.backend_cache import _native_archive_global_symbol_facts
+
+            symbol_facts = _native_archive_global_symbol_facts(
+                artifact_path,
+                target_triple=target_triple,
+            )
+            if symbol_facts is None:
+                return [
+                    f"cannot read static archive symbol closure from {artifact_path.name}"
+                ]
+            actual_defined = set(symbol_facts.defined)
+            actual_undefined = set(symbol_facts.undefined) - actual_defined
+            actual_defined_functions = set(symbol_facts.defined_functions)
+    else:
+        return [f"unsupported source-extension artifact_kind {artifact_kind!r}"]
+
+    declared_defined = set(identity["defined_symbols"])
+    declared_undefined = set(identity["undefined_symbols"])
+    errors: list[str] = []
+    if declared_defined != actual_defined:
+        errors.append(
+            f"{artifact_path.name} defined-symbol closure differs from "
+            "object_closure.defined_symbols; "
+            f"missing={sorted(actual_defined - declared_defined)!r}; "
+            f"stale={sorted(declared_defined - actual_defined)!r}"
+        )
+    if declared_undefined != actual_undefined:
+        errors.append(
+            f"{artifact_path.name} undefined-symbol closure differs from "
+            "object_closure.undefined_symbols; "
+            f"missing={sorted(actual_undefined - declared_undefined)!r}; "
+            f"stale={sorted(declared_undefined - actual_undefined)!r}"
+        )
+
+    root_symbol = identity["root_symbol"]
+    if root_symbol not in actual_defined_functions:
+        errors.append(
+            f"object_closure.root_symbol {root_symbol!r} is not a defined "
+            f"function in {artifact_path.name}"
+        )
+
+    required_exports = set(required_function_exports)
+    available_function_exports = (
+        set(inspection.wasm_function_exports)
+        if artifact_kind == "wasm_relocatable_object" and inspection is not None
+        else actual_defined_functions
+    )
+    missing_exports = sorted(required_exports - available_function_exports)
+    if missing_exports:
+        errors.append(
+            "direct_symbol callable export(s) are absent from artifact function "
+            "exports: " + ", ".join(missing_exports)
+        )
+
+    if artifact_kind == "static_archive":
+        declared_runtime_symbols = set(identity["runtime_symbols"])
+        if declared_runtime_symbols:
+            errors.append(
+                "native object_closure.runtime_symbols must be empty; native "
+                "providers are owned by typed link requirements"
+            )
+        return errors
+    if inspection is None:
+        return errors
+    try:
+        actual_receipts = source_extension_wasm_import_receipts(
+            inspection.wasm_imports or ()
+        )
+    except SourceExtensionObjectClosureError as exc:
+        errors.append(f"WASM import closure is invalid: {exc}")
+        return errors
+    expected_runtime_symbols = set(
+        wasm_static_link_runtime_symbols_for_imports(
+            (*actual_undefined, *(item["name"] for item in actual_receipts)),
+            typed_imports=((item["module"], item["name"]) for item in actual_receipts),
+        )
+    )
+    declared_runtime_symbols = set(identity["runtime_symbols"])
+    if declared_runtime_symbols != expected_runtime_symbols:
+        errors.append(
+            "object_closure.runtime_symbols differs from the exact generated "
+            "runtime projection; "
+            f"missing={sorted(expected_runtime_symbols - declared_runtime_symbols)!r}; "
+            f"stale={sorted(declared_runtime_symbols - expected_runtime_symbols)!r}"
+        )
+    declared_receipts = tuple(identity.get("wasm_imports", ()))
+    if declared_receipts != actual_receipts:
+        declared_set = {
+            (item["module"], item["name"], item["kind"]) for item in declared_receipts
+        }
+        actual_set = {
+            (item["module"], item["name"], item["kind"]) for item in actual_receipts
+        }
+        missing = sorted(actual_set - declared_set)
+        stale = sorted(declared_set - actual_set)
+        if missing:
+            errors.append(
+                f"{artifact_path.name} import records absent from "
+                f"object_closure.wasm_imports: {missing!r}"
+            )
+        if stale:
+            errors.append(
+                "object_closure.wasm_imports records absent from "
+                f"{artifact_path.name}: {stale!r}"
+            )
+    errors.extend(
+        validate_source_extension_wasm_import_shapes(
+            actual_receipts,
+            provider_function_names=(
+                (
+                    wasm_external_link_provider_symbol_classes(target_triple)
+                    if external_link_provider_classes is None
+                    else external_link_provider_classes
+                )
+                if any(
+                    receipt["name"] not in WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES
+                    for receipt in actual_receipts
+                )
+                else ()
+            ),
+            actual_function_signatures={
+                (module, name): (params, result)
+                for module, name, params, result in (
+                    inspection.wasm_function_import_signatures
+                )
+            },
+        )
+    )
+    return errors
 
 
 def _source_extension_runtime_import_callee(callee: str) -> str | None:
@@ -2852,37 +3183,6 @@ def _source_extension_required_c_api_by_source(
     )
 
 
-def _source_extension_closure_digest(
-    *,
-    init_symbol: str,
-    objects: Sequence[_SourceExtensionObjectFact],
-    runtime_symbols: Sequence[str],
-) -> str:
-    payload = {
-        "schema_version": 1,
-        "root_symbol": init_symbol,
-        "objects": [
-            {
-                "source": str(fact.source_path),
-                "object": fact.object_path.name,
-                "source_sha256": fact.source_sha256,
-                "object_sha256": fact.object_sha256,
-                "defined_symbols": list(fact.defined_symbols),
-                "undefined_symbols": list(fact.undefined_symbols),
-                "compile_command": list(fact.compile_command),
-                "symbol_command": list(fact.symbol_command),
-                "dependencies": [
-                    dependency.manifest_payload() for dependency in fact.dependencies
-                ],
-            }
-            for fact in objects
-        ],
-        "runtime_symbols": list(runtime_symbols),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _compute_source_extension_object_closure(
     *,
     init_symbol: str,
@@ -2905,6 +3205,11 @@ def _compute_source_extension_object_closure(
         return None, [
             f"source extension object closure root {init_symbol!r} is ambiguous "
             f"(defined by {owner_names})"
+        ]
+    if init_symbol not in init_owners[0].defined_function_symbols:
+        return None, [
+            f"source extension object closure root {init_symbol!r} is not a "
+            "function symbol"
         ]
 
     included: set[Path] = set()
@@ -2938,18 +3243,12 @@ def _compute_source_extension_object_closure(
         fact for fact in object_facts if fact.object_path in included
     )
     undefined_symbols_sorted = tuple(sorted(undefined_symbols))
-    closure_sha256 = _source_extension_closure_digest(
-        init_symbol=init_symbol,
-        objects=closure_objects,
-        runtime_symbols=undefined_symbols_sorted,
-    )
     return (
         _SourceExtensionObjectClosure(
             init_symbol=init_symbol,
             init_symbol_owner=init_owners[0],
             objects=closure_objects,
             undefined_symbols=undefined_symbols_sorted,
-            closure_sha256=closure_sha256,
         ),
         [],
     )

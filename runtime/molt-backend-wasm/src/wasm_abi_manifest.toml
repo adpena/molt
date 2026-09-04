@@ -655,6 +655,10 @@ runtime_name = "molt_exception_last_pending"
 callable_arity = 0
 
 [[import]]
+name = "async_work_poll_and_exception_last_pending"
+type = 0
+
+[[import]]
 name = "exception_match_builtin"
 type = 3
 
@@ -6253,6 +6257,7 @@ sink = "non_none_result_or_drop"
 [[op_loop_runtime_call]]
 kind = "exception_finally_pending_observer"
 import_name = "exception_last_pending"
+marked_import_name = "async_work_poll_and_exception_last_pending"
 args = []
 sink = "result_or_drop"
 
@@ -7027,110 +7032,163 @@ exports = ["molt_tuple_getitem_borrowed"]
 [[link_allowed_import]]
 name = "args_sizes_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "args_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "environ_sizes_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "environ_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "random_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "clock_time_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i64", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "proc_exit"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32"]
+wasm_results = []
 
 [[link_allowed_import]]
 name = "sched_yield"
 primitive_class = "wasi_link_import"
+wasm_params = []
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_read"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_write"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_seek"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i64", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_tell"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_close"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_prestat_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_prestat_dir_name"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_open"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_rename"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_readlink"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_unlink_file"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_create_directory"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_remove_directory"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "path_filestat_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_filestat_get"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_filestat_set_size"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i64"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "fd_readdir"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i64", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "poll_oneoff"
 primitive_class = "wasi_link_import"
+wasm_params = ["i32", "i32", "i32", "i32"]
+wasm_results = ["i32"]
 
 [[link_allowed_import]]
 name = "__indirect_function_table"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_kind = "table"
 
 [[link_allowed_import]]
 name = "molt_call_indirect0"
@@ -7219,29 +7277,47 @@ primitive_class = "molt_runtime_host_import"
 # stages, eliminating the former hand-maintained symbol subset.
 
 [[external_native_link_import]]
+name = "__linear_memory"
+primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "memory"
+
+[[external_native_link_import]]
 name = "__memory_base"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "global"
 
 [[external_native_link_import]]
 name = "__stack_pointer"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "global"
 
 [[external_native_link_import]]
 name = "__table_base"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "global"
 
 [[external_native_link_import]]
 name = "__tls_base"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "global"
 
 [[external_native_link_import]]
 name = "__cpp_exception"
 primitive_class = "wasm_toolchain_link_import"
+wasm_import_module = "env"
+wasm_import_kind = "tag"
 
 [[external_native_link_import]]
 name = "__dso_handle"
 primitive_class = "wasm_toolchain_link_import"
 symbol_kind = "data"
+wasm_import_module = "env"
+wasm_import_kind = "global"
 
 [[strip_import_prefix_rule]]
 module = "env"

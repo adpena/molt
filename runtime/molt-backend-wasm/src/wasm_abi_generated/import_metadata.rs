@@ -79,6 +79,9 @@ impl WasmRuntimeImport {
             Self::ExceptionKind => "exception_kind",
             Self::ExceptionLast => "exception_last",
             Self::ExceptionLastPending => "exception_last_pending",
+            Self::AsyncWorkPollAndExceptionLastPending => {
+                "async_work_poll_and_exception_last_pending"
+            }
             Self::ExceptionMatchBuiltin => "exception_match_builtin",
             Self::ExceptionResolveCaptured => "exception_resolve_captured",
             Self::ExceptionMessage => "exception_message",
@@ -3122,6 +3125,9 @@ impl WasmRuntimeImport {
             Self::ExceptionKind => "molt_exception_kind",
             Self::ExceptionLast => "molt_exception_last",
             Self::ExceptionLastPending => "molt_exception_last_pending",
+            Self::AsyncWorkPollAndExceptionLastPending => {
+                "molt_async_work_poll_and_exception_last_pending"
+            }
             Self::ExceptionMatchBuiltin => "molt_exception_match_builtin",
             Self::ExceptionResolveCaptured => "molt_exception_resolve_captured",
             Self::ExceptionMessage => "molt_exception_message",
@@ -6193,6 +6199,7 @@ impl WasmRuntimeImport {
             Self::ExceptionKind => 2,
             Self::ExceptionLast => 0,
             Self::ExceptionLastPending => 0,
+            Self::AsyncWorkPollAndExceptionLastPending => 0,
             Self::ExceptionMatchBuiltin => 3,
             Self::ExceptionResolveCaptured => 2,
             Self::ExceptionMessage => 2,

@@ -34,25 +34,75 @@ fn binary(kind: &str, ty: &str) -> SimpleIR {
     }
 }
 
-fn runtime_without_frame_introspection() -> RuntimeTargetCapabilities {
-    RuntimeTargetCapabilities {
-        extern_function_linkage: false,
-        execution_frame_state: true,
-        python_frame_introspection: false,
-        python_identity: true,
-        tuple_representation: true,
-        exception_model: true,
-        deterministic_lifetime: true,
-        format_protocol: true,
-        iterable_protocol: true,
-        object_model: true,
-        python_truthiness: true,
-        python_comparison: true,
-        structured_runtime_errors: true,
-        async_runtime: true,
-        unstructured_control_flow: true,
-        host_capabilities: true,
+fn target_with_runtime(
+    supported_runtime_semantics: SimpleIrRuntimeRequirements,
+) -> crate::tir::TargetInfo {
+    let mut target = crate::tir::TargetInfo::rust_release_fast();
+    target.supported_runtime_semantics = supported_runtime_semantics;
+    target
+}
+
+fn runtime_without_frame_introspection() -> crate::tir::TargetInfo {
+    target_with_runtime(
+        SimpleIrRuntimeRequirements::ALL
+            .difference(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION),
+    )
+}
+
+#[test]
+fn async_work_marker_uses_precise_pending_call_eval_breaker_capability() {
+    let explicit_poll = OpIR {
+        kind: "async_work_poll".to_string(),
+        value: Some(9),
+        ..OpIR::default()
+    };
+    let marked_observer = OpIR {
+        kind: "exception_finally_pending_observer".to_string(),
+        out: Some("pending".to_string()),
+        async_work_poll: true,
+        ..OpIR::default()
+    };
+    let unmarked_observer = OpIR {
+        async_work_poll: false,
+        ..marked_observer.clone()
+    };
+
+    for op in [&explicit_poll, &marked_observer] {
+        let requirements = simpleir_op_runtime_requirements(op)
+            .expect("every async-work carrier has generated runtime requirements");
+        assert!(requirements.contains(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER));
+        assert!(requirements.contains(SimpleIrRuntimeRequirements::EXCEPTION));
+        assert!(
+            !requirements.contains(SimpleIrRuntimeRequirements::ASYNC_RUNTIME),
+            "pending-call polling must not imply scheduling or suspension support"
+        );
     }
+    assert!(
+        !simpleir_op_runtime_requirements(&unmarked_observer)
+            .unwrap()
+            .contains(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER),
+        "the ordinary pending observer must remain a non-polling exception read"
+    );
+
+    let capabilities = target_with_runtime(
+        SimpleIrRuntimeRequirements::ALL
+            .difference(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER),
+    );
+    let error =
+        validate_runtime_target_contract(&function_ir(vec![marked_observer]), &capabilities)
+            .expect_err(
+                "a target without the runtime boundary must reject before source generation",
+            );
+    assert!(error.contains("pending-call and eval-breaker polling boundary"));
+
+    let error = validate_runtime_target_contract(
+        &function_ir(vec![explicit_poll]),
+        &target_with_runtime(
+            SimpleIrRuntimeRequirements::ALL.difference(SimpleIrRuntimeRequirements::EXCEPTION),
+        ),
+    )
+    .expect_err("the poll alias must retain the established exception requirement");
+    assert!(error.contains("Python exception state"));
 }
 
 #[test]
@@ -74,41 +124,28 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
         profile: None,
     };
 
-    let error = validate_target_contract(
-        &ir,
-        "source",
-        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
-        RuntimeTargetCapabilities::NONE,
-    )
-    .expect_err("targets without a provider ABI must reject extern declarations");
-    assert!(error.contains("source target has no extern provider/linkage ABI"));
+    let error = validate_target_contract(&ir, &crate::tir::TargetInfo::rust_release_fast())
+        .expect_err("targets without a provider ABI must reject extern declarations");
+    assert!(error.contains("rust target has no extern provider/linkage ABI"));
 
-    validate_target_contract(
-        &ir,
-        "linkable",
-        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
-        RuntimeTargetCapabilities {
-            extern_function_linkage: true,
-            ..RuntimeTargetCapabilities::NONE
-        },
-    )
-    .expect("declaration-capable targets admit canonical extern signatures");
+    let mut linkable = crate::tir::TargetInfo::rust_release_fast();
+    linkable.extern_function_linkage = true;
+    validate_target_contract(&ir, &linkable)
+        .expect("declaration-capable targets admit canonical extern signatures");
 }
 
 #[test]
 fn fixed_width_targets_admit_exact_float_basics_only() {
     validate_numeric_target_contract(
         &binary("add", "float"),
-        "test",
-        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect("float add is exact in the target policy");
 
     for kind in ["pow", "floor_div", "mod"] {
         let error = validate_numeric_target_contract(
             &binary(kind, "float"),
-            "test",
-            NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+            &crate::tir::TargetInfo::rust_release_fast(),
         )
         .expect_err("non-exact float semantics must reject");
         assert!(error.contains("rejected before source generation"));
@@ -119,8 +156,7 @@ fn fixed_width_targets_admit_exact_float_basics_only() {
 fn fixed_width_targets_reject_integer_arithmetic() {
     let error = validate_numeric_target_contract(
         &binary("add", "int"),
-        "test",
-        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect_err("i64 is not Python integer semantics");
     assert!(error.contains("arbitrary-precision"));
@@ -128,7 +164,7 @@ fn fixed_width_targets_reject_integer_arithmetic() {
 
 #[test]
 fn exact_literal_capability_admits_only_complete_in_range_siblings() {
-    let capabilities = NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS;
+    let target = crate::tir::TargetInfo::luau_release_fast();
     for op in [
         OpIR {
             kind: "const".to_string(),
@@ -149,7 +185,7 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
             ..OpIR::default()
         },
     ] {
-        validate_numeric_target_contract(&function_ir(vec![op]), "luau", capabilities)
+        validate_numeric_target_contract(&function_ir(vec![op]), &target)
             .expect("exact concrete literal must be admitted");
     }
     for payload in ["9007199254740993", "-9007199254740993", "not-an-int"] {
@@ -160,8 +196,7 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
                 out: Some("out".to_string()),
                 ..OpIR::default()
             }]),
-            "luau",
-            capabilities,
+            &target,
         )
         .expect_err("unsafe or malformed bigint literal must reject");
         assert!(error.contains("exact concrete value authority"));
@@ -177,8 +212,7 @@ fn generic_const_non_integer_payload_stays_outside_integer_admission() {
             out: Some("out".to_string()),
             ..OpIR::default()
         }]),
-        "fixed",
-        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect("generic const float payload is not an integer literal");
 }
@@ -193,17 +227,13 @@ fn execution_frames_are_distinct_from_python_introspection() {
             ..OpIR::default()
         }]);
         let error =
-            validate_runtime_target_contract(&ir, "no-frames", RuntimeTargetCapabilities::NONE)
+            validate_runtime_target_contract(&ir, &crate::tir::TargetInfo::rust_release_fast())
                 .expect_err("execution-frame operations must not degrade to target no-ops");
         assert!(error.contains("execution-frame stack and source-location"));
 
         validate_runtime_target_contract(
             &ir,
-            "frames",
-            RuntimeTargetCapabilities {
-                execution_frame_state: true,
-                ..RuntimeTargetCapabilities::NONE
-            },
+            &target_with_runtime(SimpleIrRuntimeRequirements::EXECUTION_FRAME),
         )
         .expect("the execution-frame capability admits its generated sibling family");
     }
@@ -213,11 +243,7 @@ fn execution_frames_are_distinct_from_python_introspection() {
             kind: "getframe".to_string(),
             ..OpIR::default()
         }]),
-        "execution-only",
-        RuntimeTargetCapabilities {
-            execution_frame_state: true,
-            ..RuntimeTargetCapabilities::NONE
-        },
+        &target_with_runtime(SimpleIrRuntimeRequirements::EXECUTION_FRAME),
     )
     .expect_err("execution frames must not imply Python-visible frame objects");
     assert!(error.contains("exact Python-visible frame objects"));
@@ -245,12 +271,8 @@ fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
         },
     ]);
     ir.functions[0].execution_context = ExecutionContextPolicy::None;
-    let error = validate_runtime_target_contract(
-        &ir,
-        "execution-only",
-        runtime_without_frame_introspection(),
-    )
-    .expect_err("producer acquisition must reject before any dynamic call transport matters");
+    let error = validate_runtime_target_contract(&ir, &runtime_without_frame_introspection())
+        .expect_err("producer acquisition must reject before any dynamic call transport matters");
     assert!(error.contains("f:op#0 `module_get_attr`"), "{error}");
     assert!(
         error.contains("exact Python-visible frame objects"),
@@ -273,8 +295,7 @@ fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
 
     let error = validate_runtime_target_contract(
         &function_ir(vec![acquisition]),
-        "execution-only",
-        runtime_without_frame_introspection(),
+        &runtime_without_frame_introspection(),
     )
     .expect_err("may-provenance must reject on a target without frame introspection");
     assert!(error.contains("f:op#0 `module_get_attr`"), "{error}");
@@ -293,12 +314,8 @@ fn every_generated_runtime_requirement_carrier_parses_and_reaches_admission() {
         );
         let ir = SimpleIR::from_json_str(&source)
             .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
-        let error = validate_runtime_target_contract(
-            &ir,
-            "execution-only",
-            runtime_without_frame_introspection(),
-        )
-        .expect_err("every explicit carrier must reach target admission");
+        let error = validate_runtime_target_contract(&ir, &runtime_without_frame_introspection())
+            .expect_err("every explicit carrier must reach target admission");
         assert!(error.contains(&format!("f:op#0 `{kind}`")), "{error}");
         assert!(
             error.contains("exact Python-visible frame objects"),
@@ -315,12 +332,8 @@ fn every_generated_runtime_symbol_carrier_parses_and_reaches_admission() {
         );
         let ir = SimpleIR::from_json_str(&source)
             .unwrap_or_else(|error| panic!("generated symbol carrier {kind} must parse: {error}"));
-        let error = validate_runtime_target_contract(
-            &ir,
-            "execution-only",
-            runtime_without_frame_introspection(),
-        )
-        .expect_err("every runtime-symbol carrier must reach target admission");
+        let error = validate_runtime_target_contract(&ir, &runtime_without_frame_introspection())
+            .expect_err("every runtime-symbol carrier must reach target admission");
         assert!(error.contains(&format!("f:op#0 `{kind}`")), "{error}");
         assert!(
             error.contains("exact Python-visible frame objects"),

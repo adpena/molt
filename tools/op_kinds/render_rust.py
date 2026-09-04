@@ -961,6 +961,26 @@ def _render_simpleir_control_facts(data: dict) -> str:
         )
         out.append("\n")
 
+    label_namespace_members = sorted(
+        {
+            member
+            for field in (
+                "verifier_label_definition",
+                "verifier_label_reference",
+                "wasm_state_resume_after",
+            )
+            for member in _simpleir_control_members(data, field)
+        }
+    )
+    out.append(
+        _render_simpleir_kind_bool_fn(
+            "simpleir_kind_uses_function_label_id",
+            label_namespace_members,
+            "Whether a SimpleIR kind's value occupies the function-local label namespace.",
+        )
+    )
+    out.append("\n")
+
     aliases = _simpleir_kind_aliases(data)
     return_rows = [
         row
@@ -1092,20 +1112,22 @@ def _render_simpleir_field_roles(data: dict) -> str:
                 f"Some(SimpleIrCallTargetRole::{rust_role}),\n"
             )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
-    lines.extend([
-        "/// Canonical role of the optional SimpleIR `var` field.\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum SimpleIrVarFieldRole {\n",
-        "    Read,\n",
-        "    Definition,\n",
-        "    Result,\n",
-        "    MetadataWhenArgs,\n",
-        "    Forbidden,\n",
-        "}\n\n",
-        "#[inline]\n",
-        "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
-        "    match kind {\n",
-    ])
+    lines.extend(
+        [
+            "/// Canonical role of the optional SimpleIR `var` field.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum SimpleIrVarFieldRole {\n",
+            "    Read,\n",
+            "    Definition,\n",
+            "    Result,\n",
+            "    MetadataWhenArgs,\n",
+            "    Forbidden,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
+            "    match kind {\n",
+        ]
+    )
     for key, role in var_roles:
         patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
@@ -1206,39 +1228,109 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
 
 
 def _render_simpleir_runtime_semantics(data: dict) -> str:
+    storage_bits = data["simpleir_runtime_requirement_mask_bits"]
     roles = tuple(
-        (row["table"], row["constant"])
-        for row in data["simpleir_runtime_requirement_roles"]
+        sorted(
+            (
+                (row["table"], row["constant"], row["bit"], row["reason"])
+                for row in data["simpleir_runtime_requirement_roles"]
+            ),
+            key=lambda role: role[2],
+        )
     )
+    known_mask = sum(1 << bit for _, _, bit, _ in roles)
     registered = _simpleir_registered_runtime_kinds(data)
 
     lines = [
         "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",
         "/// Multiple bits may be set; enabling one target capability never masks\n",
         "/// another unmet semantic requirement.\n",
+        f"pub type SimpleIrRuntimeRequirementBits = u{storage_bits};\n",
+        f"pub const SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: u32 = {storage_bits};\n\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub struct SimpleIrRuntimeRequirements(u16);\n\n",
+        "pub struct SimpleIrRuntimeRequirements(SimpleIrRuntimeRequirementBits);\n\n",
         "impl SimpleIrRuntimeRequirements {\n",
         "    pub const NONE: Self = Self(0);\n",
     ]
-    for bit, (_, constant) in enumerate(roles):
+    for _, constant, bit, _ in roles:
         lines.append(f"    pub const {constant}: Self = Self(1 << {bit});\n")
+    lines.append(f"    pub const ALL: Self = Self({known_mask});\n")
     lines.extend(
         [
             "    pub const fn is_empty(self) -> bool {\n",
             "        self.0 == 0\n",
             "    }\n",
             "    pub const fn contains(self, requirement: Self) -> bool {\n",
-            "        self.0 & requirement.0 != 0\n",
+            "        self.0 & requirement.0 == requirement.0\n",
             "    }\n",
             "    pub const fn union(self, other: Self) -> Self {\n",
             "        Self(self.0 | other.0)\n",
             "    }\n",
-            "    pub const fn bits(self) -> u16 {\n",
+            "    pub const fn difference(self, other: Self) -> Self {\n",
+            "        Self(self.0 & !other.0)\n",
+            "    }\n",
+            "    pub const fn bits(self) -> SimpleIrRuntimeRequirementBits {\n",
             "        self.0\n",
             "    }\n",
-            "    pub const fn from_bits(bits: u16) -> Option<Self> {\n",
-            f"        if bits & !{(1 << len(roles)) - 1} == 0 {{ Some(Self(bits)) }} else {{ None }}\n",
+            "    pub const fn from_bits(bits: SimpleIrRuntimeRequirementBits) -> Option<Self> {\n",
+            f"        if bits & !{known_mask} == 0 {{ Some(Self(bits)) }} else {{ None }}\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub struct SimpleIrRuntimeRequirementDescriptor {\n",
+            "    pub requirement: SimpleIrRuntimeRequirements,\n",
+            "    pub reason: &'static str,\n",
+            "}\n\n",
+        ]
+    )
+    for _, constant, _, reason in roles:
+        lines.append(
+            f"pub const {constant}_REQUIREMENT_REASON: &str = {_rs_string(reason)};\n"
+        )
+    lines.append(
+        "\npub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS: &[SimpleIrRuntimeRequirementDescriptor] = &[\n"
+    )
+    for _, constant, _, _ in roles:
+        lines.append(
+            "    SimpleIrRuntimeRequirementDescriptor { "
+            f"requirement: SimpleIrRuntimeRequirements::{constant}, "
+            f"reason: {constant}_REQUIREMENT_REASON }},\n"
+        )
+    role_bits = {constant: bit for _, constant, bit, _ in roles}
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Stable external spelling for a target kind.\n",
+            "pub const fn simpleir_target_name(target: super::target_info::TargetKind) -> &'static str {\n",
+            "    match target {\n",
+        ]
+    )
+    for profile in sorted(
+        data["simpleir_target_runtime_profiles"], key=lambda row: row["target"]
+    ):
+        lines.append(
+            f"        super::target_info::TargetKind::{profile['rust_variant']} => {_rs_string(profile['target'])},\n"
+        )
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+            "/// Target-proven runtime semantics from the declarative target profiles.\n",
+            "/// Adding a target is a compile-time-exhaustive profile decision.\n",
+            "#[inline]\n",
+            "pub fn simpleir_target_runtime_requirements(target: super::target_info::TargetKind) -> SimpleIrRuntimeRequirements {\n",
+            "    match target {\n",
+        ]
+    )
+    for profile in sorted(
+        data["simpleir_target_runtime_profiles"], key=lambda row: row["target"]
+    ):
+        bits = sum(1 << role_bits[constant] for constant in profile["supported"])
+        lines.append(
+            f"        super::target_info::TargetKind::{profile['rust_variant']} => SimpleIrRuntimeRequirements({bits}),\n"
+        )
+    lines.extend(
+        [
             "    }\n",
             "}\n\n",
             "/// Return `None` only for an unclassified spelling. Registered kinds\n",
@@ -1248,8 +1340,9 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "    match kind {\n",
         ]
     )
+
     requirements_by_kind = {kind: 0 for kind in registered}
-    for bit, (key, _) in enumerate(roles):
+    for key, _, bit, _ in roles:
         for kind in data.get(key, []):
             requirements_by_kind[kind] = requirements_by_kind.get(kind, 0) | (1 << bit)
     grouped: dict[int, list[str]] = {}
@@ -1424,6 +1517,19 @@ def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
     lines.append("    )\n}\n\n")
     lines.extend(
         [
+            "/// Whether this SimpleIR spelling branches on pending exception state.\n",
+            "/// Generated from `exception_check_kinds` so the authored check and\n",
+            "/// its async-work alias cannot drift across consumers.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_is_exception_check(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(data.get("exception_check_kinds", [])))
+    lines.append("    )\n}\n\n")
+    lines.extend(
+        [
             "/// Whether this SimpleIR spelling is the generated async-work poll.\n",
             "#[inline]\n",
             "pub fn simpleir_kind_is_async_work_poll(kind: &str) -> bool {\n",
@@ -1432,6 +1538,17 @@ def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
         ]
     )
     lines.append(_render_matches_arm(data.get("async_work_poll_kinds", [])))
+    lines.append("    )\n}\n\n")
+    lines.extend(
+        [
+            "/// Whether this SimpleIR role may carry an explicit async-work marker.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_may_carry_async_work_poll_marker(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(data.get("async_work_poll_marker_kinds", [])))
     lines.append("    )\n}\n")
     return "".join(lines)
 

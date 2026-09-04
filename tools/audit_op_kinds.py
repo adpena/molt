@@ -332,6 +332,18 @@ def extract_match_arms(path: Path, fn: str, match_on: str) -> list[str]:
                 continue
             if two == "=>":
                 arms.extend(_string_literals(pat))
+                # Generated SimpleIR membership predicates are declarative
+                # match patterns too. Resolve their backing ``*_kinds`` set
+                # from op_kinds.toml instead of forcing consumers to restate
+                # every member as string literals just for this audit.
+                registry = None
+                for stem in re.findall(r"simpleir_kind_is_([a-z0-9_]+)\s*\(", pat):
+                    registry = registry or _load_op_kinds_toml()
+                    members = registry.get(f"{stem}_kinds")
+                    if isinstance(members, list) and all(
+                        isinstance(member, str) for member in members
+                    ):
+                        arms.extend(members)
                 pat = ""
                 in_pattern = False
                 i += 2

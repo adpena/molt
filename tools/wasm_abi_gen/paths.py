@@ -29,6 +29,9 @@ OUT_RS_FILES = {
 OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )
+OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS = (
+    ROOT / "runtime/molt-backend-native/src/exception_observer_abi.rs"
+)
 OUT_WASM_FACTS_CALLABLE_TABLE_RS = (
     ROOT / "runtime/molt-wasm-facts/src/callable_table_generated.rs"
 )

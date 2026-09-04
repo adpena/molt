@@ -176,6 +176,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     let mut backend = SimpleBackend::new();
     backend.compile_func(
         caller,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeSet::from(["molt_main".to_string()]),

@@ -543,7 +543,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                 }
             }
-            "check_exception" | "async_work_poll" => {
+            kind if crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
                 if let Some(label_id) = op.value {
                     exception_label_ids.insert(label_id);
                 }

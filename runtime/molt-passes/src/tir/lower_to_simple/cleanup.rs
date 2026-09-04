@@ -1,6 +1,11 @@
 use std::collections::HashSet;
 
 use crate::ir::OpIR;
+use crate::tir::dominators::is_simple_exception_transfer_kind;
+use crate::tir::op_kinds_generated::{
+    simpleir_kind_is_suspend, simpleir_kind_is_verifier_label_definition,
+    simpleir_kind_is_verifier_label_reference,
+};
 
 /// Remove dead `label` ops from the linearised op stream.
 ///
@@ -30,19 +35,14 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         // Phase 1: collect all label ids that are explicit branch targets.
         let mut branch_targets: HashSet<i64> = HashSet::new();
         for op in ops.iter() {
-            match op.kind.as_str() {
-                "jump" | "br_if" | "check_exception" | "async_work_poll" | "try_start"
-                | "loop_continue" => {
-                    if let Some(id) = op.value {
-                        branch_targets.insert(id);
-                    }
-                }
-                "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield" => {
-                    if let Some(id) = op.value {
-                        branch_targets.insert(id);
-                    }
-                }
-                _ => {}
+            let kind = op.kind.as_str();
+            if (simpleir_kind_is_verifier_label_reference(kind)
+                || is_simple_exception_transfer_kind(kind)
+                || matches!(kind, "br_if" | "loop_continue")
+                || simpleir_kind_is_suspend(kind))
+                && let Some(id) = op.value
+            {
+                branch_targets.insert(id);
             }
         }
 
@@ -170,55 +170,6 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
     }
 }
 
-pub(super) fn close_try_regions_before_handler_labels(ops: &mut Vec<OpIR>) {
-    let mut active_handlers: Vec<i64> = Vec::new();
-    let mut result = Vec::with_capacity(ops.len());
-    let mut changed = false;
-
-    for op in ops.iter() {
-        if matches!(op.kind.as_str(), "label" | "state_label")
-            && let Some(label) = op.value
-            && let Some(pos) = active_handlers
-                .iter()
-                .rposition(|&handler| handler == label)
-        {
-            let drained: Vec<i64> = active_handlers.drain(pos..).collect();
-            for handler in drained.into_iter().rev() {
-                result.push(OpIR {
-                    kind: "try_end".to_string(),
-                    value: Some(handler),
-                    ..OpIR::default()
-                });
-                changed = true;
-            }
-        }
-
-        match op.kind.as_str() {
-            "try_start" => {
-                if let Some(handler) = op.value {
-                    active_handlers.push(handler);
-                }
-            }
-            "try_end" => {
-                if let Some(handler) = op.value
-                    && let Some(pos) = active_handlers
-                        .iter()
-                        .rposition(|&active| active == handler)
-                {
-                    active_handlers.drain(pos..);
-                }
-            }
-            _ => {}
-        }
-
-        result.push(op.clone());
-    }
-
-    if changed {
-        *ops = result;
-    }
-}
-
 pub(super) fn validate_structured_if_markers(ops: &[OpIR]) -> Result<(), String> {
     #[derive(Clone, Copy)]
     struct IfFrame {
@@ -269,18 +220,17 @@ pub(super) fn missing_label_references(ops: &[crate::ir::OpIR]) -> Vec<i64> {
     let mut defined_labels: HashSet<i64> = HashSet::new();
     let mut referenced_labels: HashSet<i64> = HashSet::new();
     for op in ops {
-        match op.kind.as_str() {
-            "label" | "state_label" => {
-                if let Some(id) = op.value {
-                    defined_labels.insert(id);
-                }
+        let kind = op.kind.as_str();
+        if simpleir_kind_is_verifier_label_definition(kind) {
+            if let Some(id) = op.value {
+                defined_labels.insert(id);
             }
-            "jump" | "br_if" | "check_exception" | "async_work_poll" => {
-                if let Some(id) = op.value {
-                    referenced_labels.insert(id);
-                }
-            }
-            _ => {}
+        } else if (simpleir_kind_is_verifier_label_reference(kind)
+            || is_simple_exception_transfer_kind(kind)
+            || kind == "br_if")
+            && let Some(id) = op.value
+        {
+            referenced_labels.insert(id);
         }
     }
     let mut missing: Vec<i64> = referenced_labels

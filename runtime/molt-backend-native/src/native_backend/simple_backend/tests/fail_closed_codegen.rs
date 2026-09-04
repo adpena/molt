@@ -24,6 +24,7 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
         BTreeMap::from([("caller".to_string(), true), ("helper".to_string(), true)]);
     backend.compile_func(
         caller,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
         &BTreeMap::new(),
         &BTreeMap::new(),
         &defined_functions,

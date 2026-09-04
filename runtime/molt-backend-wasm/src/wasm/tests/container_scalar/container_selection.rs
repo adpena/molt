@@ -11,7 +11,7 @@ fn container_import_selection_ignores_transport_hints() {
         None,
         vec![index.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert_eq!(
         selected_container_runtime_import(&plan, 0, "index", &index),
@@ -30,7 +30,7 @@ fn container_import_selection_uses_typed_container_facts() {
         Some(vec!["list[int]", "int", "int"]),
         vec![index.clone(), set.clone(), len.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert_eq!(
         selected_container_runtime_import(&plan, 0, "index", &index),
@@ -92,7 +92,7 @@ fn container_import_selection_uses_manifest_typed_query_matrix() {
             Some(vec![container_type, "Any"]),
             vec![contains.clone(), len.clone()],
         );
-        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let plan = wasm_representation_plan(&func);
 
         assert_eq!(
             selected_container_runtime_import(&plan, 0, "contains", &contains),
@@ -136,7 +136,7 @@ fn container_import_selection_uses_manifest_index_store_matrix() {
             Some(vec![container_type, "Any", "Any"]),
             vec![index.clone(), store.clone()],
         );
-        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let plan = wasm_representation_plan(&func);
 
         assert_eq!(
             selected_container_runtime_import(&plan, 0, "index", &index),
@@ -162,7 +162,7 @@ fn container_import_selection_uses_flat_list_storage_proof() {
         Some(vec!["int", "int", "int"]),
         vec![make, index.clone(), set.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = wasm_representation_plan(&func);
 
     assert_eq!(
         selected_container_runtime_import(&plan, 1, "index", &index),

@@ -148,12 +148,34 @@ mod tests {
         );
 
         let op_call =
-            op_loop_runtime_call("module_cache_del").expect("module_cache_del op-loop call");
+            op_loop_runtime_call("module_cache_del", false).expect("module_cache_del op-loop call");
         assert_eq!(op_call.import, WasmRuntimeImport::ModuleCacheDel);
         assert_eq!(
             op_call.required_imports,
             [WasmRuntimeImport::ModuleCacheDel],
             "module_cache_del codegen must request its runtime import explicitly"
+        );
+    }
+
+    #[test]
+    fn finally_pending_observer_selects_exactly_one_import_from_the_shared_marker() {
+        let plain = op_loop_runtime_call("exception_finally_pending_observer", false)
+            .expect("plain finally observer runtime call");
+        assert_eq!(plain.import, WasmRuntimeImport::ExceptionLastPending);
+        assert_eq!(
+            plain.required_imports,
+            [WasmRuntimeImport::ExceptionLastPending]
+        );
+
+        let marked = op_loop_runtime_call("exception_finally_pending_observer", true)
+            .expect("marked finally observer runtime call");
+        assert_eq!(
+            marked.import,
+            WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending
+        );
+        assert_eq!(
+            marked.required_imports,
+            [WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending]
         );
     }
 

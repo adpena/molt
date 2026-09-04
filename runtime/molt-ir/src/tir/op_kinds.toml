@@ -343,7 +343,7 @@ simpleir_integer_producer_semantics_kinds = [
 simpleir_identity_semantics_kinds = ["is", "is_not"]
 simpleir_tuple_semantics_kinds = ["tuple_new"]
 simpleir_exception_semantics_kinds = [
-    "raise", "reraise", "check_exception", "loop_break_if_exception",
+    "raise", "reraise", "check_exception", "async_work_poll", "loop_break_if_exception",
     "try_start", "try_end", "except_start", "except_end", "finally_start", "finally_end",
     "exception_push", "exception_pop", "exception_clear", "exception_active",
     "exception_stack_clear", "exception_stack_enter", "exception_stack_exit",
@@ -373,23 +373,34 @@ simpleir_execution_frame_semantics_kinds = [
 # Python-visible frame introspection. A target claiming this capability must
 # provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
 simpleir_frame_introspection_semantics_kinds = ["getframe"]
+simpleir_runtime_requirement_mask_bits = 32
 simpleir_runtime_requirement_roles = [
-    { table = "simpleir_identity_semantics_kinds", constant = "IDENTITY" },
-    { table = "simpleir_tuple_semantics_kinds", constant = "TUPLE" },
-    { table = "simpleir_exception_semantics_kinds", constant = "EXCEPTION" },
-    { table = "simpleir_deterministic_lifetime_semantics_kinds", constant = "DETERMINISTIC_LIFETIME" },
-    { table = "simpleir_format_protocol_semantics_kinds", constant = "FORMAT_PROTOCOL" },
-    { table = "simpleir_iterable_protocol_semantics_kinds", constant = "ITERABLE_PROTOCOL" },
-    { table = "simpleir_object_model_semantics_kinds", constant = "OBJECT_MODEL" },
-    { table = "simpleir_truthiness_semantics_kinds", constant = "TRUTHINESS" },
-    { table = "simpleir_comparison_semantics_kinds", constant = "COMPARISON" },
-    { table = "simpleir_fallible_protocol_semantics_kinds", constant = "FALLIBLE_PROTOCOL" },
-    { table = "simpleir_async_runtime_semantics_kinds", constant = "ASYNC_RUNTIME" },
-    { table = "simpleir_unstructured_control_semantics_kinds", constant = "UNSTRUCTURED_CONTROL" },
-    { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY" },
-    { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME" },
-    { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION" },
+    { table = "simpleir_identity_semantics_kinds", constant = "IDENTITY", bit = 0, reason = "operation requires Python object identity rather than value equality" },
+    { table = "simpleir_tuple_semantics_kinds", constant = "TUPLE", bit = 1, reason = "operation requires a tuple representation distinct from mutable lists" },
+    { table = "simpleir_exception_semantics_kinds", constant = "EXCEPTION", bit = 2, reason = "operation requires Python exception state, matching, and structured unwinding" },
+    { table = "simpleir_deterministic_lifetime_semantics_kinds", constant = "DETERMINISTIC_LIFETIME", bit = 3, reason = "operation requires deterministic Python lifetime/finalizer semantics" },
+    { table = "simpleir_format_protocol_semantics_kinds", constant = "FORMAT_PROTOCOL", bit = 4, reason = "operation requires the Python __format__ protocol and conversion semantics" },
+    { table = "simpleir_iterable_protocol_semantics_kinds", constant = "ITERABLE_PROTOCOL", bit = 5, reason = "operation requires the Python iterable/sequence protocol and exact errors" },
+    { table = "simpleir_object_model_semantics_kinds", constant = "OBJECT_MODEL", bit = 6, reason = "operation requires Python aliasing, cycles, None storage, hashing, and object protocols" },
+    { table = "simpleir_truthiness_semantics_kinds", constant = "TRUTHINESS", bit = 7, reason = "operation requires CPython truthiness across NaN and dynamic containers" },
+    { table = "simpleir_comparison_semantics_kinds", constant = "COMPARISON", bit = 8, reason = "operation requires CPython comparison dispatch, NaN behavior, and exact integers" },
+    { table = "simpleir_fallible_protocol_semantics_kinds", constant = "FALLIBLE_PROTOCOL", bit = 9, reason = "operation can raise and requires structured catchable Python exceptions" },
+    { table = "simpleir_async_runtime_semantics_kinds", constant = "ASYNC_RUNTIME", bit = 10, reason = "operation requires an exact async scheduler and suspension-state model" },
+    { table = "simpleir_unstructured_control_semantics_kinds", constant = "UNSTRUCTURED_CONTROL", bit = 11, reason = "operation requires a target-proven unstructured control-flow lowering" },
+    { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY", bit = 12, reason = "operation requires a target host filesystem or foreign-function capability" },
+    { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME", bit = 13, reason = "operation requires internal execution-frame stack and source-location custody" },
+    { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION", bit = 14, reason = "operation requires exact Python-visible frame objects, locals, globals, and tracing state" },
+    { table = "simpleir_pending_call_eval_breaker_semantics_kinds", constant = "PENDING_CALL_EVAL_BREAKER", bit = 15, reason = "operation requires the target runtime's pending-call and eval-breaker polling boundary" },
 ]
+simpleir_target_runtime_profiles = [
+    { target = "native", rust_variant = "NativeCranelift", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
+    { target = "wasm", rust_variant = "Wasm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
+    { target = "llvm", rust_variant = "Llvm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
+    { target = "luau", rust_variant = "Luau", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "UNSTRUCTURED_CONTROL", "EXECUTION_FRAME"] },
+    { target = "rust", rust_variant = "Rust", supported = [] },
+    { target = "mlir", rust_variant = "Mlir", supported = [] },
+]
+
 # Canonical runtime-call spellings that expose the same Python-visible frame
 # and tracing surface when carried by call/builtin metadata rather than a
 # dedicated SimpleIR opcode.
@@ -508,6 +519,10 @@ simpleir_async_runtime_semantics_kinds = [
     "chan_recv_yield", "chan_send_yield",
     "state_label", "state_switch", "state_transition", "state_yield",
 ]
+# Servicing CPython pending calls and the eval breaker is independent from task
+# scheduling and suspension-state semantics. The explicit wire alias carries
+# this requirement by kind; a marked finally observer acquires it dynamically.
+simpleir_pending_call_eval_breaker_semantics_kinds = ["async_work_poll"]
 simpleir_unstructured_control_semantics_kinds = [
     "goto", "jump", "label",
 ]
@@ -787,7 +802,11 @@ async_work_poll_after_opcodes = [
     "CallSuperMethodIc",
     "CallBuiltin",
 ]
+exception_check_kinds = ["check_exception", "async_work_poll"]
 async_work_poll_kinds = ["async_work_poll"]
+async_work_poll_marker_kinds = [
+    "exception_finally_pending_observer",
+]
 
 # exception CreationRef producers: a fresh exception object reference whose
 # source ownership is released at the `raise` boundary after the runtime has
@@ -2110,6 +2129,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "goto"
+verifier_label_reference = true
 structural = true
 terminator = true
 suspend = false
@@ -2128,6 +2148,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "br_if"
+verifier_label_reference = true
 structural = true
 terminator = false
 suspend = false
@@ -2474,6 +2495,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "try_start"
+verifier_label_reference = true
 verifier_region = "try"
 verifier_region_role = "start"
 structural = false
@@ -2494,6 +2516,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "try_end"
+verifier_label_reference = true
 verifier_region = "try"
 verifier_region_role = "end"
 structural = false

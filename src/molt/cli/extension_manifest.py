@@ -706,7 +706,7 @@ def _validate_extension_manifest(
     *,
     manifest_dir: Path,
     wheel_path: Path | None,
-    require_capabilities: bool,
+    require_nonempty_capabilities: bool,
     required_abi: str | None,
     require_checksum: bool = False,
     warn_missing_checksum: bool = False,
@@ -748,7 +748,7 @@ def _validate_extension_manifest(
         manifest_capabilities = [
             item.strip() for item in capabilities_value if item.strip()
         ]
-    if require_capabilities and not manifest_capabilities:
+    if require_nonempty_capabilities and not manifest_capabilities:
         errors.append(
             "Capabilities are required but manifest capability list is empty."
         )

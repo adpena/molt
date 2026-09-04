@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import shutil
 import sys
@@ -29,17 +28,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from tools import artifact_publish, harness_memory_guard  # noqa: E402
-
-_WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
-_WASM_ABI_SPEC = importlib.util.spec_from_file_location(
-    "molt_tools_wasm_abi_generated", _WASM_ABI_GENERATED
+from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    WASM_EXTERN_KIND_FUNCTION,
+    WASM_EXTERN_KIND_GLOBAL,
+    WASM_EXTERN_KIND_MEMORY,
+    WASM_EXTERN_KIND_TABLE,
+    WASM_EXTERN_KIND_TAG,
+    read_wasm_imports,
 )
-if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
-    raise RuntimeError(f"cannot load generated WASM ABI data: {_WASM_ABI_GENERATED}")
-_WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
-_WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
 
 # ---------------------------------------------------------------------------
@@ -123,158 +125,39 @@ class AnalysisResult:
 
 
 # ---------------------------------------------------------------------------
-# WASM binary parsing (import section only)
+# WASM import projection
 # ---------------------------------------------------------------------------
 
-WASM_MAGIC = b"\x00asm"
-SECTION_IMPORT = 2
-SECTION_TYPE = 1
-
-
-def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
-    """Read an unsigned LEB128-encoded u32. Returns (value, new_offset)."""
-    result = 0
-    shift = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    return result, offset
-
-
-def _read_name(data: bytes, offset: int) -> tuple[str, int]:
-    """Read a WASM name (length-prefixed UTF-8 string)."""
-    length, offset = _read_leb128_u32(data, offset)
-    name = data[offset : offset + length].decode("utf-8", errors="replace")
-    return name, offset + length
-
-
-def _parse_sections(data: bytes) -> dict[int, tuple[int, int]]:
-    """Parse WASM sections, returning {section_id: (offset, size)}."""
-    assert data[:4] == WASM_MAGIC, "Not a valid WASM binary"
-    offset = 8  # Skip magic + version
-    sections: dict[int, tuple[int, int]] = {}
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_leb128_u32(data, offset)
-        sections[section_id] = (offset, section_size)
-        offset += section_size
-    return sections
-
-
-def _parse_type_section(
-    data: bytes, sec_offset: int, sec_size: int
-) -> dict[int, tuple[list, list]]:
-    """Parse the type section to get function signatures.
-
-    Tolerates non-functype entries (sub-types, GC types, rec groups) by
-    skipping entries whose leading byte is not 0x60.
-    """
-    offset = sec_offset
-    end = sec_offset + sec_size
-    count, offset = _read_leb128_u32(data, offset)
-    types: dict[int, tuple[list, list]] = {}
-    for i in range(count):
-        if offset >= end:
-            break
-        form = data[offset]
-        offset += 1
-        if form != 0x60:
-            # Skip non-functype entries (rec group, sub type, etc.)
-            # We can't reliably parse these, so skip to next by scanning
-            # for the next 0x60 or end of section.  Mark this type as unknown.
-            types[i] = ([], [])
-            # Heuristic: try to skip a plausible LEB128 param+result block
-            # by looking for the next functype marker or exhausting section.
-            while offset < end and data[offset] != 0x60:
-                offset += 1
-            continue
-        # Params
-        param_count, offset = _read_leb128_u32(data, offset)
-        params = []
-        for _ in range(param_count):
-            params.append(data[offset])
-            offset += 1
-        # Results
-        result_count, offset = _read_leb128_u32(data, offset)
-        results = []
-        for _ in range(result_count):
-            results.append(data[offset])
-            offset += 1
-        types[i] = (params, results)
-    return types
-
-
-def _valtype_name(vt: int) -> str:
-    return {
-        0x7F: "i32",
-        0x7E: "i64",
-        0x7D: "f32",
-        0x7C: "f64",
-        0x7B: "v128",
-        0x70: "funcref",
-        0x6F: "externref",
-    }.get(vt, f"0x{vt:02x}")
+_IMPORT_KIND_NAMES = {
+    WASM_EXTERN_KIND_FUNCTION: "func",
+    WASM_EXTERN_KIND_TABLE: "table",
+    WASM_EXTERN_KIND_MEMORY: "memory",
+    WASM_EXTERN_KIND_GLOBAL: "global",
+    WASM_EXTERN_KIND_TAG: "tag",
+}
 
 
 def parse_imports(wasm_path: Path) -> list[ImportInfo]:
-    """Parse the import section of a WASM binary."""
-    data = wasm_path.read_bytes()
-    sections = _parse_sections(data)
-
-    if SECTION_IMPORT not in sections:
-        return []
-
-    sec_offset, sec_size = sections[SECTION_IMPORT]
-    offset = sec_offset
-    count, offset = _read_leb128_u32(data, offset)
+    """Project the canonical WASM import interface into analyzer records."""
     imports: list[ImportInfo] = []
-
-    for idx in range(count):
-        module, offset = _read_name(data, offset)
-        name, offset = _read_name(data, offset)
-        kind_byte = data[offset]
-        offset += 1
-
-        type_index = -1
-        if kind_byte == 0x00:  # func
-            type_index, offset = _read_leb128_u32(data, offset)
-            kind = "func"
-        elif kind_byte == 0x01:  # table
-            offset += 1  # elem_type
-            flags = data[offset]
-            offset += 1
-            _initial, offset = _read_leb128_u32(data, offset)
-            if flags & 0x01:
-                _max, offset = _read_leb128_u32(data, offset)
-            kind = "table"
-        elif kind_byte == 0x02:  # memory
-            flags = data[offset]
-            offset += 1
-            _initial, offset = _read_leb128_u32(data, offset)
-            if flags & 0x01:
-                _max, offset = _read_leb128_u32(data, offset)
-            kind = "memory"
-        elif kind_byte == 0x03:  # global
-            _valtype = data[offset]
-            offset += 1
-            _mutability = data[offset]
-            offset += 1
-            kind = "global"
-        else:
-            kind = f"unknown({kind_byte})"
-
-        # Classify the import
+    for index, wasm_import in enumerate(read_wasm_imports(wasm_path)):
+        try:
+            kind = _IMPORT_KIND_NAMES[wasm_import.kind]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported WASM import kind {wasm_import.kind}"
+            ) from exc
         info = ImportInfo(
-            index=idx, module=module, name=name, kind=kind, type_index=type_index
+            index=index,
+            module=wasm_import.module,
+            name=wasm_import.name,
+            kind=kind,
+            type_index=(
+                -1 if wasm_import.type_index is None else wasm_import.type_index
+            ),
         )
         _classify_import(info)
         imports.append(info)
-
     return imports
 
 

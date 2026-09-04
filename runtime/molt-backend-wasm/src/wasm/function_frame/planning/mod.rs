@@ -54,7 +54,10 @@ impl WasmFunctionFramePlan {
             &mut local_count,
         );
 
-        let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
+        let scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
+            func_ir,
+            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
+        );
         let mut requirements = FrameRuntimeRequirements::default();
         let mut seed_plan = FrameConstSeedPlan::default();
         let allocation_policy = FrameLocalAllocationPolicy {

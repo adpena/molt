@@ -6,6 +6,13 @@
 use super::super::test_fixtures::{function, op};
 use super::super::*;
 
+fn native_representation_plan(func_ir: &FunctionIR) -> ScalarRepresentationPlan {
+    ScalarRepresentationPlan::for_function_ir_for_target(
+        func_ir,
+        &crate::tir::TargetInfo::native_release_fast(),
+    )
+}
+
 fn const_int(out: &str, value: i64) -> OpIR {
     OpIR {
         kind: "const".to_string(),
@@ -67,7 +74,7 @@ fn container_kind_comes_from_structured_tir_types() {
         ]),
         vec![op("ret", None, None, &["xs"])],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_container_kind("xs"), Some(ContainerKind::List));
     assert_eq!(plan.name_container_kind("d"), Some(ContainerKind::Dict));
@@ -82,7 +89,7 @@ fn container_transport_metadata_does_not_seed_container_kind() {
     index.container_type = Some("list".to_string());
     index.type_hint = Some("list".to_string());
     let func = function("transport_only", &["xs", "i"], None, vec![index]);
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_container_kind("xs"), None);
     assert_eq!(plan.name_container_kind("item"), None);
@@ -98,7 +105,7 @@ fn flat_list_storage_requires_structural_producer() {
         None,
         vec![index.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_container_storage_kind("xs"), None);
     assert!(!plan.op_has_container_storage(0, &index, ContainerStorageKind::FlatListInt));
@@ -117,7 +124,7 @@ fn list_int_new_seeds_flat_storage_and_aliases() {
         Some(vec!["int"]),
         vec![list_new, copy, store, load, index.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(
         plan.name_container_storage_kind("xs"),
@@ -151,7 +158,7 @@ fn non_int_store_index_conflicts_flat_list_storage() {
         None,
         vec![list_new, idx, value, store.clone(), index.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_container_storage_kind("xs"), None);
     assert_eq!(plan.name_container_storage_kind("ys"), None);
@@ -168,7 +175,7 @@ fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
         Some(vec!["list[bool]", "int"]),
         vec![index],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (_, bool_like, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
@@ -195,7 +202,7 @@ fn index_result_lane_comes_from_element_fact_not_key() {
         Some(vec!["list[int]", "int"]),
         vec![index.clone()],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
@@ -237,7 +244,7 @@ fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
             dict_set.clone(),
         ],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert!(!plan.op_index_key_is_integer_family(&store_index));
     assert!(!plan.op_index_key_is_integer_family(&dict_set));
@@ -269,7 +276,7 @@ fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
             add.clone(),
         ],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
     assert!(
@@ -312,7 +319,7 @@ fn generic_index_does_not_promote_result_from_integer_key() {
             ),
         ],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
@@ -341,7 +348,7 @@ fn alias_group_unknown_loop_header_source_terminates_without_promotion() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
     assert!(
@@ -368,7 +375,7 @@ fn pending_store_target_dominates_same_name_alias_output() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
     assert!(
@@ -394,7 +401,7 @@ fn pending_store_target_remains_relevant_for_same_name_alias_output() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
     assert!(
@@ -418,7 +425,7 @@ fn pending_alias_source_blocks_store_target_reinsert_loop() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
     assert!(
@@ -455,7 +462,7 @@ fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
             op("loop_break_if_true", None, None, &["done_flag"]),
         ],
     );
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, bool_like, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
@@ -511,8 +518,7 @@ fn plan_uses_entry_param_names_as_scalar_facts() {
         vec![op("ret", None, Some("x"), &[])],
     );
 
-    let (int_like, bool_like, _, _, _) =
-        ScalarRepresentationPlan::for_function_ir(&func).scalar_name_sets();
+    let (int_like, bool_like, _, _, _) = native_representation_plan(&func).scalar_name_sets();
 
     assert!(int_like.contains("x"));
     assert!(bool_like.contains("flag"));
@@ -532,8 +538,7 @@ fn plan_propagates_store_targets_only_when_all_sources_match() {
             op("ret", None, Some("slot"), &[]),
         ],
     );
-    let (int_like, bool_like, _, _, _) =
-        ScalarRepresentationPlan::for_function_ir(&mixed).scalar_name_sets();
+    let (int_like, bool_like, _, _, _) = native_representation_plan(&mixed).scalar_name_sets();
     assert!(!int_like.contains("slot"));
     assert!(!bool_like.contains("slot"));
 
@@ -547,8 +552,7 @@ fn plan_propagates_store_targets_only_when_all_sources_match() {
             op("ret", None, Some("slot"), &[]),
         ],
     );
-    let (int_like, _, _, _, _) =
-        ScalarRepresentationPlan::for_function_ir(&uniform).scalar_name_sets();
+    let (int_like, _, _, _, _) = native_representation_plan(&uniform).scalar_name_sets();
     assert!(int_like.contains("slot"));
 }
 
@@ -594,8 +598,7 @@ fn generic_type_hint_does_not_seed_plan_scalar_fact() {
     generic.type_hint = Some("int".to_string());
     let func = function("generic_hint", &[], None, vec![generic]);
 
-    let (int_like, _, _, _, _) =
-        ScalarRepresentationPlan::for_function_ir(&func).scalar_name_sets();
+    let (int_like, _, _, _, _) = native_representation_plan(&func).scalar_name_sets();
 
     assert!(!int_like.contains("maybe_int"));
 }
@@ -614,7 +617,7 @@ fn integer_family_preserves_boxed_unbounded_arithmetic_lane() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let (int_like, _, float_like, _, _) = plan.scalar_name_sets();
     let integer_family = plan.integer_family_names();
 
@@ -640,7 +643,7 @@ fn primary_int_names_admit_bounded_arithmetic_range_proof() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let primary = plan.primary_name_sets();
 
     assert!(primary.int.contains("lhs"));
@@ -659,7 +662,7 @@ fn primary_int_names_exclude_unbounded_param_arithmetic_without_range_proof() {
         vec![op("add", Some("sum"), None, &["lhs", "rhs"])],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let primary = plan.primary_name_sets();
 
     assert!(!primary.int.contains("lhs"));
@@ -680,7 +683,7 @@ fn primary_int_names_exclude_arithmetic_that_can_overflow_i64() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     assert!(primary.int.contains("lhs"));
     assert!(primary.int.contains("rhs"));
@@ -710,7 +713,7 @@ fn counted_store_load_loop_proves_bounded_i64_add() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     assert!(primary.int.contains("i"));
     assert!(primary.int.contains("i_cur"));
@@ -740,7 +743,7 @@ fn mismatched_counted_loop_direction_does_not_prove_update_range() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     assert!(!primary.int.contains("i"));
     assert!(!primary.int.contains("i_cur"));
@@ -762,7 +765,7 @@ fn bool_primary_projection_is_tir_value_owned() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     for name in ["flag", "flag_copy", "cmp", "negated"] {
         assert!(
@@ -787,7 +790,7 @@ fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
         vec![pow.clone()],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.op_scalar_lane(&pow), None);
 }
@@ -800,7 +803,7 @@ fn transport_hints_do_not_prove_scalar_representation() {
     add.type_hint = Some("int".to_string());
     let func = function("hinted_add", &["lhs", "rhs"], None, vec![add.clone()]);
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.op_scalar_lane(&add), None);
     assert!(!plan.op_prefers_integer_runtime_lane(&add));
@@ -818,7 +821,7 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
         vec![add.clone(), mul.clone()],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert!(plan.op_prefers_integer_runtime_lane(&add));
     assert!(plan.op_prefers_integer_runtime_lane(&mul));
@@ -850,13 +853,66 @@ fn const_numeric_ops_prove_direct_numeric_result_lanes() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
     assert_eq!(
         plan.op_direct_numeric_repr(5, &f_add),
         Some(Repr::FloatUnboxed)
     );
+}
+
+#[test]
+fn direct_numeric_repr_uses_current_producer_not_durable_source_index() {
+    let mut safe_add = op("add", Some("safe_sum"), None, &["lhs", "rhs"]);
+    safe_add.source_op_idx = Some(5);
+    let unproven_add = op(
+        "add",
+        Some("unproven_sum"),
+        None,
+        &["unknown_lhs", "unknown_rhs"],
+    );
+    let func = function(
+        "relifted_numeric_producers",
+        &["unknown_lhs", "unknown_rhs"],
+        None,
+        vec![
+            const_int("lhs", 2),
+            const_int("rhs", 3),
+            safe_add.clone(),
+            const_bool("padding_a", true),
+            const_bool("padding_b", false),
+            unproven_add.clone(),
+        ],
+    );
+
+    let plan = native_representation_plan(&func);
+
+    assert_eq!(
+        plan.op_direct_numeric_repr(2, &safe_add),
+        Some(Repr::RawI64Safe)
+    );
+    assert_eq!(plan.op_direct_numeric_repr(5, &unproven_add), None);
+}
+
+#[test]
+fn duplicate_output_producers_block_direct_numeric_projection() {
+    let add = op("add", Some("rebound"), None, &["lhs", "rhs"]);
+    let func = function(
+        "ambiguous_numeric_producer",
+        &["fallback"],
+        None,
+        vec![
+            const_int("lhs", 2),
+            const_int("rhs", 3),
+            add.clone(),
+            op("copy", Some("rebound"), None, &["fallback"]),
+        ],
+    );
+
+    let plan = native_representation_plan(&func);
+
+    assert_eq!(plan.op_direct_numeric_repr(2, &add), None);
 }
 
 #[test]
@@ -884,7 +940,7 @@ fn returned_counted_loop_retains_direct_add_op_repr() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.op_direct_numeric_repr(8, &add), Some(Repr::RawI64Safe));
 }
@@ -900,7 +956,7 @@ fn list_repeat_does_not_take_integer_runtime_lane() {
         vec![list_new, repeat.clone()],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_scalar_kind("items"), None);
     assert!(!plan.op_prefers_integer_runtime_lane(&repeat));
@@ -917,7 +973,7 @@ fn scalar_lane_keeps_float_pow_on_float_lane() {
         vec![pow.clone()],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(plan.op_scalar_lane(&pow), Some(ScalarKind::Float));
 }
@@ -958,7 +1014,7 @@ fn scalar_store_targets_are_plan_owned_and_all_sources() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
 
     assert_eq!(
         plan.scalar_store_targets(ScalarKind::Int),
@@ -1021,7 +1077,7 @@ fn raw_loop_iv_copy_used_by_object_ops_stays_primary_until_escape() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let int_primary = plan.primary_name_sets().int;
 
     for name in ["_bb1_arg0", "iv", "escaped_iv", "next", "next_copy"] {
@@ -1048,7 +1104,7 @@ fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let primary = plan.primary_name_sets();
 
     assert!(primary.float.contains("base"));
@@ -1076,7 +1132,7 @@ fn float_primary_store_targets_require_all_sources() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     assert!(primary.float.contains("f_seed"));
     assert!(primary.float.contains("float_slot"));
@@ -1121,7 +1177,7 @@ fn scalar_primary_excludes_missing_sentinel_store_sources() {
         ],
     );
 
-    let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+    let primary = native_representation_plan(&func).primary_name_sets();
 
     assert!(primary.int.contains("int_slot"));
     assert!(primary.bool_.contains("bool_slot"));
@@ -1147,7 +1203,7 @@ fn cold_module_chunk_functions_have_empty_primary_sets() {
         ],
     );
 
-    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+    let plan = native_representation_plan(&func);
     let primary = plan.primary_name_sets();
 
     assert!(primary.int.is_empty());

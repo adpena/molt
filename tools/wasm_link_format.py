@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import importlib.util
 import re
 import sys
 from collections.abc import Mapping
@@ -13,15 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
-_WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
-_WASM_ABI_SPEC = importlib.util.spec_from_file_location(
-    "molt_tools_wasm_abi_generated", _WASM_ABI_GENERATED
-)
-if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
-    raise RuntimeError(f"cannot load generated WASM ABI data: {_WASM_ABI_GENERATED}")
-_WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
-_WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
+from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    WasmImport,
+    parse_wasm_export_section,
+    parse_wasm_import_section,
+    parse_wasm_sections,
+    parse_wasm_type_section_groups,
+)
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols  # noqa: E402
 
 WASM_MAGIC = b"\x00asm"
@@ -85,6 +84,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
     _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 )
 
+
 @dataclass(frozen=True, slots=True)
 class CallableTableLayout:
     fixed_prefix_base: int
@@ -113,6 +113,8 @@ class CallableTableLayout:
         app_end = self.finalized_app_base + self.app_entry_count
         if app_end > 0xFFFF_FFFF:
             raise ValueError("callable-table finalized app boundary overflows u32")
+
+
 def wasm_runtime_import_name(name: str) -> str | None:
     return _WASM_ABI.wasm_runtime_import_name(name)
 
@@ -157,7 +159,7 @@ _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
 
 @dataclass(frozen=True, slots=True)
 class WasmModuleFacts:
-    imports: tuple[tuple[str, str, int, bytes], ...]
+    imports: tuple[WasmImport, ...]
     exports: frozenset[str]
     function_exports: Mapping[str, int]
     export_kinds: Mapping[str, tuple[int, int]]
@@ -215,21 +217,7 @@ def _write_string(value: str) -> bytes:
     return _write_varuint(len(raw)) + raw
 
 
-def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
-    if len(data) < 8 or data[:4] != WASM_MAGIC or data[4:8] != WASM_VERSION:
-        raise ValueError("Invalid wasm header")
-    offset = 8
-    sections: list[tuple[int, bytes]] = []
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        size, offset = _read_varuint(data, offset)
-        end = offset + size
-        if end > len(data):
-            raise ValueError("Unexpected EOF while reading section")
-        sections.append((section_id, data[offset:end]))
-        offset = end
-    return sections
+_parse_sections = parse_wasm_sections
 
 
 def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
@@ -241,127 +229,6 @@ def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
         output.extend(_write_varuint(len(payload)))
         output.extend(payload)
     return bytes(output)
-
-
-def _flatten_rec_groups(data: bytes) -> bytes | None:
-    """Rewrite the type section so a recursive type group (`0x4E`) of plain
-    function types is re-emitted as a run of standalone function types.
-
-    wasm-ld 22 / LLD 22 (LLVM 22 toolchain drift) emits the merged type section
-    as a single GC-proposal *recursive type group* even when every member is an
-    ordinary MVP `func` type with no actual recursion. The rec-group encoding
-    (`0x4E`) is only valid under the GC proposal, so a pre-GC parser — molt's own
-    wasmtime-based host runner, Cloudflare Workers' V8, and `wasm-opt` without
-    `--all-features` — rejects the module with "rec group usage requires `gc`
-    proposal to be enabled". Flattening the group back to standalone types is a
-    pure *encoding* canonicalization: a singleton-or-flat run of `func` types is
-    semantically identical to one rec group of the same types, and because the
-    members keep their exact sequential order, every existing type index (in the
-    function section, `call_indirect`, etc.) stays valid with no renumbering.
-
-    Returns the rewritten module, or ``None`` when there is no type section or no
-    rec group to flatten. Fails closed (raises ``ValueError``) if a rec group
-    contains anything other than plain `func` types, since collapsing real
-    subtype/recursive structure would change the module's meaning.
-
-    Function parameter/result value types are walked with full awareness of the
-    multi-byte typed-reference encodings (`0x64 (ref ht)` / `0x63 (ref null ht)`,
-    each followed by a heap-type LEB128) that LLD 22 introduces alongside the rec
-    group, so the byte spans are skipped exactly — a single-byte value-type
-    assumption would desynchronize the walk.
-    """
-    REC_GROUP = 0x4E
-    FUNC_FORM = 0x60
-    REF_FORMS = (0x63, 0x64)  # (ref null ht), (ref ht): prefix + heaptype LEB128
-
-    try:
-        sections = _parse_sections(data)
-    except ValueError:
-        return None
-
-    type_section_index = -1
-    payload = b""
-    for idx, (sid, sec_payload) in enumerate(sections):
-        if sid == 1:
-            type_section_index = idx
-            payload = sec_payload
-            break
-    if type_section_index < 0:
-        return None
-
-    offset = 0
-    group_count, offset = _read_varuint(payload, offset)
-
-    def _skip_value_type(buf: bytes, pos: int) -> int:
-        # Numtypes / vectype / abstract heap-type reftypes are a single byte;
-        # the concrete-reference forms (0x63/0x64) carry a trailing heap-type
-        # LEB128 whose byte-length is sign-agnostic, so an unsigned-LEB skip
-        # advances past it correctly.
-        form = buf[pos]
-        pos += 1
-        if form in REF_FORMS:
-            _heap_type, pos = _read_varuint(buf, pos)
-        return pos
-
-    def _read_func_type(buf: bytes, pos: int) -> tuple[bytes, int]:
-        # buf[pos] is the 0x60 func form byte. Returns (encoded_func, new_pos).
-        start = pos
-        if buf[pos] != FUNC_FORM:
-            raise ValueError(
-                f"type section: expected func form 0x60, found {hex(buf[pos])}"
-            )
-        pos += 1
-        param_count, pos = _read_varuint(buf, pos)
-        for _ in range(param_count):
-            pos = _skip_value_type(buf, pos)
-        result_count, pos = _read_varuint(buf, pos)
-        for _ in range(result_count):
-            pos = _skip_value_type(buf, pos)
-        return buf[start:pos], pos
-
-    flat_types: list[bytes] = []
-    saw_rec_group = False
-    for _ in range(group_count):
-        form = payload[offset]
-        if form == REC_GROUP:
-            saw_rec_group = True
-            offset += 1
-            member_count, offset = _read_varuint(payload, offset)
-            for _member in range(member_count):
-                if payload[offset] != FUNC_FORM:
-                    raise ValueError(
-                        "rec group flatten: group member is not a plain func "
-                        f"type (form {hex(payload[offset])}); cannot flatten a "
-                        "real recursive/subtype group without changing semantics"
-                    )
-                encoded, offset = _read_func_type(payload, offset)
-                flat_types.append(encoded)
-        elif form == FUNC_FORM:
-            encoded, offset = _read_func_type(payload, offset)
-            flat_types.append(encoded)
-        else:
-            raise ValueError(
-                "rec group flatten: unsupported type form "
-                f"{hex(form)} in type section; expected func (0x60) or rec "
-                "group (0x4E) of func types"
-            )
-
-    if not saw_rec_group:
-        return None
-    if offset != len(payload):
-        raise ValueError(
-            "rec group flatten: trailing bytes after type section "
-            f"({offset} != {len(payload)})"
-        )
-
-    new_payload = bytearray()
-    new_payload.extend(_write_varuint(len(flat_types)))
-    for encoded in flat_types:
-        new_payload.extend(encoded)
-
-    new_sections = list(sections)
-    new_sections[type_section_index] = (1, bytes(new_payload))
-    return _build_sections(new_sections)
 
 
 def _parse_custom_section(payload: bytes) -> tuple[str, bytes]:
@@ -633,19 +500,11 @@ def _parse_export_payload(
     exports: set[str] = set()
     function_exports: dict[str, int] = {}
     export_kinds: dict[str, tuple[int, int]] = {}
-    offset = 0
-    count, offset = _read_varuint(payload, offset)
-    for _ in range(count):
-        name, offset = _read_string(payload, offset)
-        if offset >= len(payload):
-            raise ValueError("Unexpected EOF while reading export kind")
-        kind = payload[offset]
-        offset += 1
-        index, offset = _read_varuint(payload, offset)
-        exports.add(name)
-        export_kinds[name] = (kind, index)
-        if kind == 0:
-            function_exports[name] = index
+    for wasm_export in parse_wasm_export_section(payload):
+        exports.add(wasm_export.name)
+        export_kinds[wasm_export.name] = (wasm_export.kind, wasm_export.index)
+        if wasm_export.kind == 0:
+            function_exports[wasm_export.name] = wasm_export.index
     return exports, function_exports, export_kinds
 
 
@@ -762,8 +621,10 @@ def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     """Return the number of function imports in the import section."""
     for sid, payload in sections:
         if sid == 2:
-            _, func_imports, _, _, _ = _parse_import_payload(payload)
-            return func_imports
+            return sum(
+                wasm_import.kind == 0
+                for wasm_import in parse_wasm_import_section(payload)
+            )
     return 0
 
 
@@ -780,117 +641,6 @@ def _get_total_func_count(data: bytes) -> int:
     return import_count + defined_count
 
 
-def _parse_limits(data: bytes, offset: int) -> int:
-    flags, offset = _read_varuint(data, offset)
-    _, offset = _read_varuint(data, offset)
-    if flags & 0x01:
-        _, offset = _read_varuint(data, offset)
-    return offset
-
-
-def _read_limits(data: bytes, offset: int) -> tuple[int, int, int | None, int]:
-    flags, offset = _read_varuint(data, offset)
-    minimum, offset = _read_varuint(data, offset)
-    maximum = None
-    if flags & 0x01:
-        maximum, offset = _read_varuint(data, offset)
-    return flags, minimum, maximum, offset
-
-
-def _write_limits(flags: int, minimum: int, maximum: int | None) -> bytes:
-    output = bytearray()
-    output.extend(_write_varuint(flags))
-    output.extend(_write_varuint(minimum))
-    if flags & 0x01:
-        if maximum is None:
-            maximum = minimum
-        output.extend(_write_varuint(maximum))
-    return bytes(output)
-
-
-def _parse_import_desc(data: bytes, offset: int, kind: int) -> int:
-    if kind == 0:
-        _, offset = _read_varuint(data, offset)
-        return offset
-    if kind == 1:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading table import")
-        offset += 1
-        return _parse_limits(data, offset)
-    if kind == 2:
-        return _parse_limits(data, offset)
-    if kind == 3:
-        if offset + 2 > len(data):
-            raise ValueError("Unexpected EOF while reading global import")
-        return offset + 2
-    if kind == 4:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading tag import")
-        offset += 1
-        _, offset = _read_varuint(data, offset)
-        return offset
-    raise ValueError(f"Unknown import kind: {kind}")
-
-
-def _import_limits_min(kind: int, desc: bytes) -> int | None:
-    if not desc:
-        return None
-    if kind == 1:
-        _, minimum, _, _ = _read_limits(desc, 1)
-        return minimum
-    if kind == 2:
-        _, minimum, _, _ = _read_limits(desc, 0)
-        return minimum
-    return None
-
-
-def _parse_import_payload(
-    payload: bytes,
-) -> tuple[
-    list[tuple[str, str, int, bytes]],
-    int,
-    dict[str, set[str]],
-    dict[tuple[str, str], int],
-    dict[tuple[str, str], int],
-]:
-    imports: list[tuple[str, str, int, bytes]] = []
-    module_imports: dict[str, set[str]] = {}
-    table_import_mins: dict[tuple[str, str], int] = {}
-    memory_import_mins: dict[tuple[str, str], int] = {}
-    func_imports = 0
-    offset = 0
-    count, offset = _read_varuint(payload, offset)
-    for _ in range(count):
-        module, offset = _read_string(payload, offset)
-        name, offset = _read_string(payload, offset)
-        if offset >= len(payload):
-            raise ValueError("Unexpected EOF while reading import kind")
-        kind = payload[offset]
-        offset += 1
-        desc_start = offset
-        offset = _parse_import_desc(payload, offset, kind)
-        desc = payload[desc_start:offset]
-        imports.append((module, name, kind, desc))
-        module_imports.setdefault(module, set()).add(name)
-        if kind == 0:
-            func_imports += 1
-        elif kind == 1:
-            minimum = _import_limits_min(kind, desc)
-            if minimum is not None:
-                table_import_mins[(module, name)] = minimum
-        elif kind == 2:
-            minimum = _import_limits_min(kind, desc)
-            if minimum is not None:
-                memory_import_mins[(module, name)] = minimum
-    return (
-        imports,
-        func_imports,
-        module_imports,
-        table_import_mins,
-        memory_import_mins,
-    )
-
-
 def _collect_exports(data: bytes) -> set[str]:
     for section_id, payload in _parse_sections(data):
         if section_id == 7:
@@ -899,17 +649,16 @@ def _collect_exports(data: bytes) -> set[str]:
     return set()
 
 
-def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
+def _collect_imports(data: bytes) -> list[WasmImport]:
     for section_id, payload in _parse_sections(data):
         if section_id == 2:
-            imports, _, _, _, _ = _parse_import_payload(payload)
-            return imports
+            return parse_wasm_import_section(payload)
     return []
 
 
 def _has_table(data: bytes) -> bool:
-    for module, name, kind, _ in _collect_imports(data):
-        if kind == 1 and name == "__indirect_function_table":
+    for wasm_import in _collect_imports(data):
+        if wasm_import.kind == 1 and wasm_import.name == "__indirect_function_table":
             return True
     for section_id, _ in _parse_sections(data):
         if section_id == 4:
@@ -918,30 +667,29 @@ def _has_table(data: bytes) -> bool:
 
 
 def _validate_linked_table_import_contract(
-    imports: list[tuple[str, str, int, bytes]],
+    imports: tuple[WasmImport, ...],
 ) -> tuple[bool, str | None]:
-    table_imports = [
-        (module, name, desc) for module, name, kind, desc in imports if kind == 1
-    ]
+    table_imports = [wasm_import for wasm_import in imports if wasm_import.kind == 1]
     if not table_imports:
         return True, None
     if len(table_imports) > 1:
         table_names = ", ".join(
-            f"{module}::{name}" for module, name, _ in table_imports
+            f"{wasm_import.module}::{wasm_import.name}" for wasm_import in table_imports
         )
         return (
             False,
             "Linked wasm imports multiple tables "
             f"({table_names}); only env::__indirect_function_table is supported.",
         )
-    module, name, desc = table_imports[0]
-    if module != "env" or name != "__indirect_function_table":
+    table_import = table_imports[0]
+    if table_import.module != "env" or table_import.name != "__indirect_function_table":
         return (
             False,
             "Linked wasm imports unsupported table "
-            f"{module}::{name}; expected env::__indirect_function_table.",
+            f"{table_import.module}::{table_import.name}; expected "
+            "env::__indirect_function_table.",
         )
-    if not desc:
+    if table_import.limits_flags is None or table_import.minimum is None:
         return False, "Linked wasm table import is missing its limits descriptor."
     return True, None
 
@@ -1000,10 +748,10 @@ def _find_func_import_index(
     data: bytes, module_name: str, import_name: str
 ) -> int | None:
     func_index = 0
-    for module, name, kind, _desc in _collect_imports(data):
-        if kind != 0:
+    for wasm_import in _collect_imports(data):
+        if wasm_import.kind != 0:
             continue
-        if module == module_name and name == import_name:
+        if wasm_import.module == module_name and wasm_import.name == import_name:
             return func_index
         func_index += 1
     return None
@@ -1038,14 +786,17 @@ def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
     """
     for section_id, payload in _parse_sections(wasm_data):
         if section_id == 2:
-            _, _, module_imports, _, _ = _parse_import_payload(payload)
-            return set(module_imports.get(module_name, ()))
+            return {
+                wasm_import.name
+                for wasm_import in parse_wasm_import_section(payload)
+                if wasm_import.module == module_name
+            }
     return set()
 
 
 def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
     sections = _parse_sections(data)
-    imports: list[tuple[str, str, int, bytes]] = []
+    imports: list[WasmImport] = []
     exports: set[str] = set()
     function_exports: dict[str, int] = {}
     export_kinds: dict[str, tuple[int, int]] = {}
@@ -1067,13 +818,18 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
             custom_names.append(name)
             continue
         if section_id == 2 and not saw_imports:
-            (
-                imports,
-                _func_import_count,
-                module_imports,
-                table_import_mins,
-                memory_import_mins,
-            ) = _parse_import_payload(payload)
+            imports = parse_wasm_import_section(payload)
+            for wasm_import in imports:
+                module_imports.setdefault(wasm_import.module, set()).add(
+                    wasm_import.name
+                )
+                if wasm_import.minimum is None:
+                    continue
+                key = (wasm_import.module, wasm_import.name)
+                if wasm_import.kind == 1:
+                    table_import_mins[key] = wasm_import.minimum
+                elif wasm_import.kind == 2:
+                    memory_import_mins[key] = wasm_import.minimum
             saw_imports = True
             continue
         if section_id == 7 and not saw_exports:
@@ -1103,23 +859,19 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
 
 def _parse_type_section(
     sections: list[tuple[int, bytes]],
-) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+) -> list[tuple[tuple[bytes, ...], tuple[bytes, ...]]]:
     """Parse the type section and return a list of (param_types, result_types)."""
     for sid, payload in sections:
         if sid == 1:
-            offset = 0
-            type_count, offset = _read_varuint(payload, offset)
-            types: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
-            for _ in range(type_count):
-                _form = payload[offset]
-                offset += 1
-                pc, offset = _read_varuint(payload, offset)
-                params = tuple(payload[offset + j] for j in range(pc))
-                offset += pc
-                rc, offset = _read_varuint(payload, offset)
-                results = tuple(payload[offset + j] for j in range(rc))
-                offset += rc
-                types.append((params, results))
+            types: list[tuple[tuple[bytes, ...], tuple[bytes, ...]]] = []
+            for group in parse_wasm_type_section_groups(payload):
+                for entry in group.entries:
+                    if entry.function_signature is None:
+                        raise ValueError(
+                            "type section contains a non-function type where the "
+                            "link editor requires function signatures"
+                        )
+                    types.append(entry.function_signature)
             return types
     return []
 

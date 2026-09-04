@@ -16,9 +16,8 @@
 
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, SimpleIR};
-use molt_tir::target_admission::{
-    NumericTargetCapabilities, RuntimeTargetCapabilities, validate_target_contract,
-};
+use molt_tir::target_admission::validate_target_contract;
+use molt_tir::tir::TargetInfo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -135,12 +134,7 @@ impl RustBackend {
     /// Dispatch records are the sole authority; unsupported operations emit no
     /// source and this Result boundary never publishes a partial program.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        validate_target_contract(
-            ir,
-            "rust",
-            NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
-            RuntimeTargetCapabilities::NONE,
-        )?;
+        validate_target_contract(ir, &TargetInfo::rust_release_fast())?;
         let source = self.emit_source(ir);
         if !self.unsupported_ops.is_empty() {
             return Err(format!(
@@ -254,7 +248,10 @@ impl RustBackend {
             is_extern: func.is_extern,
             execution_context: func.execution_context,
         };
-        self.current_scalar_plan = Some(ScalarRepresentationPlan::for_function_ir(&plan_func));
+        self.current_scalar_plan = Some(ScalarRepresentationPlan::for_function_ir_for_target(
+            &plan_func,
+            &TargetInfo::rust_release_fast(),
+        ));
 
         // Collect loop index vars (need pre-declaration so they persist across iterations)
         let loop_idx_vars: Vec<String> = ops
@@ -496,16 +493,11 @@ impl RustBackend {
             .iter()
             .rev()
             .find(|op| {
-                !matches!(
-                    op.kind.as_str(),
-                    "nop"
-                        | "comment"
-                        | "debug_label"
-                        | "line"
-                        | "check_exception"
-                        | "async_work_poll"
-                        | "label"
-                )
+                !op.is_async_work_poll()
+                    && !matches!(
+                        op.kind.as_str(),
+                        "nop" | "comment" | "debug_label" | "line" | "check_exception" | "label"
+                    )
             })
             .is_none_or(|op| {
                 !molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(

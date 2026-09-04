@@ -13,7 +13,9 @@ pub(super) fn emit_exception_control_op(
     match op.kind.as_str() {
         "try_start" => emit_try_start(context, func),
         "try_end" => emit_try_end(context, func),
-        "check_exception" | "async_work_poll" => emit_check_exception(context, func, op),
+        kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
+            emit_check_exception(context, func, op)
+        }
         _ => return false,
     }
     true
@@ -56,7 +58,7 @@ fn emit_try_end(context: &mut ControlOpContext<'_>, func: &mut Function) {
 }
 
 fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
-    let async_work_poll = op.kind == "async_work_poll";
+    let async_work_poll = op.is_async_work_poll();
     if !async_work_poll
         && (context.native_eh_enabled
             || context

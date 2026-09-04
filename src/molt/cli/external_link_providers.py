@@ -24,6 +24,9 @@ _PROVIDER_CLASS_PRECEDENCE = (
     WASM_LIBCXX_LINK_IMPORT_CLASS,
 )
 
+_ProviderArchiveKey = tuple[str, tuple[tuple[str, int, int, int], ...]]
+_ProviderResolutionKey = tuple[str, tuple[_ProviderArchiveKey, ...]]
+
 
 @dataclass(frozen=True)
 class ExternalLinkProviderSurface:
@@ -63,8 +66,8 @@ def _resolved_provider_archives(
 
 def _provider_resolution_key(
     target_triple: str,
-) -> tuple[tuple[str, tuple[tuple[str, int, int, int], ...]], ...]:
-    key: list[tuple[str, tuple[tuple[str, int, int, int], ...]]] = []
+) -> _ProviderResolutionKey:
+    key: list[_ProviderArchiveKey] = []
     for primitive_class, archives in _resolved_provider_archives(target_triple):
         archive_keys: list[tuple[str, int, int, int]] = []
         for archive in archives:
@@ -83,20 +86,24 @@ def _provider_resolution_key(
                 )
             )
         key.append((primitive_class, tuple(archive_keys)))
-    return tuple(key)
+    return target_triple.strip().lower(), tuple(key)
 
 
 @functools.lru_cache(maxsize=8)
 def _provider_surfaces_from_key(
-    key: tuple[tuple[str, tuple[tuple[str, int, int, int], ...]], ...],
+    key: _ProviderResolutionKey,
 ) -> tuple[ExternalLinkProviderSurface, ...]:
+    target_triple, provider_archives = key
     surfaces: list[ExternalLinkProviderSurface] = []
-    for primitive_class, archive_keys in key:
+    for primitive_class, archive_keys in provider_archives:
         archives = tuple(Path(path) for path, _size, _mtime, _ctime in archive_keys)
         symbols: set[str] = set()
         readable = bool(archives)
         for archive in archives:
-            facts = _native_archive_global_symbol_sets(archive)
+            facts = _native_archive_global_symbol_sets(
+                archive,
+                target_triple=target_triple,
+            )
             if facts is None:
                 readable = False
                 break
@@ -132,19 +139,16 @@ def wasm_external_link_provider_symbol_classes(
 ) -> Mapping[str, str]:
     """Map every available provider export to its canonical provider class."""
 
-    return _provider_symbol_classes_from_key(
-        _provider_resolution_key(target_triple)
-    )
+    return _provider_symbol_classes_from_key(_provider_resolution_key(target_triple))
 
 
 @functools.lru_cache(maxsize=8)
 def _provider_symbol_classes_from_key(
-    key: tuple[tuple[str, tuple[tuple[str, int, int, int], ...]], ...],
+    key: _ProviderResolutionKey,
 ) -> Mapping[str, str]:
     classes: dict[str, str] = {}
     surfaces = {
-        surface.primitive_class: surface
-        for surface in _provider_surfaces_from_key(key)
+        surface.primitive_class: surface for surface in _provider_surfaces_from_key(key)
     }
     for primitive_class in _PROVIDER_CLASS_PRECEDENCE:
         for symbol in surfaces[primitive_class].symbols:
@@ -165,7 +169,7 @@ def wasm_external_link_provider_symbols(
 
 @functools.lru_cache(maxsize=24)
 def _provider_symbols_from_key(
-    key: tuple[tuple[str, tuple[tuple[str, int, int, int], ...]], ...],
+    key: _ProviderResolutionKey,
     primitive_classes: tuple[str, ...] | None,
 ) -> frozenset[str]:
     included = None if primitive_classes is None else frozenset(primitive_classes)

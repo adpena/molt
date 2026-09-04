@@ -250,6 +250,13 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 }
                 _ => {}
             }
+            if op.is_async_work_poll() && !op.can_carry_async_work_poll() {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    format!("{:?} op cannot carry the async_work_poll marker", op.opcode),
+                ));
+            }
             verify_native_callable_attrs(*bid, op_idx, op, errors);
 
             // Check expected result counts using the generated opcode registry.
@@ -957,6 +964,23 @@ mod tests {
             "valid add function should pass: {:?}",
             verify_function(&func).err()
         );
+    }
+
+    #[test]
+    fn async_work_marker_rejects_unrelated_tir_opcodes() {
+        let mut func = valid_add_function();
+        func.blocks.get_mut(&func.entry_block).unwrap().ops[0]
+            .attrs
+            .insert(
+                super::super::ops::ASYNC_WORK_POLL_ATTR.into(),
+                AttrValue::Bool(true),
+            );
+        let errors = verify_function(&func).expect_err("Add cannot service async work");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("cannot carry the async_work_poll marker")
+        }));
     }
 
     #[test]

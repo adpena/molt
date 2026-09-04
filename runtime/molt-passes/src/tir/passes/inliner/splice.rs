@@ -10,7 +10,7 @@ use crate::tir::values::{TirValue, ValueId};
 use super::call_sites::{CallSite, call_site_has_arg_incref};
 use super::clone_body::clone_function_body_with_fresh_ids;
 use super::eligibility::is_closure;
-use super::exception_labels::exception_label_of;
+use crate::tir::clone_support::exception_label_of;
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
 /// `callee` (an owned snapshot) with the callee's inlined body.

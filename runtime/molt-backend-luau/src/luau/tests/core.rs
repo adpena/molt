@@ -2177,7 +2177,12 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
             profile: None,
         };
 
-        let error = compile_pipeline::validate_luau_identity_contract(&ir).unwrap_err();
+        let function = &ir.functions[0];
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(
+            function,
+            &crate::tir::target_info::TargetInfo::luau_release_fast(),
+        );
+        let error = compile_pipeline::validate_luau_identity_contract(function, &plan).unwrap_err();
         assert!(
             error.contains("identity needs alias/reference/singleton provenance"),
             "{scalar_kind}: {error}"

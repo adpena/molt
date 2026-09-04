@@ -182,7 +182,6 @@ fn borrowed_branch_input_is_owned_at_phi_edge_not_republished_at_return() {
 #[test]
 fn loop_slot_accumulator_no_double_drop() {
     use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::passes::alias_analysis::build_alias_union_find;
     use crate::tir::passes::run_pipeline;
     use crate::tir::type_refine::refine_types;
@@ -295,7 +294,10 @@ fn loop_slot_accumulator_no_double_drop() {
         execution_context: Default::default(),
     };
 
-    let mut tir_func = lower_to_tir(&func_ir);
+    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir_for_target(
+        &func_ir,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
     refine_types(&mut tir_func);
     // Run the full optimization pipeline to reach the realistic lowered loop
     // shape (Copy-aliased loop-slot loads), THEN run drop insertion directly.

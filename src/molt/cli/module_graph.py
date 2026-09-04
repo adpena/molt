@@ -674,9 +674,7 @@ def _support_source_import_bindings(
             )
             source_modules = require_static_import_modules(
                 plan_static_import_request(
-                    StaticImportRequest.statement(
-                        stmt.module or "", level=stmt.level
-                    ),
+                    StaticImportRequest.statement(stmt.module or "", level=stmt.level),
                     contexts,
                 ),
                 consumer="native support binding graph",
@@ -961,6 +959,7 @@ def _missing_native_support_artifact_imports(
     support_explicit_imports: Collection[str],
     module_graph: Mapping[str, Path],
     native_artifact_plan,
+    native_artifact_manifests: Mapping[Path, Mapping[str, object]],
 ) -> tuple[str, ...]:
     if not support_explicit_imports or not native_artifact_plan.artifacts:
         return ()
@@ -975,7 +974,10 @@ def _missing_native_support_artifact_imports(
     source_modules = frozenset(module_graph)
     runtime_import_modules = native_artifact_plan.runtime_python_import_module_names()
     object_closure_source_paths, object_closure_source_hashes = (
-        _native_artifact_object_closure_source_custody(native_artifact_plan)
+        _native_artifact_object_closure_source_custody(
+            native_artifact_plan,
+            native_artifact_manifests=native_artifact_manifests,
+        )
     )
     missing: list[str] = []
     for import_name in sorted(set(support_explicit_imports)):
@@ -989,6 +991,7 @@ def _missing_native_support_artifact_imports(
         source_candidates = _native_support_artifact_source_candidates(
             native_artifact_plan=native_artifact_plan,
             module_name=import_name,
+            native_artifact_manifests=native_artifact_manifests,
         )
         if source_candidates:
             if _native_support_import_has_object_closure_custody(
@@ -1047,16 +1050,13 @@ def _native_support_import_has_object_closure_custody(
 
 def _native_artifact_object_closure_source_custody(
     native_artifact_plan,
+    *,
+    native_artifact_manifests: Mapping[Path, Mapping[str, object]],
 ) -> tuple[frozenset[Path], frozenset[str]]:
     sources: set[Path] = set()
     source_hashes: set[str] = set()
     for artifact in native_artifact_plan.artifacts:
-        try:
-            manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(manifest, Mapping):
-            continue
+        manifest = native_artifact_manifests[artifact.manifest_path.resolve()]
         object_closure = manifest.get("object_closure")
         objects = (
             object_closure.get("objects")
@@ -1096,6 +1096,7 @@ def _native_support_artifact_source_candidates(
     *,
     native_artifact_plan,
     module_name: str,
+    native_artifact_manifests: Mapping[Path, Mapping[str, object]],
 ) -> tuple[Path, ...]:
     candidates: list[Path] = []
     seen: set[Path] = set()
@@ -1116,7 +1117,9 @@ def _native_support_artifact_source_candidates(
             artifact.package_dir.joinpath(*parent_parts),
             artifact.package_dir.joinpath(*parent_parts, "src"),
             artifact.package_dir / "src",
-            *_native_support_artifact_manifest_search_roots(artifact),
+            *_native_support_artifact_manifest_search_roots(
+                manifest=native_artifact_manifests[artifact.manifest_path.resolve()],
+            ),
         )
         for search_root in search_roots:
             for suffix in _NATIVE_SUPPORT_ARTIFACT_SOURCE_SUFFIXES:
@@ -1128,13 +1131,10 @@ def _native_support_artifact_source_candidates(
     return tuple(candidates)
 
 
-def _native_support_artifact_manifest_search_roots(artifact) -> tuple[Path, ...]:
-    try:
-        manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return ()
-    if not isinstance(manifest, Mapping):
-        return ()
+def _native_support_artifact_manifest_search_roots(
+    *,
+    manifest: Mapping[str, object],
+) -> tuple[Path, ...]:
     roots: list[Path] = []
     for raw_path in manifest.get("sources") or ():
         if isinstance(raw_path, str) and raw_path.strip():
@@ -1147,16 +1147,73 @@ def _native_support_artifact_manifest_search_roots(artifact) -> tuple[Path, ...]
     return tuple(dict.fromkeys(roots))
 
 
+def _custodied_native_artifact_manifest(artifact) -> Mapping[str, object]:
+    manifest_path = artifact.manifest_path.resolve()
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            "external native artifact manifest cannot be read under its planned "
+            f"identity for {artifact.module}: {manifest_path}: {exc}"
+        ) from exc
+    actual_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    expected_sha256 = artifact.manifest_sha256.lower()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            "external native artifact manifest changed after plan validation for "
+            f"{artifact.module}: {manifest_path}; expected sha256 "
+            f"{expected_sha256}, got {actual_sha256}. Rebuild the native artifact "
+            "plan before module discovery."
+        )
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "external native artifact manifest bytes named by the plan are invalid "
+            f"for {artifact.module}: {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(manifest, Mapping):
+        raise ValueError(
+            "external native artifact manifest bytes named by the plan must decode "
+            f"to an object for {artifact.module}: {manifest_path}"
+        )
+    return manifest
+
+
+def _custodied_native_artifact_manifests(
+    native_artifact_plan,
+) -> Mapping[Path, Mapping[str, object]]:
+    manifests: dict[Path, Mapping[str, object]] = {}
+    manifest_digests: dict[Path, str] = {}
+    for artifact in native_artifact_plan.artifacts:
+        manifest_path = artifact.manifest_path.resolve()
+        expected_sha256 = artifact.manifest_sha256.lower()
+        existing_sha256 = manifest_digests.get(manifest_path)
+        if existing_sha256 is not None:
+            if existing_sha256 == expected_sha256:
+                continue
+            raise ValueError(
+                "external native artifact plan assigns conflicting digests to "
+                f"shared manifest path {manifest_path}: {existing_sha256} and "
+                f"{expected_sha256}"
+            )
+        manifests[manifest_path] = _custodied_native_artifact_manifest(artifact)
+        manifest_digests[manifest_path] = expected_sha256
+    return MappingProxyType(manifests)
+
+
 def _format_missing_native_support_artifact_imports(
     *,
     missing_imports: Sequence[str],
     native_artifact_plan,
+    native_artifact_manifests: Mapping[Path, Mapping[str, object]],
 ) -> str:
     details: list[str] = []
     for module_name in missing_imports:
         candidates = _native_support_artifact_source_candidates(
             native_artifact_plan=native_artifact_plan,
             module_name=module_name,
+            native_artifact_manifests=native_artifact_manifests,
         )
         if candidates:
             preview = ", ".join(str(path) for path in candidates[:4])
@@ -1301,16 +1358,21 @@ def _materialize_import_plan(
     )
     namespace_module_names = support_modules.namespace_module_names
     generated_module_source_paths = dict(support_modules.generated_module_source_paths)
+    native_artifact_manifests = _custodied_native_artifact_manifests(
+        native_artifact_plan
+    )
     missing_native_support_imports = _missing_native_support_artifact_imports(
         support_explicit_imports=support_explicit_imports,
         module_graph=module_graph,
         native_artifact_plan=native_artifact_plan,
+        native_artifact_manifests=native_artifact_manifests,
     )
     if missing_native_support_imports:
         raise ValueError(
             _format_missing_native_support_artifact_imports(
                 missing_imports=missing_native_support_imports,
                 native_artifact_plan=native_artifact_plan,
+                native_artifact_manifests=native_artifact_manifests,
             )
         )
     source_modules = frozenset(module_graph)

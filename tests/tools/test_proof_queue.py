@@ -37,7 +37,14 @@ from molt.cli.source_extension_manifest_codec import (
 from molt.cli.source_extension_object_closure import (
     source_extension_object_closure_digest,
 )
-from molt.cli.source_extension_set_identity import _source_extension_set_identity
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
+from molt.cli.source_extension_set_identity import (
+    SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+    _source_extension_set_identity,
+)
 import molt.cli.source_extension_set_validation as set_validation
 from molt.cli.source_extension_target import source_extension_artifact_suffix
 from molt.cli.source_extension_toolchain import MOLT_PKGCONF_REQUIREMENT
@@ -12932,10 +12939,16 @@ def _write_current_scientific_seal(
             os.sep, "/"
         )
         object_closure: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": init_symbol,
             "init_symbol_owner": "0.o",
+            "defined_symbols": [init_symbol],
+            "undefined_symbols": [],
             "runtime_symbols": [],
+            "required_c_api_symbols": [],
+            "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "wasm_imports": [],
             "objects": [
                 {
                     "source": source_reference,
@@ -12950,8 +12963,11 @@ def _write_current_scientific_seal(
                         "-c",
                         source_reference,
                     ],
-                    "symbol_command": ["@llvm-bin/llvm-nm"],
+                    "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                     "dependencies": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                    "project_generated_c_api_symbols": [],
                 }
             ],
         }
@@ -12959,7 +12975,6 @@ def _write_current_scientific_seal(
         source_path.write_bytes(source_bytes)
         closure_sha256 = source_extension_object_closure_digest(
             object_closure,
-            manifest_dir=package_dir,
         )
         object_closure["closure_sha256"] = closure_sha256
         set_extensions.append(
@@ -13146,7 +13161,7 @@ def _write_current_scientific_seal(
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": SOURCE_EXTENSION_SET_SCHEMA_VERSION,
                 "kind": "molt-source-extension-set",
                 "package": package,
                 "package_version": extension_set.package_version,
@@ -13663,7 +13678,11 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
 @pytest.mark.parametrize(
     ("field", "value", "problem"),
     [
-        ("schema_version", 3, "schema_version must be 4"),
+        (
+            "schema_version",
+            SOURCE_EXTENSION_SET_SCHEMA_VERSION - 1,
+            f"schema_version must be {SOURCE_EXTENSION_SET_SCHEMA_VERSION}",
+        ),
         ("kind", "legacy-set", "kind must be 'molt-source-extension-set'"),
         ("source_head", "stale", "source_head must be"),
         ("cpython", "3.13", "cpython must be '3.12'"),

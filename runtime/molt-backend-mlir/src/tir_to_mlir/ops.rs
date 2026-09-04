@@ -30,12 +30,6 @@ pub(super) fn emit_tir_op<'c, 'a>(
     i1_type: Type<'c>,
     location: Location<'c>,
 ) -> Result<(), String> {
-    if op.is_async_work_poll() {
-        return Err(
-            "MLIR backend cannot lower async_work_poll: canonical pending-call/eval-breaker runtime boundary is unavailable"
-                .to_string(),
-        );
-    }
     if op.opcode == OpCode::UnpackSequence {
         let expected = match op.attrs.get("value") {
             Some(AttrValue::Int(value)) => usize::try_from(*value).ok(),

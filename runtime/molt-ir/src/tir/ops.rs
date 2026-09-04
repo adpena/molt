@@ -427,7 +427,7 @@ pub struct TirOp {
     pub source_span: Option<(u32, u32)>,
 }
 
-/// Canonical TIR marker for a `CheckException` that must also service
+/// Canonical TIR marker for an exception observation that must also service
 /// pending calls and the eval breaker at a Python asynchronous-work boundary.
 pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 
@@ -463,25 +463,37 @@ impl TirOp {
         }
     }
 
-    /// Whether this exception observation is also the canonical pending-call /
-    /// eval-breaker observation. The opcode and marker are one semantic fact;
-    /// consumers must not infer it from the attribute spelling alone.
+    /// Whether this operation is also the canonical pending-call/eval-breaker
+    /// observation. Ordinary boundaries fuse the poll with CheckException;
+    /// generated `finally` arbitration fuses it with the pending-object observer
+    /// so exception replacement and context chaining remain on the authored path.
     #[inline]
     pub fn is_async_work_poll(&self) -> bool {
-        self.opcode == OpCode::CheckException
-            && matches!(
-                self.attrs.get(ASYNC_WORK_POLL_ATTR),
-                Some(AttrValue::Bool(true))
-            )
+        matches!(
+            self.attrs.get(ASYNC_WORK_POLL_ATTR),
+            Some(AttrValue::Bool(true))
+        )
     }
 
-    /// Promote a `CheckException` to the canonical asynchronous-work poll.
+    /// Whether this operation role can fuse an asynchronous-work poll without
+    /// changing its control or value semantics.
+    #[inline]
+    pub fn can_carry_async_work_poll(&self) -> bool {
+        self.opcode == OpCode::CheckException
+            || (self.opcode == OpCode::Copy
+                && matches!(
+                    self.attrs.get("_original_kind"),
+                    Some(AttrValue::Str(kind))
+                        if super::op_kinds_generated::simpleir_kind_may_carry_async_work_poll_marker(kind)
+                ))
+    }
+
+    /// Fuse the canonical asynchronous-work poll into this observation.
     /// Returns whether the semantic fact changed.
     pub fn mark_async_work_poll(&mut self) -> bool {
-        assert_eq!(
-            self.opcode,
-            OpCode::CheckException,
-            "only CheckException may carry the async-work poll authority"
+        assert!(
+            self.can_carry_async_work_poll(),
+            "only an async-work observation carrier may carry the poll marker"
         );
         if self.is_async_work_poll() {
             return false;

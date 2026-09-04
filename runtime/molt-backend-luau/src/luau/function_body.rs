@@ -17,7 +17,10 @@ impl LuauBackend {
             is_extern: func.is_extern,
             execution_context: func.execution_context,
         };
-        self.scalar_plan = ScalarRepresentationPlan::for_function_ir(&scalar_func);
+        self.scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
+            &scalar_func,
+            &crate::tir::target_info::TargetInfo::luau_release_fast(),
+        );
 
         // Build typed parameter list.  When `param_types` carries per-param
         // type hints from the frontend we emit Luau type annotations so the

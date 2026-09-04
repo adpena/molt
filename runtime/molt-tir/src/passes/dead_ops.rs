@@ -4,6 +4,7 @@ use super::purity::{
 };
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::simple_def_use::{visit_simple_ir_reads, visit_simple_ir_result_names};
+use crate::tir::target_info::TargetInfo;
 use crate::{OpIR, SimpleIR};
 use std::collections::HashSet;
 
@@ -82,7 +83,7 @@ fn simple_ir_unused_result_is_removable(
     )
 }
 
-pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
+pub fn eliminate_dead_ops(ir: &mut SimpleIR, target_info: &TargetInfo) {
     if std::env::var("MOLT_DISABLE_DEAD_OP_ELIM").is_ok() {
         return;
     }
@@ -91,6 +92,12 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
     let mut total_removed = 0usize;
 
     for func in &mut ir.functions {
+        // Representation planning lowers and optimizes the complete function.
+        // A DCE round only deletes unused pure operations, so facts for every
+        // retained definition remain valid. Build lazily on the first round
+        // that needs scalar proof and reuse it through the fixpoint instead of
+        // repeating the full target pipeline up to five times.
+        let mut scalar_plan = None;
         for _round in 0..5 {
             // Build a set of all consumed names from the canonical field-role
             // visitor. In particular, unpack_sequence trailing args are
@@ -128,8 +135,12 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                 });
                 has_result && !any_consumed
             });
-            let scalar_plan =
-                needs_scalar_plan.then(|| ScalarRepresentationPlan::for_function_ir(func));
+            if needs_scalar_plan && scalar_plan.is_none() {
+                scalar_plan = Some(ScalarRepresentationPlan::for_function_ir_for_target(
+                    func,
+                    target_info,
+                ));
+            }
             let scalar_facts = needs_scalar_plan
                 .then(|| SimpleIrScalarPurityFacts::for_function(func, scalar_plan.as_ref()));
 

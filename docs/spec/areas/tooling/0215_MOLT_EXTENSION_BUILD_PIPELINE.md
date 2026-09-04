@@ -171,8 +171,12 @@ metadata.
    `.molt.a` archive. The final application link consumes it through the typed
    ELF archive-group, COFF `/WHOLEARCHIVE`, or Mach-O `-force_load` plan.
 4. For wasm targets, emit a wasm32 static-link `.molt.wasm` object, read its
-   function exports/imports, and reject missing declared `direct_symbol`
-   callable exports.
+   linking-section symbol table, typed import interface, and function exports
+   in one in-process inspection, and reject missing declared `direct_symbol`
+   callable exports. Linking symbols and imports are distinct facts: undefined
+   data/global/table/tag symbols remain in the linker closure even when no
+   function import has the same name, while imports retain their module and
+   external kind instead of being flattened into linker names.
    Source-recompiled roots such as NumPy/SciPy must publish `python_exports` or
    `callable_exports`; package-root imports such as `numpy` require a
    `python_exports = ["numpy"]` owner rather than child artifact ancestry.
@@ -274,19 +278,36 @@ unsealed scripts are not representable.
   artifacts:
   `wasm_relocatable_object` artifacts must export the declared function symbol,
   and `static_archive` artifacts must list it in
-  `object_closure.defined_symbols`. Sidecar object closure also carries two
-  reachable symbol boards. The ABI board classifies non-`Py*`
+  `object_closure.defined_symbols`. Sidecar object-closure schema v2 carries
+  separate canonical linker and import boards. `defined_symbols` and
+  `undefined_symbols` are the exact reachable linking-section facts.
+  `wasm_imports` is the exact sorted set of `{module, name, kind}` receipts from
+  the binary import section. Function receipts are validated against the
+  module-qualified signature table generated from `wasm_abi_manifest.toml`;
+  the same spelling in two modules is therefore not interchangeable. Known
+  imports with the wrong module, external kind, or function signature fail
+  admission, as do unknown imports. Non-function descriptors remain a typed
+  interface-hardening frontier and must not be inferred from linker names.
+  The ABI board classifies non-`Py*`
   `undefined_symbols` as project-defined through `defined_symbols` or
   runtime-backed through `runtime_symbols` only when the symbol is present in
   the generated WASM runtime/link import surface. Unknown runtime claims and
-  generated runtime imports missing `runtime_symbols` custody fail admission.
+  generated runtime imports missing signed top-level `runtime_symbols` custody
+  fail admission. Per-object `runtime_symbols` are forbidden: semantic
+  consumers use the finalized top-level projection covered by
+  `closure_sha256`.
   The C/API board classifies `required_c_api_symbols` and `Py*`/NumPy
   `undefined_symbols` as runtime-backed, source-compile-only, project-defined,
   fail-fast, or missing; undefined C/API symbols cannot contain
   source-compile-only NumPy inline/macro APIs, fail-fast symbols, or unknown
-  gaps. For `wasm_relocatable_object`, `object_closure.undefined_symbols` must
-  exactly match the artifact's function imports: binary imports missing from the
-  sidecar and stale sidecar names missing from the binary both fail admission.
+  gaps. For `wasm_relocatable_object`, shared artifact admission independently
+  compares the binary's linking-section definitions and unresolved symbols with
+  `object_closure.defined_symbols` and `object_closure.undefined_symbols`, and
+  compares the binary import section with `object_closure.wasm_imports`.
+  Missing or stale facts in either board fail admission. C-API data relocations
+  such as `PyExc_*` and `Py_None` are linker requirements even though they are
+  not function imports; memory imports such as `__linear_memory` are import
+  receipts and are not invented as linker undefineds.
   Each accepted C/API symbol is bucketed by reusable primitive class such as
   object/type lifecycle, module state, capsules, exceptions, refcount, memory
   allocation, buffer protocol, import system, call protocol, descriptors,
@@ -326,6 +347,14 @@ unsealed scripts are not representable.
   manifest, and support-file bytes in the link fingerprint. Target modes
   without a runtime-custody consumer fail closed when external native artifacts
   are admitted.
+
+  Artifact closure is not permission policy. Capability requests and host grants
+  continue to resolve through the canonical capability-manifest and runtime
+  authorities. A target or binary-interface fact may prove that an operation
+  can be represented; it cannot grant filesystem, network, process,
+  environment, clock, randomness, or extension authority. Conversely, a
+  capability grant cannot make a missing target primitive or malformed artifact
+  interface valid.
 
 ---
 

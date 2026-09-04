@@ -114,7 +114,7 @@ fn emit_get_attr_generic_obj(
     let args = op.args.as_ref().unwrap();
     let obj = locals[&args[0]];
     let attr = staged_attr_name(backend, op, reloc_enabled);
-    let source_op_idx = required_source_op_idx(op, op_idx, "get_attr_generic_obj");
+    let source_op_idx = op.required_source_op_index(op_idx, "get_attr_generic_obj");
     let site_bits = box_int(stable_ic_site_id(
         func_ir.name.as_str(),
         source_op_idx,
@@ -234,12 +234,4 @@ fn local_or_panic(locals: &WasmFrameLocals, value: &str, func_ir: &FunctionIR, o
             value, func_ir.name, op.kind
         )
     })
-}
-
-fn required_source_op_idx(op: &OpIR, op_idx: usize, kind: &str) -> usize {
-    match op.source_op_idx {
-        Some(value) => usize::try_from(value)
-            .unwrap_or_else(|_| panic!("{kind} has invalid negative source_op_idx {value}")),
-        None => panic!("{kind} at stream op {op_idx} requires transported source_op_idx"),
-    }
 }

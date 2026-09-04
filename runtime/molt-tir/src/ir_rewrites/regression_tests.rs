@@ -253,7 +253,10 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
         ],
     };
 
-    elide_useless_try_blocks_for_function(&mut func);
+    elide_useless_try_blocks_for_function(
+        &mut func,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
 
     assert!(
         func.ops.iter().any(|op| op.kind == "exception_push")
@@ -341,7 +344,10 @@ fn try_except_elision_uses_typed_int_body_without_transport_hints() {
         ],
     };
 
-    elide_useless_try_blocks_for_function(&mut func);
+    elide_useless_try_blocks_for_function(
+        &mut func,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
 
     let kinds: Vec<&str> = func.ops.iter().map(|op| op.kind.as_str()).collect();
     assert_eq!(kinds, vec!["add", "store_var"]);

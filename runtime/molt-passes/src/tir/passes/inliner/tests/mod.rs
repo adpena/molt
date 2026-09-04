@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use super::call_sites::collect_call_sites;
 use super::clone_body::{clone_attrs_without_simple_names, clone_function_body_with_fresh_ids};
 use super::eligibility::is_closure;
-use super::exception_labels::{exception_label_of, function_label_ids};
 use super::splice::splice_call_site;
 use super::*;
+use crate::tir::clone_support::{exception_label_of, function_label_ids};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use crate::tir::call_graph::CallGraph;

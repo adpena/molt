@@ -34,6 +34,13 @@ pub(super) fn wasm_test_function(
     }
 }
 
+pub(super) fn wasm_representation_plan(func_ir: &FunctionIR) -> ScalarRepresentationPlan {
+    ScalarRepresentationPlan::for_function_ir_for_target(
+        func_ir,
+        &crate::tir::TargetInfo::wasm_release_fast(),
+    )
+}
+
 pub(super) fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
     OpIR {
         kind: kind.to_string(),

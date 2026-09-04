@@ -11,6 +11,13 @@ from tools.proof_queue_pkg import pact
 
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+)
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.scientific_stack_versions import resolve_scientific_stack
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
@@ -48,6 +55,7 @@ def _write_native_extension(
         "molt_c_api_version": abi_version,
         "abi_tag": f"molt_abi{abi_version}",
         "python_tag": "py3",
+        "target_python": "py312",
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
         "loader_kind": "libmolt_source",
@@ -68,25 +76,41 @@ def _write_native_extension(
         "sealed_from_extension_sha256": extension_sha256,
         "provided_capsules": [],
         "object_closure": {
-            "schema_version": 1,
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": init_symbol,
             "init_symbol_owner": "0.o",
-            "closure_sha256": extension_sha256,
+            "defined_symbols": [init_symbol],
+            "undefined_symbols": [],
             "runtime_symbols": [],
+            "required_c_api_symbols": [],
             "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "wasm_imports": [],
             "objects": [
                 {
+                    "source": artifact_name,
                     "object": "0.o",
                     "source_sha256": extension_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": [init_symbol],
                     "undefined_symbols": [],
+                    "compile_command": [
+                        "fixture-compiler",
+                        "--target=wasm32-wasip1",
+                        "-c",
+                        artifact_name,
+                    ],
+                    "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
+                    "dependencies": [],
                     "required_c_api_symbols": [],
                     "required_capsules": [],
+                    "project_generated_c_api_symbols": [],
                 }
             ],
         },
+        "build": {},
     }
+    finalize_source_extension_object_closure(manifest)
     (package_dir / f"{artifact_name}.extension_manifest.json").write_text(
         json.dumps(manifest), encoding="utf-8"
     )
