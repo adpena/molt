@@ -82,6 +82,10 @@ def _seed_valid_repo(root: Path) -> None:
             ]
         ),
     )
+    _write_file(
+        root / "docs/spec/README.md",
+        "# Spec Index\n\n- [Status](STATUS.md)\n",
+    )
     _write_file(root / "ROADMAP.md", "# Roadmap\n")
     _write_file(
         root / "SUPPORTED.md",
@@ -353,9 +357,7 @@ def test_checker_rejects_duplicate_foundation_portfolio_number_authority(
     errors = module.check_repo()
 
     assert any(
-        error.startswith(
-            "foundation portfolio number 64 has multiple authorities:"
-        )
+        error.startswith("foundation portfolio number 64 has multiple authorities:")
         for error in errors
     )
 
@@ -372,6 +374,97 @@ def test_checker_allows_unnumbered_supplementary_foundation_authority(
     module.ROOT = tmp_path
 
     assert module.check_repo() == []
+
+
+def test_checker_resolves_local_markdown_links_from_the_owning_document(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/spec/README.md",
+        "# Spec Index\n\n- [Status](STATUS.md#current)\n- [Missing][missing]\n\n"
+        "[missing]: areas/core/missing.md\n",
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert errors == [
+        "docs/spec/README.md:4: broken local Markdown target "
+        "'areas/core/missing.md'; expected docs/spec/areas/core/missing.md"
+    ]
+
+
+def test_checker_ignores_anchor_url_and_code_sample_targets(tmp_path: Path) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/spec/README.md",
+        "\n".join(
+            [
+                "# Spec Index",
+                "",
+                "[Anchor](#spec-index)",
+                "[HTTPS](https://example.com/missing.md)",
+                "[Mail](mailto:docs@example.com)",
+                "[Protocol relative](//example.com/missing.md)",
+                "[Site root](/docs/missing.md)",
+                "",
+                "```markdown",
+                "[Code sample](missing.md)",
+                "```",
+                "",
+            ]
+        ),
+    )
+    module.ROOT = tmp_path
+
+    assert module.check_repo() == []
+
+
+def test_checker_rejects_local_markdown_links_that_escape_the_repo(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/spec/README.md",
+        "# Spec Index\n\n[Escape](../../../outside.md)\n",
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert errors == [
+        "docs/spec/README.md:3: local Markdown target escapes repository: "
+        "'../../../outside.md'"
+    ]
+
+
+def test_checker_fails_closed_when_a_markdown_link_authority_is_missing(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    (tmp_path / "docs/spec/README.md").unlink()
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert "docs/spec/README.md: missing Markdown link authority" in errors
+
+
+def test_local_markdown_path_case_check_is_platform_independent(tmp_path: Path) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+
+    assert module._has_exact_path_case(
+        tmp_path / "docs/spec/STATUS.md", root=tmp_path, directory_entries={}
+    )
+    assert not module._has_exact_path_case(
+        tmp_path / "docs/spec/status.md", root=tmp_path, directory_entries={}
+    )
 
 
 def test_checker_passes_for_valid_repo(
