@@ -347,10 +347,16 @@ light rows with disjoint families can still use remaining queue capacity.
 `running-proof-launch-summary-stale` is diagnostic evidence only while the
 queue-owned guard is still live; it means the memory guard has not yet published
 child-process custody. Only terminal stale signals such as
-`running-proof-child-missing`, a dead/reused guard, an expired dispatch handoff,
-or the running-age ceiling may reclaim a live row. This keeps Windows, macOS,
-and Linux detached rows from being marked stale just because an old queued log
-or launch summary predates the current execution epoch.
+`running-proof-child-missing` and `running-proof-guard-timeout-expired`, a
+dead/reused guard, an expired dispatch handoff, or the fallback running-age
+ceiling may reclaim a live row. The timeout signal is emitted when a non-final
+`running`/`child_running` summary remains past its own typed `limits.timeout_s`
+contract plus the bounded finalization grace. Its evidence records row age,
+timeout and overdue durations, guard PID, marker state/age, and exact
+summary/log artifacts even when the log has no child output. This keeps
+Windows, macOS, and Linux detached rows from being marked stale just because an
+old queued log or launch summary predates the current execution epoch while
+making violated guard contracts directly actionable.
 Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
 already set a value. This keeps APDataStore, exFAT, cross-device caches, and
 other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
@@ -729,11 +735,16 @@ the running summary is dead and the log is stale, `prune-stale` must still mark
 the row stale with `running-proof-child-missing`; do not keep that row active
 waiting for a child that custody already proved gone.
 Active queue-owned runners apply the same stale-running diagnostics while they
-wait, but only `running-proof-child-missing` is a self-terminalizing runner
-signal. `running-proof-launch-summary-stale` means the guard summary has not
-yet advanced far enough to prove nested custody; the runner must keep waiting
-for the guard process it launched. Use `prune-stale --run-id RUN_ID` after an
-ownership check when a launch-summary-only row truly needs manual cleanup.
+wait. `running-proof-child-missing` and
+`running-proof-guard-timeout-expired` are self-terminalizing runner signals;
+the latter means the guard's own declared timeout plus finalization grace has
+already elapsed without a terminal summary. Persist it with
+`diagnose RUN_ID --append-note`, then use targeted
+`prune-stale --run-id RUN_ID`; never kill or restart from PID evidence alone.
+`running-proof-launch-summary-stale` means the guard summary has not yet
+advanced far enough to prove nested custody, so the runner must keep waiting
+for the guard process it launched. Use targeted pruning after an ownership
+check when a launch-summary-only row truly needs manual cleanup.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID

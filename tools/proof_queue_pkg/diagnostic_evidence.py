@@ -3,22 +3,50 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from tools.proof_queue_pkg import custody, state
-from tools.proof_queue_pkg.diagnostic_model import _diagnostic, _format_duration
+from tools.proof_queue_pkg.diagnostic_model import (
+    _diagnostic,
+    _format_duration,
+    _running_age_seconds,
+)
 
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 
+RUNNING_GUARD_TIMEOUT_GRACE_SECONDS = 60.0
+
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 
 PYTEST_PROGRESS_LINE_RE = re.compile(r"^[.FEfsxX]+(?:\s+\[\s*\d+%\])?$")
+
+GuardMarkerState = Literal["nonterminal", "terminal", "missing", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class RunningGuardTimeoutEvidence:
+    """Typed evidence for one violated memory-guard timeout contract."""
+
+    timeout_s: float
+    running_age_s: float
+    summary_status: str
+    guard_pid: int | None
+    marker_state: GuardMarkerState
+    marker_status: str | None
+    marker_path: Path | None
+    marker_age_s: float | None
+
+    @property
+    def overdue_s(self) -> float:
+        return max(0.0, self.running_age_s - self.timeout_s)
 
 
 def _last_nonempty_log_line(path: Path) -> str | None:
@@ -59,6 +87,111 @@ def _read_json_object(path: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _summary_limits(summary: Mapping[str, object]) -> Mapping[str, object]:
+    limits = summary.get("limits")
+    if isinstance(limits, dict):
+        return limits
+    repro = summary.get("repro")
+    if isinstance(repro, dict):
+        limits = repro.get("limits")
+        if isinstance(limits, dict):
+            return limits
+    return {}
+
+
+def _summary_timeout_seconds(summary: Mapping[str, object]) -> float | None:
+    timeout = _summary_limits(summary).get("timeout_s")
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not math.isfinite(float(timeout))
+        or float(timeout) <= 0.0
+    ):
+        return None
+    return float(timeout)
+
+
+def _summary_guard_pid(summary: Mapping[str, object]) -> int | None:
+    repro = summary.get("repro")
+    if not isinstance(repro, dict):
+        return None
+    guard_process = repro.get("guard_process")
+    if not isinstance(guard_process, dict):
+        return None
+    pid = guard_process.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        return int(pid)
+    return None
+
+
+def _summary_guard_marker(
+    row: sqlite3.Row,
+    summary: Mapping[str, object],
+    *,
+    guard_pid: int | None,
+) -> tuple[GuardMarkerState, str | None, Path | None, float | None]:
+    """Resolve the marker belonging to the summary's exact guard launch."""
+
+    if guard_pid is None:
+        return "unavailable", None, None, None
+    repro = summary.get("repro")
+    if not isinstance(repro, dict):
+        return "unavailable", None, None, None
+    env = repro.get("env")
+    if not isinstance(env, dict):
+        return "unavailable", None, None, None
+    raw_root = env.get("MOLT_MEMORY_GUARD_STATE_ROOT")
+    if not isinstance(raw_root, str) or not raw_root.strip():
+        return "unavailable", None, None, None
+    root = Path(raw_root.strip()).expanduser()
+    if not root.is_absolute():
+        root = Path(str(row["cwd"])) / root
+    marker_dir = root.resolve(strict=False) / "active"
+    expected_command = summary.get("command")
+    expected_created_at = summary.get("recorded_at")
+    matches: list[tuple[Path, dict[str, object]]] = []
+    try:
+        candidates = tuple(marker_dir.glob(f"guard-{guard_pid}-*.json"))
+    except OSError:
+        return "unavailable", None, None, None
+    for path in candidates:
+        marker = _read_json_object(path)
+        if marker.get("pid") != guard_pid:
+            continue
+        if (
+            isinstance(expected_command, list)
+            and marker.get("command") != expected_command
+        ):
+            continue
+        if (
+            isinstance(expected_created_at, str)
+            and expected_created_at.strip()
+            and marker.get("created_at") != expected_created_at
+        ):
+            continue
+        matches.append((path, marker))
+    if not matches:
+        return "missing", None, None, None
+    path, marker = max(
+        matches,
+        key=lambda item: str(
+            item[1].get("updated_at") or item[1].get("created_at") or ""
+        ),
+    )
+    status = marker.get("status")
+    status_text = status.strip() if isinstance(status, str) and status.strip() else None
+    terminal_statuses = {
+        "completed",
+        "finalizer_completed",
+        "guard_exception",
+        "spawn_failed",
+    }
+    marker_state: GuardMarkerState = (
+        "terminal" if status_text in terminal_statuses else "nonterminal"
+    )
+    return marker_state, status_text, path, _log_age_seconds(path)
 
 
 def _log_age_seconds(path: Path) -> float | None:
@@ -239,6 +372,90 @@ def _memory_guard_child_descendant_status_line(summary_json: object) -> str | No
     if sample_evidence is not None:
         line += f" {sample_evidence}"
     return line
+
+
+def _running_guard_timeout_evidence(
+    row: sqlite3.Row,
+) -> RunningGuardTimeoutEvidence | None:
+    if row["status"] != "running":
+        return None
+    summary = _read_json_object(Path(str(row["summary_json"])))
+    summary_status = summary.get("status")
+    if summary_status not in {"running", "child_running"}:
+        return None
+    if summary.get("returncode") is not None:
+        return None
+    timeout_s = _summary_timeout_seconds(summary)
+    if timeout_s is None:
+        return None
+    running_age_s = _running_age_seconds(state._row_value(row, "started_at"))
+    if (
+        running_age_s is None
+        or running_age_s <= timeout_s + RUNNING_GUARD_TIMEOUT_GRACE_SECONDS
+    ):
+        return None
+    guard_pid = _summary_guard_pid(summary)
+    marker_state, marker_status, marker_path, marker_age_s = _summary_guard_marker(
+        row,
+        summary,
+        guard_pid=guard_pid,
+    )
+    return RunningGuardTimeoutEvidence(
+        timeout_s=timeout_s,
+        running_age_s=running_age_s,
+        summary_status=str(summary_status),
+        guard_pid=guard_pid,
+        marker_state=marker_state,
+        marker_status=marker_status,
+        marker_path=marker_path,
+        marker_age_s=marker_age_s,
+    )
+
+
+def _running_guard_timeout_diagnostic(
+    row: sqlite3.Row,
+) -> dict[str, object] | None:
+    timeout = _running_guard_timeout_evidence(row)
+    if timeout is None:
+        return None
+    evidence_parts = [
+        f"summary_status={timeout.summary_status}",
+        "summary_returncode=null",
+        f"row_elapsed={_format_duration(timeout.running_age_s)}",
+        f"configured_timeout={_format_duration(timeout.timeout_s)}",
+        f"timeout_overdue={_format_duration(timeout.overdue_s)}",
+        f"active_guard_marker={timeout.marker_state}",
+    ]
+    if timeout.guard_pid is not None:
+        evidence_parts.append(f"memory_guard_pid={timeout.guard_pid}")
+    if timeout.marker_status is not None:
+        evidence_parts.append(f"marker_status={timeout.marker_status}")
+    if timeout.marker_age_s is not None:
+        evidence_parts.append(f"marker_age={_format_duration(timeout.marker_age_s)}")
+    log_age_s = _log_age_seconds(Path(str(row["log_path"])))
+    if log_age_s is not None:
+        evidence_parts.append(f"last_log_age={_format_duration(log_age_s)}")
+    evidence_parts.append(f"summary_json={row['summary_json']}")
+    artifacts = [str(row["summary_json"]), str(row["log_path"])]
+    if timeout.marker_path is not None:
+        artifacts.append(str(timeout.marker_path))
+    return _diagnostic(
+        signal_id="running-proof-guard-timeout-expired",
+        severity="infra",
+        summary=(
+            "Running proof remains non-final after its declared memory-guard "
+            "timeout contract expired."
+        ),
+        evidence=" ".join(evidence_parts),
+        next_action=(
+            "Treat this as lost or wedged queue custody, not product evidence. "
+            "Persist it with `diagnose RUN_ID --append-note`, then use targeted "
+            "`prune-stale --run-id RUN_ID`; do not kill or restart a process "
+            "from PID evidence alone."
+        ),
+        scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+        artifacts=tuple(artifacts),
+    )
 
 
 def _descendant_sample_evidence(
@@ -545,16 +762,9 @@ def _finished_incomplete_memory_guard_diagnostic(
     elapsed_s = row["elapsed_s"]
     if isinstance(elapsed_s, (int, float)):
         evidence_parts.append(f"row_elapsed={_format_duration(float(elapsed_s))}")
-    limits = summary.get("limits")
-    repro = summary.get("repro")
-    if not isinstance(limits, dict) and isinstance(repro, dict):
-        limits = repro.get("limits")
-    if isinstance(limits, dict):
-        timeout_s = limits.get("timeout_s")
-        if isinstance(timeout_s, (int, float)):
-            evidence_parts.append(
-                f"configured_timeout={_format_duration(float(timeout_s))}"
-            )
+    timeout_s = _summary_timeout_seconds(summary)
+    if timeout_s is not None:
+        evidence_parts.append(f"configured_timeout={_format_duration(timeout_s)}")
     child = summary.get("child_process")
     if isinstance(child, dict):
         command = child.get("command")
