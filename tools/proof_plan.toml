@@ -229,6 +229,7 @@ fingerprint_domain = "rustup"
 version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
 linker_process_helpers = { "link.exe" = ["vctip.exe"] }
+linker_build_tools = { "link.exe" = { "cl.exe" = "rust-build-c-compiler", "lib.exe" = "rust-build-archiver" } }
 version_pattern = '^rustc 1\.96\.1\b'
 setup_value = "1.96.1"
 setup_evidence = [
@@ -578,7 +579,7 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 105
+timeout_minutes = 125
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1684,6 +1685,32 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.test.freestanding-e2e"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports", "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.test.finally-pending-observer-parity"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "python.static.ty"

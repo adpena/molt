@@ -163,7 +163,10 @@ from tools.memory_guard_core import process_custody as _process_custody  # noqa:
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
-from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from tools.memory_guard_core.paths import (  # noqa: E402
+    active_guard_marker_dir,
+    pytest_guard_summary_dir,
+)
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
@@ -232,7 +235,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     watched_pids as watched_pids,
 )
 
-PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
+PYTEST_OUTER_GUARD_SUMMARY_DIR = pytest_guard_summary_dir(ROOT)
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"

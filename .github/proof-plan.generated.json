@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "386063919cccd872442408eb4f112b21b449923e09f43eeca50b4cf521990d51",
+  "authority_sha256": "e49361936d6d28d7fe32ae246fb8bcb4f4b46d894695fa966f3180841665f0a7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -217,7 +217,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 105,
+      "timeout_minutes": 125,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -2757,6 +2757,98 @@
       "argv": [
         "uv",
         "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "pytest",
+        "-q",
+        "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
+        "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.host",
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.freestanding-e2e",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "pytest",
+        "-q",
+        "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.host",
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.finally-pending-observer-parity",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang",
+        "llvm-config",
+        "ld.lld",
+        "lld-link",
+        "wasm-ld",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "ty",
         "check",
         "src"
@@ -3525,12 +3617,12 @@
         }
       },
       "wasm": {
-        "budget_seconds": 6300,
+        "budget_seconds": 7500,
         "critical_path_seconds": 3000,
         "headroom_seconds": 300,
-        "projected_makespan_seconds": 6000,
+        "projected_makespan_seconds": 7200,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 6000,
+          "compiler-build-resource": 7200,
           "wasm-runtime": 450
         }
       }
@@ -4963,6 +5055,12 @@
       ],
       "executable": "rustc",
       "fingerprint_domain": "rustup",
+      "linker_build_tools": {
+        "link.exe": {
+          "cl.exe": "rust-build-c-compiler",
+          "lib.exe": "rust-build-archiver"
+        }
+      },
       "linker_process_helpers": {
         "link.exe": [
           "vctip.exe"

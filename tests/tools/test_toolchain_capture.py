@@ -572,3 +572,57 @@ def test_rust_link_capture_declares_exact_platform_linker_helper_family(
     )
     assert revalidated == images
     assert reused == telemetry
+
+
+def test_rust_link_capture_declares_exact_msvc_build_tool_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rustc = tmp_path / "rustc.exe"
+    cargo = tmp_path / "cargo.exe"
+    linker = tmp_path / "link.exe"
+    compiler = tmp_path / "cl.exe"
+    archiver = tmp_path / "lib.exe"
+    for path in (rustc, cargo, linker, compiler, archiver):
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=fake_run))
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=rustc,
+        cargo=cargo,
+        cwd=tmp_path,
+        env={"PATH": str(tmp_path)},
+        target=None,
+        command_argv=("cargo", "build"),
+        linker_build_tools={
+            "link.exe": {
+                "cl.exe": "rust-build-c-compiler",
+                "lib.exe": "rust-build-archiver",
+            }
+        },
+    )
+
+    assert [(row["role"], Path(str(row["path"])).name) for row in images] == [
+        ("rust-build-c-compiler", "cl.exe"),
+        ("rust-build-archiver", "lib.exe"),
+        ("rust-linker", "link.exe"),
+    ]
+    assert all(
+        row.get("root_exit_disposition", "require-exit") == "require-exit"
+        for row in images
+    )
+    assert telemetry["declared_build_tool_count"] == 2
+    assert telemetry["selected_build_tool_count"] == 2
+
+    revalidated, reused = toolchain_capture.revalidate_rust_link_process_images(
+        {"process_images": images, "link_selection": telemetry},
+        target=None,
+        command_argv=("cargo", "build"),
+    )
+    assert revalidated == images
+    assert reused == telemetry

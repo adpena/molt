@@ -15,7 +15,10 @@ import types
 import pytest
 
 import tools.memory_guard as memory_guard
-from tools.memory_guard_core.paths import active_guard_marker_dir
+from tools.memory_guard_core.paths import (
+    active_guard_marker_dir,
+    pytest_guard_summary_dir,
+)
 
 
 @pytest.fixture
@@ -169,6 +172,16 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
             "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
         },
     ) == (state_root / "active").resolve(strict=False)
+    assert pytest_guard_summary_dir(repo_root, {}) == (
+        repo_root / "tmp" / "pytest-memory-guard"
+    ).resolve(strict=False)
+    assert pytest_guard_summary_dir(
+        repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
+    ) == (artifact_root / "tmp" / "pytest-memory-guard").resolve(strict=False)
+    assert pytest_guard_summary_dir(
+        repo_root,
+        {"MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+    ) == (state_root.parent / "pytest-memory-guard").resolve(strict=False)
 
 
 def test_parse_process_table_reads_process_group_ids() -> None:

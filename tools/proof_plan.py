@@ -561,6 +561,41 @@ class ProofPlan:
                                 f"{policy.name}: linker helpers for {linker!r} "
                                 "must be unique basenames"
                             )
+            linker_build_tools = policy.data.get("linker_build_tools")
+            if linker_build_tools is not None:
+                if not isinstance(linker_build_tools, dict):
+                    errors.append(f"{policy.name}: linker_build_tools must be a table")
+                else:
+                    for linker, tools in linker_build_tools.items():
+                        if (
+                            not isinstance(linker, str)
+                            or not linker
+                            or Path(linker).name != linker
+                            or not isinstance(tools, dict)
+                            or not tools
+                        ):
+                            errors.append(
+                                f"{policy.name}: linker build-tool entry must map a "
+                                "linker basename to a non-empty table"
+                            )
+                            continue
+                        folded_tools: set[str] = set()
+                        for tool, role in tools.items():
+                            if (
+                                not isinstance(tool, str)
+                                or not tool
+                                or Path(tool).name != tool
+                                or tool.casefold() in folded_tools
+                                or not isinstance(role, str)
+                                or re.fullmatch(r"rust-build-[a-z][a-z-]*", role)
+                                is None
+                            ):
+                                errors.append(
+                                    f"{policy.name}: linker build tools for {linker!r} "
+                                    "must map unique basenames to typed rust-build roles"
+                                )
+                                break
+                            folded_tools.add(tool.casefold())
             fingerprint_domain = policy.data.get("fingerprint_domain")
             if fingerprint_domain is not None and (
                 not isinstance(fingerprint_domain, str) or not fingerprint_domain

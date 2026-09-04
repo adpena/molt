@@ -177,11 +177,11 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "headroom_seconds": 180,
     }
     assert timeout_envelopes["wasm"] == {
-        "budget_seconds": 6300,
-        "projected_makespan_seconds": 6000,
+        "budget_seconds": 7500,
+        "projected_makespan_seconds": 7200,
         "critical_path_seconds": 3000,
         "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 6000,
+            "compiler-build-resource": 7200,
             "wasm-runtime": 450,
         },
         "headroom_seconds": 300,
@@ -406,6 +406,25 @@ def test_linker_process_helper_policy_requires_unique_basenames() -> None:
     assert any("linker helper key must be a basename" in error for error in errors)
 
 
+def test_linker_build_tool_policy_requires_typed_unique_basenames() -> None:
+    policies = tuple(
+        replace(
+            policy,
+            data={
+                **policy.data,
+                "linker_build_tools": {
+                    "link.exe": {"nested/cl.exe": "compiler", "cl.exe": "compiler"}
+                },
+            },
+        )
+        if policy.name == "rustc"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    assert any("must map unique basenames" in error for error in errors)
+
+
 def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     cargo = next(policy for policy in PLAN.toolchain_policies if policy.name == "cargo")
 
@@ -417,6 +436,31 @@ def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     assert PLAN.required_toolchains(cargo_command) == (
         *cargo_command.toolchains,
         "git",
+    )
+    rustc = next(policy for policy in PLAN.toolchain_policies if policy.name == "rustc")
+    assert rustc.data["linker_build_tools"] == {
+        "link.exe": {
+            "cl.exe": "rust-build-c-compiler",
+            "lib.exe": "rust-build-archiver",
+        }
+    }
+
+
+def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
+    by_id = {command.id: command for command in PLAN.commands}
+    freestanding = by_id["wasm.test.freestanding-e2e"]
+    parity = by_id["wasm.test.finally-pending-observer-parity"]
+
+    assert freestanding.argv[-2:] == (
+        "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
+        "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm",
+    )
+    assert {"python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools"}.issubset(
+        PLAN.required_toolchains(freestanding)
+    )
+    assert parity.argv[-1].endswith("test_finally_pending_observer_native_wasm_parity")
+    assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
+        PLAN.required_toolchains(parity)
     )
 
 
