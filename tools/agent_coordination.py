@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,10 +21,14 @@ from typing import Any, BinaryIO, Sequence, TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from molt import process_guard  # noqa: E402
 from molt.dx import DX_ENV_KEYS, RunContext, render_env  # noqa: E402
+from tools import check_instruction_hierarchy, claims_status  # noqa: E402
 
 LOG_ROOT = Path("logs/agents")
 CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
@@ -34,6 +40,19 @@ CANONICAL_ARTIFACT_ROOTS = (
     Path("target"),
 )
 SCHEMA_VERSION = 1
+AGENT_CONTEXT_SCHEMA = "molt.agent-context.v1"
+AGENT_CONTEXT_COMMAND_TIMEOUT_SEC = 30.0
+AGENT_CONTEXT_DOCUMENTS = (
+    ("agent contract", "AGENTS.md"),
+    ("agent contract adapter", "CLAUDE.md"),
+    ("live orchestration", "docs/agent/ORCHESTRATION.md"),
+    ("claims ledger", "docs/agent/CLAIMS.md"),
+    ("proof custody", "docs/agent/PROOF_QUEUE.md"),
+    ("coordination protocol", "docs/ops/MULTI_AGENT_COORDINATION.md"),
+    ("canonical documentation map", "docs/CANONICALS.md"),
+    ("documentation index", "docs/INDEX.md"),
+    ("specification index", "docs/spec/README.md"),
+)
 CODEX_WINDOWS_CONTROL_C_EXIT = 3221225786
 CODEX_DEFAULT_PROMPT_LIMIT = 3
 ACTIVE_STATUSES = frozenset({"running", "paused", "blocked"})
@@ -87,6 +106,55 @@ class CoordinationRecord:
     @property
     def broad_coordinator(self) -> bool:
         return self.proof_role == BROAD_ROLE
+
+
+@dataclass(frozen=True)
+class ContextCommandResult:
+    source: str
+    command: tuple[str, ...]
+    return_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+    failure_kind: str | None = None
+    failure_message: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.failure_kind is None and self.return_code == 0
+
+    def error_payload(self) -> dict[str, Any]:
+        message = self.failure_message or self.stderr.strip() or "command failed"
+        return _context_error(
+            self.source,
+            self.failure_kind or "nonzero_exit",
+            message,
+            command=self.command,
+            return_code=self.return_code,
+        )
+
+
+@dataclass(frozen=True)
+class AgentContext:
+    generated_at_utc: str
+    live_facts: dict[str, Any]
+    file_records: dict[str, Any]
+    documentation: dict[str, Any]
+    errors: tuple[dict[str, Any], ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema": AGENT_CONTEXT_SCHEMA,
+            "generated_at_utc": self.generated_at_utc,
+            "ok": self.ok,
+            "live_facts": self.live_facts,
+            "file_records": self.file_records,
+            "documentation": self.documentation,
+            "errors": list(self.errors),
+        }
 
 
 @dataclass
@@ -581,6 +649,634 @@ def git_status_paths(repo_root: Path) -> list[str]:
                 i += 1
         paths.append(normalize_repo_path(path, repo_root))
     return sorted(dict.fromkeys(paths))
+
+
+def _bounded_context_text(value: object, limit: int = 500) -> str:
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _context_error(
+    source: str,
+    kind: str,
+    message: object,
+    *,
+    command: Sequence[str] = (),
+    return_code: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "kind": kind,
+        "command": [str(item) for item in command],
+        "return_code": return_code,
+        "message": _bounded_context_text(message),
+    }
+
+
+def _run_context_command(
+    source: str,
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: float = AGENT_CONTEXT_COMMAND_TIMEOUT_SEC,
+) -> ContextCommandResult:
+    argv = tuple(str(item) for item in command)
+    try:
+        completed = process_guard.run_completed_command(
+            argv,
+            cwd=str(cwd),
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            memory_guard_prefix=None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return ContextCommandResult(
+            source=source,
+            command=argv,
+            return_code=None,
+            stdout=str(exc.stdout or ""),
+            stderr=str(exc.stderr or ""),
+            failure_kind="timeout",
+            failure_message=f"command exceeded {timeout:g}s timeout",
+        )
+    except OSError as exc:
+        return ContextCommandResult(
+            source=source,
+            command=argv,
+            return_code=None,
+            failure_kind="spawn_error",
+            failure_message=str(exc),
+        )
+    return ContextCommandResult(
+        source=source,
+        command=argv,
+        return_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )
+
+
+def _required_command_text(
+    result: ContextCommandResult,
+    errors: list[dict[str, Any]],
+) -> str | None:
+    if not result.ok:
+        errors.append(result.error_payload())
+        return None
+    return result.stdout.strip()
+
+
+def _parse_worktree_porcelain(text: str) -> list[dict[str, Any]]:
+    worktrees: list[dict[str, Any]] = []
+    for block in re.split(r"\r?\n\r?\n", text.strip()):
+        if not block.strip():
+            continue
+        record: dict[str, Any] = {
+            "path": "",
+            "head": "unknown",
+            "branch": "detached",
+            "detached": False,
+            "locked": False,
+            "prunable": False,
+        }
+        for line in block.splitlines():
+            key, _, value = line.partition(" ")
+            if key == "worktree":
+                record["path"] = value
+            elif key == "HEAD":
+                record["head"] = value
+            elif key == "branch":
+                record["branch"] = value.removeprefix("refs/heads/")
+            elif key == "detached":
+                record["detached"] = True
+            elif key == "locked":
+                record["locked"] = True
+                if value:
+                    record["locked_reason"] = value
+            elif key == "prunable":
+                record["prunable"] = True
+                if value:
+                    record["prunable_reason"] = value
+        if record["path"]:
+            worktrees.append(record)
+    return worktrees
+
+
+def _porcelain_status_entry_count(text: str) -> int:
+    entries = text.split("\0")
+    count = 0
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        count += 1
+        status = entry[:2]
+        if (
+            status.startswith(("R", "C")) or status.endswith(("R", "C"))
+        ) and index < len(entries):
+            index += 1
+    return count
+
+
+def _git_agent_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def git(source: str, *arguments: str, cwd: Path = repo_root) -> str | None:
+        result = _run_context_command(
+            f"git.{source}",
+            ("git", *arguments),
+            cwd=cwd,
+        )
+        return _required_command_text(result, errors)
+
+    current_root = git("root", "rev-parse", "--show-toplevel")
+    head = git("head", "rev-parse", "HEAD")
+    branch = git("branch", "branch", "--show-current")
+    origin_main = git("origin_main", "rev-parse", "origin/main")
+    drift_text = git(
+        "origin_drift",
+        "rev-list",
+        "--left-right",
+        "--count",
+        "HEAD...origin/main",
+    )
+    worktree_text = git("worktrees", "worktree", "list", "--porcelain")
+
+    ahead: int | None = None
+    behind: int | None = None
+    if drift_text is not None:
+        try:
+            ahead_text, behind_text = drift_text.split()
+            ahead, behind = int(ahead_text), int(behind_text)
+        except (ValueError, TypeError):
+            errors.append(
+                _context_error(
+                    "git.origin_drift",
+                    "invalid_output",
+                    f"unexpected drift output: {drift_text!r}",
+                    command=(
+                        "git",
+                        "rev-list",
+                        "--left-right",
+                        "--count",
+                        "HEAD...origin/main",
+                    ),
+                    return_code=0,
+                )
+            )
+
+    worktrees = _parse_worktree_porcelain(worktree_text or "")
+
+    def inspect_worktree(
+        record: dict[str, Any],
+    ) -> tuple[dict[str, Any], ContextCommandResult]:
+        path = Path(str(record["path"]))
+        result = _run_context_command(
+            f"git.worktree_status:{path}",
+            (
+                "git",
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ),
+            cwd=path,
+        )
+        enriched = dict(record)
+        if result.ok:
+            dirty_count = _porcelain_status_entry_count(result.stdout)
+            enriched["dirty"] = dirty_count > 0
+            enriched["dirty_path_count"] = dirty_count
+        else:
+            enriched["dirty"] = None
+            enriched["dirty_path_count"] = None
+        return enriched, result
+
+    if worktrees:
+        with ThreadPoolExecutor(
+            max_workers=min(8, len(worktrees)),
+            thread_name_prefix="molt-agent-context",
+        ) as executor:
+            inspected = list(executor.map(inspect_worktree, worktrees))
+        worktrees = []
+        for record, result in inspected:
+            worktrees.append(record)
+            if not result.ok:
+                errors.append(result.error_payload())
+
+    canonical_root = worktrees[0]["path"] if worktrees else None
+    normalized_current = (
+        str(Path(current_root).resolve()) if current_root is not None else None
+    )
+    normalized_canonical = (
+        str(Path(str(canonical_root)).resolve()) if canonical_root is not None else None
+    )
+    dirty_worktrees = [record for record in worktrees if record.get("dirty") is True]
+    return {
+        "source": "git commands observed at query time",
+        "queried_root": normalized_current,
+        "canonical_root": normalized_canonical,
+        "queried_root_is_canonical": (
+            normalized_current == normalized_canonical
+            if normalized_current is not None and normalized_canonical is not None
+            else None
+        ),
+        "branch": branch or "detached",
+        "head": head,
+        "origin_main": origin_main,
+        "ahead": ahead,
+        "behind": behind,
+        "worktree_count": len(worktrees),
+        "dirty_worktree_count": len(dirty_worktrees),
+        "worktrees": worktrees,
+    }
+
+
+def _coordination_record_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        records = load_records(repo_root)
+    except OSError as exc:
+        errors.append(_context_error("coordination.records", "read_error", exc))
+        return {
+            "source": "logs/agents/**/coordination.json",
+            "record_count": None,
+            "active_count": None,
+            "invalid_count": None,
+            "collision_count": None,
+            "active": [],
+            "invalid": [],
+            "collisions": [],
+        }
+    collisions = broad_lane_collisions(records, repo_root)
+    active = [
+        {
+            "task": record.task,
+            "status": record.status,
+            "proof_role": record.proof_role or "unknown",
+            "planned_proof_lane": record.planned_proof_lane or None,
+            "shared_target_root": record.shared_target_root or None,
+            "path": repo_relative(record.path, repo_root),
+        }
+        for record in records
+        if record.active
+    ]
+    invalid = [
+        {
+            "task": record.task,
+            "path": repo_relative(record.path, repo_root),
+            "error": _bounded_context_text(
+                record.payload.get("error", "invalid record")
+            ),
+        }
+        for record in records
+        if record.status == "invalid"
+    ]
+    for record in invalid:
+        errors.append(
+            _context_error(
+                "coordination.records",
+                "invalid_record",
+                f"{record['path']}: {record['error']}",
+            )
+        )
+    if collisions:
+        errors.append(
+            _context_error(
+                "coordination.records",
+                "broad_lane_collision",
+                f"{len(collisions)} active broad proof-lane collision(s)",
+            )
+        )
+    return {
+        "source": "logs/agents/**/coordination.json",
+        "record_count": len(records),
+        "active_count": len(active),
+        "invalid_count": len(invalid),
+        "collision_count": len(collisions),
+        "active": active,
+        "invalid": invalid,
+        "collisions": collisions,
+    }
+
+
+def _claims_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    relative = Path(claims_status.CLAIMS_REL)
+    path = repo_root / relative
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(
+            _context_error(
+                "claims.records",
+                "read_error",
+                f"{relative.as_posix()}: {exc}",
+            )
+        )
+        return {
+            "source": relative.as_posix(),
+            "counts": None,
+            "live": [],
+            "stale": [],
+        }
+    summary = claims_status.summarize(
+        claims_status.parse_rows(text),
+        datetime.now(UTC),
+    ).as_dict()
+
+    def active_claim(record: object) -> dict[str, object]:
+        if not isinstance(record, dict):
+            return {}
+        return {
+            key: record.get(key)
+            for key in ("lane", "agent", "utc", "status", "class", "age_hours")
+        }
+
+    return {
+        "source": relative.as_posix(),
+        "counts": summary["counts"],
+        "live": [active_claim(record) for record in summary["live"]],
+        "stale": [active_claim(record) for record in summary["stale"]],
+        "full_detail_command": (
+            "uv run --python 3.12 python tools/claims_status.py --json"
+        ),
+    }
+
+
+def _proof_audit_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    command = (
+        sys.executable,
+        str(repo_root / "tools" / "proof_queue.py"),
+        "--repo-root",
+        str(repo_root),
+        "audit",
+        "--json",
+        "--max-issues",
+        "0",
+    )
+    result = _run_context_command("proof.audit", command, cwd=repo_root)
+    if result.failure_kind is not None:
+        errors.append(result.error_payload())
+        return {"source_command": list(command), "available": False}
+    try:
+        payload = json.loads(result.stdout)
+        if not isinstance(payload, dict):
+            raise TypeError("audit JSON root is not an object")
+    except (json.JSONDecodeError, TypeError) as exc:
+        errors.append(
+            _context_error(
+                "proof.audit",
+                "invalid_json",
+                exc,
+                command=command,
+                return_code=result.return_code,
+            )
+        )
+        return {"source_command": list(command), "available": False}
+
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        issues = []
+    signals = Counter(
+        str(issue.get("signal_id", "unknown"))
+        for issue in issues
+        if isinstance(issue, dict)
+    )
+    custody_signal_ids = {
+        "audit-active-log-missing",
+        "audit-active-log-stale",
+        "audit-dead-running-guard",
+        "audit-memory-guard-summary-incomplete",
+        "audit-memory-guard-timeout",
+        "audit-native-call-lane-memory-guard-timeout",
+    }
+    custody_issues = [
+        issue
+        for issue in issues
+        if isinstance(issue, dict) and issue.get("signal_id") in custody_signal_ids
+    ]
+
+    def project_issue(issue: object) -> dict[str, object]:
+        if not isinstance(issue, dict):
+            return {}
+        return {
+            key: issue.get(key)
+            for key in (
+                "signal_id",
+                "severity",
+                "run_id",
+                "summary",
+                "next_action",
+                "artifacts",
+            )
+        }
+
+    def project_frontier(item: object) -> dict[str, object]:
+        if not isinstance(item, dict):
+            return {}
+        return {
+            key: item.get(key)
+            for key in (
+                "run_id",
+                "logical_id",
+                "diagnostic",
+                "summary",
+                "next_action",
+                "log_path",
+            )
+        }
+
+    if result.return_code != 0:
+        errors.append(
+            _context_error(
+                "proof.audit",
+                "health_check_failed",
+                (
+                    "proof queue audit reported unhealthy recorded custody: "
+                    f"{payload.get('issue_counts', {})}"
+                ),
+                command=command,
+                return_code=result.return_code,
+            )
+        )
+    frontier = payload.get("frontier_failures")
+    if not isinstance(frontier, list):
+        frontier = []
+    return {
+        "source_command": list(command),
+        "available": True,
+        "return_code": result.return_code,
+        "scanned_runs": payload.get("scanned_runs"),
+        "active_runs": payload.get("active_runs"),
+        "classified_failed_runs": payload.get("classified_failed_runs"),
+        "issue_counts": payload.get("issue_counts", {}),
+        "issue_signal_counts": dict(sorted(signals.items())),
+        "custody_issue_count": len(custody_issues),
+        "custody_issues": [project_issue(issue) for issue in custody_issues],
+        "frontier_failure_count": len(frontier),
+        "frontier_failures": [project_frontier(item) for item in frontier[:3]],
+        "frontier_failures_omitted": max(0, len(frontier) - 3),
+        "full_detail_command": (
+            "uv run --python 3.12 python tools/proof_queue.py audit --json "
+            "--max-issues 0"
+        ),
+    }
+
+
+def _documentation_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    pointers = []
+    for role, relative in AGENT_CONTEXT_DOCUMENTS:
+        inspection_failed = False
+        try:
+            exists = (repo_root / relative).is_file()
+        except OSError as exc:
+            exists = False
+            inspection_failed = True
+            errors.append(
+                _context_error(
+                    "documentation",
+                    "read_error",
+                    f"cannot inspect {relative}: {exc}",
+                )
+            )
+        pointers.append({"role": role, "path": relative, "exists": exists})
+        if not exists and not inspection_failed:
+            errors.append(
+                _context_error(
+                    "documentation",
+                    "missing_canonical_document",
+                    f"missing {role}: {relative}",
+                )
+            )
+    try:
+        instruction_audit = check_instruction_hierarchy.audit(repo_root).as_dict()
+    except (OSError, UnicodeDecodeError) as exc:
+        instruction_audit = {"ok": False, "failures": [str(exc)]}
+    if not instruction_audit["ok"]:
+        errors.append(
+            _context_error(
+                "documentation.instruction_authority",
+                "authority_drift",
+                "; ".join(str(item) for item in instruction_audit["failures"]),
+            )
+        )
+    return {
+        "pointers": pointers,
+        "instruction_authority": {
+            "canonical": "AGENTS.md",
+            "claude_adapter": "CLAUDE.md",
+            "claude_expected_content": check_instruction_hierarchy.CLAUDE_IMPORT.rstrip(
+                "\n"
+            ),
+            "audit": instruction_audit,
+        },
+    }
+
+
+def agent_context(repo_root: Path) -> AgentContext:
+    root = repo_root.resolve()
+    errors: list[dict[str, Any]] = []
+    live_facts = {"git": _git_agent_context(root, errors)}
+    file_records = {
+        "coordination": _coordination_record_context(root, errors),
+        "claims": _claims_context(root, errors),
+        "proof_audit": _proof_audit_context(root, errors),
+    }
+    documentation = _documentation_context(root, errors)
+    return AgentContext(
+        generated_at_utc=utc_now(),
+        live_facts=live_facts,
+        file_records=file_records,
+        documentation=documentation,
+        errors=tuple(errors),
+    )
+
+
+def print_text_agent_context(payload: dict[str, Any]) -> None:
+    git = payload["live_facts"]["git"]
+    head = str(git.get("head") or "unknown")[:12]
+    origin = str(git.get("origin_main") or "unknown")[:12]
+    print(
+        f"agent context: {'ok' if payload['ok'] else 'attention'} "
+        f"schema={payload['schema']}"
+    )
+    print(
+        "git: root={root} branch={branch} head={head} origin/main={origin} "
+        "ahead={ahead} behind={behind}".format(
+            root=git.get("canonical_root") or "unknown",
+            branch=git.get("branch") or "detached",
+            head=head,
+            origin=origin,
+            ahead=git.get("ahead"),
+            behind=git.get("behind"),
+        )
+    )
+    dirty = [item for item in git["worktrees"] if item.get("dirty") is True]
+    print(
+        f"worktrees: total={git['worktree_count']} dirty={len(dirty)} "
+        f"queried_is_canonical={git['queried_root_is_canonical']}"
+    )
+    for item in dirty:
+        print(
+            f"- dirty {item['path']} branch={item['branch']} "
+            f"paths={item['dirty_path_count']}"
+        )
+    coordination = payload["file_records"]["coordination"]
+    print(
+        "coordination records: total={record_count} active={active_count} "
+        "invalid={invalid_count} collisions={collision_count}".format(**coordination)
+    )
+    claims = payload["file_records"]["claims"]
+    counts = claims.get("counts") or {"live": "?", "stale": "?", "retired": "?"}
+    print(
+        f"claims: live={counts['live']} stale={counts['stale']} "
+        f"retired={counts['retired']}"
+    )
+    proof = payload["file_records"]["proof_audit"]
+    issue_counts = proof.get("issue_counts", {})
+    print(
+        "proof audit: active={active} errors={errors} warnings={warnings} "
+        "custody={custody} frontier={frontier}".format(
+            active=proof.get("active_runs", "?"),
+            errors=issue_counts.get("error", 0),
+            warnings=issue_counts.get("warning", 0),
+            custody=proof.get("custody_issue_count", "?"),
+            frontier=proof.get("frontier_failure_count", "?"),
+        )
+    )
+    print(
+        "docs: AGENTS.md; docs/agent/ORCHESTRATION.md; docs/CANONICALS.md; "
+        "docs/INDEX.md; docs/spec/README.md"
+    )
+    for error in payload["errors"]:
+        return_code = error.get("return_code")
+        rc = "?" if return_code is None else return_code
+        print(
+            f"- error source={error['source']} kind={error['kind']} rc={rc}: "
+            f"{error['message']}"
+        )
 
 
 def rule_matches_path(rule: ProofLaneRule, path: str) -> bool:
@@ -1722,6 +2418,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     check = sub.add_parser("check", help="fail on broad-lane coordination collisions")
     check.add_argument("--json", action="store_true")
 
+    context = sub.add_parser(
+        "context",
+        help="summarize live repository facts and recorded coordination health",
+    )
+    context.add_argument("--json", action="store_true")
+
     proof_plan = sub.add_parser(
         "proof-plan",
         help="recommend focused proof lanes for explicit paths or current git changes",
@@ -1864,6 +2566,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print_text_environment(payload)
         return 0
+
+    if args.command == "context":
+        payload = agent_context(repo_root).as_dict()
+        if args.json:
+            print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        else:
+            print_text_agent_context(payload)
+        return 0 if payload["ok"] else 2
 
     if args.command == "codex-stall":
         return run_codex_stall_diagnostic(args)
