@@ -77,6 +77,7 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Work with the live repository
 
+- Start whole-project discovery with `uv run --python 3.12 python tools/agent_coordination.py context`; use `--json` for the versioned agent-facing model.
 - Start with `git status`, applicable nested instructions, and the current
   source/proof state. For active multi-agent or Pact work, read the relevant
   sections of `docs/agent/ORCHESTRATION.md`; do not preload the entire historical

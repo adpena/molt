@@ -251,6 +251,184 @@ def test_agent_coordination_check_returns_nonzero_on_collision(tmp_path: Path) -
     )
 
 
+def test_agent_context_git_facts_cover_origin_drift_and_dirty_worktrees(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "canonical"
+    current = tmp_path / "worktree"
+    canonical.mkdir()
+    current.mkdir()
+    responses = {
+        "git.root": (0, str(current)),
+        "git.head": (0, "a" * 40),
+        "git.branch": (0, "feature/context"),
+        "git.origin_main": (0, "b" * 40),
+        "git.origin_drift": (0, "2 3"),
+        "git.worktrees": (
+            0,
+            f"worktree {canonical.as_posix()}\nHEAD {'b' * 40}\n"
+            "branch refs/heads/main\n\n"
+            f"worktree {current.as_posix()}\nHEAD {'a' * 40}\n"
+            "branch refs/heads/feature/context\n",
+        ),
+        f"git.worktree_status:{canonical}": (0, ""),
+        f"git.worktree_status:{current}": (0, " M tools/agent_coordination.py\0"),
+    }
+
+    def fake_run(source, command, *, cwd, timeout=30.0):
+        return_code, stdout = responses[source]
+        return agent_coordination.ContextCommandResult(
+            source=source,
+            command=tuple(command),
+            return_code=return_code,
+            stdout=stdout,
+        )
+
+    monkeypatch.setattr(agent_coordination, "_run_context_command", fake_run)
+    errors = []
+
+    payload = agent_coordination._git_agent_context(current, errors)
+
+    assert errors == []
+    assert payload["canonical_root"] == str(canonical.resolve())
+    assert payload["queried_root"] == str(current.resolve())
+    assert payload["queried_root_is_canonical"] is False
+    assert payload["ahead"] == 2
+    assert payload["behind"] == 3
+    assert payload["dirty_worktree_count"] == 1
+    assert payload["worktrees"][1]["dirty_path_count"] == 1
+
+
+def test_agent_context_proof_audit_preserves_dead_custody_and_nonzero_status(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    audit_payload = {
+        "scanned_runs": 4,
+        "active_runs": 1,
+        "classified_failed_runs": 1,
+        "issue_counts": {"error": 1, "warning": 1},
+        "issues": [
+            {
+                "signal_id": "audit-dead-running-guard",
+                "severity": "error",
+                "run_id": "dead-run",
+                "summary": "guard is dead",
+            },
+            {
+                "signal_id": "audit-weak-proof-metadata",
+                "severity": "warning",
+                "run_id": "old-run",
+                "summary": "metadata is weak",
+            },
+        ],
+        "frontier_failures": [{"run_id": "frontier-run"}],
+    }
+    monkeypatch.setattr(
+        agent_coordination,
+        "_run_context_command",
+        lambda source, command, *, cwd, timeout=30.0: (
+            agent_coordination.ContextCommandResult(
+                source=source,
+                command=tuple(command),
+                return_code=1,
+                stdout=json.dumps(audit_payload),
+            )
+        ),
+    )
+    errors = []
+
+    payload = agent_coordination._proof_audit_context(tmp_path, errors)
+
+    assert payload["available"] is True
+    assert payload["custody_issue_count"] == 1
+    assert payload["custody_issues"][0]["run_id"] == "dead-run"
+    assert payload["issue_signal_counts"] == {
+        "audit-dead-running-guard": 1,
+        "audit-weak-proof-metadata": 1,
+    }
+    assert errors[0]["kind"] == "health_check_failed"
+    assert errors[0]["return_code"] == 1
+
+
+def test_agent_context_command_failure_is_structured_and_cli_returns_nonzero(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    failure = {
+        "source": "git.head",
+        "kind": "timeout",
+        "command": ["git", "rev-parse", "HEAD"],
+        "return_code": None,
+        "message": "command exceeded 30s timeout",
+    }
+    model = agent_coordination.AgentContext(
+        generated_at_utc="2026-09-04T00:00:00Z",
+        live_facts={"git": {}},
+        file_records={},
+        documentation={},
+        errors=(failure,),
+    )
+    monkeypatch.setattr(agent_coordination, "agent_context", lambda _root: model)
+
+    rc = agent_coordination.main(["--repo-root", str(tmp_path), "context", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert payload["schema"] == agent_coordination.AGENT_CONTEXT_SCHEMA
+    assert payload["ok"] is False
+    assert payload["errors"] == [failure]
+    assert set(payload) == {
+        "schema",
+        "generated_at_utc",
+        "ok",
+        "live_facts",
+        "file_records",
+        "documentation",
+        "errors",
+    }
+
+
+def test_agent_context_documentation_reuses_instruction_authority(
+    tmp_path: Path,
+) -> None:
+    for _role, relative in agent_coordination.AGENT_CONTEXT_DOCUMENTS:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Authority\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "# Agent contract\n\nSee `docs/INDEX.md`.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+    for relative in agent_coordination.check_instruction_hierarchy.ARCHIVES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            agent_coordination.check_instruction_hierarchy.ARCHIVE_MARKER + "\n",
+            encoding="utf-8",
+        )
+    errors = []
+
+    payload = agent_coordination._documentation_context(tmp_path, errors)
+
+    assert errors == []
+    assert payload["instruction_authority"]["canonical"] == "AGENTS.md"
+    assert payload["instruction_authority"]["claude_adapter"] == "CLAUDE.md"
+    assert payload["instruction_authority"]["audit"] == {
+        "ok": True,
+        "failures": [],
+    }
+
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\nextra\n", encoding="utf-8")
+    errors = []
+    payload = agent_coordination._documentation_context(tmp_path, errors)
+    assert payload["instruction_authority"]["audit"]["ok"] is False
+    assert errors[0]["kind"] == "authority_drift"
+
+
 def test_proof_plan_recommends_focused_lanes_for_explicit_paths(tmp_path: Path) -> None:
     payload = agent_coordination.proof_plan_payload(
         agent_coordination.parse_args(
