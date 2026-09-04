@@ -9,7 +9,12 @@ from tools.proof_queue_pkg import state
 
 DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
 
-TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
+TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset(
+    {
+        "running-proof-child-missing",
+        "running-proof-guard-timeout-expired",
+    }
+)
 
 
 def _elapsed_since(started_at: str | None, elapsed_s: float | None = None) -> str:

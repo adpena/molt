@@ -17,6 +17,7 @@ from tools.proof_queue_pkg.diagnostic_evidence import (
     _last_nonempty_log_line,
     _read_log_tail,
     _running_child_missing_diagnostic,
+    _running_guard_timeout_diagnostic,
     _running_pytest_current_test_missing_diagnostic,
     _running_pytest_failures_observed_diagnostic,
 )
@@ -46,6 +47,9 @@ SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE = re.compile(
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    running_guard_timeout = _running_guard_timeout_diagnostic(row)
+    if running_guard_timeout is not None:
+        diagnostics.append(running_guard_timeout)
     running_pytest_failures = _running_pytest_failures_observed_diagnostic(row)
     if running_pytest_failures is not None:
         diagnostics.append(running_pytest_failures)
