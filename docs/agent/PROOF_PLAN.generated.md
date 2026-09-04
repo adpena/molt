@@ -38,7 +38,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3420 s | 180 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 105 min | 6000 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
+| `wasm` | pr, main | yes | `github-job` | 125 min | 7200 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 7 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 10 |
@@ -202,6 +202,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
 | `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
+| `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |

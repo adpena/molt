@@ -17,6 +17,7 @@ from typing import Mapping, Sequence
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg.process_image_capture import (
+    canonical_images,
     capture_image,
     revalidate_images,
 )
@@ -91,6 +92,7 @@ def capture_rust_link_process_images(
     target: str | None,
     command_argv: Sequence[str] = (),
     linker_process_helpers: Mapping[str, Sequence[str]] | None = None,
+    linker_build_tools: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Ask the selected Rust toolchain to link a zero-dependency synthetic crate.
 
@@ -323,6 +325,31 @@ def capture_rust_link_process_images(
                 ),
             )
             images.append(image)
+        build_tool_policy = {
+            str(linker).casefold(): {
+                str(tool): str(role) for tool, role in tools.items()
+            }
+            for linker, tools in (linker_build_tools or {}).items()
+        }
+        declared_build_tools = build_tool_policy.get(driver_name, {})
+        selected_build_tools: list[Path] = []
+        for tool_name, role in declared_build_tools.items():
+            if Path(tool_name).name != tool_name:
+                raise ValueError("Rust build-tool policy requires basenames")
+            if not role.startswith("rust-build-"):
+                raise ValueError(
+                    "Rust build-tool policy requires typed rust-build roles"
+                )
+            tool = primary.with_name(tool_name)
+            if not tool.is_file():
+                raise ValueError(
+                    f"selected Rust linker has no declared build tool {tool_name!r}"
+                )
+            selected_build_tools.append(tool.resolve(strict=True))
+            images.append(
+                capture_image(role, tool, root_exit_disposition="require-exit")
+            )
+        images = canonical_images(images)
         telemetry = {
             "schema": "molt.proof-rust-link-selection-telemetry.v1",
             "target": target,
@@ -331,11 +358,23 @@ def capture_rust_link_process_images(
             "selection_probe_count": 1,
             "declared_helper_count": len(declared_helpers),
             "selected_helper_count": len(selected_helpers),
+            "declared_build_tool_count": len(declared_build_tools),
+            "selected_build_tool_count": len(selected_build_tools),
             "helper_policy_sha256": hashlib.sha256(
                 json.dumps(
                     {
                         linker: list(helpers)
                         for linker, helpers in sorted(helper_policy.items())
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            "build_tool_policy_sha256": hashlib.sha256(
+                json.dumps(
+                    {
+                        linker: dict(sorted(tools.items()))
+                        for linker, tools in sorted(build_tool_policy.items())
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -389,7 +428,9 @@ def revalidate_rust_link_process_images(
         if not isinstance(raw, Mapping):
             raise ValueError("pre-arm Rust process-image row is malformed")
         role = raw.get("role")
-        if role not in {"rust-linker", "rust-link-helper"}:
+        if role not in {"rust-linker", "rust-link-helper"} and not (
+            isinstance(role, str) and role.startswith("rust-build-")
+        ):
             continue
         selected_rows.append(raw)
     try:

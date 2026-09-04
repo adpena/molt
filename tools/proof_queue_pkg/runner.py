@@ -16,6 +16,8 @@ from pathlib import Path
 
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from tools.command_execution import CommandExecutor
+from tools.memory_guard_core import repro_context as guard_repro_context
+from tools.memory_guard_core.paths import pytest_guard_summary_dir
 from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
@@ -1188,6 +1190,15 @@ def _run_one(
         env["MOLT_PROOF_QUEUE_DB"] = str(db)
         env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
         env.update(env_overrides)
+        if guard_repro_context._command_requests_test_custody(
+            command,
+            cwd=repo_root,
+            root=repo_root,
+        ):
+            pytest_root = pytest_guard_summary_dir(repo_root, env)
+            env["MOLT_PYTEST_CURRENT_TEST_FILE"] = str(
+                pytest_root / f"{state._slug(run_id)}_current-test.json"
+            )
         row = state._row_by_run_id(conn, run_id)
         if row is None:
             raise ValueError(f"proof run {run_id!r} disappeared before execution")
