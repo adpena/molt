@@ -100,11 +100,23 @@ Agents must use the JSON coordination records as the machine-readable discovery
 surface before long proof work.
 
 ```bash
+uv run --python 3.12 python tools/agent_coordination.py context
 uv run --python 3.12 python tools/agent_coordination.py scan
 uv run --python 3.12 python tools/agent_coordination.py check
 uv run --python 3.12 python tools/agent_coordination.py proof-plan
 ```
 
+- `context` is the canonical read-only whole-project entrypoint. Its concise
+  renderer separates Git facts observed at query time from file-backed claims,
+  coordination, and proof records. `context --json` emits the versioned
+  `molt.agent-context.v1` model with canonical root, HEAD/origin drift, every
+  registered worktree and its dirty-path count, claims health, proof-audit and
+  dead-custody summaries, instruction-authority health, and canonical document
+  pointers. It writes no registry or status file. Missing authorities, invalid
+  records, subprocess failures, and unhealthy proof audit results appear in
+  `errors` and make the command exit nonzero; unavailable data is never rendered
+  as a healthy zero. The summarized proof section includes the full-detail
+  audit command when deeper evidence is needed.
 - `scan` lists current task records and any broad-lane collisions.
 - `check` returns nonzero when two active broad-sweep coordinators claim the
   same proof lane on the same shared target root.
