@@ -1,6 +1,7 @@
-use molt_backend::tir::lower_from_simple::lower_to_tir;
+use molt_backend::tir::lower_from_simple::lower_to_tir_for_target;
 use molt_backend::tir::lower_to_simple::lower_to_simple_ir;
 use molt_backend::tir::passes::run_pipeline;
+use molt_backend::tir::target_info::TargetInfo;
 use molt_backend::tir::type_refine::refine_types;
 use molt_backend::tir::verify::verify_function;
 use molt_backend::{CompileOutput, FunctionIR, OpIR, SimpleBackend, SimpleIR};
@@ -77,12 +78,10 @@ fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
 }
 
 fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
-    let mut typed = lower_to_tir(&func);
+    let target = TargetInfo::native_release_fast();
+    let mut typed = lower_to_tir_for_target(&func, &target);
     refine_types(&mut typed);
-    let _stats = run_pipeline(
-        &mut typed,
-        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-    );
+    let _stats = run_pipeline(&mut typed, &target);
     refine_types(&mut typed);
     verify_function(&typed).expect("typed TIR must verify");
     eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
@@ -599,12 +598,10 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
         execution_context: Default::default(),
     };
 
-    let mut tir = lower_to_tir(&func_ir);
+    let target = TargetInfo::native_release_fast();
+    let mut tir = lower_to_tir_for_target(&func_ir, &target);
     refine_types(&mut tir);
-    let _stats = run_pipeline(
-        &mut tir,
-        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-    );
+    let _stats = run_pipeline(&mut tir, &target);
     refine_types(&mut tir);
     assert!(
         verify_function(&tir).is_ok(),

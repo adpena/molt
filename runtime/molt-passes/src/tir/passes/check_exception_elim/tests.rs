@@ -7,7 +7,10 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::run;
+use super::{
+    classify::{const_int_values, op_may_raise},
+    run,
+};
 
 fn make_check_exception() -> TirOp {
     let mut attrs = AttrDict::new();
@@ -172,6 +175,25 @@ fn redundant_check_after_pure_ops_dropped() {
     let stats = run(&mut func);
     assert_eq!(stats.ops_removed, 1);
     assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
+}
+
+#[test]
+fn marked_finally_observer_can_create_pending_exception() {
+    let unmarked = make_original_kind("exception_finally_pending_observer");
+    let mut observer = make_original_kind("exception_finally_pending_observer");
+    observer.mark_async_work_poll();
+    let value_types = HashMap::new();
+    let probe = make_func_with_block(vec![unmarked.clone(), observer.clone()]);
+    let const_ints = const_int_values(&probe);
+
+    assert!(
+        !op_may_raise(&value_types, &const_ints, &unmarked),
+        "the ordinary observer remains a non-raising read"
+    );
+    assert!(
+        op_may_raise(&value_types, &const_ints, &observer),
+        "polling can introduce a pending exception"
+    );
 }
 
 #[test]

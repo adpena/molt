@@ -124,10 +124,15 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         "exception_last_pending" | "exception_finally_pending_observer" => {
+            let symbol = crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
+                &op.kind,
+                op.is_async_work_poll(),
+            )
+            .expect("pending-exception observer kind must have a runtime projection");
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_last_pending",
+                symbol,
                 &[],
                 &[types::I64],
             );

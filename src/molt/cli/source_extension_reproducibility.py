@@ -10,6 +10,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+)
+
 _MESON_TRANSIENT_DEPENDENCY_ID_RE = re.compile(r"dep[0-9]+")
 _URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 _FILE_URL_RE = re.compile(r"(?i)file://")
@@ -339,13 +343,6 @@ def _canonical_extension_manifest_for_wheel(
         ).hexdigest()
         if isinstance(canonical.get("build"), dict):
             canonical["build"]["source_plan_digest"] = source_plan["digest"]
-    closure = canonical.get("object_closure")
-    if isinstance(closure, dict) and "closure_sha256" in closure:
-        identity = dict(closure)
-        identity.pop("closure_sha256", None)
-        closure["closure_sha256"] = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        if isinstance(canonical.get("build"), dict):
-            canonical["build"]["object_closure_sha256"] = closure["closure_sha256"]
+    if isinstance(canonical.get("object_closure"), dict):
+        finalize_source_extension_object_closure(canonical)
     return canonical

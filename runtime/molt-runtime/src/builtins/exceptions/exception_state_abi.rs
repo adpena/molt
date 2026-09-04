@@ -380,20 +380,29 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
 /// backedge polls. Pure exception predicates above remain non-reentrant.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { if service_async_work(_py) { 1 } else { 0 } })
+}
+
+/// Fused eval-breaker and pending-exception capture for generated `finally`
+/// arbitration. The caller must continue through the existing replacement and
+/// `__context__` logic instead of branching directly to the outer handler.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_async_work_poll_and_exception_last_pending() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        // Allocation only schedules GC; generated call-return/backedge polls own
-        // the safe execution boundary, matching CPython's eval-breaker model.
-        // Automatic resource failure is retained as pending GC pressure and
-        // telemetry rather than being confused with a user exception.
-        let _ = unsafe { crate::object::gc::collect_pending(_py) };
-        let drain_failed =
-            molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
-        if drain_failed || exception_pending(_py) {
-            1
-        } else {
-            0
-        }
+        let _ = service_async_work(_py);
+        exception_last_pending_bits(_py)
     })
+}
+
+fn service_async_work(_py: &PyToken<'_>) -> bool {
+    // Allocation only schedules GC; generated call-return/backedge polls own
+    // the safe execution boundary, matching CPython's eval-breaker model.
+    // Automatic resource failure is retained as pending GC pressure and
+    // telemetry rather than being confused with a user exception.
+    let _ = unsafe { crate::object::gc::collect_pending(_py) };
+    let drain_failed =
+        molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
+    drain_failed || exception_pending(_py)
 }
 
 /// Returns a pointer to the current thread's pending-exception byte.

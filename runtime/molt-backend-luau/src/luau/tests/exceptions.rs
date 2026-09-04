@@ -1,4 +1,5 @@
 use super::*;
+use molt_tir::target_admission::PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON;
 
 #[test]
 fn test_compile_checked_keeps_ordinary_programs_available() {
@@ -25,36 +26,53 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
 }
 
 #[test]
-fn test_compile_checked_rejects_async_work_poll_without_runtime_boundary() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "async_work_poll_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
+fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary() {
+    let cases = [
+        (
+            "async_work_poll",
+            OpIR {
                 kind: "async_work_poll".to_string(),
                 value: Some(0),
                 ..OpIR::default()
-            }],
-        }],
-        profile: None,
-    };
+            },
+        ),
+        (
+            "exception_finally_pending_observer",
+            OpIR {
+                kind: "exception_finally_pending_observer".to_string(),
+                out: Some("pending".to_string()),
+                async_work_poll: true,
+                ..OpIR::default()
+            },
+        ),
+    ];
 
-    let mut backend = LuauBackend::new();
-    let err = backend
-        .compile_checked(&ir)
-        .expect_err("Luau must not erase the pending-call/eval-breaker poll");
-    assert!(
-        err.contains("async_work_poll"),
-        "diagnostic must name the op: {err}"
-    );
-    assert!(
-        err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
-        "diagnostic must name the missing target capability: {err}"
-    );
+    for (kind, op) in cases {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("{kind}_test"),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
+                ops: vec![op],
+            }],
+            profile: None,
+        };
+
+        let err = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect_err("Luau must not erase an async-work observation");
+        assert!(
+            err.contains(kind),
+            "diagnostic must name the carrier `{kind}`: {err}"
+        );
+        assert!(
+            err.contains(PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON),
+            "diagnostic must name the missing target capability: {err}"
+        );
+    }
 }
 
 #[test]
@@ -172,9 +190,9 @@ pub(super) fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
     if func.ops.iter().any(|op| op.kind == "phi") {
         molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut func.ops);
     }
-    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&func);
-    crate::tir::type_refine::refine_types(&mut tir_func);
     let target_info = crate::tir::target_info::TargetInfo::luau_release_fast();
+    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir_for_target(&func, &target_info);
+    crate::tir::type_refine::refine_types(&mut tir_func);
     let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &target_info);
     let _drop_changed =
         crate::tir::drop_phase::finalize_function_drops(&mut tir_func, &target_info);

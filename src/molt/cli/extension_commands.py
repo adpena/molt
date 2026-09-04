@@ -11,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.source_extension_reproducibility import (
@@ -82,6 +83,10 @@ from molt.cli.source_extension_target import (
 )
 from molt.cli.source_extension_link_requirements import (
     source_extension_link_requirements,
+)
+from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
+    source_extension_wasm_import_receipts,
 )
 from molt.cli.wasm_toolchain import (
     normalize_wasi_sysroot,
@@ -1142,6 +1147,7 @@ def extension_build(
                             ),
                         ),
                         nm_command=effective_tool_commands.get("nm"),
+                        target_triple=target_triple,
                     )
                 )
                 if object_fact_error is not None:
@@ -1160,6 +1166,7 @@ def extension_build(
                         compile_command=cmd,
                         dependency_paths=(source_path,),
                         nm_command=effective_tool_commands.get("nm"),
+                        target_triple=target_triple,
                     )
                 )
                 if object_fact_error is not None:
@@ -1337,13 +1344,39 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-        defined_symbols = sorted(
-            {
-                symbol
-                for fact in source_plan_object_closure.objects
-                for symbol in fact.defined_symbols
-            }
+        artifact_symbol_inspection = (
+            _source_extensions._inspect_source_extension_artifact_symbols(
+                built_extension,
+                nm_command=effective_tool_commands.get("nm"),
+                target_triple=target_triple,
+                aggregate_linker_closure=True,
+            )
         )
+        if artifact_symbol_inspection is None:
+            return _fail(
+                "Unable to read the emitted extension artifact global symbol table",
+                json_output,
+                command="extension-build",
+            )
+        artifact_defined_symbols = tuple(
+            sorted(artifact_symbol_inspection.defined_symbols)
+        )
+        artifact_undefined_symbols = tuple(
+            sorted(artifact_symbol_inspection.undefined_symbols)
+        )
+        wasm_import_receipts: tuple[dict[str, str], ...] | None = None
+        if wasm_static_link:
+            try:
+                wasm_import_receipts = source_extension_wasm_import_receipts(
+                    artifact_symbol_inspection.wasm_imports or ()
+                )
+            except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
+                return _fail(
+                    "Failed reading the emitted wasm relocatable extension import "
+                    f"closure: {exc}",
+                    json_output,
+                    command="extension-build",
+                )
         direct_symbols = sorted(
             {
                 str(export.get("symbol"))
@@ -1353,20 +1386,14 @@ def extension_build(
                 and str(export.get("symbol")).strip()
             }
         )
-        missing_direct_symbols = [
-            symbol for symbol in direct_symbols if symbol not in defined_symbols
-        ]
-        if missing_direct_symbols:
-            return _fail(
-                "Extension direct_symbol callable export(s) missing from the static "
-                f"object closure: {', '.join(missing_direct_symbols)}",
-                json_output,
-                command="extension-build",
-            )
         if wasm_static_link:
             _atomic_copy_file(built_extension, output_root / module_rel)
 
-        extension_bytes = built_extension.read_bytes()
+        extension_bytes = (
+            artifact_symbol_inspection.artifact_bytes
+            if artifact_symbol_inspection.artifact_bytes is not None
+            else built_extension.read_bytes()
+        )
         extension_archive_path = module_rel.as_posix()
         runtime_linkage = "static_link"
         artifact_kind = target_plan.artifact_kind
@@ -1438,9 +1465,6 @@ def extension_build(
                 ]
         build_payload["object_count"] = len(object_facts)
         build_payload["linked_object_count"] = len(object_paths)
-        build_payload["object_closure_sha256"] = (
-            source_plan_object_closure.closure_sha256
-        )
         required_c_api_by_source = {
             fact.source_path.resolve(): tuple(
                 sorted(
@@ -1458,27 +1482,61 @@ def extension_build(
             )
             for fact in source_plan_object_closure.objects
         }
-        manifest_payload["object_closure"] = (
-            source_plan_object_closure.manifest_payload(
-                runtime_symbols=(
-                    wasm_static_link_runtime_symbols_for_imports(
-                        source_plan_object_closure.undefined_symbols
-                    )
-                    if wasm_static_link
-                    else source_plan_object_closure.undefined_symbols
-                ),
-                required_c_api_by_source=required_c_api_by_source,
-                required_capsules_by_source=(
-                    source_c_api_requirements.required_capsules_by_source
-                ),
-                project_generated_c_api_by_source=(
-                    source_c_api_requirements.project_generated_c_api_by_source
-                ),
-                project_generated_c_api_prefixes=(
-                    source_c_api_requirements.project_generated_c_api_prefixes
-                ),
+        runtime_requirement_symbols = artifact_undefined_symbols
+        if wasm_static_link:
+            assert wasm_import_receipts is not None
+            runtime_requirement_symbols = tuple(
+                sorted(
+                    set(runtime_requirement_symbols)
+                    | {item["name"] for item in wasm_import_receipts}
+                )
+            )
+        object_closure_payload = source_plan_object_closure.manifest_payload(
+            defined_symbols=artifact_defined_symbols,
+            undefined_symbols=artifact_undefined_symbols,
+            wasm_imports=wasm_import_receipts,
+            runtime_symbols=(
+                wasm_static_link_runtime_symbols_for_imports(
+                    runtime_requirement_symbols,
+                    typed_imports=(
+                        (item["module"], item["name"]) for item in wasm_import_receipts
+                    ),
+                )
+                if wasm_static_link
+                else ()
+            ),
+            required_c_api_by_source=required_c_api_by_source,
+            required_capsules_by_source=(
+                source_c_api_requirements.required_capsules_by_source
+            ),
+            project_generated_c_api_by_source=(
+                source_c_api_requirements.project_generated_c_api_by_source
+            ),
+            project_generated_c_api_prefixes=(
+                source_c_api_requirements.project_generated_c_api_prefixes
+            ),
+        )
+        manifest_payload["object_closure"] = object_closure_payload
+        validated_object_closure = finalize_source_extension_object_closure(
+            manifest_payload
+        )
+        _object_closure_identity, object_closure_sha256 = validated_object_closure
+        artifact_closure_errors = (
+            _source_extensions.validate_source_extension_artifact_object_closure(
+                artifact_path=built_extension,
+                manifest=manifest_payload,
+                required_function_exports=direct_symbols,
+                inspection=artifact_symbol_inspection,
+                validated_closure=validated_object_closure,
             )
         )
+        if artifact_closure_errors:
+            return _fail(
+                "Emitted source-extension artifact/object closure mismatch: "
+                + "; ".join(artifact_closure_errors),
+                json_output,
+                command="extension-build",
+            )
         if python_exports:
             manifest_payload["python_exports"] = python_exports
         if callable_exports:
@@ -1636,7 +1694,7 @@ def extension_build(
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
                 "object_closure_sha256": (
-                    source_plan_object_closure.closure_sha256
+                    object_closure_sha256
                     if source_plan_object_closure is not None
                     else None
                 ),

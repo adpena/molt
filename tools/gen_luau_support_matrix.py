@@ -43,29 +43,39 @@ def _kind_set(*keys: str) -> frozenset[str]:
     return frozenset(kind for key in keys for kind in _OP_KIND_TABLE.get(key, []))
 
 
-_PRE_SOURCE_NOT_ADMITTED = _kind_set(
-    "simpleir_dynamic_divmod_semantics_kinds",
-    "simpleir_dynamic_power_semantics_kinds",
-    "simpleir_integer_only_semantics_kinds",
-    "simpleir_integer_producer_semantics_kinds",
-    "simpleir_identity_semantics_kinds",
-    "simpleir_tuple_semantics_kinds",
-    "simpleir_exception_semantics_kinds",
-    "simpleir_deterministic_lifetime_semantics_kinds",
-    "simpleir_frame_introspection_semantics_kinds",
-    "simpleir_format_protocol_semantics_kinds",
-    "simpleir_iterable_protocol_semantics_kinds",
-    "simpleir_object_model_semantics_kinds",
-    "simpleir_truthiness_semantics_kinds",
-    "simpleir_comparison_semantics_kinds",
-    "simpleir_fallible_protocol_semantics_kinds",
-    "simpleir_async_runtime_semantics_kinds",
-    "simpleir_unstructured_control_semantics_kinds",
-    "simpleir_host_capability_semantics_kinds",
+_RUNTIME_ROLE_BITS = {
+    row["constant"]: (row["table"], row["bit"])
+    for row in _OP_KIND_TABLE["simpleir_runtime_requirement_roles"]
+}
+_LUAU_PROFILE = next(
+    profile
+    for profile in _OP_KIND_TABLE["simpleir_target_runtime_profiles"]
+    if profile["target"] == "luau"
+)
+_LUAU_RUNTIME_BITS = sum(
+    1 << _RUNTIME_ROLE_BITS[constant][1] for constant in _LUAU_PROFILE["supported"]
+)
+_LUAU_RUNTIME_NOT_ADMITTED = frozenset(
+    kind
+    for table, bit in _RUNTIME_ROLE_BITS.values()
+    if not (_LUAU_RUNTIME_BITS & (1 << bit))
+    for kind in _OP_KIND_TABLE.get(table, [])
+)
+
+
+_PRE_SOURCE_NOT_ADMITTED = (
+    _kind_set(
+        "simpleir_dynamic_divmod_semantics_kinds",
+        "simpleir_dynamic_power_semantics_kinds",
+        "simpleir_integer_only_semantics_kinds",
+        "simpleir_integer_producer_semantics_kinds",
+    )
+    | _LUAU_RUNTIME_NOT_ADMITTED
 )
 _PRE_SOURCE_LITERAL_LIMITED = _kind_set(
     "simpleir_integer_literal_semantics_kinds",
 )
+_PRE_SOURCE_INSTANCE_LIMITED = _kind_set("async_work_poll_marker_kinds")
 _PRE_SOURCE_TYPE_LIMITED = _kind_set(
     "simpleir_dynamic_add_semantics_kinds",
     "simpleir_dynamic_numeric_semantics_kinds",
@@ -79,8 +89,7 @@ _REGISTERED_SIMPLEIR_KINDS = {
 }
 _REGISTERED_SIMPLEIR_KINDS.update(
     _kind_set(
-        "simpleir_execution_frame_semantics_kinds",
-        "simpleir_frame_introspection_semantics_kinds",
+        *(row["table"] for row in _OP_KIND_TABLE["simpleir_runtime_requirement_roles"])
     )
 )
 for _table in ("simpleir_control_kind", "frontend_effect_kind"):
@@ -90,9 +99,7 @@ for _table in ("simpleir_control_kind", "frontend_effect_kind"):
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_LITERAL_LIMITED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
-_REGISTERED_SIMPLEIR_KINDS.update(
-    _kind_set("simpleir_runtime_neutral_semantics_kinds")
-)
+_REGISTERED_SIMPLEIR_KINDS.update(_kind_set("simpleir_runtime_neutral_semantics_kinds"))
 
 
 @dataclass(frozen=True)
@@ -311,6 +318,12 @@ def _classify(op: str, body: str) -> Row:
             "not-admitted",
             "Operation is unclassified in the generated target-contract authority.",
         )
+    if op in _PRE_SOURCE_INSTANCE_LIMITED:
+        return Row(
+            op,
+            "implemented-target-limited",
+            "Unmarked observer is lowered; the generated target contract rejects the pending-call/eval-breaker-marked variant.",
+        )
     if op in _PRE_SOURCE_NOT_ADMITTED:
         return Row(
             op,
@@ -373,6 +386,13 @@ def collect_rows_from_text(text: str) -> list[Row]:
         for ops, body in _iter_arms(match_text):
             for op in ops:
                 by_op[op] = _classify(op, body)
+
+    # A generated pre-source rejection is itself the backend's implementation
+    # of that target contract; it deliberately has no emitter arm. Include
+    # these rows from the semantic authority so deleting an unreachable arm
+    # cannot also erase the operation from the conformance matrix.
+    for op in _PRE_SOURCE_NOT_ADMITTED:
+        by_op.setdefault(op, _classify(op, ""))
 
     rows = sorted(by_op.values(), key=lambda row: row.op)
     bad_statuses = sorted({row.status for row in rows} - STATUSES)

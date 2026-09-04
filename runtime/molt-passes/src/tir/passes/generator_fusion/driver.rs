@@ -20,7 +20,17 @@ pub fn run_generator_fusion(
     let poll_bodies: HashMap<String, TirFunction> = module
         .functions
         .iter()
-        .filter(|f| is_poll_fusable(f, call_graph))
+        .filter(|f| {
+            let fusable = is_poll_fusable(f, call_graph);
+            if fusable && tti.supports_pending_call_eval_breaker_poll() {
+                assert!(
+                    super::super::async_work_poll::is_materialized(f),
+                    "generator fusion requires post-pipeline async-work observations in poll {:?}",
+                    f.name
+                );
+            }
+            fusable
+        })
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
     if poll_bodies.is_empty() {
@@ -55,6 +65,13 @@ pub fn run_generator_fusion(
                     .next()
             };
             let Some(candidate) = candidate else { break };
+            if tti.supports_pending_call_eval_breaker_poll() {
+                assert!(
+                    super::super::async_work_poll::is_materialized(&module.functions[caller_idx]),
+                    "generator fusion requires post-pipeline async-work observations in caller {:?}",
+                    caller_name
+                );
+            }
             let Some(poll) = poll_bodies.get(&candidate.poll_name) else {
                 break;
             };

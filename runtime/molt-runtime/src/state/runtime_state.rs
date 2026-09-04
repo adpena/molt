@@ -1179,9 +1179,10 @@ fn trace_runtime_init(stage: &str) {
 
 /// Clean executable process exit.
 ///
-/// Runs Python-level process-exit finalization once, then calls `_exit` so C
-/// global destructors and Rust/TLS destructors cannot race runtime allocator
-/// state. Explicit embedding teardown remains `molt_runtime_shutdown()`.
+/// Runs Python-level process-exit finalization once, drains native managed TLS
+/// while runtime/GIL custody is still live, then calls `_exit` to bypass normal
+/// user-level C teardown. Explicit embedding teardown remains
+/// `molt_runtime_shutdown()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
     // Process-exit attachment is governed by the same prepare -> runtime TLS
@@ -1238,6 +1239,17 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             //    still held; reads crate-static counters only, never touches
             //    `state`.
             crate::object::ops::assert_no_true_leak_post_teardown(&py);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                // Windows `_exit` reaches `ExitProcess`, which runs native TLS
+                // destructors. Retire the managed CPython record explicitly
+                // while the finalization owner still holds the GIL and the
+                // persistent C-extension execution context; otherwise its TLS
+                // sentinel runs after the lifecycle is Shutdown and correctly
+                // rejects destruction without runtime custody.
+                molt_cpython_abi::api::object::detach_runtime_execution_thread();
+                molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
+            }
             let mut phase = lifecycle.phase.lock().unwrap();
             assert_eq!(
                 *phase,
@@ -1248,8 +1260,6 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             );
             *phase = RuntimeLifecyclePhase::Shutdown;
             lifecycle.changed.notify_all();
-            #[cfg(not(target_arch = "wasm32"))]
-            molt_cpython_abi::api::object::detach_runtime_execution_thread();
         }
         drop(gil);
     }

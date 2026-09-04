@@ -771,7 +771,7 @@ def verify(
                     manifest,
                     manifest_dir=manifest_dir,
                     wheel_path=extension_wheel,
-                    require_capabilities=require_extension_capabilities,
+                    require_nonempty_capabilities=require_extension_capabilities,
                     required_abi=required_extension_abi,
                     require_checksum=require_checksum,
                     warn_missing_checksum=not require_checksum,

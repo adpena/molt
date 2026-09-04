@@ -71,6 +71,7 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         entry_override_by_module={n: None for n in names},
         module_is_namespace_by_module={n: False for n in names},
         module_is_package_by_module={n: False for n in names},
+        module_execution_kind_by_module={n: "imported" for n in names},
         frontend_module_costs={n: 1.0 for n in names},
         stdlib_like_by_module={n: False for n in names},
     )
@@ -199,6 +200,7 @@ def _context_digest(project_root: Path, path: Path, name: str) -> str:
         path,
         logical_source_path=str(path),
         entry_override=None,
+        module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
         parse_codec="msgpack",

@@ -115,7 +115,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 def_var_named(&mut *builder, vars, out.clone(), res);
             }
         }
-        "check_exception" | "async_work_poll" => {
+        kind if crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
             let target_id = op.value.unwrap_or_else(|| {
                 panic!(
                     "check_exception missing target label id in function `{}` op {}",
@@ -306,7 +306,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             fallthrough_transport.append_block_params(&mut *builder, fallthrough);
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
-            let (pending_observer, pending_flag_slot) = if op.kind == "async_work_poll" {
+            let (pending_observer, pending_flag_slot) = if op.is_async_work_poll() {
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,

@@ -152,6 +152,44 @@ consumption paths:
   `getattr(module, name, default)` consumes only `AttributeError` and returns
   the default.
 
+**Asynchronous-work observation and placement.** Pending calls and the eval
+breaker are observed at the same semantic exception boundaries on native and
+WASM. The generated op-kind facts identify call boundaries; one compilation-
+owned `TargetInfo` decides whether the selected executable target implements
+that runtime service; and target-aware SimpleIR-to-TIR lowering is the sole
+authority that materializes a missing transfer before SSA. This ordering lets
+SSA author handler payload operands exactly once. The normal case fuses the
+poll with `CheckException`. Generated `finally` arbitration instead marks its
+existing `exception_finally_pending_observer`, preserving the branchless path
+that performs exception replacement and `__context__` chaining.
+
+Placement identity and source provenance are deliberately separate. A
+placement preview temporarily numbers the exact post-rewrite SimpleIR stream,
+materializes against that same stream, and then restores the transported
+`source_op_idx`. That transported value remains the stable inline-cache/source
+identity across TIR round trips and is never used as a current array position.
+Pre-SSA loop-index and cell rewrites inherit the existing source-site record,
+including its stable operation provenance. Numeric representation projection
+correlates TIR results to unique current SimpleIR producers through the existing
+`SimpleValueNames` authority; ambiguous rebinding fails conservative instead of
+falling back to source provenance. No persistent remap table or second index
+registry exists.
+
+`TargetInfo` is the compiler/runtime availability plane, not an application
+permission plane. Filesystem, network, process, environment, time, and extension
+admission continue to use the existing capability-manifest/effect authorities.
+Pending-call support does not mint a permission, and capability declarations do
+not mutate target lowering. Keeping these planes separate preserves the
+Monty-style least-authority model without duplicating or merging registries.
+
+Native process exit drains the current managed CPython thread-state record
+before publishing terminal runtime shutdown, while the finalization owner still
+holds the GIL and C-extension execution custody. This ordering is explicit on
+all native platforms because Windows `ExitProcess` runs TLS destructors even
+when reached through `_exit`; WASM has no native `PyThreadState` record. The ABI
+assertion remains fail-closed and teardown ordering, rather than a late
+destructor workaround, prevents post-shutdown managed-edge destruction.
+
 Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
 `runtime/molt-passes/src/tir/exception_regions.rs`. It recognizes the current
 `Copy` + `_original_kind` exception carriers, computes path-state reachable

@@ -1,16 +1,20 @@
-use super::RuntimeTargetCapabilities;
 use crate::tir::op_kinds_generated::{
-    SimpleIrRuntimeRequirements, simpleir_runtime_requirements_table,
-    simpleir_runtime_symbol_requirements_table,
+    SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS, SimpleIrRuntimeRequirements,
+    simpleir_runtime_requirements_table, simpleir_runtime_symbol_requirements_table,
 };
+use crate::tir::target_info::TargetInfo;
 use crate::{OpIR, SimpleIR};
+
+pub use crate::tir::op_kinds_generated::{
+    ASYNC_RUNTIME_REQUIREMENT_REASON, PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON,
+};
 
 pub fn validate_runtime_target_contract(
     ir: &SimpleIR,
-    target: &str,
-    capabilities: RuntimeTargetCapabilities,
+    target_info: &TargetInfo,
 ) -> Result<(), String> {
-    let admission_checks = runtime_admission_checks(capabilities);
+    let target = target_info.target.as_str();
+    let supported_requirements = target_info.supported_runtime_semantics;
     for function in &ir.functions {
         for (index, op) in function.ops.iter().enumerate() {
             let Some(requirements) = simpleir_op_runtime_requirements(op) else {
@@ -19,11 +23,12 @@ pub fn validate_runtime_target_contract(
                     function.name, op.kind,
                 ));
             };
-            for &(requirement, supported, reason) in &admission_checks {
-                if requirements.contains(requirement) && !supported {
+            let missing = requirements.difference(supported_requirements);
+            for descriptor in SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS {
+                if missing.contains(descriptor.requirement) {
                     return Err(format!(
-                        "{target} target rejected before source generation: {}:op#{index} `{}`: {reason}",
-                        function.name, op.kind,
+                        "{target} target rejected before source generation: {}:op#{index} `{}`: {}",
+                        function.name, op.kind, descriptor.reason,
                     ));
                 }
             }
@@ -37,6 +42,9 @@ pub fn validate_runtime_target_contract(
 /// admission deliberately performs no use-sensitive heap/CFG taint analysis.
 pub fn simpleir_op_runtime_requirements(op: &OpIR) -> Option<SimpleIrRuntimeRequirements> {
     let mut requirements = simpleir_runtime_requirements_table(op.kind.as_str())?;
+    if op.async_work_poll {
+        requirements = requirements.union(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER);
+    }
     requirements = requirements.union(SimpleIrRuntimeRequirements::from_bits(
         op.runtime_requirement_bits,
     )?);
@@ -52,87 +60,4 @@ pub fn simpleir_op_runtime_requirements(op: &OpIR) -> Option<SimpleIrRuntimeRequ
         requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
     }
     Some(requirements)
-}
-
-fn runtime_admission_checks(
-    capabilities: RuntimeTargetCapabilities,
-) -> [(SimpleIrRuntimeRequirements, bool, &'static str); 15] {
-    use SimpleIrRuntimeRequirements as Requirement;
-    [
-        (
-            Requirement::EXECUTION_FRAME,
-            capabilities.execution_frame_state,
-            "operation requires internal execution-frame stack and source-location custody",
-        ),
-        (
-            Requirement::FRAME_INTROSPECTION,
-            capabilities.python_frame_introspection,
-            "operation requires exact Python-visible frame objects, locals, globals, and tracing state",
-        ),
-        (
-            Requirement::IDENTITY,
-            capabilities.python_identity,
-            "operation requires Python object identity rather than value equality",
-        ),
-        (
-            Requirement::TUPLE,
-            capabilities.tuple_representation,
-            "operation requires a tuple representation distinct from mutable lists",
-        ),
-        (
-            Requirement::EXCEPTION,
-            capabilities.exception_model,
-            "operation requires Python exception state, matching, and structured unwinding",
-        ),
-        (
-            Requirement::DETERMINISTIC_LIFETIME,
-            capabilities.deterministic_lifetime,
-            "operation requires deterministic Python lifetime/finalizer semantics",
-        ),
-        (
-            Requirement::FORMAT_PROTOCOL,
-            capabilities.format_protocol,
-            "operation requires the Python __format__ protocol and conversion semantics",
-        ),
-        (
-            Requirement::ITERABLE_PROTOCOL,
-            capabilities.iterable_protocol,
-            "operation requires the Python iterable/sequence protocol and exact errors",
-        ),
-        (
-            Requirement::OBJECT_MODEL,
-            capabilities.object_model,
-            "operation requires Python aliasing, cycles, None storage, hashing, and object protocols",
-        ),
-        (
-            Requirement::TRUTHINESS,
-            capabilities.python_truthiness,
-            "operation requires CPython truthiness across NaN and dynamic containers",
-        ),
-        (
-            Requirement::COMPARISON,
-            capabilities.python_comparison,
-            "operation requires CPython comparison dispatch, NaN behavior, and exact integers",
-        ),
-        (
-            Requirement::FALLIBLE_PROTOCOL,
-            capabilities.structured_runtime_errors,
-            "operation can raise and requires structured catchable Python exceptions",
-        ),
-        (
-            Requirement::ASYNC_RUNTIME,
-            capabilities.async_runtime,
-            "operation requires an exact async scheduler and suspension-state model",
-        ),
-        (
-            Requirement::UNSTRUCTURED_CONTROL,
-            capabilities.unstructured_control_flow,
-            "operation requires a target-proven unstructured control-flow lowering",
-        ),
-        (
-            Requirement::HOST_CAPABILITY,
-            capabilities.host_capabilities,
-            "operation requires a target host filesystem or foreign-function capability",
-        ),
-    ]
 }

@@ -129,15 +129,62 @@ fn cell_rewrite_handles_multiple_unescaped_cells_independently() {
         op_args_out("index", &["cell_b", "zero"], "loaded_b"),
     ];
 
+    ops[6].source_op_idx = Some(41);
+    ops[6].source_line = Some(12);
+    ops[7].source_op_idx = Some(42);
+    ops[7].source_line = Some(13);
+
     assert!(rewrite_cell_locals_to_store_load(&mut ops));
     assert_eq!(ops[6].kind, "store_var");
     assert_eq!(ops[6].var.as_deref(), Some("_cell_cell_a_0"));
     assert_eq!(ops[7].kind, "load_var");
     assert_eq!(ops[7].var.as_deref(), Some("_cell_cell_a_0"));
+    assert_eq!(ops[6].source_op_idx, Some(41));
+    assert_eq!(ops[6].source_line, Some(12));
+    assert_eq!(ops[7].source_op_idx, Some(42));
+    assert_eq!(ops[7].source_line, Some(13));
     assert_eq!(ops[9].kind, "store_var");
     assert_eq!(ops[9].var.as_deref(), Some("_cell_cell_b_0"));
     assert_eq!(ops[10].kind, "load_var");
     assert_eq!(ops[10].var.as_deref(), Some("_cell_cell_b_0"));
+}
+
+#[test]
+fn loop_index_rewrite_preserves_source_identity_on_derived_ops() {
+    let ops = vec![
+        op_val_out("const", 0, "initial"),
+        op("loop_start"),
+        OpIR {
+            kind: "loop_index_start".into(),
+            args: Some(vec!["initial".into()]),
+            out: Some("index".into()),
+            source_op_idx: Some(73),
+            source_line: Some(21),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_index_next".into(),
+            args: Some(vec!["index".into()]),
+            out: Some("index".into()),
+            source_op_idx: Some(74),
+            source_line: Some(22),
+            ..OpIR::default()
+        },
+        op("loop_continue"),
+        op("loop_end"),
+    ];
+
+    let rewritten = rewrite_loop_index_to_store_load(&ops);
+
+    assert_eq!(rewritten[1].kind, "store_var");
+    assert_eq!(rewritten[1].source_op_idx, Some(73));
+    assert_eq!(rewritten[1].source_line, Some(21));
+    assert_eq!(rewritten[3].kind, "load_var");
+    assert_eq!(rewritten[3].source_op_idx, Some(73));
+    assert_eq!(rewritten[3].source_line, Some(21));
+    assert_eq!(rewritten[4].kind, "store_var");
+    assert_eq!(rewritten[4].source_op_idx, Some(74));
+    assert_eq!(rewritten[4].source_line, Some(22));
 }
 
 // =======================================================================

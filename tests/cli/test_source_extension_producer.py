@@ -24,7 +24,11 @@ from molt.cli.source_extension_publication import (
     _source_extension_publication_custody,
 )
 from molt.cli.source_extension_object_closure import (
-    source_extension_object_closure_digest,
+    finalize_source_extension_object_closure,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.cli.source_extension_manifest_codec import _manifest_sequence
 from molt.cli.source_extension_set_registry import (
@@ -34,6 +38,7 @@ from molt.cli.source_extension_set_registry import (
     SourceExtensionVariant,
 )
 from molt.target_python import TargetPythonVersion
+from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 
 
 _MODULES = (
@@ -124,7 +129,8 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
     for module in _MODULES:
         path = root.joinpath(*module.split(".")).with_suffix(".molt.wasm")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{marker}:{module}", encoding="utf-8")
+        root_symbol = f"PyInit_{module.rsplit('.', 1)[-1]}"
+        path.write_bytes(_wasm_exporting_i64_unary_symbol(root_symbol))
         artifact_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
         source_path = root.joinpath(
             "provenance", "compiled-inputs", *module.split("."), "source.c"
@@ -137,27 +143,33 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
         source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
         wheel_sha256 = hashlib.sha256(f"wheel:{module}".encode()).hexdigest()
         object_closure = {
-            "schema_version": 1,
-            "root_symbol": f"PyInit_{module.rsplit('.', 1)[-1]}",
+            "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
+            "root_symbol": root_symbol,
+            "init_symbol_owner": "0.o",
+            "defined_symbols": [root_symbol],
+            "undefined_symbols": [],
             "runtime_symbols": [],
+            "required_c_api_symbols": [],
+            "required_capsules": [],
+            "project_generated_c_api_symbols": [],
+            "wasm_imports": [],
             "objects": [
                 {
                     "source": source_reference,
                     "object": "0.o",
                     "source_sha256": source_sha256,
-                    "object_sha256": "a" * 64,
-                    "defined_symbols": [],
+                    "object_sha256": artifact_sha256,
+                    "defined_symbols": [root_symbol],
                     "undefined_symbols": [],
                     "compile_command": ["clang"],
-                    "symbol_command": ["llvm-nm"],
+                    "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                     "dependencies": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                    "project_generated_c_api_symbols": [],
                 }
             ],
         }
-        object_closure["closure_sha256"] = source_extension_object_closure_digest(
-            object_closure,
-            manifest_dir=path.parent,
-        )
         wheel_path = root.joinpath(
             "provenance", "wheels", *module.split("."), f"{path.stem}.whl"
         )
@@ -167,6 +179,7 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "name": "scipy",
             "version": "1.18.0",
             "module": module,
+            "init_symbol": root_symbol,
             "abi_tier": "cpython-abi",
             "target_python": "py312",
             "python_tag": "py3",
@@ -182,7 +195,9 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "extension_sha256": artifact_sha256,
             "wheel_sha256": wheel_sha256,
             "object_closure": object_closure,
+            "build": {},
         }
+        finalize_source_extension_object_closure(manifest)
         producer._compact_source_extension_manifest(manifest)
         path.with_name(path.name + ".extension_manifest.json").write_text(
             json.dumps(manifest),
@@ -2152,10 +2167,16 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         extension_bytes=artifact.read_bytes(),
     )
     closure = {
-        "schema_version": 1,
+        "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
         "root_symbol": "PyInit__nd_image",
         "init_symbol_owner": "1.o",
+        "defined_symbols": ["PyInit__nd_image", "source_symbol"],
+        "undefined_symbols": [],
         "runtime_symbols": [],
+        "required_c_api_symbols": [],
+        "required_capsules": [],
+        "project_generated_c_api_symbols": [],
+        "wasm_imports": [],
         "objects": [
             {
                 "source": str(source),
@@ -2165,8 +2186,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
                 "defined_symbols": ["source_symbol"],
                 "undefined_symbols": [],
                 "compile_command": ["clang", "-c", str(source)],
-                "symbol_command": ["llvm-nm"],
+                "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": [],
+                "required_c_api_symbols": [],
+                "required_capsules": [],
+                "project_generated_c_api_symbols": [],
             },
             {
                 "source": str(generated),
@@ -2176,13 +2200,18 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
                 "defined_symbols": ["PyInit__nd_image"],
                 "undefined_symbols": [],
                 "compile_command": ["clang", "-c", str(generated)],
-                "symbol_command": ["llvm-nm"],
+                "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": [],
+                "required_c_api_symbols": [],
+                "required_capsules": [],
+                "project_generated_c_api_symbols": [],
             },
         ],
     }
     manifest = {
         "module": module,
+        "init_symbol": "PyInit__nd_image",
+        "artifact_kind": "wasm_relocatable_object",
         "target_triple": "wasm32-wasip1",
         "link_requirements": {
             "target_triple": "wasm32-wasip1",
@@ -2206,9 +2235,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             ],
             "digest": "stale-location-dependent-digest",
         },
-        "build": {"source_plan_digest": "stale", "object_closure_sha256": "stale"},
+        "build": {"source_plan_digest": "stale"},
         "object_closure": closure,
     }
+    _closure_identity, closure_sha256 = finalize_source_extension_object_closure(
+        manifest
+    )
     sidecar = artifact.with_name(artifact.name + ".extension_manifest.json")
     sidecar.write_text(json.dumps(manifest), encoding="utf-8")
     intro = publish / "provenance/metadata/meson/intro-targets.json"
@@ -2227,7 +2259,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         wheel_path=wheel,
         artifact_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
         wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
-        object_closure_sha256="stale",
+        object_closure_sha256=closure_sha256,
     )
 
     staged = producer._stage_extension(

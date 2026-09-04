@@ -16,7 +16,8 @@
 //! consume:
 //!
 //!   * Part A - the NAME-KEYED native authority
-//!     (`ScalarRepresentationPlan::for_function_ir` -> `is_raw_int_carrier_name`),
+//!     (`ScalarRepresentationPlan::for_function_ir_for_target` ->
+//!     `is_raw_int_carrier_name`),
 //!     the exact predicate the native modulo store consulted. One bounded-loop
 //!     case per int op (mod / floordiv / add / mul / shift) asserts the op
 //!     result is admitted to the raw carrier when (and only when) its range is
@@ -204,7 +205,10 @@ fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
 fn name_keyed_authority_admits_bounded_int_op_results() {
     for int_op in int_ops() {
         let func = bounded_loop_body_op_ir(int_op);
-        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(
+            &func,
+            &molt_tir::tir::TargetInfo::native_release_fast(),
+        );
 
         // The induction variable and its update must be raw-i64 carriers -
         // otherwise the loop already fell off the raw lane and the body-op

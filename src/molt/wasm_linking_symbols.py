@@ -1,21 +1,34 @@
 from __future__ import annotations
 
 import mmap
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-WasmLinkingSymbolKind = Literal["function", "data"]
+from molt.wasm_artifact import (
+    WASM_EXTERN_KIND_FUNCTION,
+    WASM_EXTERN_KIND_GLOBAL,
+    WASM_EXTERN_KIND_TABLE,
+    WASM_EXTERN_KIND_TAG,
+    WasmImport,
+    WasmSectionSpan,
+    parse_wasm_section_spans,
+)
+
+WasmLinkingSymbolKind = Literal["function", "data", "global", "table", "tag"]
 _Buffer = bytes | mmap.mmap
 
-_WASM_HEADER = b"\0asm\x01\0\0\0"
 _LINKING_SECTION_NAME = "linking"
 _LINKING_METADATA_VERSION = 2
 _SYMBOL_TABLE_SUBSECTION_ID = 8
 _SYMBOL_KIND_FUNCTION = 0
 _SYMBOL_KIND_DATA = 1
-_INDEXED_SYMBOL_KINDS = frozenset({2, 4, 5})
+_INDEXED_SYMBOL_KINDS: dict[int, WasmLinkingSymbolKind] = {
+    2: "global",
+    4: "tag",
+    5: "table",
+}
 _SYMBOL_KIND_SECTION = 3
 _SYMBOL_BINDING_MASK = 0x3
 _SYMBOL_BINDING_GLOBAL = 0
@@ -95,6 +108,26 @@ class WasmLinkingSymbolTable:
         )
 
     @property
+    def undefined_names(self) -> frozenset[str]:
+        unresolved = [
+            symbol
+            for symbol in self.symbols
+            if not symbol.is_defined and not symbol.name
+        ]
+        if unresolved:
+            details = ", ".join(
+                f"{symbol.kind}[{symbol.index}]" for symbol in unresolved
+            )
+            raise ValueError(
+                "unresolved unnamed WebAssembly linking symbols: " + details
+            )
+        return frozenset(
+            symbol.name
+            for symbol in self.symbols
+            if symbol.name and not symbol.is_defined
+        )
+
+    @property
     def defined_names(self) -> frozenset[str]:
         return frozenset(
             symbol.name
@@ -113,8 +146,10 @@ class WasmLinkingSymbolTable:
             expected_by_kind[kind].add(name)
         available: set[str] = set()
         for symbol in self.symbols:
+            expected_names = expected_by_kind.get(symbol.kind)
             if (
-                symbol.name in expected_by_kind[symbol.kind]
+                expected_names is not None
+                and symbol.name in expected_names
                 and symbol.is_externally_linkable
             ):
                 available.add(symbol.name)
@@ -152,22 +187,6 @@ def _read_varuint(data: _Buffer, offset: int, limit: int) -> tuple[int, int]:
         result |= (byte & 0x7F) << shift
         shift += 7
     return result, offset
-
-
-def _read_section_varuint(data: _Buffer, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading wasm varuint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return result, offset
-        shift += 7
-        if shift > 63:
-            raise ValueError("wasm varuint is too large")
 
 
 def _skip_varuint(data: _Buffer, offset: int, limit: int) -> int:
@@ -266,7 +285,15 @@ def _symbol_table(
             )
             continue
         if kind in _INDEXED_SYMBOL_KINDS:
-            _, _, offset = _indexed_symbol(data, offset, limit, flags)
+            index, name, offset = _indexed_symbol(data, offset, limit, flags)
+            symbols.append(
+                WasmLinkingSymbol(
+                    name,
+                    _INDEXED_SYMBOL_KINDS[kind],
+                    flags,
+                    index=index,
+                )
+            )
             continue
         if kind == _SYMBOL_KIND_SECTION:
             _, offset = _read_varuint(data, offset, limit)
@@ -352,31 +379,31 @@ def _parse_wasm_linking_symbols(
         tuple[WasmLinkingSymbolKind, int], dict[bytes, str]
     ]
     | None = None,
+    *,
+    section_spans: Sequence[WasmSectionSpan] | None = None,
 ) -> WasmLinkingSymbolTable | frozenset[str]:
-    if len(data) < len(_WASM_HEADER) or data[: len(_WASM_HEADER)] != _WASM_HEADER:
-        raise ValueError("Invalid wasm binary")
+    if section_spans is None:
+        section_spans = parse_wasm_section_spans(data)
     symbols: list[WasmLinkingSymbol] | None = (
         [] if expected_by_kind_and_length is None else None
     )
     available: set[str] | None = (
         set() if expected_by_kind_and_length is not None else None
     )
+    linking_section_seen = False
     symbol_table_seen = False
-    offset = len(_WASM_HEADER)
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_section_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError("Invalid wasm section length")
+    for span in section_spans:
+        section_id = span.id
+        offset = span.offset
+        section_end = span.offset + span.size
         if section_id != 0:
-            offset = section_end
             continue
         section_name, payload_offset = _read_string(data, offset, section_end)
         if section_name != _LINKING_SECTION_NAME:
-            offset = section_end
             continue
+        if linking_section_seen:
+            raise ValueError("duplicate WebAssembly linking metadata section")
+        linking_section_seen = True
         version, payload_offset = _read_varuint(data, payload_offset, section_end)
         if version != _LINKING_METADATA_VERSION:
             raise ValueError(
@@ -408,17 +435,57 @@ def _parse_wasm_linking_symbols(
                         available,
                     )
             payload_offset = subsection_end
-        offset = section_end
     if symbols is not None:
         return WasmLinkingSymbolTable(tuple(symbols))
     assert available is not None
     return frozenset(available)
 
 
-def parse_wasm_linking_symbols(data: bytes) -> WasmLinkingSymbolTable:
-    table = _parse_wasm_linking_symbols(data)
+def parse_wasm_linking_symbols(
+    data: bytes,
+    *,
+    wasm_imports: Sequence[WasmImport] = (),
+    section_spans: Sequence[WasmSectionSpan] | None = None,
+) -> WasmLinkingSymbolTable:
+    table = _parse_wasm_linking_symbols(data, section_spans=section_spans)
     assert isinstance(table, WasmLinkingSymbolTable)
+    if wasm_imports:
+        return _resolve_undefined_indexed_symbol_names(table, wasm_imports)
     return table
+
+
+def _resolve_undefined_indexed_symbol_names(
+    table: WasmLinkingSymbolTable,
+    wasm_imports: Sequence[WasmImport],
+) -> WasmLinkingSymbolTable:
+    import_kind_names = {
+        WASM_EXTERN_KIND_FUNCTION: "function",
+        WASM_EXTERN_KIND_GLOBAL: "global",
+        WASM_EXTERN_KIND_TABLE: "table",
+        WASM_EXTERN_KIND_TAG: "tag",
+    }
+    next_index = {kind: 0 for kind in import_kind_names.values()}
+    imported_names: dict[tuple[str, int], str] = {}
+    for wasm_import in wasm_imports:
+        kind = import_kind_names.get(wasm_import.kind)
+        if kind is None:
+            continue
+        index = next_index[kind]
+        next_index[kind] = index + 1
+        imported_names[(kind, index)] = wasm_import.name
+    symbols: list[WasmLinkingSymbol] = []
+    for symbol in table.symbols:
+        if symbol.name or symbol.is_defined or symbol.index is None:
+            symbols.append(symbol)
+            continue
+        name = imported_names.get((symbol.kind, symbol.index))
+        if name is None:
+            raise ValueError(
+                "WebAssembly linking symbol references missing import "
+                f"{symbol.kind}[{symbol.index}]"
+            )
+        symbols.append(replace(symbol, name=name))
+    return WasmLinkingSymbolTable(tuple(symbols))
 
 
 def _read_mapped(
@@ -441,9 +508,15 @@ def _read_mapped(
             return _parse_wasm_linking_symbols(data, expected_by_kind_and_length)
 
 
-def read_wasm_linking_symbols(path: Path) -> WasmLinkingSymbolTable:
+def read_wasm_linking_symbols(
+    path: Path,
+    *,
+    wasm_imports: Sequence[WasmImport] = (),
+) -> WasmLinkingSymbolTable:
     table = _read_mapped(path, expected_symbol_kinds=None)
     assert isinstance(table, WasmLinkingSymbolTable)
+    if wasm_imports:
+        return _resolve_undefined_indexed_symbol_names(table, wasm_imports)
     return table
 
 

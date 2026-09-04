@@ -18,7 +18,12 @@ pub(super) fn emit_plain_function_body(
     let mut label_order: Vec<i64> = Vec::new();
     for op in &func_ir.ops {
         match op.kind.as_str() {
-            "jump" | "br_if" | "check_exception" | "async_work_poll" => {
+            "jump" | "br_if" => {
+                if let Some(label_id) = op.value {
+                    branch_target_labels.insert(label_id);
+                }
+            }
+            kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
                 if let Some(label_id) = op.value {
                     branch_target_labels.insert(label_id);
                 }

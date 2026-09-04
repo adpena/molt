@@ -81,6 +81,44 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
 }
 
 #[test]
+fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new("marked_finally_observer".into(), vec![], TirType::DynBox);
+    let result = func.fresh_value();
+    let mut observer = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![],
+        results: vec![result],
+        attrs: AttrDict::from([(
+            "_original_kind".into(),
+            AttrValue::Str("exception_finally_pending_observer".into()),
+        )]),
+        source_span: None,
+    };
+    observer.mark_async_work_poll();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(observer);
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let ir = try_lower_tir_to_llvm(&func, &backend)
+        .expect("marked observer must lower")
+        .print_to_string()
+        .to_string();
+    assert!(
+        ir.contains("molt_async_work_poll_and_exception_last_pending"),
+        "marked observer must use the fused poll/object-return primitive:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i64 @molt_exception_last_pending"),
+        "marked observer must not emit the unfused runtime call:\n{ir}"
+    );
+}
+
+#[test]
 fn lower_special_get_attr_trusts_runtime_owned_result() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

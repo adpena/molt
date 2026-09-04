@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
+    use crate::tir::lower_from_simple::{lower_to_tir, lower_to_tir_for_target};
     use crate::tir::lower_to_simple::lower_to_simple_ir;
     use crate::tir::op_kinds_generated::simpleir_kind_is_structural;
     use crate::tir::passes::run_pipeline;
@@ -31,9 +31,10 @@ mod tests {
 
     fn roundtrip(ops: Vec<OpIR>) -> Vec<OpIR> {
         let ir = make_function(ops);
-        let mut tir = lower_to_tir(&ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
+        let _stats = run_pipeline(&mut tir, &target);
         assert!(
             verify_function(&tir).is_ok(),
             "TIR verification failed after optimization"
@@ -273,9 +274,10 @@ mod tests {
             execution_context: Default::default(),
         };
 
-        let mut tir = lower_to_tir(&ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
+        let _stats = run_pipeline(&mut tir, &target);
         assert!(verify_function(&tir).is_ok(), "TIR verification failed");
         let result = lower_to_simple_ir(&tir);
 
@@ -380,9 +382,10 @@ mod tests {
             op_args("ret", &["y"]),
         ];
         let ir = make_function(ops);
-        let mut tir = lower_to_tir(&ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
-        run_pipeline(&mut tir, &TargetInfo::native_release_fast());
+        run_pipeline(&mut tir, &target);
         // run_pipeline already panics on verify failure, but let's assert
         // explicitly to make the intent clear in test output.
         assert!(
@@ -409,9 +412,10 @@ mod tests {
             is_extern: false,
             execution_context: Default::default(),
         };
-        let mut tir = lower_to_tir(&ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
+        let _stats = run_pipeline(&mut tir, &target);
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());
@@ -440,9 +444,10 @@ mod tests {
             is_extern: false,
             execution_context: Default::default(),
         };
-        let mut tir = lower_to_tir(&ir);
+        let target = TargetInfo::native_release_fast();
+        let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
+        let _stats = run_pipeline(&mut tir, &target);
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());

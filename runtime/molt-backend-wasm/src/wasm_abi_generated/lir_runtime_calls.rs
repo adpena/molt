@@ -713,7 +713,7 @@ pub(crate) struct OpLoopRuntimeCallSpec {
 }
 
 #[inline]
-pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {
+pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRuntimeCallSpec> {
     match kind {
         "gpu_thread_id" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuThreadId,
@@ -974,6 +974,12 @@ pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> 
             ],
             required_imports: &[WasmRuntimeImport::FormatBuiltin],
             sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "exception_finally_pending_observer" if marked => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
+            args: &[],
+            required_imports: &[WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
         }),
         "exception_finally_pending_observer" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionLastPending,

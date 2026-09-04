@@ -1,7 +1,10 @@
 use crate::SimpleIR;
 use crate::wasm_plan::{emit_wasm_stage_audit, simple_ir_stage_shape, tir_module_stage_shape};
 
-pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
+pub(super) fn run_tir_pipeline(
+    ir: &mut SimpleIR,
+    target_info: &crate::tir::target_info::TargetInfo,
+) {
     emit_wasm_stage_audit(
         "compile-start",
         simple_ir_stage_shape(&ir.functions),
@@ -19,7 +22,7 @@ pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
         let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
             &mut ir.functions,
             crate::tir::pipeline_cache::TirPipelineRunOptions {
-                target_info: crate::tir::target_info::TargetInfo::wasm_release_fast(),
+                target_info: target_info.clone(),
                 cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Wasm,
                 cache_dir: None,
                 process_externs: false,
@@ -47,14 +50,13 @@ pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
     // unconstrained. Cache custody, module assembly, module-phase execution,
     // selective back-conversion, and label validation all live in the shared
     // TIR pipeline authority.
-    let wasm_tti = crate::tir::target_info::TargetInfo::wasm_release_fast();
     let non_inlinable = std::collections::HashSet::new();
     let mut stage_observer = emit_wasm_tir_pipeline_stage;
     let _module_run = crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
         &mut ir.functions,
         &mut cached_tir,
         crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
-            target_info: &wasm_tti,
+            target_info,
             module_name: "wasm_module",
             non_inlinable: &non_inlinable,
             missing_tir_context: "WASM TIR cache runner",

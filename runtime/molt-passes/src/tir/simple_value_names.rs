@@ -140,7 +140,14 @@ impl SimpleValueNames {
     /// a canonical fallback name can COLLIDE with a different value's
     /// explicit stream name; the explicit fact must win, not conflict out.
     pub fn has_override(&self, id: ValueId) -> bool {
-        self.value_overrides.contains_key(&id)
+        self.explicit_value_name(id).is_some()
+    }
+
+    /// Borrow the explicit SimpleIR stream name for a value, excluding
+    /// synthesized `_vN` fallbacks. Consumers that require an authored producer
+    /// identity use this instead of allocating through [`Self::value_name`].
+    pub fn explicit_value_name(&self, id: ValueId) -> Option<&str> {
+        self.value_overrides.get(&id).map(String::as_str)
     }
 
     pub fn block_arg_slot(&self, block: BlockId, index: usize) -> String {

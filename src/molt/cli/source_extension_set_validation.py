@@ -22,7 +22,16 @@ from molt.cli.source_extension_manifest_codec import (
     _validate_compact_source_extension_manifest,
 )
 from molt.cli.source_extension_object_closure import (
-    source_extension_object_closure_digest,
+    SourceExtensionObjectClosureError,
+    validate_source_extension_object_closure,
+    validate_source_extension_object_closure_sources,
+)
+from molt.cli.source_extensions import (
+    validate_source_extension_artifact_object_closure,
+)
+from molt.cli.source_extension_object_closure_schema import (
+    SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
+    SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.cli.source_extension_reproducibility import _require_location_neutral
 from molt.cli.source_extension_set_identity import (
@@ -777,16 +786,22 @@ def validate_source_extension_set_publish_root(
         closure_sha256 = (
             closure.get("closure_sha256") if isinstance(closure, Mapping) else None
         )
-        if not isinstance(closure, Mapping) or closure_sha256 != (
-            source_extension_object_closure_digest(
+        try:
+            if not isinstance(closure, Mapping):
+                raise SourceExtensionObjectClosureError(
+                    "extension sidecar has no object closure"
+                )
+            validate_source_extension_object_closure_sources(
                 closure,
                 manifest_dir=sidecar_path.parent,
                 manifest=sidecar,
+                allowed_root=publish_root,
             )
-        ):
+            validated_object_closure = validate_source_extension_object_closure(sidecar)
+        except SourceExtensionObjectClosureError as exc:
             raise SourceExtensionSetValidationError(
-                f"extension sidecar object closure identity is false for {spec.module}"
-            )
+                f"extension sidecar object closure is invalid for {spec.module}: {exc}"
+            ) from exc
         checksums = {
             "artifact_sha256": sidecar.get("extension_sha256"),
             "wheel_sha256": sidecar.get("wheel_sha256"),
@@ -829,15 +844,22 @@ def validate_source_extension_set_publish_root(
             )
             expected_compiler = target_commands[compiler_role]
             expected_nm = target_commands["nm"]
+            symbol_authority = closure_object.get("symbol_authority")
+            symbol_custody_matches = (
+                symbol_authority == SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
+                and symbol_command is None
+                if target_plan.artifact_kind == "wasm_relocatable_object"
+                else symbol_authority == SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY
+                and symbol_command == expected_nm
+            )
             if not (
                 isinstance(compile_command, list)
                 and compile_command[: len(expected_compiler)] == expected_compiler
-                and isinstance(symbol_command, list)
-                and symbol_command == expected_nm
+                and symbol_custody_matches
             ):
                 raise SourceExtensionSetValidationError(
                     f"extension sidecar object[{object_index}] for {spec.module} "
-                    "did not consume the canonical compiler/nm commands"
+                    "did not consume the canonical compiler/symbol authority"
                 )
             if closure_object.get("unit_sha256") != _object_unit_sha256(
                 sidecar, closure_object
@@ -851,6 +873,16 @@ def validate_source_extension_set_publish_root(
             raise SourceExtensionSetValidationError(
                 f"extension-set manifest artifact checksum differs from bytes for "
                 f"{spec.module}"
+            )
+        artifact_closure_errors = validate_source_extension_artifact_object_closure(
+            artifact_path=artifact_path,
+            manifest=sidecar,
+            validated_closure=validated_object_closure,
+        )
+        if artifact_closure_errors:
+            raise SourceExtensionSetValidationError(
+                f"extension sidecar artifact/object closure mismatch for {spec.module}: "
+                + "; ".join(artifact_closure_errors)
             )
 
 

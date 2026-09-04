@@ -8,7 +8,6 @@ mod call_sites;
 mod clone_body;
 mod driver;
 mod eligibility;
-mod exception_labels;
 mod splice;
 
 #[cfg(test)]

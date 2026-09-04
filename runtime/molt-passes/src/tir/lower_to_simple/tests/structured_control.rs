@@ -632,6 +632,8 @@ fn structured_if_skips_successor_with_try_region_markers() {
     let then_blk = func.fresh_block();
     let else_blk = func.fresh_block();
     let join_blk = func.fresh_block();
+    let handler_blk = func.fresh_block();
+    func.has_exception_handling = true;
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.terminator = Terminator::CondBranch {
@@ -689,6 +691,16 @@ fn structured_if_skips_successor_with_try_region_markers() {
         join_blk,
         TirBlock {
             id: join_blk,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.label_id_map.insert(handler_blk.0, 100);
+    func.blocks.insert(
+        handler_blk,
+        TirBlock {
+            id: handler_blk,
             args: vec![],
             ops: vec![],
             terminator: Terminator::Return { values: vec![] },

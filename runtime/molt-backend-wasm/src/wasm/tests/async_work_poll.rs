@@ -31,8 +31,7 @@ fn poll_ir() -> SimpleIR {
     }
 }
 
-fn compile_final_poll(native_eh_enabled: bool) -> Vec<u8> {
-    let ir = poll_ir();
+fn compile_ir(ir: SimpleIR, native_eh_enabled: bool) -> Vec<u8> {
     let trampoline_analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled,
@@ -42,6 +41,28 @@ fn compile_final_poll(native_eh_enabled: bool) -> Vec<u8> {
     })
     .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
     .wasm
+}
+
+fn compile_final_poll(native_eh_enabled: bool) -> Vec<u8> {
+    compile_ir(poll_ir(), native_eh_enabled)
+}
+
+fn finally_pending_observer_ir(async_work_poll: bool) -> SimpleIR {
+    let observer = OpIR {
+        kind: "exception_finally_pending_observer".into(),
+        async_work_poll,
+        out: Some("pending".into()),
+        ..Default::default()
+    };
+    SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            vec![],
+            None,
+            vec![observer, wasm_test_op("ret", None, vec!["pending"])],
+        )],
+        profile: None,
+    }
 }
 
 #[test]
@@ -74,5 +95,50 @@ fn jumpful_and_native_eh_dispatch_call_async_observer_then_branch() {
             ops[call_pos + 3].starts_with("If"),
             "dispatch must conditionally transfer to the function exception exit; ops={ops:?}"
         );
+    }
+}
+
+#[test]
+fn finally_pending_observer_marker_selects_one_branchless_runtime_import() {
+    for native_eh_enabled in [false, true] {
+        for (marked, selected_name, rejected_name) in [
+            (
+                false,
+                "exception_last_pending",
+                "async_work_poll_and_exception_last_pending",
+            ),
+            (
+                true,
+                "async_work_poll_and_exception_last_pending",
+                "exception_last_pending",
+            ),
+        ] {
+            let wasm = compile_ir(finally_pending_observer_ir(marked), native_eh_enabled);
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let imports = wasm_function_import_indices(&wasm);
+            let selected = *imports
+                .get(selected_name)
+                .unwrap_or_else(|| panic!("selected observer import {selected_name} must survive"));
+            assert!(
+                !imports.contains_key(rejected_name),
+                "unselected observer import {rejected_name} must not be demanded"
+            );
+
+            let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+            assert_eq!(calls, [selected]);
+            let ops = wasm_operator_debug_for_export(&wasm, "molt_main");
+            let call = format!("Call {{ function_index: {selected} }}");
+            let call_pos = ops
+                .iter()
+                .position(|op| op == &call)
+                .expect("molt_main must call the selected observer");
+            assert!(ops[call_pos + 1].starts_with("LocalSet"));
+            assert!(
+                ops[call_pos + 1..]
+                    .iter()
+                    .all(|op| !op.starts_with("BrIf") && !op.starts_with("If")),
+                "finally observation must stay on its authored reconciliation path: {ops:?}"
+            );
+        }
     }
 }

@@ -23,13 +23,20 @@ use cranelift_codegen::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use std::collections::{BTreeMap, BTreeSet};
 
+fn native_representation_plan_for_test(func_ir: &FunctionIR) -> ScalarRepresentationPlan {
+    ScalarRepresentationPlan::for_function_ir_for_target(
+        func_ir,
+        &crate::tir::TargetInfo::native_release_fast(),
+    )
+}
+
 fn preanalyze_for_test(func_ir: &FunctionIR) -> FunctionPreanalysis {
-    let representation_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
+    let representation_plan = native_representation_plan_for_test(func_ir);
     preanalyze_function_ir(func_ir, &representation_plan)
 }
 
 fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {
-    ScalarRepresentationPlan::for_function_ir(&FunctionIR {
+    native_representation_plan_for_test(&FunctionIR {
         name: "storage_test".to_string(),
         params: vec![],
         ops: ops.to_vec(),
@@ -45,7 +52,7 @@ fn representation_plan_for_typed_ops(
     param_types: Option<Vec<&str>>,
     ops: &[OpIR],
 ) -> ScalarRepresentationPlan {
-    ScalarRepresentationPlan::for_function_ir(&FunctionIR {
+    native_representation_plan_for_test(&FunctionIR {
         name: "container_dispatch_test".to_string(),
         params: params.iter().map(|param| param.to_string()).collect(),
         ops: ops.to_vec(),

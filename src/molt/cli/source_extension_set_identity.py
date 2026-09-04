@@ -7,12 +7,17 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+from molt.cli.extension_manifest import (
+    _manifest_callable_exports,
+    _manifest_support_file_payloads,
+)
 from molt.cli.source_extension_manifest_codec import (
-    _manifest_dependencies,
-    _manifest_sequence,
     _validate_compact_source_extension_manifest,
+)
+from molt.cli.source_extension_object_closure import (
+    source_extension_object_closure_identity_payload,
 )
 from molt.cli.source_extension_reproducibility import _require_location_neutral
 from molt.cli.source_extension_set_registry import (
@@ -24,14 +29,7 @@ from molt.cli.source_extension_target import (
 )
 from molt.target_python import _parse_target_python_version
 
-_OBJECT_SEQUENCE_FIELDS = (
-    "defined_symbols",
-    "undefined_symbols",
-    "required_c_api_symbols",
-    "required_capsules",
-    "project_generated_c_api_symbols",
-)
-SOURCE_EXTENSION_SET_SCHEMA_VERSION = 4
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 5
 
 
 def _digest_payload(payload: Any) -> str:
@@ -45,34 +43,35 @@ def _sha256_file(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _extension_content_projection(
+    manifest: Mapping[str, Any],
+    *,
+    payload_root: Path,
+) -> dict[str, Any]:
     closure = manifest.get("object_closure")
     objects = closure.get("objects") if isinstance(closure, Mapping) else None
     if not isinstance(objects, list) or not objects:
         raise ValueError("extension identity requires a non-empty object closure")
-    projected_objects: list[dict[str, Any]] = []
-    for index, item in enumerate(objects):
-        if not isinstance(item, Mapping):
-            raise ValueError(f"extension identity object[{index}] is invalid")
-        item = cast(Mapping[str, Any], item)
-        projected = {
-            key: item.get(key)
-            for key in ("source", "object", "source_sha256", "object_sha256")
-            if key in item
-        }
-        projected["compile_command"] = _manifest_sequence(
-            manifest, item, "compile_command"
-        )
-        projected["symbol_command"] = _manifest_sequence(
-            manifest, item, "symbol_command"
-        )
-        projected["dependencies"] = _manifest_dependencies(manifest, item)
-        for field in _OBJECT_SEQUENCE_FIELDS:
-            if field in item or f"{field}_ref" in item:
-                projected[field] = _manifest_sequence(manifest, item, field)
-        projected_objects.append(projected)
     source_plan = manifest.get("source_plan")
-    closure = cast(Mapping[str, Any], closure)
+    module = manifest.get("module")
+    if not isinstance(module, str) or not module:
+        raise ValueError("extension identity requires a module name")
+    errors: list[str] = []
+    callable_exports = _manifest_callable_exports(
+        manifest,
+        package=module.split(".", 1)[0],
+        errors=errors,
+    )
+    support_files = _manifest_support_file_payloads(
+        manifest.get("support_files"),
+        field_name="support_files",
+        root=payload_root,
+        errors=errors,
+    )
+    if errors:
+        raise ValueError(
+            "extension identity has invalid execution metadata: " + "; ".join(errors)
+        )
     projection = {
         key: manifest.get(key)
         for key in (
@@ -86,6 +85,7 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             "abi_tier",
             "molt_c_api_version",
             "target_triple",
+            "platform_tag",
             "artifact_kind",
             "loader_kind",
             "runtime_linkage",
@@ -97,12 +97,19 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             "capability_profiles",
             "python_exports",
             "provided_capsules",
+            "runtime_python_imports",
             "runtime_python_import_modules",
             "effects",
             "link_requirements",
         )
         if key in manifest
     }
+    projection["callable_exports"] = [
+        export.digest_payload() for export in callable_exports
+    ]
+    projection["support_files"] = [
+        support_file.digest_payload() for support_file in support_files
+    ]
     projection["source_plan"] = {
         key: source_plan.get(key)
         for key in (
@@ -114,23 +121,10 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
         )
         if isinstance(source_plan, Mapping) and key in source_plan
     }
-    projection["object_closure"] = {
-        "schema_version": closure.get("schema_version"),
-        "root_symbol": closure.get("root_symbol"),
-        "init_symbol_owner": closure.get("init_symbol_owner"),
-        "runtime_symbols": closure.get("runtime_symbols"),
-        "defined_symbols": closure.get("defined_symbols"),
-        "undefined_symbols": closure.get("undefined_symbols"),
-        "required_c_api_symbols": closure.get("required_c_api_symbols"),
-        "required_capsules": closure.get("required_capsules"),
-        "project_generated_c_api_symbols": closure.get(
-            "project_generated_c_api_symbols"
-        ),
-        "project_generated_c_api_prefixes": closure.get(
-            "project_generated_c_api_prefixes"
-        ),
-        "objects": projected_objects,
-    }
+    projection["object_closure"] = source_extension_object_closure_identity_payload(
+        closure,
+        manifest=manifest,
+    )
     return projection
 
 
@@ -349,7 +343,13 @@ def _source_extension_set_identity(
             )
         relative = path.relative_to(root).as_posix()
         extension_content.append(
-            {"path": relative, "identity": _extension_content_projection(payload)}
+            {
+                "path": relative,
+                "identity": _extension_content_projection(
+                    payload,
+                    payload_root=root,
+                ),
+            }
         )
         producer_sidecars.append({"path": relative, "manifest": dict(payload)})
     installed = set_manifest.get("installed_package_files")

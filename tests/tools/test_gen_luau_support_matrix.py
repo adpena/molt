@@ -114,29 +114,29 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["unsupported_fixture_op"].status == "not-admitted"
     assert rows["call_async"].status == "not-admitted"
     assert rows["spawn"].status == "not-admitted"
-    assert rows["br_if"].status == "not-admitted"
-    assert "target contract rejects" in rows["br_if"].note
+    assert rows["br_if"].status == "compile-error"
+    assert "Checked Luau emission rejects" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "not-admitted"
-    assert rows["object_set_class"].status == "not-admitted"
-    assert rows["class_set_layout_version"].status == "not-admitted"
+    assert rows["object_set_class"].status == "implemented-exact"
+    assert rows["class_set_layout_version"].status == "implemented-exact"
     assert rows["class_apply_set_name"].status == "not-admitted"
-    assert rows["class_layout_version"].status == "not-admitted"
-    assert rows["class_merge_layout"].status == "not-admitted"
+    assert rows["class_layout_version"].status == "implemented-exact"
+    assert rows["class_merge_layout"].status == "implemented-exact"
     assert rows["classmethod_new"].status == "not-admitted"
     assert rows["staticmethod_new"].status == "not-admitted"
     assert rows["property_new"].status == "not-admitted"
-    assert rows["call_method"].status == "not-admitted"
-    assert rows["get_attr_generic_obj"].status == "not-admitted"
-    assert rows["set_attr_generic_obj"].status == "not-admitted"
-    assert rows["del_attr_generic_obj"].status == "not-admitted"
+    assert rows["call_method"].status == "implemented-exact"
+    assert rows["get_attr_generic_obj"].status == "implemented-exact"
+    assert rows["set_attr_generic_obj"].status == "implemented-exact"
+    assert rows["del_attr_generic_obj"].status == "implemented-exact"
     assert rows["has_attr_name"].status == "not-admitted"
-    assert rows["call_internal"].status == "not-admitted"
+    assert rows["call_internal"].status == "implemented-exact"
     assert "molt_abs_builtin" not in rows
     assert rows["isinstance"].status == "not-admitted"
     assert rows["issubclass"].status == "not-admitted"
     assert rows["vec_sum_*"].status == "not-admitted"
     assert rows["vec_prod_*"].status == "not-admitted"
-    assert rows["is"].status == "not-admitted"
+    assert rows["is"].status == "implemented-exact"
     assert rows["getargv"].status == "not-admitted"
 
 
@@ -218,7 +218,7 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
     output = mod.build_output(source_dir)
 
     assert "**Source:**" in output
-    assert "`const_none` | `not-admitted`" in output
+    assert "`const_none` | `implemented-exact`" in output
     assert "`const_bool` | `compile-error`" in output
     assert "`vec_fixture_*` | `not-admitted`" in output
     assert "ignored_test_only" not in output
@@ -226,7 +226,7 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
 
 def test_execution_frames_are_implemented_but_introspection_is_not_admitted() -> None:
     mod = _load_module()
-    source = r'''
+    source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
             "trace_enter_slot" => { self.emit_line("molt_frame_enter(code)"); }
@@ -238,10 +238,37 @@ def test_execution_frames_are_implemented_but_introspection_is_not_admitted() ->
             }
         }
     }
-    '''
+    """
 
     rows = {row.op: row for row in mod.collect_rows_from_text(source)}
 
     for kind in ("frame_locals_set", "line", "trace_enter_slot", "trace_exit"):
         assert rows[kind].status == "implemented-exact"
     assert rows["getframe"].status == "not-admitted"
+
+
+def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
+    mod = _load_module()
+    source = r"""
+    fn emit_op(&mut self, op: &OpIR) {
+        match op.kind.as_str() {
+            "state_yield" => {
+                self.emit_line("return yielded");
+            }
+            "exception_finally_pending_observer" => {
+                self.emit_line("local pending = molt_exception_last_pending()");
+            }
+        }
+    }
+    """
+
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+
+    assert rows["async_work_poll"].status == "not-admitted"
+    assert rows["state_yield"].status == "not-admitted"
+    assert (
+        rows["exception_finally_pending_observer"].status
+        == "implemented-target-limited"
+    )
+    assert "marked variant" in rows["exception_finally_pending_observer"].note
+    assert "target contract rejects" in rows["async_work_poll"].note

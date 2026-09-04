@@ -248,7 +248,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                         .call(local_callee, &[*obj, attr_ptr, attr_len])
                 }
                 "get_attr_generic_obj" => {
-                    let source_op_idx = required_source_op_idx(op, op_idx, "get_attr_generic_obj");
+                    let source_op_idx = op.required_source_op_index(op_idx, "get_attr_generic_obj");
                     let callee = SimpleBackend::import_func_id_split(
                         &mut *module,
                         &mut *import_ids,
@@ -776,12 +776,4 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }
     OpFlow::Proceed
-}
-
-fn required_source_op_idx(op: &OpIR, op_idx: usize, kind: &str) -> usize {
-    match op.source_op_idx {
-        Some(value) => usize::try_from(value)
-            .unwrap_or_else(|_| panic!("{kind} has invalid negative source_op_idx {value}")),
-        None => panic!("{kind} at stream op {op_idx} requires transported source_op_idx"),
-    }
 }

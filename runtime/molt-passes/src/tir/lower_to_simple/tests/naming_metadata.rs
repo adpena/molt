@@ -920,7 +920,6 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
 #[test]
 fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
     use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::passes::run_pipeline;
     use crate::tir::type_refine::refine_types;
 
@@ -1059,12 +1058,10 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         execution_context: Default::default(),
     };
 
-    let mut tir_func = lower_to_tir(&func_ir);
+    let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir_for_target(&func_ir, &target);
     refine_types(&mut tir_func);
-    run_pipeline(
-        &mut tir_func,
-        &crate::tir::target_info::TargetInfo::native_release_fast(),
-    );
+    run_pipeline(&mut tir_func, &target);
     refine_types(&mut tir_func);
     let round_tripped = lower_to_simple_ir(&tir_func);
 

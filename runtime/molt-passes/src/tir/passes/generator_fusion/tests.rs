@@ -7,6 +7,24 @@ use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
+fn canonical_function_bytes(function: &TirFunction) -> Vec<u8> {
+    crate::tir::serialize::serialize_tir_function(function)
+        .expect("test TIR function must serialize canonically")
+}
+
+fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
+    let module = TirModule {
+        name: "candidate".into(),
+        functions: vec![poll.clone(), caller.clone()],
+    };
+    let call_graph = CallGraph::build(&module);
+    let polls = std::collections::HashMap::from([(poll.name.clone(), poll.clone())]);
+    collect_fusion_candidates(caller, &polls, &call_graph)
+        .into_iter()
+        .next()
+        .expect("fixture must expose one fusion candidate")
+}
+
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         dialect: Dialect::Molt,
@@ -46,6 +64,7 @@ fn counter_poll() -> TirFunction {
     let test = f.fresh_block();
     let body = f.fresh_block();
     let exhausted = f.fresh_block();
+    let exception_exit = f.fresh_block();
 
     // entry
     let zero = const_int(&mut f, 0);
@@ -140,6 +159,11 @@ fn counter_poll() -> TirFunction {
                 op_v(OpCode::ConstInt, vec![], vec![one], 1),
                 op(OpCode::Add, vec![i_b, one], vec![i2]),
                 op_v(OpCode::ClosureStore, vec![ValueId(0), i2], vec![], 56),
+                {
+                    let mut poll = op_v(OpCode::CheckException, vec![], vec![], 91);
+                    poll.mark_async_work_poll();
+                    poll
+                },
             ],
             terminator: Terminator::Branch {
                 target: header,
@@ -175,6 +199,16 @@ fn counter_poll() -> TirFunction {
             terminator: Terminator::Return {
                 values: vec![donepair],
             },
+        },
+    );
+    f.label_id_map.insert(exception_exit.0, 91);
+    f.blocks.insert(
+        exception_exit,
+        TirBlock {
+            id: exception_exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
         },
     );
     f
@@ -303,6 +337,11 @@ fn consumer() -> TirFunction {
                 },
                 // a trivial use of elem
                 op(OpCode::Copy, vec![elem], vec![elem_use]),
+                {
+                    let mut poll = op_v(OpCode::CheckException, vec![], vec![], 90);
+                    poll.mark_async_work_poll();
+                    poll
+                },
             ],
             terminator: Terminator::Branch {
                 target: loophdr,
@@ -314,6 +353,7 @@ fn consumer() -> TirFunction {
         .insert(loophdr, crate::tir::blocks::LoopRole::LoopHeader);
     f.loop_cond_blocks.insert(loophdr, condb);
     f.loop_pairs.insert(loophdr, exit);
+    f.label_id_map.insert(exit.0, 90);
     f.blocks.insert(
         exit,
         TirBlock {
@@ -324,6 +364,134 @@ fn consumer() -> TirFunction {
         },
     );
     f
+}
+
+#[test]
+fn fusion_rejects_unmaterialized_poll_before_mutating_the_module() {
+    let mut unprepared_poll = counter_poll();
+    for block in unprepared_poll.blocks.values_mut() {
+        block.ops.retain(|op| !op.is_async_work_poll());
+    }
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![unprepared_poll, consumer()],
+    };
+    let before: Vec<_> = module
+        .functions
+        .iter()
+        .map(crate::tir::printer::print_function)
+        .collect();
+    let cg = CallGraph::build(&module);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast())
+    }));
+    assert!(
+        result.is_err(),
+        "unmaterialized target input must fail closed"
+    );
+    let after: Vec<_> = module
+        .functions
+        .iter()
+        .map(crate::tir::printer::print_function)
+        .collect();
+    assert_eq!(
+        after, before,
+        "the preparation gate must precede all mutation"
+    );
+}
+
+#[test]
+fn clone_late_bail_is_byte_identical_including_id_allocators() {
+    let mut poll = counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+
+    // Introduce a second non-entry store for slot 56 in a distinct block. The
+    // clone discovers this only after it has allocated every value/block id and
+    // inserted earlier cloned blocks into its staging function.
+    let entry = poll.entry_block;
+    let header = match poll.blocks[&entry].terminator {
+        Terminator::Branch { target, .. } => target,
+        ref other => panic!("counter entry must branch to its header, got {other:?}"),
+    };
+    let test = match poll.blocks[&header].terminator {
+        Terminator::Branch { target, .. } => target,
+        ref other => panic!("counter header must branch to its test, got {other:?}"),
+    };
+    let stored = poll.blocks[&entry].ops[0].results[0];
+    poll.blocks.get_mut(&test).unwrap().ops.push(op_v(
+        OpCode::ClosureStore,
+        vec![ValueId(0), stored],
+        vec![],
+        56,
+    ));
+
+    let before = canonical_function_bytes(&caller);
+    let before_ids = (caller.next_value, caller.next_block);
+    let mut stats = FusionStats::default();
+    assert!(
+        !apply_fusion(&mut caller, &poll, &candidate, &mut stats),
+        "multi-block slot stores must conservatively reject fusion"
+    );
+    assert_eq!(
+        canonical_function_bytes(&caller),
+        before,
+        "late clone rejection must preserve the complete caller artifact"
+    );
+    assert_eq!(
+        (caller.next_value, caller.next_block),
+        before_ids,
+        "failed staging must not consume deterministic ids"
+    );
+    assert_eq!(stats, FusionStats::default());
+}
+
+#[test]
+fn wire_late_bail_is_byte_identical_including_cfg_and_ids() {
+    let mut poll = counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+
+    // A third predecessor into the cloned loop header is rejected during wire,
+    // after clone insertion and after header phi arguments have been appended.
+    // Keep it unreachable so recognition remains irrelevant to this direct
+    // transaction test while the wiring surprise is fully representative.
+    let header = match poll.blocks[&poll.entry_block].terminator {
+        Terminator::Branch { target, .. } => target,
+        ref other => panic!("counter entry must branch to its header, got {other:?}"),
+    };
+    let third_pred = poll.fresh_block();
+    poll.blocks.insert(
+        third_pred,
+        TirBlock {
+            id: third_pred,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![],
+            },
+        },
+    );
+
+    let before = canonical_function_bytes(&caller);
+    let before_ids = (caller.next_value, caller.next_block);
+    let mut stats = FusionStats::default();
+    assert!(
+        !apply_fusion(&mut caller, &poll, &candidate, &mut stats),
+        "a third cloned-loop predecessor must conservatively reject fusion"
+    );
+    assert_eq!(
+        canonical_function_bytes(&caller),
+        before,
+        "late wire rejection must preserve the complete caller CFG and metadata"
+    );
+    assert_eq!(
+        (caller.next_value, caller.next_block),
+        before_ids,
+        "failed wiring must not consume deterministic ids"
+    );
+    assert_eq!(stats, FusionStats::default());
 }
 
 #[test]
@@ -359,5 +527,39 @@ fn single_yield_in_loop_recognized_and_spliced() {
     assert!(!has(OpCode::AllocTask), "AllocTask must be deleted");
     assert!(!has(OpCode::StateYield), "StateYield must be gone");
     assert!(!has(OpCode::IterNext), "IterNext must be deleted");
+    let poll_sites: Vec<_> = cons
+        .blocks
+        .iter()
+        .flat_map(|(&block, body)| {
+            body.ops
+                .iter()
+                .filter(|op| op.is_async_work_poll())
+                .map(move |op| (block, op))
+        })
+        .collect();
+    assert_eq!(
+        poll_sites.len(),
+        1,
+        "fusion must preserve exactly the generator loop's pre-authored latch transfer"
+    );
+    let (poll_block, poll) = poll_sites[0];
+    let AttrValue::Int(poll_label) = poll.attrs["value"] else {
+        panic!("fused latch poll must retain a remapped exception label")
+    };
+    assert!(
+        cons.label_id_map.values().any(|label| *label == poll_label),
+        "fused latch poll's remapped label must resolve in the caller"
+    );
+    let mut analyses = crate::tir::analysis::AnalysisManager::new();
+    let loops = analyses
+        .get::<crate::tir::analysis::LoopForest>(cons)
+        .clone();
+    assert!(
+        loops.headers.iter().any(|header| {
+            loops.bodies[header].contains(&poll_block)
+                && cons.blocks[&poll_block].terminator.has_successor(*header)
+        }),
+        "the preserved marker must remain on the actual fused backedge"
+    );
     crate::tir::verify::verify_function(cons).expect("fused consumer must verify");
 }

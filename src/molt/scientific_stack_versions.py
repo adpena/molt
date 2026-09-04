@@ -20,7 +20,7 @@ from molt.cli.source_extension_set_registry import (
 )
 from molt.target_python import (
     _parse_target_python_version,
-    require_known_cpython_coverage_version,
+    require_supported_target_python,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -155,7 +155,7 @@ def _scientific_entry(
     scipy = _version(raw.get("scipy"), field=f"{field}.scipy", path=path)
     cpython = _version(raw.get("cpython"), field=f"{field}.cpython", path=path)
     try:
-        target_python = require_known_cpython_coverage_version(
+        target_python = require_supported_target_python(
             _parse_target_python_version(cpython)
         )
     except ValueError as exc:

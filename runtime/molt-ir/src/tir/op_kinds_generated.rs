@@ -273,7 +273,10 @@ pub fn simpleir_kind_is_verifier_label_definition(kind: &str) -> bool {
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
 #[inline]
 pub fn simpleir_kind_is_verifier_label_reference(kind: &str) -> bool {
-    matches!(kind, "jump" | "check_exception" | "async_work_poll")
+    matches!(
+        kind,
+        "jump" | "goto" | "br_if" | "try_start" | "try_end" | "check_exception" | "async_work_poll"
+    )
 }
 
 /// Whether the SimpleIR verifier requires this control kind inside a loop.
@@ -293,6 +296,29 @@ pub fn simpleir_kind_is_verifier_loop_scoped(kind: &str) -> bool {
 #[inline]
 pub fn simpleir_kind_is_verifier_phi(kind: &str) -> bool {
     matches!(kind, "phi")
+}
+
+/// Whether a SimpleIR kind's value occupies the function-local label namespace.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_uses_function_label_id(kind: &str) -> bool {
+    matches!(
+        kind,
+        "async_work_poll"
+            | "br_if"
+            | "chan_recv_yield"
+            | "chan_send_yield"
+            | "check_exception"
+            | "goto"
+            | "jump"
+            | "label"
+            | "state_label"
+            | "state_transition"
+            | "state_yield"
+            | "try_end"
+            | "try_start"
+    )
 }
 
 /// Whether a SimpleIR kind is a normal function-return terminator.
@@ -557,8 +583,11 @@ pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics 
 /// Composable runtime/object-model requirements for a SimpleIR spelling.
 /// Multiple bits may be set; enabling one target capability never masks
 /// another unmet semantic requirement.
+pub type SimpleIrRuntimeRequirementBits = u32;
+pub const SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: u32 = 32;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SimpleIrRuntimeRequirements(u16);
+pub struct SimpleIrRuntimeRequirements(SimpleIrRuntimeRequirementBits);
 
 impl SimpleIrRuntimeRequirements {
     pub const NONE: Self = Self(0);
@@ -577,24 +606,163 @@ impl SimpleIrRuntimeRequirements {
     pub const HOST_CAPABILITY: Self = Self(1 << 12);
     pub const EXECUTION_FRAME: Self = Self(1 << 13);
     pub const FRAME_INTROSPECTION: Self = Self(1 << 14);
+    pub const PENDING_CALL_EVAL_BREAKER: Self = Self(1 << 15);
+    pub const ALL: Self = Self(65535);
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
     pub const fn contains(self, requirement: Self) -> bool {
-        self.0 & requirement.0 != 0
+        self.0 & requirement.0 == requirement.0
     }
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
-    pub const fn bits(self) -> u16 {
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+    pub const fn bits(self) -> SimpleIrRuntimeRequirementBits {
         self.0
     }
-    pub const fn from_bits(bits: u16) -> Option<Self> {
-        if bits & !32767 == 0 {
+    pub const fn from_bits(bits: SimpleIrRuntimeRequirementBits) -> Option<Self> {
+        if bits & !65535 == 0 {
             Some(Self(bits))
         } else {
             None
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimpleIrRuntimeRequirementDescriptor {
+    pub requirement: SimpleIrRuntimeRequirements,
+    pub reason: &'static str,
+}
+
+pub const IDENTITY_REQUIREMENT_REASON: &str =
+    "operation requires Python object identity rather than value equality";
+pub const TUPLE_REQUIREMENT_REASON: &str =
+    "operation requires a tuple representation distinct from mutable lists";
+pub const EXCEPTION_REQUIREMENT_REASON: &str =
+    "operation requires Python exception state, matching, and structured unwinding";
+pub const DETERMINISTIC_LIFETIME_REQUIREMENT_REASON: &str =
+    "operation requires deterministic Python lifetime/finalizer semantics";
+pub const FORMAT_PROTOCOL_REQUIREMENT_REASON: &str =
+    "operation requires the Python __format__ protocol and conversion semantics";
+pub const ITERABLE_PROTOCOL_REQUIREMENT_REASON: &str =
+    "operation requires the Python iterable/sequence protocol and exact errors";
+pub const OBJECT_MODEL_REQUIREMENT_REASON: &str =
+    "operation requires Python aliasing, cycles, None storage, hashing, and object protocols";
+pub const TRUTHINESS_REQUIREMENT_REASON: &str =
+    "operation requires CPython truthiness across NaN and dynamic containers";
+pub const COMPARISON_REQUIREMENT_REASON: &str =
+    "operation requires CPython comparison dispatch, NaN behavior, and exact integers";
+pub const FALLIBLE_PROTOCOL_REQUIREMENT_REASON: &str =
+    "operation can raise and requires structured catchable Python exceptions";
+pub const ASYNC_RUNTIME_REQUIREMENT_REASON: &str =
+    "operation requires an exact async scheduler and suspension-state model";
+pub const UNSTRUCTURED_CONTROL_REQUIREMENT_REASON: &str =
+    "operation requires a target-proven unstructured control-flow lowering";
+pub const HOST_CAPABILITY_REQUIREMENT_REASON: &str =
+    "operation requires a target host filesystem or foreign-function capability";
+pub const EXECUTION_FRAME_REQUIREMENT_REASON: &str =
+    "operation requires internal execution-frame stack and source-location custody";
+pub const FRAME_INTROSPECTION_REQUIREMENT_REASON: &str =
+    "operation requires exact Python-visible frame objects, locals, globals, and tracing state";
+pub const PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON: &str =
+    "operation requires the target runtime's pending-call and eval-breaker polling boundary";
+
+pub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS: &[SimpleIrRuntimeRequirementDescriptor] = &[
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::IDENTITY,
+        reason: IDENTITY_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::TUPLE,
+        reason: TUPLE_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::EXCEPTION,
+        reason: EXCEPTION_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::DETERMINISTIC_LIFETIME,
+        reason: DETERMINISTIC_LIFETIME_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::FORMAT_PROTOCOL,
+        reason: FORMAT_PROTOCOL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::ITERABLE_PROTOCOL,
+        reason: ITERABLE_PROTOCOL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::OBJECT_MODEL,
+        reason: OBJECT_MODEL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::TRUTHINESS,
+        reason: TRUTHINESS_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::COMPARISON,
+        reason: COMPARISON_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::FALLIBLE_PROTOCOL,
+        reason: FALLIBLE_PROTOCOL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::ASYNC_RUNTIME,
+        reason: ASYNC_RUNTIME_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::UNSTRUCTURED_CONTROL,
+        reason: UNSTRUCTURED_CONTROL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::HOST_CAPABILITY,
+        reason: HOST_CAPABILITY_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::EXECUTION_FRAME,
+        reason: EXECUTION_FRAME_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,
+        reason: FRAME_INTROSPECTION_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER,
+        reason: PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON,
+    },
+];
+
+/// Stable external spelling for a target kind.
+pub const fn simpleir_target_name(target: super::target_info::TargetKind) -> &'static str {
+    match target {
+        super::target_info::TargetKind::Llvm => "llvm",
+        super::target_info::TargetKind::Luau => "luau",
+        super::target_info::TargetKind::Mlir => "mlir",
+        super::target_info::TargetKind::NativeCranelift => "native",
+        super::target_info::TargetKind::Rust => "rust",
+        super::target_info::TargetKind::Wasm => "wasm",
+    }
+}
+
+/// Target-proven runtime semantics from the declarative target profiles.
+/// Adding a target is a compile-time-exhaustive profile decision.
+#[inline]
+pub fn simpleir_target_runtime_requirements(
+    target: super::target_info::TargetKind,
+) -> SimpleIrRuntimeRequirements {
+    match target {
+        super::target_info::TargetKind::Llvm => SimpleIrRuntimeRequirements(65535),
+        super::target_info::TargetKind::Luau => SimpleIrRuntimeRequirements(11239),
+        super::target_info::TargetKind::Mlir => SimpleIrRuntimeRequirements(0),
+        super::target_info::TargetKind::NativeCranelift => SimpleIrRuntimeRequirements(65535),
+        super::target_info::TargetKind::Rust => SimpleIrRuntimeRequirements(0),
+        super::target_info::TargetKind::Wasm => SimpleIrRuntimeRequirements(65535),
     }
 }
 
@@ -673,7 +841,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "add"
         | "async_for_end"
         | "async_for_start"
-        | "async_work_poll"
         | "bit_and"
         | "bit_not"
         | "bit_or"
@@ -955,6 +1122,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
             Some(SimpleIrRuntimeRequirements(8192))
         }
         "getframe" => Some(SimpleIrRuntimeRequirements(16384)),
+        "async_work_poll" => Some(SimpleIrRuntimeRequirements(32772)),
         _ => None,
     }
 }
@@ -2462,10 +2630,24 @@ pub fn simpleir_kind_is_call_graph_user_call(kind: &str) -> bool {
     )
 }
 
+/// Whether this SimpleIR spelling branches on pending exception state.
+/// Generated from `exception_check_kinds` so the authored check and
+/// its async-work alias cannot drift across consumers.
+#[inline]
+pub fn simpleir_kind_is_exception_check(kind: &str) -> bool {
+    matches!(kind, "check_exception" | "async_work_poll")
+}
+
 /// Whether this SimpleIR spelling is the generated async-work poll.
 #[inline]
 pub fn simpleir_kind_is_async_work_poll(kind: &str) -> bool {
     matches!(kind, "async_work_poll")
+}
+
+/// Whether this SimpleIR role may carry an explicit async-work marker.
+#[inline]
+pub fn simpleir_kind_may_carry_async_work_poll_marker(kind: &str) -> bool {
+    matches!(kind, "exception_finally_pending_observer")
 }
 
 /// Whether successful completion of this first-class opcode is a Python

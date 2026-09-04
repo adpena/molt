@@ -86,7 +86,7 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     depth: u32,
     exception_regions: &BTreeSet<usize>,
 ) {
-    let async_work_poll = op.kind == "async_work_poll";
+    let async_work_poll = op.is_async_work_poll();
     if !async_work_poll && (op_emitter.native_eh_enabled || exception_regions.contains(&idx)) {
         emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
         return;

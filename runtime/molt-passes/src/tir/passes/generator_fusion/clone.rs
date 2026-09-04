@@ -6,11 +6,13 @@
 //! out of `generator_fusion.rs` as a move-only decomposition; the recognition
 //! and orchestration live in [`super`], the CFG surgery in [`super::wire`].
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::clone_support::{
+    build_label_remap, remap_exception_label_attr, remap_terminator, transfer_label_id_map,
+};
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::opcode_has_exception_label_attr_table;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -390,7 +392,7 @@ pub(super) fn clone_and_rewrite_poll(
             // values) are CLEARED — the consumer's own `CheckException` reads the
             // runtime pending flag directly and carries no operands.
             let mut attrs = clone_attrs_drop_simple_names(&op.attrs);
-            remap_exception_label_attr_local(op.opcode, &mut attrs, &label_remap);
+            remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &poll.name);
             let operands: Vec<ValueId> = if op.opcode == OpCode::CheckException {
                 Vec::new()
             } else {
@@ -406,7 +408,7 @@ pub(super) fn clone_and_rewrite_poll(
             });
         }
 
-        let new_term = clone_terminator_local(&src.terminator, &value_map, &block_map);
+        let new_term = remap_terminator(&src.terminator, &value_map, &block_map, &poll.name);
         if matches!(new_term, Terminator::Return { .. }) {
             return_blocks.push(new_bid);
         }
@@ -455,12 +457,7 @@ pub(super) fn clone_and_rewrite_poll(
     // carrying label N, and LLVM lowering fails ("check_exception target label N
     // is not present in label map"); the native back-conversion likewise cannot
     // resolve the exception edge.
-    for (old_block_u32, label_val) in &poll.label_id_map {
-        if let Some(new_bid) = block_map.get(&BlockId(*old_block_u32)) {
-            let new_label = label_remap.get(label_val).copied().unwrap_or(*label_val);
-            caller.label_id_map.entry(new_bid.0).or_insert(new_label);
-        }
-    }
+    transfer_label_id_map(poll, caller, &block_map, &label_remap, &poll.name);
 
     let (yield_block, yield_idx, yield_pair) = yield_block_idx?;
 
@@ -485,112 +482,4 @@ fn clone_attrs_drop_simple_names(attrs: &AttrDict) -> AttrDict {
         .filter(|(k, _)| k.as_str() != "_simple_out" && !k.starts_with("_simple_result_"))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
-}
-
-/// Rewrite a cloned exception op's `value` label through `label_remap`.
-fn remap_exception_label_attr_local(
-    opcode: OpCode,
-    attrs: &mut AttrDict,
-    label_remap: &HashMap<i64, i64>,
-) {
-    if !opcode_has_exception_label_attr_table(opcode) {
-        return;
-    }
-    if let Some(AttrValue::Int(old)) = attrs.get("value")
-        && let Some(&new) = label_remap.get(old)
-    {
-        attrs.insert("value".into(), AttrValue::Int(new));
-    }
-}
-
-/// Build the poll->fresh exception-label remap (mirrors the inliner's
-/// `build_label_remap`): every label the poll uses is reassigned strictly above
-/// the caller's current max so the cloned exception edges cannot collide.
-fn build_label_remap(poll: &TirFunction, caller: &TirFunction) -> HashMap<i64, i64> {
-    let poll_labels = function_label_ids(poll);
-    if poll_labels.is_empty() {
-        return HashMap::new();
-    }
-    let caller_max = function_label_ids(caller).iter().copied().max();
-    let start = caller_max.map(|m| m + 1).unwrap_or(0);
-    let mut remap = HashMap::with_capacity(poll_labels.len());
-    for (label, next) in poll_labels.into_iter().zip(start..) {
-        remap.insert(label, next);
-    }
-    remap
-}
-
-/// The set of SimpleIR label ids `func` uses (label_id_map values + exception-op
-/// `value` labels).
-fn function_label_ids(func: &TirFunction) -> BTreeSet<i64> {
-    let mut labels: BTreeSet<i64> = func.label_id_map.values().copied().collect();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if opcode_has_exception_label_attr_table(op.opcode)
-                && let Some(AttrValue::Int(l)) = op.attrs.get("value")
-            {
-                labels.insert(*l);
-            }
-        }
-    }
-    labels
-}
-
-/// Clone a terminator, remapping value operands + block targets.
-fn clone_terminator_local(
-    term: &Terminator,
-    value_map: &HashMap<ValueId, ValueId>,
-    block_map: &HashMap<BlockId, BlockId>,
-) -> Terminator {
-    let rv = |v: ValueId| *value_map.get(&v).unwrap_or(&v);
-    let rb = |b: BlockId| *block_map.get(&b).unwrap_or(&b);
-    match term {
-        Terminator::Branch { target, args } => Terminator::Branch {
-            target: rb(*target),
-            args: args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::CondBranch {
-            cond,
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-        } => Terminator::CondBranch {
-            cond: rv(*cond),
-            then_block: rb(*then_block),
-            then_args: then_args.iter().map(|v| rv(*v)).collect(),
-            else_block: rb(*else_block),
-            else_args: else_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Switch {
-            value,
-            cases,
-            default,
-            default_args,
-        } => Terminator::Switch {
-            value: rv(*value),
-            cases: cases
-                .iter()
-                .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
-                .collect(),
-            default: rb(*default),
-            default_args: default_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::StateDispatch {
-            cases,
-            default,
-            default_args,
-        } => Terminator::StateDispatch {
-            cases: cases
-                .iter()
-                .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
-                .collect(),
-            default: rb(*default),
-            default_args: default_args.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Return { values } => Terminator::Return {
-            values: values.iter().map(|v| rv(*v)).collect(),
-        },
-        Terminator::Unreachable => Terminator::Unreachable,
-    }
 }

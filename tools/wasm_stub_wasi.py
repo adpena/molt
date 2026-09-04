@@ -21,8 +21,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.wasm_artifact import parse_wasm_sections  # noqa: E402
 
 
 WASM_MAGIC = b"\x00asm"
@@ -69,21 +73,7 @@ def _write_string(value: str) -> bytes:
     return _write_varuint(len(raw)) + raw
 
 
-def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
-    if len(data) < 8 or data[:4] != WASM_MAGIC or data[4:8] != WASM_VERSION:
-        raise ValueError("Invalid wasm header")
-    offset = 8
-    sections: list[tuple[int, bytes]] = []
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        size, offset = _read_varuint(data, offset)
-        end = offset + size
-        if end > len(data):
-            raise ValueError("Unexpected EOF while reading section")
-        sections.append((section_id, data[offset:end]))
-        offset = end
-    return sections
+_parse_sections = parse_wasm_sections
 
 
 def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:

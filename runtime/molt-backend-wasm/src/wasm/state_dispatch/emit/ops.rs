@@ -184,7 +184,7 @@ pub(super) fn emit_dispatch_op(
             func.instruction(&Instruction::End);
             false
         }
-        "check_exception" | "async_work_poll" => {
+        kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
             emit_dispatch_check_exception(
                 func,
                 op_emitter,

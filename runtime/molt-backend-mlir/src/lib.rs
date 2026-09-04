@@ -255,7 +255,9 @@ mod tests {
             "diagnostic must name the op: {err}"
         );
         assert!(
-            err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
+            err.contains(
+                molt_backend::tir::op_kinds_generated::PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON
+            ),
             "diagnostic must name the missing target capability: {err}"
         );
     }

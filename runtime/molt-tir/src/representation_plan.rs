@@ -4,7 +4,7 @@ use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
 use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
-use crate::tir::lower_from_simple::lower_to_tir;
+use crate::tir::lower_from_simple::lower_to_tir_for_target;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use crate::tir::op_kinds_generated::{
     SimpleIrReturnShape, simpleir_integer_semantics_table, simpleir_return_shape,
@@ -244,7 +244,10 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    pub fn for_function_ir(func_ir: &FunctionIR) -> Self {
+    pub fn for_function_ir_for_target(
+        func_ir: &FunctionIR,
+        target_info: &crate::tir::target_info::TargetInfo,
+    ) -> Self {
         if is_cold_module_chunk_function(&func_ir.name) {
             return Self::with_capacity(func_ir.ops.len());
         }
@@ -253,17 +256,14 @@ impl ScalarRepresentationPlan {
         let indexed_fact_index = fact_index
             .needs_indexed_name_graph()
             .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
-        let mut tir_func = lower_to_tir(func_ir);
+        let mut tir_func = lower_to_tir_for_target(func_ir, target_info);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
         let mut optimized_tir_func = None;
         let mut optimized_names = None;
         if crate::tir::verify::verify_function(&tir_func).is_ok() {
             let mut projected_tir_func = tir_func.clone();
-            crate::tir::passes::run_pipeline(
-                &mut projected_tir_func,
-                &crate::tir::target_info::TargetInfo::native_release_fast(),
-            );
+            crate::tir::passes::run_pipeline(&mut projected_tir_func, target_info);
             refine_types(&mut projected_tir_func);
             optimized_names = Some(SimpleValueNames::for_function(&projected_tir_func));
             optimized_tir_func = Some(projected_tir_func);
@@ -1144,7 +1144,18 @@ impl ScalarRepresentationPlan {
         tir_value_views: &[(&TirFunction, &SimpleValueNames)],
     ) {
         let mut blocked = plan_hash_set(func_ir.ops.len() / 8 + 1);
-        for (tir_func, _) in tir_value_views {
+        let mut current_ops_by_output = plan_hash_map(func_ir.ops.len() / 2 + 1);
+        for (op_index, op) in func_ir.ops.iter().enumerate() {
+            let Some(output) = op.out.as_deref() else {
+                continue;
+            };
+            current_ops_by_output
+                .entry(output)
+                .and_modify(|producer| *producer = None)
+                .or_insert(Some(op_index));
+        }
+
+        for (tir_func, names) in tir_value_views {
             let vr = value_range_for(tir_func);
             let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
             let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
@@ -1153,13 +1164,18 @@ impl ScalarRepresentationPlan {
             for block_id in block_ids {
                 let block = &tir_func.blocks[&block_id];
                 for op in &block.ops {
-                    let Some(op_index) = op.source_op_index() else {
+                    let [result] = op.results.as_slice() else {
                         continue;
                     };
-                    let Some(simple_op) = func_ir.ops.get(op_index) else {
+                    let Some(output) = names.explicit_value_name(*result) else {
                         continue;
                     };
-                    if !Self::simple_op_supports_direct_numeric_result(simple_op.kind.as_str()) {
+                    let Some(&Some(op_index)) = current_ops_by_output.get(output) else {
+                        continue;
+                    };
+                    if !Self::simple_op_supports_direct_numeric_result(
+                        func_ir.ops[op_index].kind.as_str(),
+                    ) {
                         continue;
                     }
                     let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, &carrier_by_value)

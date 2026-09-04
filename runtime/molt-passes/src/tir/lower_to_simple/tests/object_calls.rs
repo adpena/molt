@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn tir_round_trip_preserves_object_argument_call_sequence() {
     use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::passes::run_pipeline;
     use crate::tir::type_refine::refine_types;
 
@@ -618,7 +617,10 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
     };
 
     for func_ir in [callee_ir, caller_ir] {
-        let mut tir_func = lower_to_tir(&func_ir);
+        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir_for_target(
+            &func_ir,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
         refine_types(&mut tir_func);
         run_pipeline(
             &mut tir_func,

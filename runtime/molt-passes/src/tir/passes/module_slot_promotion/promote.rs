@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::clone_support::LabelAllocator;
 use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, terminator_successors};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
@@ -543,7 +544,7 @@ fn apply_promotion(
             .iter()
             .map(|(b, l)| (*l, BlockId(*b)))
             .collect();
-        let mut next_label = func.label_id_map.values().copied().max().unwrap_or(0) + 1;
+        let mut labels = LabelAllocator::for_function(func);
         for c in compensations {
             let Some(&handler_block) = label_to_block.get(&c.original_label) else {
                 continue; // unresolvable label: leave the op untouched (sound).
@@ -551,8 +552,7 @@ fn apply_promotion(
             let comp_ops =
                 alloc_store_back_ops(func, module_root, &plan.slots, &c.values, &slot_dirty);
             let comp_block = func.fresh_block();
-            let fresh_label = next_label;
-            next_label += 1;
+            let fresh_label = labels.fresh();
             func.label_id_map.insert(comp_block.0, fresh_label);
             func.blocks.insert(
                 comp_block,

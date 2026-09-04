@@ -1052,6 +1052,10 @@ def test_call_roles_delegate_to_generated_tables() -> None:
         "invoke_ffi",
     ]
     assert data["call_graph_user_call_kinds"] == expected_user_call_kinds
+    assert data["exception_check_kinds"] == [
+        "check_exception",
+        "async_work_poll",
+    ]
 
     role_block = rendered.split("fn opcode_call_role_table")[1].split(
         "fn simpleir_kind_is_call_graph_user_call"
@@ -1075,6 +1079,11 @@ def test_call_roles_delegate_to_generated_tables() -> None:
         assert f'"{kind}"' in kind_block
     for excluded in ("gpu_thread_id", "gpu_barrier", "call_builtin", "range_new"):
         assert f'"{excluded}"' not in kind_block
+
+    exception_check_block = rendered.split("fn simpleir_kind_is_exception_check")[
+        1
+    ].split("fn simpleir_kind_is_async_work_poll")[0]
+    assert '"check_exception" | "async_work_poll"' in exception_check_block
 
     assert "opcode_call_role_table" in call_graph
     assert "simpleir_kind_is_call_graph_user_call" in call_graph
@@ -3855,6 +3864,7 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     sources = {
+        "clone_support": _read_rs_module_cluster(tir_path("clone_support.rs")),
         "inliner": _read_rs_module_cluster(tir_path("passes/inliner.rs")),
         "generator_fusion": _read_rs_module_cluster(
             tir_path("passes/generator_fusion.rs")
@@ -3929,8 +3939,12 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
         "OpCode::CheckException => ExceptionRegionNestingRole::None," in nesting_block
     )
 
-    assert "opcode_has_exception_label_attr_table" in sources["inliner"]
-    assert "opcode_has_exception_label_attr_table" in sources["generator_fusion"]
+    assert "opcode_has_exception_label_attr_table" in sources["clone_support"]
+    assert "pub fn remap_exception_label_attr(" in sources["clone_support"]
+    assert "remap_exception_label_attr" in sources["inliner"]
+    assert "fn remap_exception_label_attr(" not in sources["inliner"]
+    assert "remap_exception_label_attr" in sources["generator_fusion"]
+    assert "fn remap_exception_label_attr(" not in sources["generator_fusion"]
     assert "opcode_has_exception_label_attr_table" in sources["lower_to_simple"]
     assert "opcode_is_exception_transfer_edge_table" in sources["dominators"]
     assert "opcode_exception_region_nesting_role_table" in sources["dce"]
@@ -5247,9 +5261,10 @@ def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
 ) -> None:
     gen = _gen()
     source = TABLE.read_text(encoding="utf-8")
-    frame_row = (
-        '    { table = "simpleir_frame_introspection_semantics_kinds", '
-        'constant = "FRAME_INTROSPECTION" },'
+    last_role_row = next(
+        line
+        for line in source.splitlines()
+        if 'constant = "PENDING_CALL_EVAL_BREAKER"' in line
     )
 
     mutations = {
@@ -5268,13 +5283,23 @@ def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
             'constant = "identity"',
             1,
         ),
-        "storage overflow": source.replace(
-            frame_row + "\n]",
-            frame_row
+        "bit overflow": source.replace(
+            last_role_row + "\n]",
+            last_role_row
             + "\n"
-            + '    { table = "simpleir_integer_semantics_kinds", constant = "INTEGER" },\n'
-            + '    { table = "simpleir_runtime_neutral_semantics_kinds", constant = "NEUTRAL" },\n'
+            + '    { table = "simpleir_overflow_role", constant = "OVERFLOW_ROLE", '
+            + 'bit = 32, reason = "overflow sentinel" },\n'
             + "]",
+            1,
+        )
+        + "\n"
+        + "simpleir_overflow_role = []\n",
+        "duplicate bit": source.replace(
+            'constant = "TUPLE", bit = 1', 'constant = "TUPLE", bit = 0', 1
+        ),
+        "missing reason": source.replace(
+            'reason = "operation requires Python object identity rather than value equality"',
+            'reason = ""',
             1,
         ),
     }
@@ -5282,7 +5307,9 @@ def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
         "missing frame role": "must own FRAME_INTROSPECTION",
         "missing table": "missing/non-string list",
         "noncanonical constant": "canonical uppercase identifiers",
-        "storage overflow": "exceeds u16 storage width",
+        "bit overflow": "bit must fit the generated storage width",
+        "duplicate bit": "duplicate bits",
+        "missing reason": "requires table, constant, bit, and reason rows",
     }
     for case, mutated in mutations.items():
         table = tmp_path / f"{case.replace(' ', '_')}.toml"
@@ -5296,13 +5323,68 @@ def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
     reordered["simpleir_runtime_requirement_roles"] = [frame] + [
         row for row in roles if row is not frame
     ]
-    assert "pub const FRAME_INTROSPECTION: Self = Self(1 << 0);" in gen.render_rs(
+    assert "pub const FRAME_INTROSPECTION: Self = Self(1 << 14);" in gen.render_rs(
         reordered
     )
     assert (
-        "SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 0"
+        "SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 14"
         in gen.render_py(reordered)
     )
+    rendered = gen.render_rs(reordered)
+    assert "pub type SimpleIrRuntimeRequirementBits = u32;" in rendered
+    assert "pub const SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: u32 = 32;" in rendered
+    assert "pub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS:" in rendered
+    assert "PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON" in rendered
+    assert rendered == gen.render_rs(gen.load_table())
+    assert gen.render_py(reordered) == gen.render_py(gen.load_table())
+
+
+def test_target_runtime_profiles_are_complete_explicit_and_generated(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    data = gen.load_table()
+    profiles = data["simpleir_target_runtime_profiles"]
+    assert {profile["target"]: profile["rust_variant"] for profile in profiles} == {
+        "native": "NativeCranelift",
+        "wasm": "Wasm",
+        "llvm": "Llvm",
+        "luau": "Luau",
+        "rust": "Rust",
+        "mlir": "Mlir",
+    }
+    rendered = gen.render_rs(data)
+    for profile in profiles:
+        assert f"TargetKind::{profile['rust_variant']} =>" in rendered
+    assert "pub const fn simpleir_target_name" in rendered
+    assert "pub fn simpleir_target_runtime_requirements" in rendered
+
+    mutations = {
+        "unknown requirement": source.replace(
+            'supported = ["IDENTITY",', 'supported = ["UNKNOWN_REQUIREMENT",', 1
+        ),
+        "duplicate variant": source.replace(
+            'target = "mlir", rust_variant = "Mlir"',
+            'target = "mlir", rust_variant = "Rust"',
+            1,
+        ),
+        "missing profile": source.replace(
+            '    { target = "mlir", rust_variant = "Mlir", supported = [] },\n',
+            "",
+            1,
+        ),
+    }
+    expected = {
+        "unknown requirement": "unknown requirements",
+        "duplicate variant": "duplicate target Rust variant",
+        "missing profile": "must cover exactly",
+    }
+    for case, mutated in mutations.items():
+        table = tmp_path / f"{case.replace(' ', '_')}.toml"
+        table.write_text(mutated, encoding="utf-8", newline="\n")
+        with pytest.raises(gen.OpKindTableError, match=expected[case]):
+            gen.load_table(table)
 
 
 def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_extra_keys(

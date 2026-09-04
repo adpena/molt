@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[inline]
 fn is_exception_observer_kind(kind: &str) -> bool {
-    matches!(kind, "check_exception" | "async_work_poll")
+    molt_ir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind)
 }
 
 /// Strip dead code after unconditional returns at the same nesting depth.
