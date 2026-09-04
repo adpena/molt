@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tomllib
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
+
+from markdown_it import MarkdownIt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +24,12 @@ FOUNDATION_BLUEPRINT_META_RE = re.compile(
     r"\bFoundation blueprint\s+([0-9]{2})\b", re.IGNORECASE
 )
 FOUNDATION_DOC_META_RE = re.compile(r"^doc:\s*([0-9]{2})\s*$", re.IGNORECASE)
+LOCAL_LINK_AUTHORITY_DOCS = (
+    "README.md",
+    "docs/INDEX.md",
+    "docs/CANONICALS.md",
+    "docs/spec/README.md",
+)
 
 
 def _read_text(path: Path) -> str:
@@ -302,13 +312,100 @@ def _check_foundation_portfolio_numbering(errors: list[str]) -> None:
     for number, owners in sorted(owners_by_number.items()):
         if len(owners) < 2:
             continue
-        rel_paths = ", ".join(
-            path.relative_to(ROOT).as_posix() for path in owners
-        )
+        rel_paths = ", ".join(path.relative_to(ROOT).as_posix() for path in owners)
         errors.append(
             f"foundation portfolio number {number} has multiple authorities: "
             f"{rel_paths}"
         )
+
+
+def _markdown_link_targets(text: str) -> list[tuple[int, str]]:
+    targets: list[tuple[int, str]] = []
+    for block in MarkdownIt("commonmark").parse(text):
+        if block.children is None:
+            continue
+        line = block.map[0] + 1 if block.map is not None else 1
+        for token in block.children:
+            attribute = "href" if token.type == "link_open" else "src"
+            if token.type not in {"link_open", "image"}:
+                continue
+            target = token.attrGet(attribute)
+            if target:
+                targets.append((line, target))
+    return targets
+
+
+def _has_exact_path_case(
+    path: Path,
+    *,
+    root: Path,
+    directory_entries: dict[Path, frozenset[str]],
+) -> bool:
+    current = root
+    for part in path.relative_to(root).parts:
+        entries = directory_entries.get(current)
+        if entries is None:
+            try:
+                entries = frozenset(entry.name for entry in current.iterdir())
+            except OSError:
+                return False
+            directory_entries[current] = entries
+        if part not in entries:
+            return False
+        current /= part
+    return True
+
+
+def _check_local_markdown_links(errors: list[str]) -> None:
+    root = ROOT.resolve()
+    directory_entries: dict[Path, frozenset[str]] = {}
+    for rel_path in LOCAL_LINK_AUTHORITY_DOCS:
+        source = root / rel_path
+        if not source.is_file():
+            errors.append(f"{rel_path}: missing Markdown link authority")
+            continue
+        for line, target in _markdown_link_targets(_read_text(source)):
+            if "\\" in target:
+                errors.append(
+                    f"{rel_path}:{line}: local Markdown target must use '/' separators: "
+                    f"{target!r}"
+                )
+                continue
+            try:
+                parsed = urlsplit(target)
+            except ValueError as exc:
+                errors.append(
+                    f"{rel_path}:{line}: malformed Markdown target {target!r}: {exc}"
+                )
+                continue
+            if target.startswith(("#", "/")) or parsed.scheme or parsed.netloc:
+                continue
+            local_path = unquote(parsed.path)
+            if not local_path:
+                continue
+            try:
+                unresolved = Path(os.path.abspath(source.parent / local_path))
+                unresolved.relative_to(root)
+                resolved = unresolved.resolve()
+                resolved_rel = resolved.relative_to(root).as_posix()
+            except (OSError, RuntimeError, ValueError):
+                errors.append(
+                    f"{rel_path}:{line}: local Markdown target escapes repository: "
+                    f"{target!r}"
+                )
+                continue
+            if not resolved.exists():
+                errors.append(
+                    f"{rel_path}:{line}: broken local Markdown target {target!r}; "
+                    f"expected {resolved_rel}"
+                )
+            elif not _has_exact_path_case(
+                unresolved, root=root, directory_entries=directory_entries
+            ):
+                errors.append(
+                    f"{rel_path}:{line}: local Markdown target has a case mismatch: "
+                    f"{target!r}"
+                )
 
 
 def check_repo() -> list[str]:
@@ -321,6 +418,7 @@ def check_repo() -> list[str]:
     _check_support_story_refs(errors)
     _check_long_horizon_routing(errors)
     _check_foundation_portfolio_numbering(errors)
+    _check_local_markdown_links(errors)
     return errors
 
 

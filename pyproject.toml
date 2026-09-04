@@ -192,6 +192,7 @@ bench = [
 ]
 dev = [
     "cbor2>=6.1.2",
+    "markdown-it-py>=4.2.0",
     "msgpack>=1.2.1",
     "pre-commit>=4.6.0",
     "pytest>=9.1.1",
