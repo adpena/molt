@@ -1688,7 +1688,7 @@ class RunContext:
                         create_dirs=create_dirs,
                         prefer_external=self.prefer_external_artifacts,
                     )
-                ) or self.root
+                ) or custody.custody_root
         else:
             ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
         _validate_windows_artifact_root(
