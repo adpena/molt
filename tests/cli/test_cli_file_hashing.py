@@ -60,6 +60,11 @@ def test_content_change_time_observes_same_size_timestamp_restored_mutation(
     assert after != before
 
 
+def test_content_change_time_has_one_cross_module_authority() -> None:
+    assert callable(file_hashing.content_change_time_ns)
+    assert not hasattr(file_hashing, "_content_change_time_ns")
+
+
 def test_windows_change_time_fails_closed_when_api_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
