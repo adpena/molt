@@ -7,6 +7,7 @@ from tests.process_guard_common import (
 
 import argparse
 import base64
+import copy
 import functools
 import hashlib
 import json
@@ -19,7 +20,7 @@ import sys
 import time
 import venv
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
 )
 from molt.cli.source_extension_object_closure import (
+    finalize_source_extension_object_closure,
     source_extension_object_closure_digest,
 )
 from molt.cli.source_extension_object_closure_schema import (
@@ -78,6 +80,7 @@ from tools.proof_queue_pkg import (
     diagnostic_reporting,
 )
 from tools.proof_queue_pkg import evidence as evidence_module
+from tests.wasm_object_fixtures import wasm_exporting_i64_unary_symbol
 
 
 def _extension_set(package: str, name: str, stack=None):
@@ -152,27 +155,11 @@ def _synthetic_v3_custody(
     ).as_dict()
     binary = Path(str(binary_artifact["path"])).resolve(strict=True)
     command = [str(binary), "capability", "leaf"]
-    fixed_images = [
-        {
-            "role": "root-command",
-            "path": str(binary),
-            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-        }
-    ]
-    for name, raw_identity in toolchains.items():
-        if isinstance(raw_identity, dict) and isinstance(
-            raw_identity.get("process_images"), list
-        ):
-            for image in process_image_capture.toolchain_images(name, raw_identity):
-                fixed_image = {
-                    key: image[key]
-                    for key in ("role", "path", "sha256")
-                }
-                if "root_exit_disposition" in image:
-                    fixed_image["root_exit_disposition"] = image[
-                        "root_exit_disposition"
-                    ]
-                fixed_images.append(fixed_image)
+    root_role, fixed_images = supervisor_custody._supervisor_fixed_images(
+        toolchains,
+        {},
+        command,
+    )
     policy = {
         "schema": "molt.proof-process-closure.v2",
         "nonce": nonce,
@@ -180,7 +167,7 @@ def _synthetic_v3_custody(
         "cwd": str(directory.resolve()),
         "command": command,
         "environment": dict(environment or {}),
-        "root_role": "root-command",
+        "root_role": root_role,
         "fixed_images": fixed_images,
         "derived_roots": [],
     }
@@ -368,10 +355,19 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
         ).encode()
     ).hexdigest()
     requested_toolchains = request["envelope"]["toolchains"]
-    toolchains = {
-        name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
-        for name in requested_toolchains
+    assert requested_toolchains == ["python"]
+    executable = Path(sys.executable).resolve(strict=True)
+    executable_sha256 = command_identity._hash_file(executable)
+    python_identity: dict[str, object] = {
+        "executable": str(executable),
+        "implementation": "CPython",
+        "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "executable_sha256": executable_sha256,
     }
+    python_identity["identity_sha256"] = hashlib.sha256(
+        json.dumps(python_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    toolchains = {"python": python_identity}
     toolchains, compact_custody, v3 = _synthetic_v3_custody(
         result_path.parent,
         toolchains,
@@ -817,7 +813,7 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 93
+    assert len(plan.commands) == 96
     for command in plan.commands:
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
@@ -1903,12 +1899,42 @@ def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+@dataclass(frozen=True)
+class GuardedExecutionAuthorities:
+    python_identity: dict[str, object]
+    supervisor_target: Path
+
+
+@pytest.fixture(scope="module")
+def guarded_execution_authorities(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> GuardedExecutionAuthorities:
+    """Capture immutable process authorities once for non-capture integration tests."""
+    source_root = tmp_path_factory.mktemp("guarded-execution-source")
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    identity = command_identity._python_identity(
+        envelope,
+        command,
+        cwd=state.ROOT,
+        env=os.environ,
+        source_root=source_root,
+        hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
+    )
+    assert identity is not None
+    return GuardedExecutionAuthorities(
+        python_identity=identity,
+        supervisor_target=tmp_path_factory.mktemp("proof-supervisor-target"),
+    )
+
+
 def _execute_request(
     repo: Path,
     result: Path,
     command: list[str],
     *,
     resource_family: str = "python-tests",
+    authorities: GuardedExecutionAuthorities | None = None,
 ) -> tuple[int, dict[str, object]]:
     envelope = command_admission.envelope_for_command(command)
     request = result.with_suffix(".request.json")
@@ -1929,7 +1955,47 @@ def _execute_request(
         ),
         encoding="utf-8",
     )
-    rc = guarded_execution.execute_guarded_request(request)
+    if authorities is None:
+        rc = guarded_execution.execute_guarded_request(request)
+    else:
+        provision_supervisor = supervisor_custody._provision_proof_supervisor
+
+        def cached_python_identity(
+            envelope: dict[str, object],
+            exact: list[str],
+            *,
+            cwd: Path,
+            env: dict[str, str],
+            source_root: Path,
+            hash_workers: int,
+        ) -> dict[str, object] | None:
+            del cwd, env, hash_workers
+            if (
+                command_identity._python_probe_command(
+                    envelope,
+                    exact,
+                    source_root=source_root,
+                )
+                is None
+            ):
+                return None
+            return copy.deepcopy(authorities.python_identity)
+
+        def provision_shared_supervisor(
+            *, cwd: Path, env: dict[str, str]
+        ) -> tuple[Path, dict[str, object]]:
+            shared_env = dict(env)
+            shared_env["CARGO_TARGET_DIR"] = str(authorities.supervisor_target)
+            return provision_supervisor(cwd=cwd, env=shared_env)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(command_identity, "_python_identity", cached_python_identity)
+            patch.setattr(
+                supervisor_custody,
+                "_provision_proof_supervisor",
+                provision_shared_supervisor,
+            )
+            rc = guarded_execution.execute_guarded_request(request)
     return rc, json.loads(result.read_text(encoding="utf-8"))
 
 
@@ -2210,6 +2276,7 @@ def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -
 
 def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "alternate-repo"
     commit = _initialize_clean_git_repo(repo)
@@ -2217,6 +2284,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
         repo,
         tmp_path / "execution.json",
         [sys.executable, "-c", "print('proof')"],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     context = record["receipt_context"]
@@ -2248,7 +2316,10 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     } <= python_identity["distributions"][0].keys()
 
 
-def test_guarded_receipt_rejects_stable_dirty_source(tmp_path: Path) -> None:
+def test_guarded_receipt_rejects_stable_dirty_source(
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
     repo = tmp_path / "dirty-repo"
     _initialize_clean_git_repo(repo)
     (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
@@ -2256,6 +2327,7 @@ def test_guarded_receipt_rejects_stable_dirty_source(tmp_path: Path) -> None:
         repo,
         tmp_path / "dirty-execution.json",
         [sys.executable, "-c", "print('proof')"],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     custody_payload = record["receipt_context"]["source_custody"]
@@ -2265,7 +2337,10 @@ def test_guarded_receipt_rejects_stable_dirty_source(tmp_path: Path) -> None:
     assert "source-dirty-postcompletion" in custody_payload["ineligible_reasons"]
 
 
-def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) -> None:
+def test_guarded_receipt_rejects_source_mutation_during_command(
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
     repo = tmp_path / "mutated-repo"
     _initialize_clean_git_repo(repo)
     patch = repo / "mutation.patch"
@@ -2291,6 +2366,7 @@ def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) 
             "-c",
             "from pathlib import Path; Path('tracked.txt').write_text('mutated\\n')",
         ],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     custody_payload = record["receipt_context"]["source_custody"]
@@ -2299,7 +2375,10 @@ def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) 
     assert "source-snapshot-changed" in custody_payload["ineligible_reasons"]
 
 
-def test_live_custody_detects_mutate_execute_restore_transient(tmp_path: Path) -> None:
+def test_live_custody_detects_mutate_execute_restore_transient(
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
     repo = tmp_path / "mutate-restore-repo"
     _initialize_clean_git_repo(repo)
     command = [
@@ -2313,7 +2392,10 @@ def test_live_custody_detects_mutate_execute_restore_transient(tmp_path: Path) -
         ),
     ]
     rc, record = _execute_request(
-        repo, tmp_path / "mutate-restore-execution.json", command
+        repo,
+        tmp_path / "mutate-restore-execution.json",
+        command,
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "initial\n"
@@ -2345,7 +2427,10 @@ def test_live_custody_detects_mutate_execute_restore_transient(tmp_path: Path) -
     assert "transient-input-mutation" in context["source_custody"]["ineligible_reasons"]
 
 
-def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -> None:
+def test_live_custody_detects_tracked_directory_rename_restore(
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
     repo = tmp_path / "rename-restore-repo"
     _initialize_clean_git_repo(repo)
     package = repo / "package"
@@ -2367,7 +2452,10 @@ def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -
         ),
     ]
     rc, record = _execute_request(
-        repo, tmp_path / "rename-restore-execution.json", command
+        repo,
+        tmp_path / "rename-restore-execution.json",
+        command,
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     context = record["receipt_context"]
@@ -2381,6 +2469,7 @@ def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -
 
 def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "child-closure-repo"
     _initialize_clean_git_repo(repo)
@@ -2395,6 +2484,7 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
         repo,
         tmp_path / "child-closure-execution.json",
         [sys.executable, "-c", script],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     context = record["receipt_context"]
@@ -2605,6 +2695,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
 
 def test_python_bootstrap_installs_custody_under_isolated_startup(
     tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "isolated-bootstrap-repo"
     _initialize_clean_git_repo(repo)
@@ -2623,12 +2714,16 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
             " except PermissionError: blocked.append(name)",
             "assert blocked==['system','exec','spawn'],blocked",
             "assert 'PYTHONPATH' not in os.environ",
+            f"repo_root={str(state.ROOT)!r}",
+            "assert all(os.path.normcase(os.path.abspath(path)) != "
+            "os.path.normcase(repo_root) for path in sys.path)",
         ]
     )
     rc, record = _execute_request(
         repo,
         tmp_path / "isolated-bootstrap-execution.json",
         [sys.executable, "-S", "-E", "-I", "-c", code],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     assert not marker.exists()
@@ -2663,6 +2758,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
@@ -2709,6 +2805,7 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
         execution_path,
         ["cargo", "build", "--offline"],
         resource_family="rust",
+        authorities=guarded_execution_authorities,
     )
     elapsed = time.perf_counter() - started
 
@@ -2778,7 +2875,10 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     assert elapsed < 120.0
 
 
-def test_python_leaf_blocks_exec_replacement_before_launch(tmp_path: Path) -> None:
+def test_python_leaf_blocks_exec_replacement_before_launch(
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
     repo = tmp_path / "exec-closure-repo"
     _initialize_clean_git_repo(repo)
     marker = tmp_path / "exec-bypass-marker"
@@ -2794,6 +2894,7 @@ def test_python_leaf_blocks_exec_replacement_before_launch(tmp_path: Path) -> No
         repo,
         tmp_path / "exec-closure-execution.json",
         [sys.executable, "-c", script],
+        authorities=guarded_execution_authorities,
     )
     assert rc == 0
     assert not marker.exists()
@@ -5994,7 +6095,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
         0.01,
     )
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(
@@ -6131,7 +6232,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(
@@ -6243,7 +6344,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(
@@ -6438,7 +6539,9 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
 
 
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "wasm-preflight-repo"
     _initialize_clean_git_repo(repo)
@@ -6466,6 +6569,7 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
         tmp_path / "wasm-preflight.execution.json",
         [sys.executable, "-c", "print('ran')"],
         resource_family="wasm-browser",
+        authorities=guarded_execution_authorities,
     )
 
     assert rc == 0
@@ -6475,7 +6579,9 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
 
 
 def test_proof_queue_wasm_preflight_fails_before_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "wasm-preflight-fail-repo"
     _initialize_clean_git_repo(repo)
@@ -6507,6 +6613,7 @@ def test_proof_queue_wasm_preflight_fails_before_command(
             "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
         ],
         resource_family="wasm-browser",
+        authorities=guarded_execution_authorities,
     )
 
     assert rc == 2
@@ -12975,12 +13082,12 @@ def _write_current_scientific_seal(
     set_extensions: list[dict[str, object]] = []
     for extension in extension_set.extensions:
         artifact_name = f"{extension.target}.molt.wasm"
-        artifact_bytes = b"\x00asm" + extension.target.encode("utf-8")
+        init_symbol = f"PyInit_{extension.module.rsplit('.', 1)[-1]}"
+        artifact_bytes = wasm_exporting_i64_unary_symbol(init_symbol)
         artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         wheel_sha256 = hashlib.sha256(f"wheel:{extension.target}".encode()).hexdigest()
         source_bytes = f"/* {extension.module} */\n".encode()
         source_sha256 = hashlib.sha256(source_bytes).hexdigest()
-        init_symbol = f"PyInit_{extension.module.rsplit('.', 1)[-1]}"
         package_dir = root.joinpath(*extension.module.split(".")[:-1])
         source_path = root.joinpath(
             "provenance", "compiled-inputs", *extension.module.split("."), "source.c"
@@ -13082,6 +13189,7 @@ def _write_current_scientific_seal(
             "capabilities": list(extension.capabilities),
             "init_symbol": init_symbol,
             "source_plan": {"target_selector": extension.target},
+            "build": {},
             "object_closure": object_closure,
             "python_exports": (exports_override or {}).get(
                 extension.module, list(extension.python_exports)
@@ -13089,6 +13197,10 @@ def _write_current_scientific_seal(
             "provided_capsules": list(extension.provided_capsules),
         }
         _compact_source_extension_manifest(sidecar)
+        _closure_identity, compact_closure_sha256 = (
+            finalize_source_extension_object_closure(sidecar)
+        )
+        assert compact_closure_sha256 == closure_sha256
         manifest_path.write_text(json.dumps(sidecar), encoding="utf-8")
     installed_package_files = sorted(
         {*extension_set.required_installed_files, f"{package}/_fixture_extra.py"}

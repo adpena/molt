@@ -16,6 +16,7 @@ import zipfile
 
 def _install_custody() -> None:
     authority = Path(__file__).with_name("execution_custody.py").resolve(strict=True)
+    repo_root = authority.parents[2]
     spec = importlib.util.spec_from_file_location(
         "_molt_proof_execution_custody", authority
     )
@@ -23,7 +24,16 @@ def _install_custody() -> None:
         raise RuntimeError("proof execution custody authority cannot be loaded")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    original_path = sys.path[:]
+    try:
+        # Isolated Python startup deliberately omits script and environment
+        # paths. Admit only the repository that owns this exact bootstrap while
+        # its custody authority imports, then restore the interpreter's original
+        # path before dispatching user code.
+        sys.path.insert(0, str(repo_root))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
     module.install_python_child_custody()
 
 

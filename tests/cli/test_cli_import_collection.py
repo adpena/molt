@@ -26,11 +26,6 @@ import pytest
 
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
-from molt._wasm_abi_generated import (
-    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
-    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
-    wasm_import_signature,
-)
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt import c_api_symbols as cli_c_api_symbols
 from molt.capability_manifest import CapabilityManifest
@@ -103,6 +98,10 @@ from tests.cli.process_guard import (
     cli_test_popen_kwargs,
     close_cli_test_process_group,
     run_cli_test_process,
+)
+from tests.wasm_object_fixtures import (
+    wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
+    wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
 
 cli_deps = importlib.import_module("molt.cli.deps")
@@ -4701,139 +4700,6 @@ def _write_external_native_artifact(
     _record_static_archive_symbol_facts(artifact_path, manifest)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return artifact_path, manifest_path
-
-
-def _wasm_exporting_i64_unary_symbol(
-    symbol: str,
-    *,
-    imports: tuple[str, ...] = (),
-    memory_imports: tuple[str, ...] = (),
-) -> bytes:
-    return _wasm_exporting_i64_unary_symbols(
-        (symbol,), imports=imports, memory_imports=memory_imports
-    )
-
-
-def _wasm_exporting_i64_unary_symbols(
-    symbols: Sequence[str],
-    *,
-    imports: tuple[str, ...] = (),
-    memory_imports: tuple[str, ...] = (),
-) -> bytes:
-    if not symbols:
-        raise ValueError("at least one exported symbol is required")
-
-    def uleb(value: int) -> bytes:
-        out = bytearray()
-        while True:
-            byte = value & 0x7F
-            value >>= 7
-            out.append(byte | 0x80 if value else byte)
-            if not value:
-                return bytes(out)
-
-    def wasm_string(value: str) -> bytes:
-        encoded = value.encode("utf-8")
-        return uleb(len(encoded)) + encoded
-
-    def section(section_id: int, payload: bytes) -> bytes:
-        return bytes([section_id]) + uleb(len(payload)) + payload
-
-    value_types = {"i32": b"\x7f", "i64": b"\x7e", "f32": b"\x7d", "f64": b"\x7c"}
-
-    def expected_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        module = WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
-            name, ("env", "function")
-        )[0]
-        external = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get((module, name))
-        if external is not None:
-            result = str(external["result"])
-            return (
-                tuple(str(value) for value in external["params"]),
-                () if result == "nil" else tuple(result.split(", ")),
-            )
-        runtime = wasm_import_signature(name)
-        return runtime if runtime is not None else (("i64",), ("i64",))
-
-    def type_entry(signature: tuple[tuple[str, ...], tuple[str, ...]]) -> bytes:
-        params, results = signature
-        return (
-            b"\x60"
-            + uleb(len(params))
-            + b"".join(value_types[value] for value in params)
-            + uleb(len(results))
-            + b"".join(value_types[value] for value in results)
-        )
-
-    defined_signature = (("i64",), ("i64",))
-    type_signatures = [defined_signature]
-    import_signatures = [expected_signature(name) for name in imports]
-    for signature in import_signatures:
-        if signature not in type_signatures:
-            type_signatures.append(signature)
-    type_section = uleb(len(type_signatures)) + b"".join(
-        type_entry(signature) for signature in type_signatures
-    )
-    import_section = b""
-    import_count = len(imports) + len(memory_imports)
-    if import_count:
-        import_section = section(
-            2,
-            uleb(import_count)
-            + b"".join(
-                wasm_string(
-                    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(
-                        import_name, ("env", "function")
-                    )[0]
-                )
-                + wasm_string(import_name)
-                + b"\x00"
-                + uleb(type_signatures.index(signature))
-                for import_name, signature in zip(
-                    imports, import_signatures, strict=True
-                )
-            )
-            + b"".join(
-                wasm_string("env")
-                + wasm_string(import_name)
-                + b"\x02"
-                + b"\x00"
-                + uleb(1)
-                for import_name in memory_imports
-            ),
-        )
-    function_section = uleb(len(symbols)) + (uleb(0) * len(symbols))
-    export_section = uleb(len(symbols)) + b"".join(
-        wasm_string(symbol) + b"\x00" + uleb(len(imports) + index)
-        for index, symbol in enumerate(symbols)
-    )
-    body = uleb(0) + b"\x42\x00\x0b"
-    code_section = uleb(len(symbols)) + (uleb(len(body)) + body) * len(symbols)
-    linking_entries = [
-        b"\x00" + uleb(0) + uleb(len(imports) + index) + wasm_string(symbol)
-        for index, symbol in enumerate(symbols)
-    ]
-    linking_entries.extend(
-        b"\x00" + uleb(0x50) + uleb(index) + wasm_string(import_name)
-        for index, import_name in enumerate(imports)
-    )
-    linking_symbol_table = uleb(len(linking_entries)) + b"".join(linking_entries)
-    linking_payload = (
-        wasm_string("linking")
-        + uleb(2)
-        + b"\x08"
-        + uleb(len(linking_symbol_table))
-        + linking_symbol_table
-    )
-    return (
-        b"\x00asm\x01\x00\x00\x00"
-        + section(0, linking_payload)
-        + section(1, type_section)
-        + import_section
-        + section(3, function_section)
-        + section(7, export_section)
-        + section(10, code_section)
-    )
 
 
 def _wasm_extension_artifact(
@@ -21073,7 +20939,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     expected_worker_env = [
         f"{name}={value}"
         for name, value in sorted(
-            {**resolved_policy.to_env_vars(), "MOLT_EXECUTION_TARGET": "cloudflare"}.items()
+            {
+                **resolved_policy.to_env_vars(),
+                "MOLT_EXECUTION_TARGET": "cloudflare",
+            }.items()
         )
     ]
     assert json.dumps(expected_worker_env, ensure_ascii=True) in worker_source
