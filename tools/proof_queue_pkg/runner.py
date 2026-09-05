@@ -1215,7 +1215,8 @@ def _run_one(
                 timeout_seconds=timeout,
             )
         )
-        poll_interval = custody._proof_queue_memory_guard_poll_sec(env_overrides)
+        memory_limits = custody._proof_queue_memory_limits(env_overrides)
+        poll_interval = str(memory_limits.poll_interval)
         env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
         guarded_command = [
             sys.executable,
@@ -1227,7 +1228,7 @@ def _run_one(
             command=guarded_command,
             summary_json=summary_json,
             timeout=timeout,
-            poll_interval=poll_interval,
+            limits=memory_limits,
         )
     except Exception as exc:
         return evidence._fail_preexecution_run(
