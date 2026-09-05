@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,13 @@ def _constant(value: str) -> None:
     raise ExactJsonError(f"non-finite JSON number {value!r}")
 
 
+def _finite_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ExactJsonError(f"non-finite JSON number {value!r}")
+    return result
+
+
 def loads_exact(value: str) -> Any:
     """Decode standard JSON without lossy duplicate keys or non-finite numbers."""
 
@@ -34,6 +42,7 @@ def loads_exact(value: str) -> Any:
         value,
         object_pairs_hook=_object,
         parse_constant=_constant,
+        parse_float=_finite_float,
     )
 
 

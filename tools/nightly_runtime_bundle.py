@@ -5,7 +5,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import io
-import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -15,7 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, BinaryIO
+from typing import IO, TypedDict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +34,7 @@ from molt.cli.static_archive_identity import (  # noqa: E402
     artifact_content_identity,
 )
 from molt.file_hashing import _sha256_file  # noqa: E402
+from molt.exact_json import dumps_exact, encode_exact, loads_exact  # noqa: E402
 from tools.artifact_publish import (  # noqa: E402
     fsync_file,
     publish_validated_outputs,
@@ -101,6 +101,18 @@ class BundleInput:
     source: Path
     archive_path: str
     mode: int
+
+
+class _BundleFileFields(TypedDict):
+    role: str
+    path: str
+    size_bytes: int
+    sha256: str
+    mode: str
+
+
+class BundleFileRecord(_BundleFileFields, total=False):
+    artifact_identity: object
 
 
 def _run_identity_command(
@@ -266,8 +278,8 @@ def current_runtime_source_fingerprint(
     return dict(plan.source_fingerprint)
 
 
-def _file_record(bundle_input: BundleInput) -> dict[str, object]:
-    record: dict[str, object] = {
+def _file_record(bundle_input: BundleInput) -> BundleFileRecord:
+    record: BundleFileRecord = {
         "role": bundle_input.role,
         "path": bundle_input.archive_path,
         "size_bytes": bundle_input.source.stat().st_size,
@@ -307,12 +319,6 @@ def build_manifest(
         "runtime_source_fingerprint": dict(runtime_source_fingerprint),
         "files": [_file_record(item) for item in inputs],
     }
-
-
-def _manifest_bytes(manifest: Mapping[str, object]) -> bytes:
-    return (
-        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
-    ).encode("utf-8")
 
 
 def _tar_info(name: str, *, size: int, mode: int) -> tarfile.TarInfo:
@@ -364,7 +370,7 @@ def pack_bundle(
     )
     for source, stamp in input_stamps.items():
         _require_unchanged(source, stamp)
-    encoded_manifest = _manifest_bytes(manifest)
+    encoded_manifest = encode_exact(manifest)
     staged_archive = staged_output_path(output)
     staged_manifest = staged_output_path(manifest_output)
     try:
@@ -410,24 +416,12 @@ def pack_bundle(
     return manifest
 
 
-def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
 def _read_manifest_bytes(raw: bytes) -> Mapping[str, object]:
     if not raw or len(raw) > _MAX_MANIFEST_BYTES:
         raise NightlyRuntimeBundleError("bundle manifest size is invalid")
     try:
-        payload = json.loads(
-            raw.decode("utf-8", errors="strict"),
-            object_pairs_hook=_strict_json_object,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        payload = loads_exact(raw.decode("utf-8", errors="strict"))
+    except ValueError as exc:
         raise NightlyRuntimeBundleError(f"bundle manifest is invalid: {exc}") from exc
     if not isinstance(payload, dict):
         raise NightlyRuntimeBundleError("bundle manifest must be a JSON object")
@@ -443,6 +437,14 @@ def _validated_member_name(name: str) -> str:
     if path.as_posix() != name:
         raise NightlyRuntimeBundleError(f"non-canonical archive member path: {name!r}")
     return name
+
+
+def _identity_text(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise NightlyRuntimeBundleError(
+            "bundle identity values must be non-empty strings"
+        )
+    return value
 
 
 def _validated_identity(value: object) -> BundleIdentity:
@@ -466,24 +468,24 @@ def _validated_identity(value: object) -> BundleIdentity:
         raise NightlyRuntimeBundleError("bundle toolchain identity is invalid")
     try:
         return BundleIdentity(
-            source_commit=str(value.get("source_commit", "")),
-            platform_system=str(platform_value.get("system", "")),
-            platform_machine=str(platform_value.get("machine", "")),
-            rustc_verbose=str(toolchain.get("rustc_verbose", "")),
-            cargo_version=str(toolchain.get("cargo_version", "")),
+            source_commit=_identity_text(value.get("source_commit")),
+            platform_system=_identity_text(platform_value.get("system")),
+            platform_machine=_identity_text(platform_value.get("machine")),
+            rustc_verbose=_identity_text(toolchain.get("rustc_verbose")),
+            cargo_version=_identity_text(toolchain.get("cargo_version")),
         )
     except ValueError as exc:
         raise NightlyRuntimeBundleError(f"bundle identity is invalid: {exc}") from exc
 
 
-def _validated_file_records(value: object) -> tuple[Mapping[str, object], ...]:
+def _validated_file_records(value: object) -> tuple[BundleFileRecord, ...]:
     if not isinstance(value, list) or len(value) != len(_ROLES):
         raise NightlyRuntimeBundleError("bundle must declare exactly three files")
-    records: list[Mapping[str, object]] = []
+    records: list[BundleFileRecord] = []
     for expected_role, raw in zip(_ROLES, value, strict=True):
         if not isinstance(raw, dict):
             raise NightlyRuntimeBundleError("bundle file record must be an object")
-        expected_fields = {"role", "path", "size_bytes", "sha256", "mode"}
+        expected_fields = set(BundleFileRecord.__required_keys__)
         if expected_role == RUNTIME_ROLE:
             expected_fields.add("artifact_identity")
         if set(raw) != expected_fields or raw.get("role") != expected_role:
@@ -504,12 +506,21 @@ def _validated_file_records(value: object) -> tuple[Mapping[str, object], ...]:
                 "bundle file digest must be lowercase SHA-256"
             )
         expected_mode = "0755" if expected_role == BACKEND_ROLE else "0644"
-        if mode != expected_mode:
+        if not isinstance(mode, str) or mode != expected_mode:
             raise NightlyRuntimeBundleError(
                 f"bundle file mode for {expected_role} must be {expected_mode}"
             )
-        records.append(raw)
-    paths = [str(record["path"]) for record in records]
+        record: BundleFileRecord = {
+            "role": expected_role,
+            "path": path,
+            "size_bytes": size,
+            "sha256": digest,
+            "mode": mode,
+        }
+        if expected_role == RUNTIME_ROLE:
+            record["artifact_identity"] = raw.get("artifact_identity")
+        records.append(record)
+    paths = [record["path"] for record in records]
     if len(set(paths)) != len(paths):
         raise NightlyRuntimeBundleError("bundle file paths are duplicated")
     return tuple(records)
@@ -546,7 +557,7 @@ def validate_manifest(
     *,
     expected_identity: BundleIdentity,
     expected_runtime_source_fingerprint: Mapping[str, object],
-) -> tuple[Mapping[str, object], ...]:
+) -> tuple[BundleFileRecord, ...]:
     if set(manifest) != {
         "schema_version",
         "kind",
@@ -557,7 +568,12 @@ def validate_manifest(
         "files",
     }:
         raise NightlyRuntimeBundleError("bundle manifest shape is invalid")
-    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("kind") != KIND:
+    schema_version = manifest.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != SCHEMA_VERSION
+        or manifest.get("kind") != KIND
+    ):
         raise NightlyRuntimeBundleError("bundle manifest schema is unsupported")
     if manifest.get("profile") != PROFILE:
         raise NightlyRuntimeBundleError("bundle profile identity is invalid")
@@ -584,13 +600,13 @@ def validate_manifest(
         f"{PROFILE}/{runtime_name}.native-link-deps.json",
         f"{PROFILE}/molt-backend",
     )
-    if tuple(str(record["path"]) for record in records) != expected_paths:
+    if tuple(record["path"] for record in records) != expected_paths:
         raise NightlyRuntimeBundleError("bundle contains a non-canonical payload path")
     return records
 
 
 def _copy_member_exact(
-    source: BinaryIO,
+    source: IO[bytes],
     destination: Path,
     *,
     expected_size: int,
@@ -623,11 +639,8 @@ def _validate_staged_link_metadata(
     source_fingerprint: Mapping[str, object],
 ) -> None:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8", errors="strict"),
-            object_pairs_hook=_strict_json_object,
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        payload = loads_exact(path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, ValueError) as exc:
         raise NightlyRuntimeBundleError(
             f"extracted native link metadata is invalid: {exc}"
         ) from exc
@@ -714,7 +727,7 @@ def verify_extract_bundle(
             expected_identity=expected_identity,
             expected_runtime_source_fingerprint=expected_runtime_source_fingerprint,
         )
-        expected_names = {MANIFEST_NAME, *(str(record["path"]) for record in records)}
+        expected_names = {MANIFEST_NAME, *(record["path"] for record in records)}
         if set(members) != expected_names:
             missing = sorted(expected_names - set(members))
             extra = sorted(set(members) - expected_names)
@@ -724,8 +737,8 @@ def verify_extract_bundle(
         if members[MANIFEST_NAME].mode != 0o644:
             raise NightlyRuntimeBundleError("bundle manifest archive mode is invalid")
         for record in records:
-            member = members[str(record["path"])]
-            if member.mode != int(str(record["mode"]), 8):
+            member = members[record["path"]]
+            if member.mode != int(record["mode"], 8):
                 raise NightlyRuntimeBundleError(
                     f"archive member mode does not match manifest: {record['path']}"
                 )
@@ -735,11 +748,11 @@ def verify_extract_bundle(
             stage_root = Path(temporary)
             staged_pairs: list[tuple[Path, Path]] = []
             for record in records:
-                relative = PurePosixPath(str(record["path"]))
+                relative = PurePosixPath(record["path"])
                 _ensure_destination_has_no_symlink(destination, relative)
                 staged = stage_root.joinpath(*relative.parts)
                 staged.parent.mkdir(parents=True, exist_ok=True)
-                stream = bundle.extractfile(members[str(record["path"])])
+                stream = bundle.extractfile(members[record["path"]])
                 if stream is None:
                     raise NightlyRuntimeBundleError(
                         f"archive member cannot be read: {record['path']}"
@@ -747,10 +760,10 @@ def verify_extract_bundle(
                 _copy_member_exact(
                     stream,
                     staged,
-                    expected_size=int(record["size_bytes"]),
-                    expected_sha256=str(record["sha256"]),
+                    expected_size=record["size_bytes"],
+                    expected_sha256=record["sha256"],
                 )
-                staged.chmod(int(str(record["mode"]), 8))
+                staged.chmod(int(record["mode"], 8))
                 final = destination.joinpath(*relative.parts)
                 staged_pairs.append((staged, final))
             runtime_record = records[0]
@@ -771,7 +784,7 @@ def verify_extract_bundle(
                 source_fingerprint=expected_runtime_source_fingerprint,
             )
             staged_manifest = stage_root / MANIFEST_NAME
-            staged_manifest.write_bytes(_manifest_bytes(manifest))
+            staged_manifest.write_bytes(encode_exact(manifest))
             staged_manifest.chmod(0o644)
             fsync_file(staged_manifest)
             _ensure_destination_has_no_symlink(
@@ -828,7 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_identity=identity,
             expected_runtime_source_fingerprint=runtime_source_fingerprint,
         )
-    print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    sys.stdout.write(dumps_exact(manifest, indent=None))
     return 0
 
 

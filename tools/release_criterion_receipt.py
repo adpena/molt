@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, TypedDict
+from typing import Any, TypeGuard, TypedDict
 
 from molt.exact_json import ExactJsonError, loads_exact, write_exact
 from molt.portable_paths import portable_path_identity, portable_relative_path
@@ -88,20 +88,6 @@ FAIL_CLOSED_CLASSES = frozenset(
     }
 )
 
-_ROOT_KEYS = frozenset(
-    {
-        "schema_version",
-        "kind",
-        "source_sha",
-        "generated_at",
-        "status",
-        "producer",
-        "facts",
-        "inputs",
-    }
-)
-_INPUT_KEYS = frozenset({"path", "sha256", "size"})
-_PRODUCER_KEYS = frozenset({"argv", "tool"})
 _HEX = frozenset("0123456789abcdef")
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
@@ -167,6 +153,11 @@ class Receipt(TypedDict):
     producer: ProducerRecord
     facts: dict[str, Any]
     inputs: list[InputRecord]
+
+
+_ROOT_KEYS = Receipt.__required_keys__
+_INPUT_KEYS = InputRecord.__required_keys__
+_PRODUCER_KEYS = ProducerRecord.__required_keys__
 
 
 @dataclass(frozen=True)
@@ -360,11 +351,13 @@ def write_receipt(receipt: Receipt, destination: ReceiptDestination) -> None:
     write_exact(destination.output_path, receipt, exclusive=True)
 
 
-def _is_exact_object(value: object, keys: frozenset[str]) -> bool:
+def _is_exact_object(
+    value: object, keys: frozenset[str]
+) -> TypeGuard[Mapping[str, object]]:
     return isinstance(value, Mapping) and set(value) == keys
 
 
-def _is_sha256(value: object) -> bool:
+def _is_sha256(value: object) -> TypeGuard[str]:
     return (
         isinstance(value, str)
         and len(value) == 64
@@ -379,20 +372,17 @@ def _portable_posix(value: object) -> PurePosixPath | None:
         return None
 
 
-def _nonnegative_int(value: object) -> bool:
+def _nonnegative_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def _metric(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value >= 0
-    )
+def _metric(value: object) -> TypeGuard[int | float]:
+    if isinstance(value, int):
+        return not isinstance(value, bool) and value >= 0
+    return isinstance(value, float) and math.isfinite(value) and value >= 0
 
 
-def _string_list(value: object) -> bool:
+def _string_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(
         isinstance(item, str) and item for item in value
     )
@@ -407,7 +397,6 @@ def _validate_input_record(
 ) -> list[str]:
     if not _is_exact_object(value, _INPUT_KEYS):
         return [f"{label} must contain exactly path, sha256, and size"]
-    assert isinstance(value, Mapping)
     problems: list[str] = []
     relative = _portable_posix(value.get("path"))
     if relative is None:
@@ -580,7 +569,6 @@ def _validate_verified_subset_facts(
     if not _is_exact_object(coordinate, coordinate_keys):
         problems.append("facts.coordinate schema is invalid")
     else:
-        assert isinstance(coordinate, Mapping)
         coordinate_id = coordinate.get("id")
         try:
             expected_coordinate = verified_subset_coordinate_by_id(str(coordinate_id))
@@ -617,13 +605,16 @@ def _validate_verified_subset_facts(
             if not _is_exact_object(outcome, _VERIFIED_OUTCOME_KEYS):
                 problems.append(f"facts.outcomes[{index}] schema is invalid")
                 continue
-            assert isinstance(outcome, Mapping)
             normalized_outcomes.append(outcome)
             path = outcome.get("path")
             if _portable_posix(path) is None:
                 problems.append(f"facts.outcomes[{index}].path is not portable")
             for field in ("raw_status", "resolved_status"):
-                if outcome.get(field) not in verified.RESULT_STATUSES:
+                status_value = outcome.get(field)
+                if (
+                    not isinstance(status_value, str)
+                    or status_value not in verified.RESULT_STATUSES
+                ):
                     problems.append(f"facts.outcomes[{index}].{field} is invalid")
             if outcome.get("backend") != (
                 expected_coordinate.backend if expected_coordinate is not None else None
@@ -635,17 +626,22 @@ def _validate_verified_subset_facts(
                 problems.append(
                     f"facts.outcomes[{index}].compiler_target_python differs"
                 )
-            if outcome.get("backend_status") not in {*verified.RESULT_STATUSES, None}:
+            backend_status = outcome.get("backend_status")
+            if backend_status is not None and (
+                not isinstance(backend_status, str)
+                or backend_status not in verified.RESULT_STATUSES
+            ):
                 problems.append(f"facts.outcomes[{index}].backend_status is invalid")
             if not isinstance(outcome.get("expect_molt_fail"), bool):
                 problems.append(
                     f"facts.outcomes[{index}].expect_molt_fail must be boolean"
                 )
-            if outcome.get("reason_tag") not in {None, "xfail", "xpass"}:
+            if outcome.get("reason_tag") not in (None, "xfail", "xpass"):
                 problems.append(f"facts.outcomes[{index}].reason_tag is invalid")
             for field in ("cpython_returncode", "backend_returncode"):
-                if outcome.get(field) is not None and not isinstance(
-                    outcome.get(field), int
+                returncode = outcome.get(field)
+                if returncode is not None and (
+                    not isinstance(returncode, int) or isinstance(returncode, bool)
                 ):
                     problems.append(f"facts.outcomes[{index}].{field} is invalid")
             for field in (
@@ -721,7 +717,6 @@ def _validate_verified_subset_facts(
     if not _is_exact_object(execution, execution_keys):
         problems.append("facts.execution schema is invalid")
     else:
-        assert isinstance(execution, Mapping)
         ci = execution.get("ci")
         ci_keys = frozenset(
             {
@@ -737,14 +732,12 @@ def _validate_verified_subset_facts(
             }
         )
         if not _is_exact_object(ci, ci_keys) or not all(
-            isinstance(value, str) and value
-            for value in ci.values()  # type: ignore[union-attr]
+            isinstance(value, str) and value for value in ci.values()
         ):
             problems.append("facts.execution.ci schema is invalid")
-        elif ci.get("provider") != "github-actions":  # type: ignore[union-attr]
+        elif ci.get("provider") != "github-actions":
             problems.append("facts.execution.ci provider is not github-actions")
         elif expected_coordinate is not None:
-            assert isinstance(ci, Mapping)
             expected_runner_os = {
                 "linux": "Linux",
                 "macos": "macOS",
@@ -765,7 +758,6 @@ def _validate_verified_subset_facts(
         if not _is_exact_object(host, host_keys):
             problems.append("facts.execution.host schema is invalid")
         elif expected_coordinate is not None:
-            assert isinstance(host, Mapping)
             if (
                 host.get("arch") != expected_coordinate.arch
                 or host.get("platform") != expected_coordinate.platform
@@ -793,7 +785,6 @@ def _validate_verified_subset_facts(
         if not _is_exact_object(python, python_keys):
             problems.append("facts.execution.python schema is invalid")
         else:
-            assert isinstance(python, Mapping)
             version_info = python.get("version_info")
             if (
                 python.get("implementation") != "CPython"
@@ -823,7 +814,6 @@ def _validate_verified_subset_facts(
         if not _is_exact_object(rust, rust_keys):
             problems.append("facts.execution.rust schema is invalid")
         elif expected_coordinate is not None:
-            assert isinstance(rust, Mapping)
             if (
                 rust.get("host") != expected_coordinate.rust_target
                 or not _is_sha256(rust.get("binary_sha256"))
@@ -851,7 +841,6 @@ def _validate_verified_subset_facts(
         if not _is_exact_object(backend, backend_keys):
             problems.append("facts.execution.backend schema is invalid")
         elif expected_coordinate is not None:
-            assert isinstance(backend, Mapping)
             expected_backend_runner = (
                 "node-wasi" if expected_coordinate.backend == "wasm" else "process"
             )
@@ -985,11 +974,16 @@ def _validate_fail_closed_facts(facts: Mapping[str, Any], status: object) -> lis
 def _validate_facts(kind: object, facts: object, status: object) -> list[str]:
     if not isinstance(facts, Mapping):
         return ["receipt facts must be an object"]
+    fields: dict[str, object] = {}
+    for key, value in facts.items():
+        if not isinstance(key, str):
+            return ["receipt facts keys must be strings"]
+        fields[key] = value
     if kind == KIND_VERIFIED_SUBSET:
-        return _validate_verified_subset_facts(facts, status)
+        return _validate_verified_subset_facts(fields, status)
     if kind == KIND_CANONICALIZATION_CONTRACT:
         return _validate_metric_facts(
-            facts,
+            fields,
             expected_keys=CANONICALIZATION_METRICS,
             count_field="open_violations",
             count_value_label="canonicalization",
@@ -997,16 +991,16 @@ def _validate_facts(kind: object, facts: object, status: object) -> list[str]:
         )
     if kind == KIND_STRUCTURAL_AUDIT:
         return _validate_metric_facts(
-            facts,
+            fields,
             expected_keys=STRUCTURAL_AUDIT_METRICS,
             count_field="findings_count",
             count_value_label="structural audit",
             status=status,
         )
     if kind == KIND_DEGRADE_TO_SLOW_GATE:
-        return _validate_degrade_facts(facts, status)
+        return _validate_degrade_facts(fields, status)
     if kind == KIND_FAIL_CLOSED_GATE:
-        return _validate_fail_closed_facts(facts, status)
+        return _validate_fail_closed_facts(fields, status)
     return []
 
 
@@ -1030,7 +1024,8 @@ def validate_receipt(
             f"missing={sorted(_ROOT_KEYS - set(payload), key=str)!r}, "
             f"unknown={sorted(set(payload) - _ROOT_KEYS, key=str)!r}"
         )
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if not _nonnegative_int(schema_version) or schema_version != SCHEMA_VERSION:
         problems.append(f"receipt schema_version must be {SCHEMA_VERSION}")
     kind = payload.get("kind")
     if not isinstance(kind, str) or kind not in KINDS:
@@ -1071,7 +1066,6 @@ def validate_receipt(
     if not _is_exact_object(producer, _PRODUCER_KEYS):
         problems.append("receipt producer must contain exactly argv and tool")
     else:
-        assert isinstance(producer, Mapping)
         argv = producer.get("argv")
         if not _string_list(argv) or not argv:
             problems.append("receipt producer.argv must be a non-empty string list")
@@ -1089,7 +1083,7 @@ def validate_receipt(
             problems.append(
                 f"receipt producer.tool.path must be {expected_tool!r} for {kind!r}"
             )
-        if isinstance(argv, list) and argv and isinstance(tool, Mapping):
+        if _string_list(argv) and argv and isinstance(tool, Mapping):
             if argv[0] != tool.get("path"):
                 problems.append(
                     "receipt producer.argv[0] must equal producer.tool.path"
@@ -1125,8 +1119,10 @@ def validate_receipt(
                 verify_bytes=verify_inputs,
             )
         )
-        if isinstance(item, Mapping) and isinstance(item.get("path"), str):
-            input_paths.append(item["path"])
+        if isinstance(item, Mapping):
+            input_path = item.get("path")
+            if isinstance(input_path, str):
+                input_paths.append(input_path)
     if input_paths != sorted(set(input_paths)):
         problems.append("receipt inputs must be sorted and unique by path")
 
@@ -1145,7 +1141,7 @@ def validate_receipt(
             coordinate = facts.get("coordinate")
             producer = payload.get("producer")
             argv = producer.get("argv") if isinstance(producer, Mapping) else None
-            if isinstance(coordinate, Mapping) and isinstance(argv, list):
+            if isinstance(coordinate, Mapping) and _string_list(argv):
                 try:
                     coordinate_value = argv[argv.index("--coordinate") + 1]
                     source_value = argv[argv.index("--source-sha") + 1]
@@ -1195,14 +1191,9 @@ def validate_receipt(
             KIND_STRUCTURAL_AUDIT,
         }
     ):
-        baseline_path = facts.get("baseline_path")
-        if (
-            isinstance(baseline_path, str)
-            and _portable_posix(baseline_path) is not None
-        ):
-            path = repo_root.resolve(strict=True).joinpath(
-                *_portable_posix(baseline_path).parts  # type: ignore[union-attr]
-            )
+        baseline_path = _portable_posix(facts.get("baseline_path"))
+        if baseline_path is not None:
+            path = repo_root.resolve(strict=True).joinpath(*baseline_path.parts)
             try:
                 baseline_payload = loads_exact(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError, ExactJsonError) as exc:

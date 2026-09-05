@@ -15,6 +15,7 @@ from tests.cli.native_link_test_support import (
     write_test_static_archive,
 )
 from tools import nightly_runtime_bundle as bundle
+from molt.exact_json import encode_exact
 
 
 IDENTITY = bundle.BundleIdentity(
@@ -400,7 +401,7 @@ def test_verify_extract_preserves_existing_outputs_on_late_semantic_failure(
         "member_count": 1,
         "content_size_bytes": 1,
     }
-    encoded = bundle._manifest_bytes(payload)
+    encoded = encode_exact(payload)
     changed = []
     for info, member_payload in _tar_payloads(archive):
         if info.name == bundle.MANIFEST_NAME:
@@ -433,4 +434,45 @@ def test_linux_bundle_identity_rejects_other_platforms() -> None:
             platform_machine="x86_64",
             rustc_verbose="rustc test",
             cargo_version="cargo test",
+        )
+
+
+@pytest.mark.parametrize(
+    "constant", ["NaN", "Infinity", "-Infinity", "1e9999", "-1e9999"]
+)
+def test_manifest_uses_exact_json_for_nonfinite_values(constant: str) -> None:
+    with pytest.raises(bundle.NightlyRuntimeBundleError, match="non-finite JSON"):
+        bundle._read_manifest_bytes(('{"extra": ' + constant + "}").encode())
+
+
+@pytest.mark.parametrize("field", ["rustc_verbose", "cargo_version"])
+@pytest.mark.parametrize("value", [None, False, 1, [], {}])
+def test_bundle_identity_never_coerces_nonstring_toolchain_values(
+    field: str, value: object
+) -> None:
+    identity = IDENTITY.as_dict()
+    identity["toolchain"][field] = value
+    with pytest.raises(bundle.NightlyRuntimeBundleError, match="non-empty strings"):
+        bundle._validated_identity(identity)
+
+
+def test_file_record_required_fields_follow_typed_schema() -> None:
+    assert bundle.BundleFileRecord.__required_keys__ == {
+        "role",
+        "path",
+        "size_bytes",
+        "sha256",
+        "mode",
+    }
+    assert bundle.BundleFileRecord.__optional_keys__ == {"artifact_identity"}
+
+
+def test_bundle_boolean_schema_version_is_not_version_one(tmp_path: Path) -> None:
+    _archive, _manifest, payload = _pack(tmp_path)
+    payload["schema_version"] = True
+    with pytest.raises(bundle.NightlyRuntimeBundleError, match="schema is unsupported"):
+        bundle.validate_manifest(
+            payload,
+            expected_identity=IDENTITY,
+            expected_runtime_source_fingerprint=SOURCE_FINGERPRINT,
         )

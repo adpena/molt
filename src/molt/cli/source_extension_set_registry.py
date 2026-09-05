@@ -6,6 +6,7 @@ import keyword
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -142,14 +143,15 @@ def _config_path(config_path: Path | None) -> Path:
     return Path(override) if override else DEFAULT_CONFIG_PATH
 
 
-def _require_exact_keys(
-    value: dict[str, Any], *, expected: set[str], field: str, path: Path
+def _require_exact_keys[K](
+    value: Mapping[K, object], *, expected: set[str], field: str, path: Path
 ) -> None:
     actual = set(value)
     if actual != expected:
         raise ValueError(
             f"{path}: {field} keys are invalid: "
-            f"missing={sorted(expected - actual)!r}, unknown={sorted(actual - expected)!r}"
+            f"missing={sorted(expected - actual)!r}, "
+            f"unknown={sorted(actual - expected, key=str)!r}"
         )
 
 
