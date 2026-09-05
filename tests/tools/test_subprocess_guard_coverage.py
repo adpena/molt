@@ -34,6 +34,9 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     assert audit.stale_allowlist == ()
     assert audit.expanded_allowlist == ()
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
+    assert (
+        REPO_ROOT / "src" / "molt" / "toolchain_identity.py" in module.DEFAULT_TARGETS
+    )
     assert REPO_ROOT / "src" / "molt_accel" in module.DEFAULT_TARGETS
     assert REPO_ROOT / "packaging" in module.DEFAULT_TARGETS
 

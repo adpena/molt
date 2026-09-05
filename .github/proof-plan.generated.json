@@ -23,6 +23,14 @@
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
+    "pyproject.toml",
+    "src/molt/__init__.py",
+    "src/molt/_version.py",
+    "src/molt/toolchain_identity.py",
+    "src/molt/file_hashing.py",
+    "src/molt/exact_json.py",
+    "src/molt/file_publication.py",
+    "src/molt/portable_paths.py",
     "src/molt/dx.py",
     "src/molt/cargo_execution_policy.py",
     "src/molt/process_guard.py",
@@ -67,7 +75,19 @@
     "tools/proof_queue_pkg/diagnostic_reporting.py",
     "tools/proof_queue_pkg/diagnostic_runtime_rules.py",
     "tools/proof_queue_pkg/policy.py",
-    "tools/proof_queue_pkg/python_identity_probe.py",
+    "tools/proof_queue_pkg/python_child_custody.py",
+    "tools/proof_queue_pkg/python_custody_bootstrap.py",
+    "src/molt/python_environment_identity.py",
+    "src/molt/python_environment_location.py",
+    "src/molt/python_environment_custody.py",
+    "src/molt/python_external_custody.py",
+    "src/molt/python_runtime_identity.py",
+    "src/molt/python_file_node_custody.py",
+    "src/molt/python_native_dependency_custody.py",
+    "src/molt/python_native_locations.py",
+    "src/molt/python_identity_common.py",
+    "src/molt/python_uv_lock_identity.py",
+    "src/molt/python_capture.py",
     "tools/proof_queue_pkg/pact.py",
     "tools/proof_queue_pkg/runner.py",
     "tools/proof_queue_pkg/scheduling.py",
@@ -131,7 +151,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a543e8468d6e1425de2611a8b3f9e22bc69e17e5a3dcfb4cad301ccc481781c6",
+  "authority_sha256": "7b276ef5a2e3335ba4604316c8942b6233c3f2053c5d57789b504084525934a3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -508,6 +528,11 @@
         "src/molt/cli/module_graph.py",
         "src/molt/cli/python_module_names.py",
         "src/molt/cli/source_build_environment.py",
+        "src/molt/cli/source_build_inventory.py",
+        "src/molt/python_*.py",
+        "tests/test_python_environment_identity.py",
+        "tests/test_python_native_dependency_custody.py",
+        "tests/test_python_runtime_identity.py",
         "src/molt/cli/source_extension_*.py",
         "src/molt/cli/source_extensions.py",
         "src/molt/cli/entrypoint_dispatch.py",
@@ -2973,6 +2998,73 @@
       "argv": [
         "uv",
         "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-m",
+        "not slow",
+        "tests/test_python_environment_identity.py",
+        "tests/test_python_external_custody.py",
+        "tests/test_python_uv_lock_identity.py",
+        "tests/test_python_identity_adversarial.py",
+        "tests/test_toolchain_identity.py",
+        "tests/test_python_native_dependency_custody.py",
+        "tests/test_python_runtime_identity.py",
+        "tests/cli/test_runtime_build_identity.py",
+        "tests/tools/test_toolchain_capture.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.python-custody",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "native_integration",
+      "id": "native.integration.python-custody",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "python3",
         "-m",
         "pytest",
@@ -3622,7 +3714,8 @@
         "headroom_seconds": 0,
         "projected_makespan_seconds": 1500,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 1500
+          "compiler-build-resource": 1500,
+          "python-tests": 60
         }
       },
       "python_security": {
@@ -3649,7 +3742,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 900,
         "resource_capacity_floor_seconds": {
-          "python-tests": 450
+          "python-tests": 600
         }
       },
       "repository_policy": {

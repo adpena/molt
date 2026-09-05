@@ -19,6 +19,7 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
     REPO_ROOT / "src" / "molt" / "cli",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
+    REPO_ROOT / "src" / "molt" / "toolchain_identity.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
     REPO_ROOT / "src" / "molt_accel",
     REPO_ROOT / "packaging",
@@ -491,12 +492,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "canonical finite wait escalates only its exact unreaped owned process",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_queue_pkg/python_identity_probe.py",
-        "run_git_probe",
-        "run",
-        "isolated interpreter identity probe owns one bounded read-only Git metadata boundary",
-    ),
-    AllowedRawSubprocessUse(
         "tools/rust_ir_verifier.py",
         "RustIrVerifier.close",
         "process.terminate",
@@ -765,6 +760,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_pid_alive",
         "os.kill",
         "backend daemon custody pid-liveness probe only; not signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/toolchain_identity.py",
+        "probe_executable",
+        "run",
+        "timeout-bounded native tool version probe under shared executable generation custody",
     ),
     AllowedRawSubprocessUse(
         "src/molt/process_guard.py",

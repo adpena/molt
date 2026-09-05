@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
-import importlib.metadata as importlib_metadata
 import json
 import os
 import platform
@@ -15,11 +14,12 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 import warnings
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
+from molt.cli.source_build_inventory import SourceBuildInventory
 
 from molt.cli import extension_commands
 from molt.cli import source_extension_cython as _source_extension_cython
@@ -63,7 +63,6 @@ from molt.cli.source_build_environment import (
     SourceBuildEnvironmentError,
     active_source_build_requirements,
     canonical_source_marker_environment,
-    provision_source_build_environment,
     source_build_environment,
 )
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
@@ -212,15 +211,13 @@ class _SourceBuildEnvironment:
     active_requirements: tuple[str, ...]
     resolved: tuple[_ResolvedBuildRequirement, ...]
     custody: Mapping[str, object]
+    inventory: SourceBuildInventory
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
             "python": {
-                "implementation": sys.implementation.name,
-                "version": (
-                    f"{sys.version_info.major}.{sys.version_info.minor}."
-                    f"{sys.version_info.micro}"
-                ),
+                "implementation": self.marker_environment["implementation_name"],
+                "version": self.marker_environment["python_full_version"],
                 "executable": Path(self.python_executable).name,
             },
             "requirements": list(self.requirements),
@@ -487,14 +484,13 @@ def _source_build_requirements(
     return originals, marker_environment, active
 
 
-def _installed_build_requirement(
-    raw: str, requirement: Requirement
+def _realized_build_requirement(
+    raw: str, requirement: Requirement, inventory: SourceBuildInventory
 ) -> _ResolvedBuildRequirement | None:
-    try:
-        distribution = importlib_metadata.distribution(requirement.name)
-    except importlib_metadata.PackageNotFoundError:
+    distribution = inventory.distribution(requirement.name)
+    if distribution is None:
         return None
-    version = distribution.version
+    version = str(distribution["version"])
     try:
         satisfied = not requirement.specifier or requirement.specifier.contains(
             version, prereleases=True
@@ -506,7 +502,7 @@ def _installed_build_requirement(
         ) from exc
     if not satisfied:
         return None
-    distribution_name = distribution.metadata.get("Name")
+    distribution_name = distribution["name"]
     if not isinstance(distribution_name, str) or not distribution_name.strip():
         raise SourceExtensionProducerError(
             f"installed build requirement {requirement.name!r} has no distribution "
@@ -523,22 +519,24 @@ def _ensure_source_build_environment(
     source_root: Path, *, custody: Mapping[str, object]
 ) -> _SourceBuildEnvironment:
     originals, marker_environment, active = _source_build_requirements(source_root)
-    unsatisfied = [
-        raw
-        for raw, requirement in active
-        if _installed_build_requirement(raw, requirement) is None
-    ]
+    try:
+        inventory = SourceBuildInventory(custody, Path(sys.prefix))
+    except (OSError, ValueError) as exc:
+        raise SourceExtensionProducerError(str(exc)) from exc
+    resolved: list[_ResolvedBuildRequirement] = []
+    unsatisfied: list[str] = []
+    for raw, requirement in active:
+        installed = _realized_build_requirement(raw, requirement, inventory)
+        if installed is None:
+            unsatisfied.append(raw)
+        else:
+            resolved.append(installed)
     if unsatisfied:
         raise SourceExtensionProducerError(
             "locked source-build environment does not satisfy upstream build "
             "requirements; its configured dependency group or frozen lock is "
             "incomplete: " + ", ".join(unsatisfied)
         )
-    resolved: list[_ResolvedBuildRequirement] = []
-    for raw, requirement in active:
-        installed = _installed_build_requirement(raw, requirement)
-        assert installed is not None
-        resolved.append(installed)
     return _SourceBuildEnvironment(
         python_executable=sys.executable,
         requirements=originals,
@@ -546,6 +544,7 @@ def _ensure_source_build_environment(
         active_requirements=tuple(raw for raw, _requirement in active),
         resolved=tuple(resolved),
         custody=custody,
+        inventory=inventory,
     )
 
 
@@ -648,18 +647,23 @@ def _locked_console_tool_path(
 def _source_build_config_tools(
     environment: _SourceBuildEnvironment,
 ) -> tuple[_SourceBuildConfigTool, ...]:
-    scripts_root = Path(sysconfig.get_path("scripts")).resolve()
+    inventory = environment.inventory
     tools: dict[str, _SourceBuildConfigTool] = {}
     for resolved in environment.resolved:
-        distribution = importlib_metadata.distribution(resolved.distribution)
-        for entry_point in distribution.entry_points:
-            if entry_point.group != "console_scripts" or not entry_point.name.endswith(
-                "-config"
-            ):
+        distribution = inventory.distribution(resolved.distribution)
+        assert distribution is not None
+        for entry_point in cast(
+            Sequence[Mapping[str, str]], distribution["entry_points"]
+        ):
+            if entry_point["group"] != "console_scripts" or not entry_point[
+                "name"
+            ].endswith("-config"):
                 continue
-            path = _active_console_script(entry_point.name, scripts_root=scripts_root)
+            path = inventory.console_script(
+                entry_point["name"], distribution=resolved.distribution
+            )
             tool = _SourceBuildConfigTool(
-                name=entry_point.name,
+                name=entry_point["name"],
                 path=path,
                 distribution=resolved.distribution,
                 version=resolved.version,
@@ -674,40 +678,21 @@ def _source_build_config_tools(
     return tuple(tools[name] for name in sorted(tools))
 
 
-def _active_console_script(name: str, *, scripts_root: Path | None = None) -> Path:
-    root = (
-        Path(sysconfig.get_path("scripts")).resolve()
-        if scripts_root is None
-        else scripts_root.resolve()
-    )
-    candidates = tuple(
-        path
-        for path in (
-            root / name,
-            root / f"{name}.exe",
-            root / f"{name}.cmd",
-            root / f"{name}.bat",
-        )
-        if path.is_file()
-    )
-    if len(candidates) != 1:
-        raise SourceExtensionProducerError(
-            f"active interpreter has {len(candidates)} matching console scripts "
-            f"for {name!r} under {root}"
-        )
-    return candidates[0].resolve()
-
-
-def _ensure_meson_pkg_config(source_root: Path) -> _SourceBuildConfigTool:
+def _ensure_meson_pkg_config(
+    source_root: Path, environment: _SourceBuildEnvironment
+) -> _SourceBuildConfigTool:
+    inventory = environment.inventory
     requirement = Requirement(MOLT_PKGCONF_REQUIREMENT)
-    resolved = _installed_build_requirement(MOLT_PKGCONF_REQUIREMENT, requirement)
+    resolved = _realized_build_requirement(
+        MOLT_PKGCONF_REQUIREMENT, requirement, inventory
+    )
     if resolved is None:
         raise SourceExtensionProducerError(
             "source build environment is missing Molt's locked Meson tool "
             f"requirement {MOLT_PKGCONF_REQUIREMENT}; the producer never installs "
             "into its active interpreter"
         )
-    path = _active_console_script("pkg-config")
+    path = inventory.console_script("pkg-config", distribution=resolved.distribution)
     version = _run_process((str(path), "--version"), cwd=source_root)
     if (
         version.returncode != 0
@@ -766,7 +751,9 @@ def _run_meson_setup(
         )
 
 
-def _source_meson_driver(source_root: Path) -> _SourceMesonDriver:
+def _source_meson_driver(
+    source_root: Path, environment: _SourceBuildEnvironment
+) -> _SourceMesonDriver:
     pyproject_path = source_root / "pyproject.toml"
     try:
         payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
@@ -802,36 +789,40 @@ def _source_meson_driver(source_root: Path) -> _SourceMesonDriver:
                 "sha256": _sha256_file(driver),
             },
         )
-    try:
-        meson_version = importlib_metadata.version("meson")
-    except importlib_metadata.PackageNotFoundError as exc:
+    meson = environment.inventory.distribution("meson")
+    if meson is None:
         raise SourceExtensionProducerError(
             "source build environment has no Meson distribution and upstream did "
             "not declare tool.meson-python.meson"
-        ) from exc
+        )
     return _SourceMesonDriver(
         command=(sys.executable, "-m", "mesonbuild.mesonmain"),
         manifest={
             "kind": "build-environment",
             "module": "mesonbuild.mesonmain",
             "distribution": "meson",
-            "version": meson_version,
+            "version": str(meson["version"]),
         },
     )
 
 
-def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
-    try:
-        distribution = importlib_metadata.distribution("ninja")
-    except importlib_metadata.PackageNotFoundError as exc:
+def _source_ninja_driver(
+    source_root: Path, environment: _SourceBuildEnvironment
+) -> _SourceNinjaDriver:
+    inventory = environment.inventory
+    distribution = inventory.distribution("ninja")
+    if distribution is None:
         raise SourceExtensionProducerError(
             "source build environment has no Ninja backend distribution"
-        ) from exc
+        )
+    filename = (
+        "ninja.exe" if inventory.identity["operating_system"] == "windows" else "ninja"
+    )
     binaries = tuple(
-        path.resolve()
-        for item in (distribution.files or ())
-        if Path(str(item)).name.lower() == "ninja.exe"
-        and (path := Path(str(distribution.locate_file(item)))).is_file()
+        inventory.file(item["path"], distribution="ninja")
+        for item in cast(Sequence[Mapping[str, str]], distribution["installed_files"])
+        if Path(item["path"]).name == filename
+        and Path(item["path"]).parent.as_posix() != inventory.identity["scripts_root"]
     )
     if len(binaries) != 1:
         raise SourceExtensionProducerError(
@@ -846,15 +837,10 @@ def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
         raise SourceExtensionProducerError(
             f"Ninja backend cannot attest its version: {detail}"
         )
-    distribution_name = distribution.metadata.get("Name")
     return _SourceNinjaDriver(
         command=command,
         manifest={
-            "distribution": (
-                distribution_name.strip()
-                if isinstance(distribution_name, str) and distribution_name.strip()
-                else "ninja"
-            ),
+            "distribution": str(distribution["name"]),
             "version": version,
             "path": path.name,
             "sha256": _sha256_file(path),
@@ -2241,12 +2227,9 @@ def _build_source_extension_set(
                     f"{expected_candidate_identity_sha256}"
                 )
         locked_environment = source_build_environment(
-            _REPO_ROOT, extension_set.build_dependency_group
+            _REPO_ROOT, extension_set.build_dependency_group, provision=True
         )
         if not locked_environment.active:
-            locked_environment = provision_source_build_environment(
-                _REPO_ROOT, extension_set.build_dependency_group
-            )
             return _run_locked_source_extension_producer(
                 locked_environment,
                 package=package,
@@ -2352,11 +2335,11 @@ def _build_source_extension_set(
         build_environment = _ensure_source_build_environment(
             source_root, custody=locked_environment.custody
         )
-        meson_driver = _source_meson_driver(source_root)
-        ninja_driver = _source_ninja_driver(source_root)
+        meson_driver = _source_meson_driver(source_root, build_environment)
+        ninja_driver = _source_ninja_driver(source_root, build_environment)
         discovered_config_tools = _source_build_config_tools(build_environment)
         if extension_set.use_pkg_config:
-            pkg_config_tool = _ensure_meson_pkg_config(source_root)
+            pkg_config_tool = _ensure_meson_pkg_config(source_root, build_environment)
             if any(
                 tool.name == pkg_config_tool.name for tool in discovered_config_tools
             ):

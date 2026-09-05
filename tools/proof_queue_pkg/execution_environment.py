@@ -11,8 +11,13 @@ import re
 import shlex
 import sys
 import time
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
+from molt.exact_json import canonical_json_sha256
+from molt.python_environment_identity import (
+    PythonEnvironmentIdentityError,
+    validate_python_environment_location,
+)
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
@@ -226,12 +231,16 @@ def _capture_toolchains(
     unknown = sorted(set(requested) - known)
     if unknown:
         raise ValueError(f"proof command envelope has unknown toolchains: {unknown!r}")
+    located_python = located_toolchains.get("python")
+    if "python" in requested and not isinstance(located_python, Mapping):
+        raise ValueError("located Python selection identity is unavailable")
     proof_python = command_identity._python_identity(
         envelope,
         exact,
         cwd=cwd,
         env=env,
         source_root=source_root,
+        selection=cast(Mapping[str, object], located_python),
         hash_workers=hash_workers,
     )
     if proof_python is None and "python" in requested:
@@ -244,6 +253,7 @@ def _capture_toolchains(
             cwd=cwd,
             env=env,
             source_root=source_root,
+            selection=cast(Mapping[str, object], located_python),
             hash_workers=hash_workers,
         )
     toolchains: dict[str, object] = {}
@@ -312,8 +322,10 @@ def _locate_toolchain_watch_roots(
         command = command_identity._python_auxiliary_command(
             python_envelope,
             python_exact,
-            authority=admission._PYTHON_TOOLCHAIN_LOCATOR,
-            arguments=(),
+            authority=admission._PYTHON_IDENTITY_PROBE,
+            arguments=("--locate-active-environment",),
+            isolated=True,
+            no_site=True,
         )
         if command is None:
             raise ValueError("proof Python locator has no selected interpreter")
@@ -321,32 +333,55 @@ def _locate_toolchain_watch_roots(
             command_identity._run_captured(command, cwd=cwd, env=env),
             purpose="proof Python toolchain locator",
         )
-        if located.get("schema") != "molt.proof-python-toolchain-location.v1":
-            raise ValueError("proof Python toolchain locator schema mismatch")
-        executable_raw = located.get("executable")
+        try:
+            located = validate_python_environment_location(located)
+        except PythonEnvironmentIdentityError as exc:
+            raise ValueError(
+                f"proof Python toolchain locator is invalid: {exc}"
+            ) from exc
+        command_identity._reject_python_location_onedrive(located)
+        executable_raw = located.get("selected_executable")
         base_executable_raw = located.get("base_executable")
-        if not isinstance(executable_raw, str) or not isinstance(
-            base_executable_raw, str
+        prefix_raw = located.get("prefix")
+        if (
+            not isinstance(executable_raw, str)
+            or not isinstance(base_executable_raw, str)
+            or not isinstance(prefix_raw, str)
         ):
             raise ValueError("proof Python toolchain locator has no executable chain")
-        executable = Path(executable_raw).resolve(strict=True)
+        executable = Path(os.path.abspath(executable_raw))
+        if not executable.is_file():
+            raise ValueError(
+                "proof Python toolchain locator has no selected executable"
+            )
         base_executable = Path(base_executable_raw).resolve(strict=True)
+        prefix = Path(prefix_raw).resolve(strict=True)
+        if not prefix.is_dir():
+            raise ValueError("proof Python toolchain locator has no environment prefix")
         policy_identities["python"] = {
             "executable": str(executable),
             "executable_sha256": command_identity._hash_file(executable),
             "base_executable": str(base_executable),
             "base_executable_sha256": command_identity._hash_file(base_executable),
+            "prefix": str(prefix),
+            "external_roots": [],
+            "location": located,
         }
-        for field in ("roots", "editable_roots"):
+        for field in ("roots", "external_roots"):
             values = located.get(field)
             if not isinstance(values, list) or not all(
                 isinstance(value, str) for value in values
             ):
                 raise ValueError(f"proof Python locator has malformed {field}")
-            for value in values:
+            for value in cast(list[str], values):
                 path = Path(value)
                 if path.is_dir():
-                    roots.append(path.resolve(strict=True))
+                    resolved = path.resolve(strict=True)
+                    roots.append(resolved)
+                    if field == "external_roots":
+                        external = policy_identities["python"]["external_roots"]
+                        assert isinstance(external, list)
+                        external.append(str(resolved))
     for name in requested:
         if name == "python":
             continue
@@ -378,13 +413,7 @@ def _locate_toolchain_watch_roots(
             identity["process_image_inventories"] = inventories
             identity_without_digest = dict(identity)
             identity_without_digest.pop("identity_sha256", None)
-            identity["identity_sha256"] = hashlib.sha256(
-                json.dumps(
-                    identity_without_digest,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
+            identity["identity_sha256"] = canonical_json_sha256(identity_without_digest)
         command_identity._validate_toolchain_identity(plan, name, identity)
         policy_identities[name] = identity
         roots.extend(_broad_toolchain_roots({name: identity}))
@@ -408,32 +437,50 @@ def _python_editable_ineligible_reasons(
     if identity is None:
         return []
     reasons: list[str] = []
-    distributions = identity.get("distributions")
+    environment = identity.get("environment")
+    if not isinstance(environment, Mapping):
+        return ["python-environment-closure-malformed"]
+    external_roots = environment.get("external_roots")
+    if not isinstance(external_roots, list):
+        return ["python-external-root-closure-malformed"]
+    roots = {
+        str(row.get("id")): str(row.get("path"))
+        for row in external_roots
+        if isinstance(row, Mapping)
+        and isinstance(row.get("id"), str)
+        and isinstance(row.get("path"), str)
+    }
+    if len(roots) != len(external_roots):
+        reasons.append("python-external-root-closure-malformed")
+    distributions = environment.get("distributions")
     if not isinstance(distributions, list):
         return ["python-distribution-inventory-malformed"]
+    source_root = source_snapshot.get("root")
     for distribution in distributions:
         if not isinstance(distribution, Mapping):
             reasons.append("python-distribution-inventory-malformed")
             continue
-        editable = distribution.get("editable_source")
-        if not isinstance(editable, Mapping):
+        external = distribution.get("external_source")
+        if external is None:
             continue
         name = str(distribution.get("name") or "unknown")
-        if editable.get("inside_admitted_source") is not True:
+        if not isinstance(external, Mapping):
+            reasons.append(f"python-editable-source-malformed:{name}")
+            continue
+        root = roots.get(str(external.get("root")))
+        inside_source = False
+        if root is not None and isinstance(source_root, str):
+            root_path = Path(root)
+            source_path = Path(source_root)
+            inside_source = os.path.normcase(str(root_path)) == os.path.normcase(
+                str(source_path)
+            ) or root_path.is_relative_to(source_path)
+        if not inside_source:
             reasons.append(f"python-editable-source-outside:{name}")
-        if (
-            editable.get("source_metadata_root") is not None
-            and editable.get("source_metadata_inside_admitted_source") is not True
-        ):
-            reasons.append(f"python-source-metadata-outside:{name}")
-        if editable.get("git_available") is not True:
+        if source_snapshot.get("available") is not True:
             reasons.append(f"python-editable-source-git-unavailable:{name}")
-        elif editable.get("git_clean") is not True:
+        elif source_snapshot.get("clean") is not True:
             reasons.append(f"python-editable-source-dirty:{name}")
-        if editable.get("git_commit") != source_snapshot.get("commit"):
-            reasons.append(f"python-editable-source-commit-mismatch:{name}")
-        if editable.get("git_tree") != source_snapshot.get("tree"):
-            reasons.append(f"python-editable-source-tree-mismatch:{name}")
     return reasons
 
 
@@ -533,30 +580,6 @@ def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
 
 def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
     roots: list[Path] = []
-    python = toolchains.get("python")
-    if isinstance(python, Mapping):
-        runtime = python.get("runtime")
-        runtime_roots = (
-            runtime.get("runtime_roots") if isinstance(runtime, Mapping) else None
-        )
-        if isinstance(runtime_roots, Mapping):
-            for raw in runtime_roots.values():
-                if isinstance(raw, str) and Path(raw).is_dir():
-                    roots.append(Path(raw).resolve(strict=True))
-        if isinstance(runtime, Mapping):
-            for key in ("base_prefix", "prefix"):
-                raw = runtime.get(key)
-                if isinstance(raw, str) and Path(raw).is_dir():
-                    roots.append(Path(raw).resolve(strict=True))
-        distributions = python.get("distributions")
-        if isinstance(distributions, list):
-            for distribution in distributions:
-                if not isinstance(distribution, Mapping):
-                    continue
-                for key in ("install_prefix", "editable_source"):
-                    raw = distribution.get(key)
-                    if isinstance(raw, str) and Path(raw).is_dir():
-                        roots.append(Path(raw).resolve(strict=True))
     for identity in toolchains.values():
         if not isinstance(identity, Mapping):
             continue
