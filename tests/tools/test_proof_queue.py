@@ -3639,8 +3639,8 @@ def test_proof_queue_exec_records_passed_run(
     )
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "queue-ok" in log_text
-    assert "memory_guard_poll_sec=2.0" in log_text
-    assert "--poll-interval 2.0" in log_text
+    assert "memory_guard_poll_sec=0.1" in log_text
+    assert "--poll-interval 0.1" in log_text
     notes = _notes(db)
     assert [note["body"] for note in notes] == [
         "changed queue smoke to verify note capture"
@@ -3881,13 +3881,114 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
     assert "--poll-interval 0.25" in log_text
 
 
-def test_proof_queue_rejects_invalid_memory_guard_poll_override() -> None:
-    with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
-        custody._proof_queue_memory_guard_poll_sec(
-            {"MOLT_MEMORY_GUARD_POLL_SEC": "not-a-number"}
-        )
-    with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
-        custody._proof_queue_memory_guard_poll_sec({"MOLT_MEMORY_GUARD_POLL_SEC": "0"})
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MOLT_MEMORY_GUARD_POLL_SEC", "not-a-number"),
+        ("MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC", "0"),
+        ("MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB", "nan"),
+        ("MOLT_PROOF_QUEUE_MAX_TOTAL_RSS_GB", "0"),
+        ("MOLT_PROOF_QUEUE_MAX_GLOBAL_RSS_GB", "inf"),
+    ],
+)
+def test_proof_queue_rejects_invalid_memory_guard_override(
+    name: str, value: str
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        custody._proof_queue_memory_limits({name: value})
+
+
+def test_proof_queue_memory_guard_defaults_reach_exact_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB",
+        "MOLT_PROOF_QUEUE_MAX_RSS_GB",
+        "MOLT_MAX_PROCESS_RSS_GB",
+        "MOLT_MAX_RSS_GB",
+        "MOLT_PROOF_QUEUE_MAX_TOTAL_RSS_GB",
+        "MOLT_PROOF_QUEUE_MAX_TREE_RSS_GB",
+        "MOLT_MAX_TOTAL_RSS_GB",
+        "MOLT_MAX_TREE_RSS_GB",
+        "MOLT_PROOF_QUEUE_GLOBAL_RSS_LIMIT_GB",
+        "MOLT_PROOF_QUEUE_MAX_GLOBAL_RSS_GB",
+        "MOLT_GLOBAL_RSS_LIMIT_GB",
+        "MOLT_MAX_GLOBAL_RSS_GB",
+        "MOLT_PROOF_QUEUE_CHILD_RLIMIT_GB",
+        "MOLT_PROOF_QUEUE_MAX_CHILD_RLIMIT_GB",
+        "MOLT_CHILD_RLIMIT_GB",
+        "MOLT_MAX_CHILD_RLIMIT_GB",
+        "MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC",
+        "MOLT_MEMORY_GUARD_POLL_SEC",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        custody.memory_guard,
+        "adaptive_memory_budget",
+        lambda *args, **kwargs: custody.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=64.0,
+            max_total_rss_gb=96.0,
+            max_global_rss_gb=128.0,
+            reserve_gb=8.0,
+            physical_gb=160.0,
+            available_gb=144.0,
+            source="test",
+        ),
+    )
+
+    limits = custody._proof_queue_memory_limits({})
+    command = custody._memory_guard_command(
+        command=["proof-command"],
+        summary_json=tmp_path / "summary.json",
+        timeout=30.0,
+        limits=limits,
+    )
+
+    assert limits == custody.harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=12.0,
+        max_total_rss_gb=18.0,
+        max_global_rss_gb=36.0,
+        poll_interval=2.0,
+        child_rlimit_gb=12.0,
+        adaptive_prefix="MOLT_PROOF_QUEUE",
+    )
+    assert command[command.index("--max-rss-gb") + 1] == "12.0"
+    assert command[command.index("--max-total-rss-gb") + 1] == "18.0"
+    assert command[command.index("--max-global-rss-gb") + 1] == "36.0"
+    assert command[command.index("--poll-interval") + 1] == "2.0"
+    assert command[command.index("--child-rlimit-gb") + 1] == "12.0"
+    assert command[-2:] == ["--", "proof-command"]
+
+
+def test_proof_queue_low_memory_overrides_reach_exact_command(tmp_path: Path) -> None:
+    limits = custody._proof_queue_memory_limits(
+        {
+            "MOLT_MAX_PROCESS_RSS_GB": "10",
+            "MOLT_MAX_TOTAL_RSS_GB": "11",
+            "MOLT_MAX_GLOBAL_RSS_GB": "12",
+            "MOLT_CHILD_RLIMIT_GB": "9",
+            "MOLT_MEMORY_GUARD_POLL_SEC": "1",
+            "MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB": "2",
+            "MOLT_PROOF_QUEUE_MAX_TOTAL_RSS_GB": "3",
+            "MOLT_PROOF_QUEUE_MAX_GLOBAL_RSS_GB": "4",
+            "MOLT_PROOF_QUEUE_CHILD_RLIMIT_GB": "1.5",
+            "MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC": "0.25",
+        }
+    )
+    command = custody._memory_guard_command(
+        command=["proof-command"],
+        summary_json=tmp_path / "summary.json",
+        timeout=30.0,
+        limits=limits,
+    )
+
+    assert command[command.index("--max-rss-gb") + 1] == "2.0"
+    assert command[command.index("--max-total-rss-gb") + 1] == "3.0"
+    assert command[command.index("--max-global-rss-gb") + 1] == "4.0"
+    assert command[command.index("--poll-interval") + 1] == "0.25"
+    assert command[command.index("--child-rlimit-gb") + 1] == "1.5"
+    assert command[-2:] == ["--", "proof-command"]
 
 
 def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(

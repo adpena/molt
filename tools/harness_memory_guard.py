@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -288,6 +289,17 @@ class HarnessMemoryLimits:
         return memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessMemoryLimitDefaults:
+    """Caller-specific fallbacks interpreted by the canonical env resolver."""
+
+    max_process_rss_gb: float | None = None
+    max_total_rss_gb: float | None = None
+    max_global_rss_gb: float | None = None
+    poll_interval: float = DEFAULT_POLL_INTERVAL_SEC
+    child_rlimit_gb: float | None = None
+
+
 _normalize_prefix = _harness_outcomes.normalize_prefix
 
 
@@ -364,23 +376,40 @@ def _env_float(
     names: Sequence[str],
     *,
     default: float,
+    strict: bool = False,
+    positive: bool = False,
 ) -> float:
-    value = _env_float_optional(env, names)
+    value = _env_float_optional(
+        env,
+        names,
+        strict=strict,
+        positive=positive,
+    )
     return default if value is None else value
 
 
 def _env_float_optional(
     env: Mapping[str, str],
     names: Sequence[str],
+    *,
+    strict: bool = False,
+    positive: bool = False,
 ) -> float | None:
     for name in names:
         raw = env.get(name)
         if raw is None or not raw.strip():
             continue
         try:
-            return float(raw)
-        except ValueError:
+            value = float(raw)
+        except ValueError as exc:
+            if strict:
+                raise ValueError(f"{name} must be a finite number") from exc
             continue
+        if strict and not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number")
+        if strict and positive and value <= 0:
+            raise ValueError(f"{name} must be greater than zero")
+        return value
     return None
 
 
@@ -433,9 +462,13 @@ def enabled_from_env(
 def limits_from_env(
     prefix: str,
     env: Mapping[str, str] | None = None,
+    *,
+    defaults: HarnessMemoryLimitDefaults | None = None,
+    strict: bool = False,
 ) -> HarnessMemoryLimits:
     source = _effective_env(env)
     normalized = _normalize_prefix(prefix)
+    resolved_defaults = defaults or HarnessMemoryLimitDefaults()
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
     process_override = _env_float_optional(
         source,
@@ -445,11 +478,17 @@ def limits_from_env(
             "MOLT_MAX_PROCESS_RSS_GB",
             "MOLT_MAX_RSS_GB",
         ],
+        strict=strict,
+        positive=strict,
     )
     process_gb = (
-        adaptive_budget.max_process_rss_gb
-        if process_override is None
-        else process_override
+        process_override
+        if process_override is not None
+        else (
+            adaptive_budget.max_process_rss_gb
+            if resolved_defaults.max_process_rss_gb is None
+            else resolved_defaults.max_process_rss_gb
+        )
     )
     total_override = _env_float_optional(
         source,
@@ -459,9 +498,17 @@ def limits_from_env(
             "MOLT_MAX_TOTAL_RSS_GB",
             "MOLT_MAX_TREE_RSS_GB",
         ],
+        strict=strict,
+        positive=strict,
     )
     total_gb = (
-        adaptive_budget.max_total_rss_gb if total_override is None else total_override
+        total_override
+        if total_override is not None
+        else (
+            adaptive_budget.max_total_rss_gb
+            if resolved_defaults.max_total_rss_gb is None
+            else resolved_defaults.max_total_rss_gb
+        )
     )
     global_override = _env_float_optional(
         source,
@@ -471,18 +518,39 @@ def limits_from_env(
             "MOLT_GLOBAL_RSS_LIMIT_GB",
             "MOLT_MAX_GLOBAL_RSS_GB",
         ],
+        strict=strict,
+        positive=strict,
     )
     global_gb = (
-        adaptive_budget.max_global_rss_gb
-        if global_override is None
-        else global_override
+        global_override
+        if global_override is not None
+        else (
+            adaptive_budget.max_global_rss_gb
+            if resolved_defaults.max_global_rss_gb is None
+            else resolved_defaults.max_global_rss_gb
+        )
+    )
+    effective_process_override = (
+        process_override
+        if process_override is not None
+        else resolved_defaults.max_process_rss_gb
+    )
+    effective_total_override = (
+        total_override
+        if total_override is not None
+        else resolved_defaults.max_total_rss_gb
+    )
+    effective_global_override = (
+        global_override
+        if global_override is not None
+        else resolved_defaults.max_global_rss_gb
     )
     process_gb, total_gb, global_gb, interactive_budget = (
         _cap_dynamic_interactive_budget(
             source=source,
-            process_override=process_override,
-            total_override=total_override,
-            global_override=global_override,
+            process_override=effective_process_override,
+            total_override=effective_total_override,
+            global_override=effective_global_override,
             process_gb=process_gb,
             total_gb=total_gb,
             global_gb=global_gb,
@@ -497,7 +565,9 @@ def limits_from_env(
     poll_interval = _env_float(
         source,
         [f"{normalized}_MEMORY_GUARD_POLL_SEC", "MOLT_MEMORY_GUARD_POLL_SEC"],
-        default=DEFAULT_POLL_INTERVAL_SEC,
+        default=resolved_defaults.poll_interval,
+        strict=strict,
+        positive=strict,
     )
     if poll_interval <= 0:
         poll_interval = DEFAULT_POLL_INTERVAL_SEC
@@ -509,15 +579,20 @@ def limits_from_env(
             "MOLT_CHILD_RLIMIT_GB",
             "MOLT_MAX_CHILD_RLIMIT_GB",
         ],
+        strict=strict,
     )
     child_rlimit_gb = (
-        memory_guard.default_child_rlimit_gb(
-            max_process_rss_gb=process_gb,
-            max_total_rss_gb=total_gb,
-            max_global_rss_gb=global_gb,
+        child_rlimit_override
+        if child_rlimit_override is not None
+        else (
+            memory_guard.default_child_rlimit_gb(
+                max_process_rss_gb=process_gb,
+                max_total_rss_gb=total_gb,
+                max_global_rss_gb=global_gb,
+            )
+            if resolved_defaults.child_rlimit_gb is None
+            else resolved_defaults.child_rlimit_gb
         )
-        if child_rlimit_override is None
-        else child_rlimit_override
     )
     if child_rlimit_gb > 0:
         child_rlimit_cap_gb = (
@@ -526,7 +601,10 @@ def limits_from_env(
                 max_total_rss_gb=total_gb,
                 max_global_rss_gb=global_gb,
             )
-            if child_rlimit_override is None
+            if (
+                child_rlimit_override is None
+                and resolved_defaults.child_rlimit_gb is None
+            )
             else HARD_CHILD_RLIMIT_GB
         )
         child_rlimit_gb = _clamp_hard_limit(child_rlimit_gb, child_rlimit_cap_gb)
@@ -538,10 +616,13 @@ def limits_from_env(
         poll_interval=poll_interval,
         child_rlimit_gb=child_rlimit_gb,
         adaptive_prefix=normalized,
-        dynamic_process_rss=process_override is None,
-        dynamic_total_rss=total_override is None,
-        dynamic_global_rss=global_override is None,
-        dynamic_child_rlimit=child_rlimit_override is None,
+        dynamic_process_rss=effective_process_override is None,
+        dynamic_total_rss=effective_total_override is None,
+        dynamic_global_rss=effective_global_override is None,
+        dynamic_child_rlimit=(
+            child_rlimit_override is None
+            and resolved_defaults.child_rlimit_gb is None
+        ),
         interactive_budget=interactive_budget,
     )
 

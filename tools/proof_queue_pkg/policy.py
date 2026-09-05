@@ -21,7 +21,7 @@ def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
     if semantic_error is not None:
         return f"proof queue refuses invalid environment override: {semantic_error}"
     try:
-        custody._proof_queue_memory_guard_poll_sec(env_overrides)
+        custody._proof_queue_memory_limits(env_overrides)
     except ValueError as exc:
         return f"proof queue refuses invalid environment override: {exc}"
     return None

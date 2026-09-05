@@ -11,6 +11,7 @@ from subprocess import Popen, TimeoutExpired
 import sys
 from pathlib import Path
 
+from tools import harness_memory_guard, memory_guard
 from tools.process_spawn import (
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
@@ -19,7 +20,13 @@ from tools.proof_queue_pkg import state
 
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 
-DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
+PROOF_QUEUE_MEMORY_LIMIT_DEFAULTS = harness_memory_guard.HarnessMemoryLimitDefaults(
+    max_process_rss_gb=memory_guard.DEFAULT_MAX_RSS_GB,
+    max_total_rss_gb=memory_guard.DEFAULT_MAX_TOTAL_RSS_GB,
+    max_global_rss_gb=memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB,
+    poll_interval=2.0,
+    child_rlimit_gb=memory_guard.DEFAULT_MAX_RSS_GB,
+)
 
 PROOF_QUEUE_ACTIVE_POLL_SECONDS = 2.0
 
@@ -89,43 +96,38 @@ def _memory_guard_command(
     command: list[str],
     summary_json: Path,
     timeout: float,
-    poll_interval: str,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> list[str]:
-    return [
+    result = [
         sys.executable,
         str(state.ROOT / "tools" / "memory_guard.py"),
         "--max-rss-gb",
-        "12.0",
+        str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
-        "18.0",
+        str(limits.max_total_rss_gb),
+        "--max-global-rss-gb",
+        str(limits.max_global_rss_gb),
         "--poll-interval",
-        poll_interval,
+        str(limits.poll_interval),
         "--summary-json",
         str(summary_json),
-        "--child-rlimit-gb",
-        "12.0",
         "--timeout",
         str(timeout),
-        "--",
-        *command,
     ]
+    if limits.child_rlimit_gb is not None:
+        result.extend(["--child-rlimit-gb", str(limits.child_rlimit_gb)])
+    return [*result, "--", *command]
 
 
-def _proof_queue_memory_guard_poll_sec(env_overrides: dict[str, str]) -> str:
-    value = env_overrides.get(
-        MEMORY_GUARD_POLL_SEC_ENV, DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC
-    ).strip()
-    try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"{MEMORY_GUARD_POLL_SEC_ENV} must be a positive finite number"
-        ) from exc
-    if parsed <= 0.0 or parsed == float("inf") or parsed != parsed:
-        raise ValueError(
-            f"{MEMORY_GUARD_POLL_SEC_ENV} must be a positive finite number"
-        )
-    return value
+def _proof_queue_memory_limits(
+    env_overrides: dict[str, str],
+) -> harness_memory_guard.HarnessMemoryLimits:
+    return harness_memory_guard.limits_from_env(
+        "MOLT_PROOF_QUEUE",
+        env_overrides,
+        defaults=PROOF_QUEUE_MEMORY_LIMIT_DEFAULTS,
+        strict=True,
+    )
 
 
 def _normalize_queue_process_environment() -> None:

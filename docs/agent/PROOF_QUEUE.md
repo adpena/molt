@@ -234,6 +234,18 @@ package tree, and environment-selected compiler/linker/wrapper executables are
 content-hashed. All toolchains are re-captured after the command; a missing,
 empty, changed, or extra closure cannot become evidence.
 
+The queue resolves its guard budget through the shared
+`harness_memory_guard.limits_from_env("MOLT_PROOF_QUEUE", ...)` authority. Use
+`MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB`,
+`MOLT_PROOF_QUEUE_MAX_TOTAL_RSS_GB`,
+`MOLT_PROOF_QUEUE_MAX_GLOBAL_RSS_GB`,
+`MOLT_PROOF_QUEUE_CHILD_RLIMIT_GB`, and
+`MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC` for queue-specific control; the
+corresponding global `MOLT_MAX_*`, `MOLT_CHILD_RLIMIT_GB`, and
+`MOLT_MEMORY_GUARD_POLL_SEC` names remain lower-precedence fallbacks. Resolved
+values are validated, clamped by live and hard custody ceilings, and recorded
+in the exact guard command.
+
 Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
 CPython executable and shared libraries, stdlib and native-extension byte
 manifest, resolved runtime/import roots, and installed distributions. Every
