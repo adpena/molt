@@ -15,7 +15,6 @@ import json
 import os
 import select
 import secrets
-import shlex
 import socket
 import struct
 import sys
@@ -26,9 +25,13 @@ from typing import Iterable, Mapping, Sequence
 
 from tools.proof_queue_pkg import process_image_capture
 
-CHILD_POLICY_ENV = "MOLT_PROOF_CHILD_CUSTODY_JSON"
-CHILD_ENDPOINT_ENV = "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT"
-CHILD_TOKEN_ENV = "MOLT_PROOF_CHILD_CUSTODY_TOKEN"
+from tools.proof_queue_pkg.python_child_custody import (
+    CHILD_POLICY_ENV as CHILD_POLICY_ENV,
+    CHILD_ENDPOINT_ENV as CHILD_ENDPOINT_ENV,
+    CHILD_TOKEN_ENV as CHILD_TOKEN_ENV,
+    _environment_value,
+    install_python_child_custody as install_python_child_custody,
+)
 
 
 def _norm(path: Path | str) -> str:
@@ -647,6 +650,7 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
         "content_path",
         "entry",
         "manifest",
+        "file_paths",
     }
 
     def visit(value: object, key: str | None = None) -> None:
@@ -1097,10 +1101,9 @@ class ExecutionCustodySession:
         self,
         *,
         monitor: LiveCustodyMonitor,
-        child_server: ChildCustodyEventServer,
     ) -> None:
         self.monitor = monitor
-        self.child_server = child_server
+        self.child_server: ChildCustodyEventServer | None = None
         self.state = "CREATED"
         self.lifecycle = ["CREATED"]
 
@@ -1113,16 +1116,21 @@ class ExecutionCustodySession:
         self.lifecycle.append(next_state)
 
     def __enter__(self) -> ExecutionCustodySession:
-        self.child_server.__enter__()
-        try:
-            self.monitor.__enter__()
-        except BaseException:
-            self.child_server.__exit__(None, None, None)
-            raise
+        self.monitor.__enter__()
         self._transition("CREATED", "ARMED")
         return self
 
+    def bind_child_server(self, child_server: ChildCustodyEventServer) -> None:
+        if self.state != "ARMED" or self.child_server is not None:
+            raise RuntimeError(
+                "proof child custody must bind exactly once after live custody arms"
+            )
+        child_server.__enter__()
+        self.child_server = child_server
+
     def mark_captured(self) -> None:
+        if self.child_server is None:
+            raise RuntimeError("proof child custody must bind before capture closes")
         self._transition("ARMED", "CAPTURED")
 
     def mark_running(self) -> None:
@@ -1139,20 +1147,18 @@ class ExecutionCustodySession:
         try:
             self.monitor.drain()
         finally:
-            self.child_server.__exit__(None, None, None)
+            if self.child_server is not None:
+                self.child_server.__exit__(None, None, None)
         self._transition("DRAINING", "DRAINED")
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         del exc_type, exc, traceback
         if self.state == "RUNNING":
             self.mark_quiescent()
-        if self.state == "CAPTURED":
-            self.mark_running()
-            self.mark_quiescent()
-        if self.state == "ARMED":
-            self.mark_captured()
-            self.mark_running()
-            self.mark_quiescent()
+        if self.state in {"ARMED", "CAPTURED"}:
+            # Capture failure still drains the watcher, without claiming the
+            # payload ran or requiring a broker that was never admitted.
+            self._transition(self.state, "VERIFYING")
         if self.state == "QUIESCENT":
             self.mark_verifying()
         if self.state == "VERIFYING":
@@ -1163,6 +1169,8 @@ class ExecutionCustodySession:
             raise RuntimeError(
                 f"execution custody receipt requested in state {self.state}"
             )
+        if self.child_server is None:
+            raise RuntimeError("proof child custody was never bound")
         return {
             "schema": "molt.proof-execution-custody-session.v1",
             "state": self.state,
@@ -1170,89 +1178,6 @@ class ExecutionCustodySession:
             "live_input_custody": self.monitor.receipt(),
             "child_process_custody": self.child_server.receipt(),
         }
-
-
-_child_channel: socket.socket | None = None
-_child_channel_reader: object | None = None
-_child_channel_lock = threading.Lock()
-_child_sequence = 0
-
-
-def _journal(payload: Mapping[str, object]) -> None:
-    if _child_channel is None:
-        raise RuntimeError("proof child custody event channel is unavailable")
-    line = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")) + "\n"
-    with _child_channel_lock:
-        _child_channel.sendall(line.encode())
-
-
-def _environment_value(environment: object, name: str) -> object | None:
-    if not isinstance(environment, Mapping):
-        return None
-    expected = name.upper()
-    return next(
-        (
-            value
-            for key, value in environment.items()
-            if (os.fsdecode(key) if isinstance(key, bytes) else str(key)).upper()
-            == expected
-        ),
-        None,
-    )
-
-
-def _request_child_decision(
-    token: object, child_env: object = None, child_cwd: object = None
-) -> dict[str, object]:
-    global _child_sequence
-    if _child_channel is None or _child_channel_reader is None:
-        raise RuntimeError("proof child custody decision channel is unavailable")
-    path_value = None
-    if isinstance(child_env, Mapping):
-        path_value = _environment_value(child_env, "PATH")
-        if isinstance(path_value, bytes):
-            path_value = os.fsdecode(path_value)
-    if not isinstance(path_value, str):
-        path_value = os.environ.get("PATH", "")
-    path_ext = None
-    if isinstance(child_env, Mapping):
-        path_ext = _environment_value(child_env, "PATHEXT")
-        if isinstance(path_ext, bytes):
-            path_ext = os.fsdecode(path_ext)
-    if not isinstance(path_ext, str):
-        path_ext = os.environ.get("PATHEXT", "")
-    if isinstance(child_cwd, bytes):
-        child_cwd = os.fsdecode(child_cwd)
-    effective_cwd = (
-        os.path.abspath(child_cwd)
-        if isinstance(child_cwd, str) and child_cwd
-        else os.getcwd()
-    )
-    with _child_channel_lock:
-        _child_sequence += 1
-        sequence = _child_sequence
-        intent = {
-            "event": "spawn-intent",
-            "sequence": sequence,
-            "requested": os.fsdecode(token) if isinstance(token, bytes) else str(token),
-            "path": path_value,
-            "path_ext": path_ext,
-            "cwd": effective_cwd,
-        }
-        _child_channel.sendall(
-            (json.dumps(intent, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        )
-        raw = _child_channel_reader.readline()
-    if not raw:
-        raise RuntimeError("proof child custody broker closed before decision")
-    decision = json.loads(raw)
-    if (
-        not isinstance(decision, dict)
-        or decision.get("event") != "spawn-decision"
-        or decision.get("sequence") != sequence
-    ):
-        raise RuntimeError("proof child custody broker returned an invalid decision")
-    return decision
 
 
 def _resolve_child_executable(
@@ -1303,135 +1228,3 @@ def _resolve_child_executable(
             if resolved.is_file() and os.access(resolved, os.X_OK):
                 return resolved.resolve(strict=True)
     return None
-
-
-def _admit_child(
-    policy: Mapping[str, object],
-    token: object,
-    child_env: object = None,
-    child_cwd: object = None,
-) -> None:
-    del policy
-    decision = _request_child_decision(token, child_env, child_cwd)
-    if decision.get("admitted") is True:
-        return
-    raise PermissionError(
-        f"proof child executable is outside admitted toolchain closure: {token!r}"
-    )
-
-
-def install_python_child_custody() -> None:
-    global _child_channel, _child_channel_reader
-    raw = os.environ.get(CHILD_POLICY_ENV)
-    if not raw:
-        return
-    policy = json.loads(raw)
-    if (
-        not isinstance(policy, dict)
-        or policy.get("schema") != "molt.proof-child-custody.v1"
-    ):
-        raise RuntimeError("malformed proof child custody policy")
-    # Capture enforcement callables before payload execution.  The audit hook
-    # must never resolve a mutable module-global name that proof code can replace
-    # after bootstrap.
-    admit_executable = _admit_child
-    record_event = _journal
-    decode_path = os.fsdecode
-    split_command = shlex.split
-    windows = os.name == "nt"
-    endpoint = os.environ.get(CHILD_ENDPOINT_ENV, "")
-    token = os.environ.get(CHILD_TOKEN_ENV, "")
-    try:
-        host, port_raw = endpoint.rsplit(":", 1)
-        channel = socket.create_connection((host, int(port_raw)), timeout=10.0)
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(
-            f"proof child custody channel connection failed: {exc}"
-        ) from exc
-    channel.settimeout(None)
-    _child_channel = channel
-    _child_channel_reader = channel.makefile("rb")
-    record_event(
-        {
-            "event": "hook-start",
-            "runtime": "python",
-            "pid": os.getpid(),
-            "token": token,
-            "admitted": True,
-        }
-    )
-    ready_raw = _child_channel_reader.readline()
-    if not ready_raw:
-        raise RuntimeError("proof child custody broker closed before hook readiness")
-    ready = json.loads(ready_raw)
-    if not isinstance(ready, dict) or ready != {
-        "event": "hook-ready",
-        "runtime": "python",
-    }:
-        raise RuntimeError("proof child custody broker returned invalid hook readiness")
-
-    import atexit
-
-    def close_channel() -> None:
-        global _child_channel, _child_channel_reader
-        active = _child_channel
-        if active is None:
-            return
-        try:
-            record_event(
-                {
-                    "event": "hook-end",
-                    "runtime": "python",
-                    "pid": os.getpid(),
-                    "admitted": True,
-                }
-            )
-            active.shutdown(socket.SHUT_WR)
-        finally:
-            active.close()
-            _child_channel = None
-            _child_channel_reader = None
-
-    atexit.register(close_channel)
-
-    def audit(event: str, args: tuple[object, ...]) -> None:
-        if event == "subprocess.Popen":
-            executable = args[0] if args else None
-            if executable is None and len(args) > 1:
-                command_args = args[1]
-                if isinstance(command_args, (list, tuple)) and command_args:
-                    executable = command_args[0]
-                elif isinstance(command_args, (str, bytes)):
-                    command_line = (
-                        decode_path(command_args)
-                        if isinstance(command_args, bytes)
-                        else command_args
-                    )
-                    split = split_command(command_line, posix=not windows)
-                    executable = split[0].strip('"') if split else None
-            child_env = args[3] if len(args) > 3 else None
-            child_cwd = args[2] if len(args) > 2 else None
-            admit_executable(policy, executable, child_env, child_cwd)
-        elif event in {
-            "os.system",
-            "os.exec",
-            "os.posix_spawn",
-            "os.posix_spawnp",
-            "os.spawn",
-            "os.fork",
-            "os.forkpty",
-        }:
-            record_event({"event": "policy-violation", "surface": event})
-            raise PermissionError(
-                f"opaque process creation is forbidden in proof custody: {event}"
-            )
-
-    sys.addaudithook(audit)
-    # The bootstrap loaded this authority by a private file-module name.  Remove
-    # every alias to that module before returning to payload code so the proof
-    # cannot mutate enforcement globals through sys.modules.
-    authority_module = sys.modules.get(__name__)
-    if authority_module is not None:
-        for module_name, loaded in tuple(sys.modules.items()):
-            if loaded is authority_module:
-                sys.modules.pop(module_name, None)

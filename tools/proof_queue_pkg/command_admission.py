@@ -14,11 +14,8 @@ from tools.command_execution import CommandExecutor
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PYTHON_IDENTITY_PROBE = (
-    _REPO_ROOT / "tools" / "proof_queue_pkg" / "python_identity_probe.py"
-)
+_PYTHON_IDENTITY_PROBE = _REPO_ROOT / "src" / "molt" / "python_environment_identity.py"
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
-_PYTHON_TOOLCHAIN_LOCATOR = Path(__file__).with_name("python_toolchain_locator.py")
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"

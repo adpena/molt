@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from dataclasses import replace
@@ -13,6 +14,7 @@ from typing import Any
 import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
+from molt.python_environment_identity import python_capture_authority_paths
 from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
@@ -25,6 +27,44 @@ from tools.proof_queue_pkg import evidence as proof_queue_evidence
 
 
 PLAN = proof_plan.ProofPlan.load()
+
+
+def test_python_capture_source_closure_is_proof_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    capture_paths = python_capture_authority_paths()
+    monkeypatch.chdir(tmp_path)
+    assert python_capture_authority_paths() == capture_paths
+    assert len(capture_paths) == len(set(capture_paths))
+    assert {
+        root / "src/molt/__init__.py",
+        root / "src/molt/_version.py",
+        root / "pyproject.toml",
+    }.issubset(capture_paths)
+    for path in capture_paths:
+        assert path.is_file()
+        assert path.relative_to(root).as_posix() in PLAN.authority_inputs
+        if path.suffix != ".py":
+            continue
+        for node in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level:
+                    assert node.level == 1
+                    module = f"molt.{module}".rstrip(".")
+                modules = [module]
+            for module in modules:
+                if module == "molt":
+                    dependency = root / "src/molt/__init__.py"
+                elif module.startswith("molt."):
+                    dependency = root / "src" / (module.replace(".", "/") + ".py")
+                else:
+                    continue
+                assert dependency in capture_paths, (path, dependency)
 
 
 def _sealed_terminal_context(
@@ -1183,8 +1223,17 @@ def test_receipt_verdict_rehashes_downloaded_evidence_bytes(tmp_path: Path) -> N
     )
 
 
+@pytest.fixture
+def authority_input_bytes() -> dict[str, bytes]:
+    """Read each input once per test; every variant still hashes the full closure."""
+    return {
+        relative: (proof_plan.ROOT / relative).read_bytes()
+        for relative in PLAN.authority_inputs
+    }
+
+
 def test_every_authority_input_mutation_invalidates_receipt(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, authority_input_bytes: dict[str, bytes]
 ) -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
@@ -1192,9 +1241,10 @@ def test_every_authority_input_mutation_invalidates_receipt(
     receipt = _receipt_for(command, tmp_path)
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     original = proof_plan._authority_sha256(PLAN)
-    for relative in PLAN.authority_inputs:
+    assert proof_plan._authority_sha256(PLAN, authority_input_bytes) == original
+    for relative, raw in authority_input_bytes.items():
         mutated = proof_plan._authority_sha256(
-            PLAN, {relative: (proof_plan.ROOT / relative).read_bytes() + b"\0"}
+            PLAN, {**authority_input_bytes, relative: raw + b"\0"}
         )
         assert mutated != original, relative
         with monkeypatch.context() as context:
@@ -1203,13 +1253,20 @@ def test_every_authority_input_mutation_invalidates_receipt(
         assert any("authority digest" in error for error in errors), relative
 
 
-def test_authority_digest_is_lf_crlf_checkout_invariant() -> None:
+def test_authority_digest_is_lf_crlf_checkout_invariant(
+    authority_input_bytes: dict[str, bytes],
+) -> None:
     original = proof_plan._authority_sha256(PLAN)
-    for relative in PLAN.authority_inputs:
-        raw = (proof_plan.ROOT / relative).read_bytes()
+    assert proof_plan._authority_sha256(PLAN, authority_input_bytes) == original
+    for relative, raw in authority_input_bytes.items():
         lf = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         crlf = lf.replace(b"\n", b"\r\n")
-        assert proof_plan._authority_sha256(PLAN, {relative: crlf}) == original
+        assert (
+            proof_plan._authority_sha256(
+                PLAN, {**authority_input_bytes, relative: crlf}
+            )
+            == original
+        ), relative
 
 
 def test_receipt_verdict_rejects_source_commit_replay(tmp_path: Path) -> None:

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import shutil
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -17,6 +21,41 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
 )
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
+from molt.python_runtime_identity import validate_python_runtime_identity
+from tests.python_environment_test_support import runtime_identity_manifest
+
+
+@pytest.fixture(scope="module")
+def runtime_receipt() -> dict[str, object]:
+    return runtime_identity_manifest()
+
+
+@pytest.fixture
+def synthetic_runtime_probe(
+    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
+) -> list[tuple[str, ...]]:
+    """Replace only interpreter capture, leaving the identity consumers real."""
+    original = identity.process_guard.run_completed_command
+    output = json.dumps(runtime_receipt)
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "--capture-runtime" not in argv:
+            return original(argv, **kwargs)
+        assert tuple(argv[1:]) == (
+            "-I",
+            "-S",
+            str(
+                Path(identity.__file__).resolve().parents[1]
+                / "python_environment_identity.py"
+            ),
+            "--capture-runtime",
+        )
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    return calls
 
 
 def _provision_toolchain(root: Path) -> identity.RuntimeToolchainContentManifest:
@@ -123,7 +162,11 @@ def _resolve(
 
 
 @pytest.fixture
-def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def identity_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_runtime_probe: list[tuple[str, ...]],
+) -> Path:
     source = tmp_path / "runtime" / "src"
     source.mkdir(parents=True)
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
@@ -438,6 +481,202 @@ def test_tool_version_banner_never_serializes_installed_directory(
 
     assert result["version"] == "22.1.7"
     assert "poison" not in json.dumps(result)
+
+
+def test_python_identity_uses_exact_isolated_facade_and_preserves_v2_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
+) -> None:
+    executable = tmp_path / "selected-python.exe"
+    executable.write_bytes(b"selected-interpreter-launcher")
+    environment = {
+        "MOLT_BUILD_PYTHON": str(executable),
+        "PYTHON": "ignored-python",
+        "PATH": "untrusted-search-path",
+    }
+    observed: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed.append((tuple(argv), kwargs))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
+        )
+
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    result = identity._python_identity(environment)
+
+    assert result == {
+        "logical_name": "build-python",
+        "sha256": hashlib.sha256(b"selected-interpreter-launcher").hexdigest(),
+        "runtime": runtime_receipt,
+    }
+    assert observed == [
+        (
+            (
+                str(executable),
+                "-I",
+                "-S",
+                str(
+                    Path(identity.__file__).resolve().parents[1]
+                    / "python_environment_identity.py"
+                ),
+                "--capture-runtime",
+            ),
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "env": environment,
+                "timeout": 30,
+                "memory_guard_prefix": None,
+            },
+        )
+    ]
+    assert identity._SCHEMA == "molt.runtime-build-identity.v2"
+    assert identity._PAIR_SCHEMA == "molt.runtime-build-pair.v2"
+    assert identity._TOOLCHAIN_MANIFEST_SCHEMA == "molt.runtime-toolchain-content.v2"
+
+
+@pytest.mark.parametrize(
+    "corruption", ["malformed", "duplicate-root", "duplicate-node", "nonfinite"]
+)
+def test_python_identity_rejects_ambiguous_probe_json(
+    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object], corruption: str
+) -> None:
+    output = json.dumps(runtime_receipt)
+    if corruption == "malformed":
+        output = "{not-json"
+    elif corruption == "duplicate-root":
+        output = '{"schema":"discarded-duplicate",' + output[1:]
+    elif corruption == "duplicate-node":
+        assert '"size": 1' in output
+        output = output.replace('"size": 1', '"size": 1, "size": 1', 1)
+    else:
+        output = "NaN"
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout=output, stderr=""
+        ),
+    )
+    with pytest.raises(ValueError, match="probe emitted invalid JSON"):
+        identity._python_identity({})
+
+
+def test_python_identity_validates_receipt_after_successful_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout="{}", stderr=""
+        ),
+    )
+    with pytest.raises(ValueError, match="runtime closure shape is invalid"):
+        identity._python_identity({})
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,detail",
+    [
+        ("ignored stdout", " loader closure missing \n", "loader closure missing"),
+        (" unresolved import \n", "", "unresolved import"),
+        ("", "", "probe failed"),
+    ],
+)
+def test_python_identity_preserves_probe_failure_signal(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str, detail: str
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 7, stdout=stdout, stderr=stderr
+        ),
+    )
+    with pytest.raises(ValueError, match=detail):
+        identity._python_identity({})
+
+
+def test_python_identity_preserves_timeout_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout = subprocess.TimeoutExpired([sys.executable, "--capture-runtime"], 30)
+    calls = 0
+
+    def run(_argv: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        raise timeout
+
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        identity._python_identity({})
+    assert failure.value is timeout
+    assert calls == 1
+
+
+def test_python_identity_unresolved_interpreter_never_spawns_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: None)
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unresolved interpreter must not execute"
+        ),
+    )
+    with pytest.raises(ValueError, match="build Python is unresolved"):
+        identity._python_identity({})
+
+
+@pytest.mark.slow
+def test_python_identity_live_content_probe() -> None:
+    """Native integration owns the actual isolated scanner/consumer boundary."""
+    result = identity._python_identity(
+        {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
+    )
+    runtime = validate_python_runtime_identity(result["runtime"])
+    assert runtime["file_nodes"]
+    assert runtime["native_dependency_closure"]["status"] == "closed"
+    assert result["sha256"] == identity._sha256_file(Path(sys.executable))
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "replace", "restore-bytes"])
+def test_python_identity_binds_launcher_generation_across_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_receipt: dict[str, object],
+    mutation: str,
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"before")
+    before = executable.stat()
+
+    def run(argv, **_kwargs):
+        if mutation == "replace":
+            replacement = tmp_path / "replacement.exe"
+            replacement.write_bytes(b"before")
+            replacement.replace(executable)
+        else:
+            executable.write_bytes(b"after!")
+            if mutation == "restore-bytes":
+                executable.write_bytes(b"before")
+            os.utime(executable, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
+        )
+
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    with pytest.raises(ValueError, match="changed"):
+        identity._python_identity({"MOLT_BUILD_PYTHON": str(executable)})
 
 
 def test_tree_identity_rejects_logical_label_collision(tmp_path: Path) -> None:

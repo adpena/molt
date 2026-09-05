@@ -181,6 +181,67 @@ that a successful namespace commit rolled back.
 These artifact/custody checks do not establish compiled native/WASM conformance:
 execution claims still require replayable target/version/OS/architecture receipts.
 
+### Selected-Python content authority
+
+`molt.python_environment_identity` is the shared isolated probe for runtime builds,
+source-build provisioning and proof execution. Its runtime/environment validators
+own portable file-node, import-root, distribution and loaded-native-dependency
+identity. Source-build recipe schema 5 binds the selected uv-lock group closure,
+CPython runtime closure and realized environment. The lock closure includes root
+project dependencies as well as the selected group, matching uv's actual sync
+semantics. Marker-selected dependency and extras activation use a least fixed
+point; receipt validation rejects unreachable packages and ungrounded extras.
+Unrelated lock groups do not change that recipe. The runtime-build outer v2
+schema is unchanged by this cut.
+
+The path-only locator runs before proof watches are armed. Native files outside
+environment roots receive exact-file watches, never broad system-directory watches.
+After capture, every absolute file in the custody envelope must be covered; only
+then may the full child-executable policy be bound and payload execution begin.
+Capture timing and worker telemetry are queryable but excluded from semantic hashes.
+Relative portable nodes do not replace the absolute frozen-file custody used for
+replay and final rehashing. Capture v2 binds each semantic file-node JSON pointer
+to a zero-based index in the sorted absolute-file inventory. Multiple authorities
+can reference one physical generation without duplicated hashing or ambiguous
+content-count inference; distinct nodes inside one inventory cannot collapse to
+one custody index. Absolute-path validation uses the path's own Windows/POSIX
+grammar, independent of the receipt reader's OS. Windows device namespaces,
+reserved names and Win32-stripped spelling aliases are outside that grammar.
+Unicode-normalized semantic paths resolve through collision-checked host names;
+normalization never rewrites physical lookup paths. Complete node/package
+inventories live in the CAS;
+compact receipts carry digests, counts and policy-required external-source facts.
+Failed capture drains watches without claiming that a payload ran.
+
+`PythonFileCaptureContext` shares handle/change-time-bound hashes across runtime
+and environment inventories. Hashing has bounded workers and pending work; parser
+bytes are read on demand rather than retaining every source/bytecode/native image.
+Each public capture closes its file-mutation fence. Receipt-owned tool selection
+uses the same tree/access/link semantics, including Unicode host-name resolution.
+Requirement versions, console entry points and Meson/Ninja/pkg-config discovery
+come from the realized distribution inventory, not ambient metadata rescans.
+Selection and provisioning share one recipe computation per request; requirement
+resolution and tool lookup retain one validated inventory instance.
+
+Environment v6 owns exact declared external import regions, including Git-ignored
+source and data. Runtime and external imports share one minimal-root forest;
+overlapping regions are captured once. Owned absolute-directory `.pth` declarations
+bind editable distributions to their active roles. Custom executable/editable
+mapping finders are outside the verified capability subset. Reviewed upstream
+startup hooks are admitted by exact content provenance, live origin/code and
+explicit environmental conditions, never by filename or class name alone. This
+is input/import custody, not an operating-system sandbox or a guarantee about
+arbitrary future file I/O. The bootstrap policies and provenance belong to
+`molt.python_external_custody`; unknown templates require review rather than
+post-failure fallback. Full environment capture is not a location operation.
+
+Native dependency admission currently proves the **loaded import closure**, not
+all possible future lazy imports. Its capability vector gates CPython >=3.12,
+OS, architecture, ABI and linkage explicitly; unresolved non-contract libraries
+fail with diagnostics. Synthetic PE/ELF/Mach-O and receipt tests do not establish
+live OS/architecture parity. Full capture and guarded-process tests are marked
+slow and routed separately from the bounded unit lane by `tools/proof_plan.toml`.
+
 These compilers, generators, and source-producer environments are maintainer and
 source-build tooling. End users running shipped Molt binaries do not need uv,
 Meson, Cython, Ninja, LLVM, or this producer environment unless they explicitly

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.exact_json import canonical_json_sha256
 from tools.proof_queue_pkg import (
     custody_cas,
     process_image_capture,
@@ -26,6 +27,7 @@ def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     files = [
         {
+            "path": str(path),
             "resolved_path": str(path),
             "lexical_path": str(path),
             "sha256": digest,
@@ -36,26 +38,32 @@ def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
     ]
     return {
         "python": {
-            "executable": str(path),
-            "executable_sha256": digest,
-            "implementation": "CPython",
-            "version": "3.12.test",
-            "runtime_closure_sha256": "a" * 64,
-            "distribution_inventory_sha256": "b" * 64,
+            "schema": "molt.proof-python-toolchain.v3",
+            "identity_kind": "executable",
             "identity_sha256": "c" * 64,
-            "runtime": {
-                "runtime_file_count": 1,
-                "runtime_unique_file_count": 1,
-                "explicit_authority_files": files,
+            "location": {"selected_executable": str(path)},
+            "environment": {
+                "implementation": "cpython",
+                "version": "3.12.test",
+                "environment_closure_sha256": "b" * 64,
+                "runtime": {
+                    "runtime_closure_sha256": "a" * 64,
+                    "file_nodes": [{"id": "file-0", "sha256": digest}],
+                    "runtime_roots": [{"entries": files}],
+                },
+                "distributions": [
+                    {
+                        "name": "fixture",
+                        "version": "1",
+                        "installed_files": files,
+                        "file_manifest_sha256": "d" * 64,
+                    }
+                ],
+                "external_roots": [],
             },
-            "distributions": [
-                {
-                    "name": "fixture",
-                    "version": "1",
-                    "installed_files": files,
-                    "file_manifest_sha256": "d" * 64,
-                }
-            ],
+            "file_custody": files,
+            "node_custody": [{"node": "/runtime/file_nodes/0", "file_index": 0}],
+            "process_images": [],
             "inventory_profile": {"total_s": 1.0},
         }
     }
@@ -156,9 +164,12 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
         tmp_path / "cas", _identity(owned, rows=10)
     )
     assert telemetry["full_capture_count"] == 1
-    # Ordinary installed inventories live only in CAS; only editable source
-    # custody remains in the compact receipt summary.
-    assert summaries["python"]["distributions"] == []  # type: ignore[index]
+    # Bulky file-node and installed-file inventories live only in CAS.
+    summary = summaries["python"]
+    assert "file_custody" not in summary  # type: ignore[operator]
+    assert summary["environment"]["distributions"] == []  # type: ignore[index]
+    assert summary["environment"]["distribution_count"] == 1  # type: ignore[index]
+    assert summary["version"] == "3.12.test"  # type: ignore[index]
     assert (
         toolchain_capture.verify_capture(
             reference, workers=2, cas_root=tmp_path / "cas"
@@ -181,9 +192,65 @@ def test_toolchain_capture_deduplicates_references_and_rejects_conflicts(
     identity = _identity(owned, rows=1_000)
     assert len(toolchain_capture.frozen_files(identity)) == 1
     conflict = json.loads(json.dumps(identity))
-    conflict["python"]["distributions"][0]["installed_files"][0]["sha256"] = "f" * 64
+    conflict["python"]["environment"]["distributions"][0]["installed_files"][0][
+        "sha256"
+    ] = "f" * 64
     with pytest.raises(ValueError, match="conflicting identities"):
         toolchain_capture.frozen_files(conflict)
+
+
+def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
+    tmp_path: Path,
+) -> None:
+    owned = tmp_path / "stdlib" / "module.py"
+    owned.parent.mkdir()
+    owned.write_bytes(b"before")
+    identity = _identity(owned)
+    python = identity["python"]
+    python["environment"]["runtime"]["runtime_roots"] = [
+        {"id": "runtime-0", "entries": [{"path": "module.py", "node": "file-0"}]}
+    ]
+    python["environment"]["distributions"] = []
+    summaries, reference, telemetry = toolchain_capture.publish_capture(
+        tmp_path / "cas", identity
+    )
+    assert telemetry["frozen_file_count"] == 1
+    assert "file_custody" not in summaries["python"]
+    assert "node_custody" not in summaries["python"]
+    loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+    assert loaded["files"][0]["path"] == str(owned)
+    assert loaded["toolchains"]["python"]["file_custody"] == python["file_custody"]
+    assert loaded["toolchains"]["python"]["node_custody"] == python["node_custody"]
+    owned.write_bytes(b"after!")
+    verification = toolchain_capture.verify_capture(
+        reference, workers=1, cas_root=tmp_path / "cas"
+    )
+    assert verification["stable"] is False
+    assert verification["mismatches"][0]["path"] == str(owned)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "empty", "relative", "boolean-size", "digest"]
+)
+def test_python_capture_rejects_missing_or_malformed_frozen_file_authority(
+    tmp_path: Path, damage: str
+) -> None:
+    owned = tmp_path / "module.py"
+    owned.write_bytes(b"owned")
+    identity = _identity(owned)
+    python = identity["python"]
+    if damage == "missing":
+        del python["file_custody"]
+    elif damage == "empty":
+        python["file_custody"] = []
+    elif damage == "relative":
+        python["file_custody"][0]["path"] = "module.py"
+    elif damage == "boolean-size":
+        python["file_custody"][0]["size"] = True
+    else:
+        python["file_custody"][0]["sha256"] = "g" * 64
+    with pytest.raises(ValueError, match="frozen file custody"):
+        toolchain_capture.frozen_files(identity)
 
 
 def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) -> None:
@@ -224,6 +291,91 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
     assert len(compact_bytes) < 64 * 1024
     assert reference["compressed_bytes"] < reference["uncompressed_bytes"] // 10
     assert compact_peak < legacy_peak
+
+
+def test_compact_python_package_count_does_not_expand_receipt_or_allocation(
+    tmp_path: Path,
+) -> None:
+    owned = tmp_path / "owned.py"
+    owned.write_bytes(b"owned\n")
+    editable = {
+        "name": "editable-fixture",
+        "version": "1",
+        "file_manifest_sha256": "d" * 64,
+        "direct_url_sha256": "e" * 64,
+        "record_sha256": "f" * 64,
+        "external_source": {"root": "external-root-0", "path": "src"},
+    }
+    peaks: list[int] = []
+    sizes: list[int] = []
+    for package_count in (0, 2_000):
+        identity = _identity(owned)
+        bindings = [
+            {"node": f"/tree/file_nodes/{index}", "file_index": index}
+            for index in range(package_count)
+        ]
+        identity["python"]["node_custody"] = bindings
+        environment = identity["python"]["environment"]
+        distributions = [
+            editable,
+            *[
+                {
+                    "name": f"package-{index:04}",
+                    "version": "1",
+                    "file_manifest_sha256": "a" * 64,
+                    "direct_url_sha256": "b" * 64,
+                    "record_sha256": "c" * 64,
+                    "external_source": None,
+                }
+                for index in range(package_count)
+            ],
+        ]
+        environment["distributions"] = distributions
+        environment["distribution_inventory_sha256"] = canonical_json_sha256(
+            distributions
+        )
+        environment["external_roots"] = [
+            {"id": "external-root-0", "path": str(tmp_path)}
+        ]
+        gc.collect()
+        tracemalloc.start()
+        try:
+            summaries = toolchain_capture.compact_toolchains(identity)
+            receipt = {
+                "toolchains": summaries,
+                "toolchain_custody": {
+                    "prelaunch": summaries,
+                    "postcompletion": summaries,
+                    "identical": True,
+                },
+            }
+            encoded = json.dumps(receipt, sort_keys=True).encode()
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        peaks.append(peak)
+        sizes.append(len(encoded))
+        compact_environment = summaries["python"]["environment"]
+        assert "node_custody" not in summaries["python"]
+        assert compact_environment["distributions"] == [editable]
+        assert compact_environment["distribution_count"] == package_count + 1
+        assert (
+            compact_environment["distribution_inventory_sha256"]
+            == (environment["distribution_inventory_sha256"])
+        )
+        assert compact_environment["external_roots"] == environment["external_roots"]
+        published, reference, _telemetry = toolchain_capture.publish_capture(
+            tmp_path / "cas", identity
+        )
+        assert published == summaries
+        captured = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+        assert captured["toolchains"]["python"]["environment"]["distributions"] == (
+            distributions
+        )
+        assert captured["toolchains"]["python"]["node_custody"] == bindings
+    assert max(sizes) < 64 * 1024
+    assert sizes[1] <= sizes[0] + 64
+    assert peaks[1] <= peaks[0] + 16 * 1024
 
 
 def test_custody_file_publication_is_immutable_after_source_changes(

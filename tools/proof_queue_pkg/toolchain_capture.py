@@ -8,11 +8,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import tempfile
 import time
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
@@ -471,6 +472,30 @@ def frozen_files(payload: object) -> list[FrozenFile]:
 
     def visit(value: object) -> None:
         if isinstance(value, Mapping):
+            if value.get("schema") == "molt.proof-python-toolchain.v3":
+                custody = value.get("file_custody")
+                if not isinstance(custody, list) or not custody:
+                    raise ValueError("Python capture has no frozen file custody")
+                for row in custody:
+                    if not isinstance(row, Mapping):
+                        raise ValueError(
+                            "Python capture has malformed frozen file custody"
+                        )
+                    path = row.get("path")
+                    size = row.get("size")
+                    digest = row.get("sha256")
+                    if (
+                        not isinstance(path, str)
+                        or not Path(path).is_absolute()
+                        or not isinstance(size, int)
+                        or isinstance(size, bool)
+                        or size < 0
+                        or not isinstance(digest, str)
+                        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    ):
+                        raise ValueError(
+                            "Python capture has malformed frozen file custody"
+                        )
             path = value.get("resolved_path") or value.get("path")
             add(path, value.get("sha256"), value.get("size", value.get("size_bytes")))
             add(value.get("executable"), value.get("executable_sha256"))
@@ -487,47 +512,95 @@ def frozen_files(payload: object) -> list[FrozenFile]:
 
 
 def _compact_python(identity: Mapping[str, object]) -> dict[str, object]:
-    compact = {
+    compact: dict[str, object] = {
         key: value
         for key, value in identity.items()
-        if key not in {"runtime", "distributions", "inventory_profile"}
+        if key
+        not in {"environment", "process_images", "file_custody", "inventory_profile"}
         and not isinstance(value, (dict, list))
     }
-    runtime = identity.get("runtime")
+    environment = identity.get("environment")
+    if not isinstance(environment, Mapping):
+        raise ValueError("python toolchain has no environment closure")
+    environment = cast(Mapping[str, object], environment)
+    environment_summary: dict[str, object] = {
+        key: value
+        for key, value in environment.items()
+        if key
+        in {
+            "schema",
+            "implementation",
+            "version",
+            "cache_tag",
+            "soabi",
+            "operating_system",
+            "architecture",
+            "pointer_bits",
+            "gil_disabled",
+            "environment_closure_sha256",
+            "distribution_inventory_sha256",
+        }
+    }
+    runtime = environment.get("runtime")
     if isinstance(runtime, Mapping):
-        compact["runtime"] = {
+        environment_summary["runtime"] = {
             key: value
             for key, value in runtime.items()
             if not isinstance(value, (dict, list))
         }
-    distributions = identity.get("distributions")
+    distributions = environment.get("distributions")
+    if not isinstance(distributions, list):
+        raise ValueError("python toolchain has no distribution inventory")
     compact_distributions: list[dict[str, object]] = []
-    if isinstance(distributions, list):
-        for distribution in distributions:
-            if not isinstance(distribution, Mapping):
-                continue
-            row = {
-                key: distribution.get(key)
-                for key in (
-                    "name",
-                    "version",
-                    "file_manifest_sha256",
-                    "direct_url_sha256",
-                    "record_sha256",
-                )
-                if distribution.get(key) is not None
-            }
-            editable = distribution.get("editable_source")
-            if isinstance(editable, Mapping):
-                row["editable_source"] = {
-                    key: value
-                    for key, value in editable.items()
-                    if key != "files" and not isinstance(value, (dict, list))
-                }
-                compact_distributions.append(row)
-    compact["distributions"] = compact_distributions
+    for distribution in distributions:
+        if not isinstance(distribution, Mapping):
+            raise ValueError("python toolchain has a malformed distribution")
+        external = distribution.get("external_source")
+        if external is None:
+            continue
+        if not isinstance(external, Mapping):
+            raise ValueError("python toolchain has a malformed external source")
+        # Eligibility consumes editable-source ownership. The complete package
+        # inventory is already bound by its digest and retained in the CAS blob.
+        row = {
+            key: distribution.get(key)
+            for key in (
+                "name",
+                "version",
+                "file_manifest_sha256",
+                "direct_url_sha256",
+                "record_sha256",
+            )
+            if distribution.get(key) is not None
+        }
+        row["external_source"] = dict(external)
+        compact_distributions.append(row)
+    environment_summary["distribution_count"] = len(distributions)
+    environment_summary["distributions"] = compact_distributions
+    external_roots = environment.get("external_roots")
+    environment_summary["external_roots"] = (
+        [dict(row) for row in external_roots if isinstance(row, Mapping)]
+        if isinstance(external_roots, list)
+        else []
+    )
+    compact["environment"] = environment_summary
+    location = identity.get("location")
+    if not isinstance(location, Mapping):
+        raise ValueError("python toolchain has no pre-arm location receipt")
+    compact["location"] = dict(location)
+    compact["executable"] = location.get("selected_executable")
+    compact["implementation"] = environment.get("implementation")
+    compact["version"] = environment.get("version")
     profile = identity.get("inventory_profile")
-    compact["inventory_profile"] = dict(profile) if isinstance(profile, Mapping) else {}
+    if not isinstance(profile, Mapping):
+        raise ValueError("python toolchain has no capture profile")
+    compact["inventory_profile"] = dict(profile)
+    process_images = identity.get("process_images")
+    compact["process_images"] = (
+        [dict(row) for row in process_images if isinstance(row, Mapping)]
+        if isinstance(process_images, list)
+        else []
+    )
     return compact
 
 
@@ -537,7 +610,7 @@ def compact_toolchains(toolchains: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(raw, Mapping):
             raise ValueError(f"toolchain {name!r} has malformed identity")
         if name == "python":
-            summaries[name] = _compact_python(raw)
+            summaries[name] = _compact_python(cast(Mapping[str, object], raw))
         else:
             summary = {
                 key: value
