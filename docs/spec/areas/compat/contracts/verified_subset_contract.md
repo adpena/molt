@@ -61,6 +61,23 @@ passing or failing result. Every expected failure in the default
 `cpython_equivalence` scope is conformance debt. Neither an XFAIL nor an XPASS
 can produce a passing verified-subset receipt.
 
+## Exception observations and transformation parity
+
+A pending-call/eval-breaker marker adds an asynchronous role to an existing
+exception observation; it does not replace that observation's synchronous
+transfer or SSA payload. Generator fusion may retire a removed loop's exclusive
+polling role, including at a predecessor of a split latch. Call-return and
+surviving-loop roles remain. Only the shared exception-check elimination oracle
+may discard a synchronous observation after proving it redundant.
+
+The pending-call fixture builds the same manifest-declared C source against
+the active reference CPython and Molt. Native and WASM outputs are compared to
+that CPython execution, not merely to each other or to handwritten expected
+text. Every build receives the admitted reference language version. Mocked
+harness tests prove routing and mismatch detection only; they do not close
+runtime matrix cells. The differential corpus separately checks consumer
+arithmetic exceptions before a generator's post-yield side effects.
+
 ## Pass law and evidence
 
 A coordinate passes only when all applicable tests:

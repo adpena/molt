@@ -39,7 +39,6 @@ pub(super) fn wire_fused_loop(
     clone: &ClonedPoll,
     slot_infos: &[SlotInfo],
     preheader_init_ops: Vec<TirOp>,
-    obsolete_consumer_latch_polls: &std::collections::BTreeSet<(BlockId, usize)>,
 ) -> bool {
     let n_slots = slot_infos.len();
 
@@ -162,7 +161,6 @@ pub(super) fn wire_fused_loop(
     // The consumer body block currently starts with `elem = Index(orig_pair, 0)`
     // (referencing the now-dead IterNext pair). Remove that leading op (elem is
     // now bound by `pre_block`).
-    remove_obsolete_consumer_latch_polls(caller, candidate, obsolete_consumer_latch_polls);
     remove_orig_elem_index(caller, candidate);
 
     // --- 4. Route the cloned exhausted-return blocks to the loop exit. ---
@@ -200,32 +198,6 @@ pub(super) fn wire_fused_loop(
     prune_unreachable_blocks(caller);
 
     true
-}
-
-fn remove_obsolete_consumer_latch_polls(
-    caller: &mut TirFunction,
-    candidate: &FusionCandidate,
-    sites: &std::collections::BTreeSet<(BlockId, usize)>,
-) {
-    let old_header = candidate.loop_header.unwrap_or(candidate.cond_block);
-    let mut by_block: std::collections::BTreeMap<BlockId, Vec<usize>> =
-        std::collections::BTreeMap::new();
-    for &(block, index) in sites {
-        if block_targets(caller, block, old_header) {
-            by_block.entry(block).or_default().push(index);
-        }
-    }
-    for (block, mut indices) in by_block {
-        indices.sort_unstable_by(|left, right| right.cmp(left));
-        let ops = &mut caller.blocks.get_mut(&block).unwrap().ops;
-        for index in indices {
-            assert!(
-                ops[index].is_async_work_poll(),
-                "generator fusion obsolete-latch plan drifted before rewrite"
-            );
-            ops.remove(index);
-        }
-    }
 }
 
 /// Remove every block unreachable from the function entry, and drop any dangling

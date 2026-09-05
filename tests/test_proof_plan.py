@@ -462,6 +462,9 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(parity)
     )
+    harness = by_id["python.unit.harness"]
+    assert "tests/test_finally_pending_observer_harness.py" in harness.argv
+    assert "tests/test_finally_pending_observer_parity.py" not in harness.argv
 
 
 def test_git_toolchain_declares_lossless_process_image_probe() -> None:
@@ -963,6 +966,27 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         )
         assert [command.id for command in commands] == entry["command_ids"]
         assert all(command.data["cell"] == entry["cell"] for command in commands)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["tools/windows_process_api.py", "tests/tools/test_windows_process_api.py"],
+)
+def test_windows_process_binding_selects_and_executes_portability_proof(
+    path: str,
+) -> None:
+    assert path in PLAN.authority_inputs
+    assert _classes(path)["platform_portability"]
+    commands = [
+        command
+        for command in PLAN.commands
+        if command.id.startswith("portability.queue.")
+    ]
+    assert len(commands) == 3
+    assert all(
+        "tests/tools/test_windows_process_api.py" in command.data["argv"]
+        for command in commands
+    )
 
 
 def _receipt_for(

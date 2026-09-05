@@ -495,6 +495,75 @@ fn wire_late_bail_is_byte_identical_including_cfg_and_ids() {
 }
 
 #[test]
+fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
+    for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod, OpCode::Call] {
+        for split_latch in [false, true] {
+            let poll = counter_poll();
+            let mut caller = consumer();
+            let candidate = only_candidate(&poll, &caller);
+            let body = candidate.body_block;
+            let original = {
+                let ops = &mut caller.blocks.get_mut(&body).unwrap().ops;
+                let zero = ops[0].results[0];
+                ops[2].opcode = opcode;
+                if opcode != OpCode::Call {
+                    ops[2].operands.push(zero);
+                }
+                let observation = ops.last_mut().unwrap();
+                observation.source_span = Some((123, 145));
+                observation.clone()
+            };
+            if split_latch {
+                let latch = caller.fresh_block();
+                let terminator = std::mem::replace(
+                    &mut caller.blocks.get_mut(&body).unwrap().terminator,
+                    Terminator::Branch {
+                        target: latch,
+                        args: vec![],
+                    },
+                );
+                caller.blocks.insert(
+                    latch,
+                    TirBlock {
+                        id: latch,
+                        args: vec![],
+                        ops: vec![],
+                        terminator,
+                    },
+                );
+            }
+            let candidate = only_candidate(&poll, &caller);
+            let mut stats = FusionStats::default();
+            assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+            let observation = caller.blocks[&body].ops.last().unwrap();
+            let mut expected = original;
+            if opcode != OpCode::Call {
+                expected.clear_async_work_poll();
+            }
+            assert_eq!(observation.opcode, OpCode::CheckException, "{opcode:?}");
+            assert_eq!(
+                observation.attrs, expected.attrs,
+                "{opcode:?}, split={split_latch}"
+            );
+            assert_eq!(observation.operands, expected.operands);
+            assert_eq!(observation.source_span, expected.source_span);
+            assert!(caller.label_id_map.values().any(|label| *label == 90));
+
+            // Only the shared exception oracle may remove a now-unmarked check;
+            // all these bodies can raise, so it must preserve the transfer.
+            super::super::check_exception_elim::run(&mut caller);
+            assert!(
+                caller.blocks[&body].ops.iter().any(|op| {
+                    op.opcode == OpCode::CheckException
+                        && op.attrs.get("value") == Some(&AttrValue::Int(90))
+                }),
+                "{opcode:?}, split={split_latch}"
+            );
+        }
+    }
+}
+
+#[test]
 fn single_yield_in_loop_recognized_and_spliced() {
     let mut module = TirModule {
         name: "m".into(),
