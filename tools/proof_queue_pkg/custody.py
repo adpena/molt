@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from ctypes import wintypes
 import os
 import shlex
 import subprocess
@@ -19,6 +20,7 @@ from tools.process_spawn import (
     hidden_windows_process_group_kwargs,
 )
 from tools.proof_queue_pkg import state
+from tools.windows_process_api import process_query_api
 
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 
@@ -230,13 +232,6 @@ _ERROR_ACCESS_DENIED = 5
 _STILL_ACTIVE = 259
 
 
-class _FILETIME(ctypes.Structure):
-    _fields_ = [
-        ("dwLowDateTime", ctypes.c_uint32),
-        ("dwHighDateTime", ctypes.c_uint32),
-    ]
-
-
 def _windows_process_creation_ticks(pid: int) -> int | None:
     """Return the process creation time as 100ns ticks since 1601, or None.
 
@@ -246,7 +241,7 @@ def _windows_process_creation_ticks(pid: int) -> int | None:
     identifies a process across PID reuse: a recycled PID belongs to a process
     started later, so its creation time differs.
     """
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = process_query_api()
     handle = kernel32.OpenProcess(
         _PROCESS_QUERY_LIMITED_INFORMATION,
         False,
@@ -255,10 +250,10 @@ def _windows_process_creation_ticks(pid: int) -> int | None:
     if not handle:
         return None
     try:
-        creation = _FILETIME()
-        exit_time = _FILETIME()
-        kernel_time = _FILETIME()
-        user_time = _FILETIME()
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel_time = wintypes.FILETIME()
+        user_time = wintypes.FILETIME()
         if not kernel32.GetProcessTimes(
             handle,
             ctypes.byref(creation),
@@ -324,7 +319,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = process_query_api()
         handle = kernel32.OpenProcess(
             _PROCESS_QUERY_LIMITED_INFORMATION,
             False,
@@ -333,7 +328,7 @@ def _pid_alive(pid: int) -> bool:
         if not handle:
             return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
         try:
-            exit_code = ctypes.c_ulong()
+            exit_code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return False
             return exit_code.value == _STILL_ACTIVE

@@ -29,6 +29,19 @@ environments are parsed by `policy` into string tables and case-folded locked
 names before admission; receipt objects and string lists are validated by
 `runner` before they reach custody verification. Malformed input must produce a
 policy or receipt diagnostic, never an unchecked cast or incidental type error.
+`pact.NamedProofSpec` types all built-in named lanes; queued and detached modes
+share one submission path, and detached dispatch closes its database connection
+on both success and failure. Process cleanup lives in
+`memory_guard_core.process_custody`; guard entrypoints must not rebind that
+module's callbacks. Tests inject samplers or patch the owning module directly.
+Running and terminal guard summaries share `reporting.GuardReportContext`.
+Win32 process-query signatures come from `tools/windows_process_api.py`; query-only
+consumers share its cached table, while consumers binding additional APIs own
+their DLL table and apply the shared binder. This preserves pointer-width handles
+without allowing one consumer's ctypes structures to overwrite another's ABI.
+Release and source identity probes use the canonical command execution boundary
+with finite deadlines. The raw-call audit follows callable aliases and static
+`getattr` capability queries as well as direct calls; lookup alone is not execution.
 
 ## When To Use It
 

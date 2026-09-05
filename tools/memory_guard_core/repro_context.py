@@ -3,16 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import json
 from pathlib import Path
-from typing import Protocol
-
-
-class ProcessSampleLike(Protocol):
-    pid: int
-    ppid: int
-    rss_kb: int
-    command: str
-    pgid: int | None
-    elapsed_sec: int | None
+from tools.memory_guard_core.process_model import ProcessSample
 
 
 REPRO_ENV_KEYS = {
@@ -111,7 +102,7 @@ def _safe_repro_env_delta(
     }
 
 
-def _process_sample_payload(sample: ProcessSampleLike) -> dict[str, object]:
+def _process_sample_payload(sample: ProcessSample) -> dict[str, object]:
     return {
         "pid": sample.pid,
         "ppid": sample.ppid,
@@ -123,7 +114,7 @@ def _process_sample_payload(sample: ProcessSampleLike) -> dict[str, object]:
 
 
 def _bounded_process_sample_payload(
-    sample: ProcessSampleLike,
+    sample: ProcessSample,
     *,
     max_command_chars: int = 512,
 ) -> dict[str, object]:
@@ -135,12 +126,12 @@ def _bounded_process_sample_payload(
 
 
 def _host_control_plane_payload(
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     *,
-    sample_pgid: Callable[[ProcessSampleLike], int],
-    is_host_control_plane_process: Callable[[ProcessSampleLike], bool],
+    sample_pgid: Callable[[ProcessSample], int],
+    is_host_control_plane_process: Callable[[ProcessSample], bool],
     protected_process_group_ids: Callable[
-        [Mapping[int, ProcessSampleLike]],
+        [Mapping[int, ProcessSample]],
         set[int],
     ],
     max_samples: int = 32,
@@ -172,7 +163,7 @@ def _host_control_plane_payload(
 
 
 def _process_lineage_payload(
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     *,
     pid: int,
     max_depth: int = 8,
@@ -331,7 +322,7 @@ def _read_pytest_current_test_json(path: Path) -> dict[str, object]:
 
 
 def _lineage_pid_set(
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     *,
     pid: int,
     max_depth: int = 16,
@@ -354,7 +345,7 @@ def _lineage_pid_set(
 def _pytest_worker_record_payloads(
     aggregate_path: Path,
     *,
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     incident_pid: int | None,
 ) -> list[dict[str, object]]:
     worker_dir = aggregate_path.with_name(f"{aggregate_path.name}.d")
@@ -376,11 +367,8 @@ def _pytest_worker_record_payloads(
         record = _read_pytest_current_test_json(path)
         decoded = record.get("payload")
         if isinstance(decoded, dict) and incident_lineage:
-            try:
-                record_pid = int(decoded.get("pid", 0) or 0)
-            except (TypeError, ValueError):
-                record_pid = 0
-            if record_pid in incident_lineage:
+            record_pid = decoded.get("pid")
+            if type(record_pid) is int and record_pid in incident_lineage:
                 record["incident_match"] = "pid_lineage"
         records.append(record)
     if len(paths) > PYTEST_CURRENT_TEST_WORKER_MAX_FILES:
@@ -396,7 +384,7 @@ def _pytest_worker_record_payloads(
 def _pytest_current_test_file_payload(
     environ: Mapping[str, str],
     *,
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     incident_pid: int | None = None,
     root: Path,
     summary_dir: Path,
@@ -435,7 +423,7 @@ def repro_context_payload(
     root: Path,
     summary_dir: Path,
     current_test_file_env: str,
-    samples: Mapping[int, ProcessSampleLike],
+    samples: Mapping[int, ProcessSample],
     pid: int,
     parent_pid: int,
     current_process_group_id: int | None,
@@ -447,10 +435,10 @@ def repro_context_payload(
     platform_name: str,
     platform_detail: str,
     machine: str,
-    sample_pgid: Callable[[ProcessSampleLike], int],
-    is_host_control_plane_process: Callable[[ProcessSampleLike], bool],
+    sample_pgid: Callable[[ProcessSample], int],
+    is_host_control_plane_process: Callable[[ProcessSample], bool],
     protected_process_group_ids: Callable[
-        [Mapping[int, ProcessSampleLike]],
+        [Mapping[int, ProcessSample]],
         set[int],
     ],
     max_process_rss_kb: int | None = None,

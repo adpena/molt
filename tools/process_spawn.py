@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
-from typing import Any, TextIO, TypedDict
+from typing import IO, Any, TextIO, TypedDict
 
 
 class ProcessGroupKwargs(TypedDict, total=False):
@@ -18,6 +18,16 @@ class InheritedStdioKwargs(TypedDict, total=False):
     stdin: TextIO
     stdout: TextIO
     stderr: TextIO
+
+
+class ProcessSpawnKwargs(ProcessGroupKwargs, total=False):
+    cwd: str | os.PathLike[str] | None
+    env: Mapping[str, str] | None
+    text: bool
+    stdin: int | IO[str] | IO[bytes] | None
+    stdout: int | IO[str] | IO[bytes] | None
+    stderr: int | IO[str] | IO[bytes] | None
+    pass_fds: tuple[int, ...]
 
 
 def _subprocess_flag(module: ModuleType | Any, name: str) -> int:
