@@ -84,6 +84,15 @@ projection and rejects missing, duplicate, excluded, malformed, stale, or
 self-inconsistent outcomes. `tools/release_exit_gate.py` requires the exact
 receipt closure; one receipt or one locally green host is not E3.
 
+Receipt object keys derive from their typed records. Release assembly consumes
+the same scalar and object validators; it must not mirror those predicates.
+Malformed JSON-shaped outcome values produce diagnostics, not coercions or
+incidental exceptions. In particular, booleans are not schema versions or return
+codes, and finite integer metrics retain arbitrary precision. Nightly bundle
+manifests and their embedded link metadata use `molt.exact_json` for duplicate-key
+and non-finite-number rejection; validated file records stay typed through
+extraction instead of reinterpreting strings and integers at each consumer.
+
 ## Commands and CI
 
 ```text

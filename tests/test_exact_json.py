@@ -20,10 +20,23 @@ def test_loads_exact_rejects_duplicate_keys_at_every_depth(payload: str) -> None
         exact_json.loads_exact(payload)
 
 
-@pytest.mark.parametrize("token", ("NaN", "Infinity", "-Infinity"))
+@pytest.mark.parametrize(
+    "token",
+    ("NaN", "Infinity", "-Infinity", "1e9999", "-1e9999", "1.7976931348623159e308"),
+)
 def test_loads_exact_rejects_every_non_finite_number(token: str) -> None:
     with pytest.raises(exact_json.ExactJsonError, match="non-finite JSON number"):
         exact_json.loads_exact(f'{{"value":{token}}}')
+
+
+@pytest.mark.parametrize(
+    "token", ["1.7976931348623157e308", "5e-324", "-0.0", "1e-9999"]
+)
+def test_exact_json_preserves_finite_float_boundaries(token: str) -> None:
+    actual = exact_json.loads_exact(token)
+    expected = float(token)
+    assert actual == expected
+    assert math.copysign(1.0, actual) == math.copysign(1.0, expected)
 
 
 def test_exact_encoding_is_deterministic_utf8_and_finite(tmp_path: Path) -> None:

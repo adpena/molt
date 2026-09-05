@@ -21,6 +21,24 @@ SOURCE_SHA = "a" * 40
 NOW = dt.datetime(2026, 8, 14, 1, 0, tzinfo=dt.timezone.utc)
 
 
+@pytest.mark.parametrize("target", [[], {}, None, True])
+def test_registry_target_wrong_types_return_diagnostics(target: object) -> None:
+    _coordinates, problems = release_exit_gate._validate_registry_snapshot(
+        [
+            {
+                "target": target,
+                "variant": {
+                    "cpython": "3.12",
+                    "abi_tier": "cpython-abi",
+                    "target_triple": "x86_64-unknown-linux-gnu",
+                },
+                "packages": {},
+            }
+        ]
+    )
+    assert any("target must be native or wasm" in problem for problem in problems)
+
+
 def _load_gate(monkeypatch: pytest.MonkeyPatch, *, stub_source: bool = True):
     module = release_exit_gate
     monkeypatch.setattr(module.pa.perf_schema, "validate_board", lambda _doc: [])

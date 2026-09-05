@@ -60,7 +60,6 @@ _EVIDENCE_KEYS = frozenset({"role", "path", "sha256", "size"})
 _REGISTRY_KEYS = frozenset({"target", "variant", "packages"})
 _VARIANT_KEYS = frozenset({"cpython", "abi_tier", "target_triple"})
 _PACKAGE_KEYS = frozenset({"version", "module_set", "identity_sha256"})
-_HEX = frozenset("0123456789abcdef")
 _WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
 
@@ -97,18 +96,6 @@ def _load_json(path: Path, *, label: str) -> Mapping[str, Any]:
 
 def _valid_source_sha(value: object) -> bool:
     return is_git_object_id(value)
-
-
-def _sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in _HEX for character in value)
-    )
-
-
-def _nonnegative_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -251,20 +238,27 @@ def _validate_registry_snapshot(
             problems.append(f"{label} schema is invalid")
             continue
         target = item.get("target")
-        if target not in {"native", "wasm"}:
+        if not isinstance(target, str) or target not in {"native", "wasm"}:
             problems.append(f"{label}.target must be native or wasm")
         else:
             targets.append(target)
         variant = item.get("variant")
         coordinate: tuple[str, str, str] | None = None
-        if not isinstance(variant, Mapping) or set(variant) != _VARIANT_KEYS:
+        if not rcr._is_exact_object(variant, _VARIANT_KEYS):
             problems.append(f"{label}.variant schema is invalid")
         else:
-            raw = tuple(
-                variant.get(field) for field in ("cpython", "abi_tier", "target_triple")
-            )
-            if all(isinstance(part, str) and part for part in raw):
-                coordinate = raw  # type: ignore[assignment]
+            python = variant.get("cpython")
+            abi = variant.get("abi_tier")
+            triple = variant.get("target_triple")
+            if (
+                isinstance(python, str)
+                and python
+                and isinstance(abi, str)
+                and abi
+                and isinstance(triple, str)
+                and triple
+            ):
+                coordinate = (python, abi, triple)
                 rendered_coordinates.append(coordinate)
             else:
                 problems.append(f"{label}.variant values must be non-empty strings")
@@ -286,19 +280,24 @@ def _validate_registry_snapshot(
                     for field in ("version", "module_set")
                 ):
                     problems.append(f"{package_label} version/module_set is invalid")
-                if not _sha256(package_item.get("identity_sha256")):
+                if not rcr._is_sha256(package_item.get("identity_sha256")):
                     problems.append(
                         f"{package_label}.identity_sha256 must be lowercase SHA-256"
                     )
-        if coordinate is not None and isinstance(packages, Mapping):
+        if (
+            coordinate is not None
+            and isinstance(variant, Mapping)
+            and isinstance(packages, Mapping)
+        ):
+            normalized_packages = {}
+            for package in ("numpy", "scipy"):
+                package_item = packages.get(package)
+                if isinstance(package_item, Mapping):
+                    normalized_packages[package] = dict(package_item)
             coordinates[coordinate] = {
                 "target": target,
                 "variant": dict(variant),
-                "packages": {
-                    package: dict(packages[package])
-                    for package in ("numpy", "scipy")
-                    if isinstance(packages.get(package), Mapping)
-                },
+                "packages": normalized_packages,
             }
     if rendered_coordinates != sorted(set(rendered_coordinates)):
         problems.append("manifest registry coordinates must be sorted and unique")
@@ -341,7 +340,7 @@ def _validate_evidence_records(
         return {}, ["manifest evidence must be a list"]
     for index, item in enumerate(value):
         label = f"manifest evidence[{index}]"
-        if not isinstance(item, Mapping) or set(item) != _EVIDENCE_KEYS:
+        if not rcr._is_exact_object(item, _EVIDENCE_KEYS):
             problems.append(f"{label} schema is invalid")
             continue
         role = item.get("role")
@@ -358,18 +357,18 @@ def _validate_evidence_records(
             label=label,
         )
         problems.extend(path_problems)
-        if not _sha256(item.get("sha256")):
+        if not rcr._is_sha256(item.get("sha256")):
             problems.append(f"{label}.sha256 must be lowercase SHA-256")
-        if not _nonnegative_int(item.get("size")):
+        if not rcr._nonnegative_int(item.get("size")):
             problems.append(f"{label}.size must be a non-negative integer")
         if path is not None:
             if not path.is_file():
                 problems.append(f"{label} artifact does not exist: {path}")
             else:
-                if _nonnegative_int(item.get("size")):
+                if rcr._nonnegative_int(item.get("size")):
                     if path.stat().st_size != item["size"]:
                         problems.append(f"{label} artifact size mismatch: {path}")
-                if _sha256(item.get("sha256")):
+                if rcr._is_sha256(item.get("sha256")):
                     if (
                         stable_file_sha256(
                             path,
@@ -598,7 +597,7 @@ def verify_release_bundle(
             continue
         coordinate = pwr.acceptance_coordinate(receipt)
         expected = registry.get(coordinate) if coordinate is not None else None
-        if expected is None:
+        if expected is None or coordinate is None:
             problems.append(
                 f"E1 {target} receipt has no exact manifest registry coordinate"
             )
