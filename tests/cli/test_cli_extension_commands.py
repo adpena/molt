@@ -21,7 +21,9 @@ from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _manifest_support_file_payloads,
 )
-from molt.cli.source_extensions import source_extension_manifest_source_path
+from molt.cli.source_extension_input_custody import (
+    resolve_source_extension_manifest_input,
+)
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
     source_extension_object_closure_digest,
@@ -189,43 +191,28 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
         cli_wasm_toolchain.resolve_wasm_linker()
 
 
-def test_manifest_source_resolver_computes_relocation_roots_once(
+def test_manifest_source_resolver_never_guesses_relocation_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_root = tmp_path / "source"
-    build_root = tmp_path / "build"
     source_root.mkdir()
-    build_root.mkdir()
+    source = source_root / "source.c"
+    source.write_text("int value;", encoding="utf-8")
     manifest_path = tmp_path / "sealed" / "extension_manifest.json"
     manifest_path.parent.mkdir()
-    manifest = {
-        "source_plan": {
-            "source_root": str(source_root),
-            "build_root": str(build_root),
-        }
-    }
-    calls: list[Path] = []
-    original = cli_source_extensions._source_extension_relocation_roots
+    monkeypatch.chdir(source_root)
 
-    def counted(source: Path, *, manifest_path: Path) -> tuple[Path, ...]:
-        calls.append(source)
-        return original(source, manifest_path=manifest_path)
-
-    monkeypatch.setattr(
-        cli_source_extensions,
-        "_source_extension_relocation_roots",
-        counted,
+    resolved, errors = resolve_source_extension_manifest_input(
+        "source.c", manifest_path=manifest_path
     )
-    resolver = cli_source_extensions.SourceExtensionManifestSourceResolver(
-        manifest=manifest,
-        manifest_path=manifest_path,
+    assert resolved is None
+    assert errors == []
+    resolved, errors = resolve_source_extension_manifest_input(
+        str(source), manifest_path=manifest_path
     )
-
-    resolver.resolve("missing-a.c")
-    resolver.resolve("missing-b.c")
-
-    assert calls == [source_root, build_root]
+    assert resolved == source.resolve()
+    assert errors == []
 
 
 def test_manifest_support_file_object_can_alias_build_source_path(
@@ -1718,6 +1705,37 @@ def test_default_molt_c_api_version_fallback_tracks_current_contract(
     assert _default_molt_c_api_version(root) == _CURRENT_MOLT_C_API_VERSION
 
 
+@pytest.mark.parametrize(
+    ("config", "expected", "error"),
+    [
+        ({}, [], None),
+        ({"python_exports": []}, [], None),
+        ({"python_exports": ["pkg.z", "pkg.a", "pkg.z"]}, ["pkg.a", "pkg.z"], None),
+        ({"python-exports": ["pkg.z", "pkg.a"]}, ["pkg.a", "pkg.z"], None),
+        ({"python_exports": None}, [], "must be a list"),
+        ({"python_exports": "pkg.a"}, [], "must be a list"),
+        ({"python_exports": ["pkg..a"]}, [], "invalid Python module name"),
+        ({"python_exports": [], "python-exports": ["pkg.a"]}, [], "both"),
+    ],
+)
+def test_extension_export_configuration_is_encoded_at_producer_boundary(
+    config: dict[str, object], expected: list[str], error: str | None
+) -> None:
+    from molt.cli.extension_commands import _extension_manifest_public_exports
+
+    errors: list[str] = []
+    exports, callables = _extension_manifest_public_exports(
+        config, package="pkg", errors=errors
+    )
+    assert exports == expected
+    assert callables == []
+    if error is None:
+        assert errors == []
+    else:
+        assert len(errors) == 1
+        assert error in errors[0]
+
+
 def test_extension_build_emits_public_exports_in_manifest(
     tmp_path: Path,
     monkeypatch,
@@ -2164,6 +2182,113 @@ def test_source_extension_preprocessor_uses_macro_values_and_python_version() ->
     assert required == {"PyTuple_New"}
 
 
+def test_direct_build_audits_and_reseals_extracted_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from molt.cli import source_extension_producer as producer
+    from molt.target_python import _parse_target_python_version
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_meson_source_plan_project(project)
+    compile_database = project / "build" / "compile_commands.json"
+    compile_rows = json.loads(compile_database.read_text())
+    for row in compile_rows:
+        row["arguments"].append("--target=wasm32-wasip1")
+    compile_database.write_text(json.dumps(compile_rows), encoding="utf-8")
+    wasm_bytes = _wasm_exporting_i64_unary_symbols(
+        ("PyInit_demoext", "helper_generated")
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(wasm_bytes)
+        _write_fake_compiler_depfile(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
+    sysroot = _write_fake_wasi_sysroot(tmp_path)
+    monkeypatch.setattr(cli_commands, "resolve_wasi_sysroot", lambda: sysroot)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext"}, {"helper_generated"}),
+            "helper_generated": ({"helper_generated"}, set()),
+        },
+    )
+    output = project / "dist"
+    assert (
+        cli_commands.extension_build(
+            project=str(project),
+            out_dir=str(output),
+            abi_tier="cpython-abi",
+            target="wasm",
+            molt_abi=_default_molt_c_api_version(ROOT),
+            python_version="3.12",
+            deterministic=True,
+        )
+        == 0
+    )
+    capsys.readouterr()
+    manifest = json.loads((output / "extension_manifest.json").read_text())
+    produced = producer._audit_extension_output(
+        output_root=output,
+        module="pkg.demoext",
+        source_plan_target="pkg.demoext",
+        expected_target_triple=manifest["target_triple"],
+        expected_target_python=_parse_target_python_version("3.12"),
+        expected_package_version="0.1.0",
+        python_exports=["pkg.demoext"],
+        capabilities=["fs.read"],
+        provided_capsules=[],
+    )
+    # An earlier ancestor deliberately repeats the package name. Only the
+    # explicit module-relative artifact placement owns the extracted root.
+    extracted = tmp_path / "pkg" / "extracted"
+    with zipfile.ZipFile(produced.wheel_path) as wheel:
+        embedded = json.loads(wheel.read("extension_manifest.json"))
+        assert embedded["extension_sha256"] == manifest["extension_sha256"]
+        assert embedded["runtime_python_import_modules"] == []
+        assert (
+            wheel.read("pkg/__init__.py")
+            == (project / "pkg" / "__init__.py").read_bytes()
+        )
+        wheel.extractall(extracted)
+    # Invalidate every original input and both original output views; all
+    # subsequent reads must come from the extracted wheel.
+    for item in manifest["object_closure"]["objects"]:
+        (output / item["source"]).unlink(missing_ok=True)
+    for source in (
+        project / "pkg" / "demoext.c",
+        project / "build" / "generated" / "helper_generated.c",
+    ):
+        source.unlink(missing_ok=True)
+    resealed = tmp_path / "resealed"
+    assert (
+        cli.extension_seal(
+            path=str(extracted / "extension_manifest.json"),
+            out_dir=str(resealed),
+            json_output=True,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    sealed = json.loads((resealed / "extension_manifest.json").read_text())
+    assert sealed["extension_sha256"] == embedded["extension_sha256"]
+    assert (
+        sealed["runtime_python_import_modules"]
+        == embedded["runtime_python_import_modules"]
+    )
+    assert (resealed / "pkg" / "__init__.py").read_bytes() == (
+        extracted / "pkg" / "__init__.py"
+    ).read_bytes()
+
+
 def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2510,9 +2635,10 @@ def test_extension_build_follows_linked_static_library_source_closure(
         in (manifest["source_plan"]["sources"])
     )
     object_sources = {
-        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
+        (out_dir / obj["source"]).read_bytes()
+        for obj in manifest["object_closure"]["objects"]
     }
-    assert (project_root / "pkg" / "unique.cpp").resolve() in object_sources
+    assert (project_root / "pkg" / "unique.cpp").read_bytes() in object_sources
     defined_symbols = {
         symbol
         for obj in manifest["object_closure"]["objects"]
@@ -2579,9 +2705,10 @@ def test_extension_build_excludes_linked_static_library(
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     object_sources = {
-        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
+        (out_dir / obj["source"]).read_bytes()
+        for obj in manifest["object_closure"]["objects"]
     }
-    assert (project_root / "pkg" / "unique.cpp").resolve() not in object_sources
+    assert (project_root / "pkg" / "unique.cpp").read_bytes() not in object_sources
     assert (
         str((project_root / "pkg" / "unique.cpp").resolve())
         not in (manifest["source_plan"]["sources"])
@@ -2664,11 +2791,12 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         not in manifest["source_plan"]["generated_sources"]
     )
     object_sources = {
-        Path(obj["source"]).resolve() for obj in manifest["object_closure"]["objects"]
+        (out_dir / obj["source"]).read_bytes()
+        for obj in manifest["object_closure"]["objects"]
     }
     assert (
         project_root / "build" / "generated" / "loops_arithmetic.dispatch.c"
-    ).resolve() in object_sources
+    ).read_bytes() in object_sources
     defined_symbols = {
         symbol
         for obj in manifest["object_closure"]["objects"]
@@ -4735,7 +4863,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
         ]
 
 
-def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
+def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
     tmp_path: Path,
     capsys,
 ) -> None:
@@ -4847,9 +4975,18 @@ def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
     assert rc == 0
     capsys.readouterr()
     expected_sources = {
-        "numpy/_core/src/npy_static_data.c",
-        "numpy/_core/libloops.a.p/loops.dispatch.c",
+        (
+            sealed_root
+            / "provenance"
+            / "compiled-inputs"
+            / "sha256"
+            / digest[:2]
+            / digest
+        ).resolve()
+        for digest in (source_sha256, generated_source_sha256)
     }
+    source_path.unlink()
+    generated_source_path.unlink()
     for manifest_rel in (
         "extension_manifest.json",
         "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
@@ -4859,18 +4996,39 @@ def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
         sealed_sources = {
             item["source"] for item in sealed_manifest["object_closure"]["objects"]
         }
-        assert sealed_sources == expected_sources
+        assert {
+            (sealed_manifest_path.parent / source).resolve()
+            for source in sealed_sources
+        } == expected_sources
         assert all(not Path(source).is_absolute() for source in sealed_sources)
         for item in sealed_manifest["object_closure"]["objects"]:
-            resolved, errors = source_extension_manifest_source_path(
+            resolved, errors = resolve_source_extension_manifest_input(
                 item["source"],
-                manifest=sealed_manifest,
                 manifest_path=sealed_manifest_path,
                 expected_sha256=item["source_sha256"],
             )
             assert errors == []
             assert resolved is not None
             assert resolved.is_file()
+        resealed_root = tmp_path / (
+            "resealed-root"
+            if manifest_rel == "extension_manifest.json"
+            else "resealed-artifact"
+        )
+        assert (
+            cli.extension_seal(
+                path=str(sealed_manifest_path),
+                out_dir=str(resealed_root),
+                python_export=["numpy"],
+                json_output=True,
+            )
+            == 0
+        )
+        resealed = json.loads((resealed_root / "extension_manifest.json").read_text())
+        assert resealed["runtime_python_import_modules"] == []
+        assert set(resealed["sources"]) == {
+            path.relative_to(sealed_root).as_posix() for path in expected_sources
+        }
 
 
 def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_custody(
@@ -4948,8 +5106,9 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
 
     assert rc == 2
     captured = capsys.readouterr()
-    assert "cannot derive runtime_python_import_modules" in captured.err
+    assert "source missing" in captured.err
     assert "object_closure.objects[0].source" in captured.err
+    assert not (tmp_path / "sealed").exists()
 
 
 def test_extension_seal_rejects_fake_module_attr_callable_export(

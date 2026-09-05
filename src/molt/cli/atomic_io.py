@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Protocol
 import zipfile
 
+from molt.file_hashing import _sha256_file
+
 
 _MOVEFILE_REPLACE_EXISTING = 0x1
 _MOVEFILE_WRITE_THROUGH = 0x8
@@ -209,13 +211,21 @@ def _codesign_atomic_copy_temp(path: Path) -> None:
     _codesign_binary(path)
 
 
-def _atomic_copy_file(src: Path, dst: Path, *, codesign: bool = False) -> None:
+def _atomic_copy_file(
+    src: Path,
+    dst: Path,
+    *,
+    codesign: bool = False,
+    expected_sha256: str | None = None,
+) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copyfile(src, tmp_path)
         if codesign:
             _codesign_atomic_copy_temp(tmp_path)
+        if expected_sha256 is not None and _sha256_file(tmp_path) != expected_sha256:
+            raise ValueError(f"source changed while staging verified copy: {src}")
         _durable_replace(tmp_path, dst)
         # A read-only source must not make the staged file impossible to fsync.
         # Final metadata belongs after the content and namespace durability barrier.

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -9,7 +8,12 @@ from typing import Any
 
 from molt.cli.atomic_io import _atomic_zip_file
 from molt.cli.extension_manifest import _wheel_record_line, _write_zip_member
-from molt.file_hashing import _sha256_file
+from molt.cli.source_extension_input_custody import (
+    SourceExtensionInputCustodyError,
+    source_extension_manifest_input_rows,
+    validate_source_extension_manifest_input_custody,
+)
+from molt.file_hashing import _sha256_bytes, _sha256_file
 
 
 _EMBEDDED_EXTENSION_MANIFEST = "extension_manifest.json"
@@ -64,14 +68,40 @@ def _validated_wheel_entries(
     try:
         manifest = json.loads(by_path[_EMBEDDED_EXTENSION_MANIFEST])
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExtensionWheelError(f"embedded extension manifest is invalid: {exc}") from exc
+        raise ExtensionWheelError(
+            f"embedded extension manifest is invalid: {exc}"
+        ) from exc
     if not isinstance(manifest, Mapping):
         raise ExtensionWheelError("embedded extension manifest must be an object")
     extension = manifest.get("extension")
-    if not isinstance(extension, str) or _canonical_wheel_path(extension) not in by_path:
+    if (
+        not isinstance(extension, str)
+        or _canonical_wheel_path(extension) not in by_path
+    ):
         raise ExtensionWheelError(
             "embedded extension manifest does not name a wheel member"
         )
+    if "input_custody" in manifest:
+        try:
+            validate_source_extension_manifest_input_custody(manifest)
+            input_rows = source_extension_manifest_input_rows(manifest)
+        except SourceExtensionInputCustodyError as exc:
+            raise ExtensionWheelError(f"invalid wheel input custody: {exc}") from exc
+        verified_inputs: set[str] = set()
+        for field, reference, expected_sha256 in input_rows:
+            path = _canonical_wheel_path(reference)
+            if path in verified_inputs:
+                continue
+            data = by_path.get(path)
+            if data is None:
+                raise ExtensionWheelError(
+                    f"wheel is missing retained input: {field}: {path}"
+                )
+            if _sha256_bytes(data) != expected_sha256:
+                raise ExtensionWheelError(
+                    f"wheel retained input checksum mismatch: {field}: {path}"
+                )
+            verified_inputs.add(path)
     return tuple(sorted(by_path.items()))
 
 
@@ -99,6 +129,7 @@ def _rewrite_staged_extension_wheel(
     destination_wheel: Path,
     *,
     canonical_embedded_manifest: Mapping[str, Any],
+    retained_inputs: Mapping[str, Path] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Replace the raw build manifest with the producer's canonical authority."""
     try:
@@ -107,7 +138,9 @@ def _rewrite_staged_extension_wheel(
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise ExtensionWheelError("source wheel has duplicate member paths")
-            record_paths = [name for name in names if name.endswith(".dist-info/RECORD")]
+            record_paths = [
+                name for name in names if name.endswith(".dist-info/RECORD")
+            ]
             if len(record_paths) != 1:
                 raise ExtensionWheelError(
                     "source wheel must have exactly one .dist-info/RECORD member"
@@ -134,11 +167,23 @@ def _rewrite_staged_extension_wheel(
             entries = [
                 (info.filename, wheel.read(info))
                 for info in infos
-                if info.filename
-                not in {_EMBEDDED_EXTENSION_MANIFEST, record_paths[0]}
+                if info.filename not in {_EMBEDDED_EXTENSION_MANIFEST, record_paths[0]}
             ]
     except (OSError, zipfile.BadZipFile) as exc:
         raise ExtensionWheelError(f"cannot read source extension wheel: {exc}") from exc
+
+    existing_entries = dict(entries)
+    for raw_path, source in sorted((retained_inputs or {}).items()):
+        path = _canonical_wheel_path(raw_path)
+        data = source.read_bytes()
+        if path in existing_entries:
+            if existing_entries[path] != data:
+                raise ExtensionWheelError(
+                    f"retained source input conflicts with wheel member: {path}"
+                )
+        else:
+            entries.append((path, data))
+        existing_entries[path] = data
 
     embedded_manifest = dict(canonical_embedded_manifest)
     for field in _SIDECAR_ONLY_MANIFEST_FIELDS:
@@ -186,7 +231,3 @@ def _rewrite_staged_extension_wheel(
         record_path=record_paths[0],
     )
     return wheel_sha256, embedded_manifest
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()

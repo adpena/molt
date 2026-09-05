@@ -37,6 +37,13 @@ from molt.cli.extension_manifest import (
 )
 from molt.file_hashing import _sha256_file
 from molt.cli.extension_wheel import _rewrite_staged_extension_wheel
+from molt.cli.source_extension_input_custody import (
+    project_source_extension_manifest_inputs,
+    source_extension_input_custody_path,
+    source_extension_manifest_input_rows,
+    stage_source_extension_manifest_inputs,
+    validate_source_extension_manifest_input_custody,
+)
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -48,6 +55,8 @@ from molt.cli.source_extensions import (
     _meson_target_filename_names,
     _meson_target_output_paths,
     canonicalize_source_extension_manifest_required_capsules,
+    canonicalize_source_extension_manifest_runtime_python_imports,
+    source_extension_manifest_path,
     validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_build_environment import (
@@ -1201,7 +1210,26 @@ def _audit_extension_output(
         raise SourceExtensionProducerError(
             f"failed to read built artifact sidecar {artifact_manifest_path}: {exc}"
         ) from exc
-    expected_artifact_manifest = dict(manifest)
+    try:
+        validate_source_extension_manifest_input_custody(manifest)
+        expected_artifact_manifest = project_source_extension_manifest_inputs(
+            manifest,
+            source_manifest_path=manifest_path,
+            output_manifest_path=artifact_manifest_path,
+            publish_root=output_root,
+            staged_inputs={
+                source_extension_manifest_path(
+                    raw_path, manifest_path=manifest_path
+                ): source_extension_input_custody_path(digest)
+                for _field, raw_path, digest in source_extension_manifest_input_rows(
+                    manifest
+                )
+            },
+        )
+    except ValueError as exc:
+        raise SourceExtensionProducerError(
+            f"built extension {module} has invalid retained input custody: {exc}"
+        ) from exc
     expected_artifact_manifest["extension"] = artifact_path.name
     if artifact_manifest != expected_artifact_manifest:
         raise SourceExtensionProducerError(
@@ -1332,68 +1360,6 @@ def _preflight_extension_set_plans(
         )
 
 
-def _manifest_source_candidates(manifest: Mapping[str, Any]) -> tuple[Path, ...]:
-    raw_paths: list[str] = []
-    closure = manifest.get("object_closure")
-    if isinstance(closure, Mapping):
-        objects = closure.get("objects")
-        if isinstance(objects, list):
-            raw_paths.extend(
-                str(item["source"])
-                for item in objects
-                if isinstance(item, Mapping) and isinstance(item.get("source"), str)
-            )
-            for item in objects:
-                dependencies = (
-                    item.get("dependencies") if isinstance(item, Mapping) else None
-                )
-                if isinstance(dependencies, list):
-                    raw_paths.extend(
-                        str(dependency["path"])
-                        for dependency in dependencies
-                        if isinstance(dependency, Mapping)
-                        and isinstance(dependency.get("path"), str)
-                    )
-    return tuple(
-        sorted(
-            {
-                Path(raw).expanduser().resolve()
-                for raw in raw_paths
-                if Path(raw).expanduser().is_absolute()
-            }
-        )
-    )
-
-
-def _stage_compiled_inputs(
-    manifest: Mapping[str, Any], *, publish_root: Path
-) -> dict[Path, Path]:
-    staged: dict[Path, Path] = {}
-    for source in _manifest_source_candidates(manifest):
-        if not source.is_file():
-            raise SourceExtensionProducerError(
-                f"source-extension manifest input is missing before sealing: {source}"
-            )
-        sha256 = _sha256_file(source)
-        relative = (
-            Path("provenance")
-            / "compiled-inputs"
-            / "sha256"
-            / sha256[:2]
-            / sha256
-            / source.name
-        )
-        destination = publish_root / relative
-        if destination.exists() and _sha256_file(destination) != sha256:
-            raise SourceExtensionProducerError(
-                f"content-addressed compiled input collision at {destination}"
-            )
-        if not destination.exists():
-            _atomic_copy_file(source, destination)
-        staged[source] = relative
-    return staged
-
-
 def _relative_manifest_path(path: Path, manifest_dir: Path) -> str:
     return os.path.relpath(path, manifest_dir).replace("\\", "/")
 
@@ -1407,7 +1373,6 @@ def _stage_extension(
 ) -> _ProducedExtension:
     relative_artifact = produced.artifact_path.relative_to(produced.output_root)
     destination = publish_root / relative_artifact
-    _atomic_copy_file(produced.artifact_path, destination)
     sidecar_path = destination.with_name(destination.name + ".extension_manifest.json")
     try:
         raw_manifest = json.loads(
@@ -1477,13 +1442,47 @@ def _stage_extension(
         and raw_source_plan.get("compile_commands")
         else None
     )
+    runtime_import_errors = (
+        canonicalize_source_extension_manifest_runtime_python_imports(
+            raw_manifest, manifest_path=produced.artifact_manifest_path
+        )
+    )
+    if runtime_import_errors:
+        raise SourceExtensionProducerError(
+            "cannot derive source-owned eager imports: "
+            + "; ".join(runtime_import_errors)
+        )
+    try:
+        staged_sources = stage_source_extension_manifest_inputs(
+            raw_manifest,
+            manifest_path=produced.artifact_manifest_path,
+            publish_root=publish_root,
+        )
+        embedded_inputs = project_source_extension_manifest_inputs(
+            raw_manifest,
+            source_manifest_path=produced.artifact_manifest_path,
+            output_manifest_path=publish_root / "extension_manifest.json",
+            publish_root=publish_root,
+            staged_inputs=staged_sources,
+        )
+        sidecar_inputs = project_source_extension_manifest_inputs(
+            raw_manifest,
+            source_manifest_path=produced.artifact_manifest_path,
+            output_manifest_path=sidecar_path,
+            publish_root=publish_root,
+            staged_inputs=staged_sources,
+        )
+    except (ValueError, OSError) as exc:
+        raise SourceExtensionProducerError(
+            f"cannot retain source-extension compilation inputs: {exc}"
+        ) from exc
     canonical_embedded_manifest = _canonical_extension_manifest_for_wheel(
-        raw_manifest,
+        embedded_inputs,
         location_roots=location_roots,
         meson_plan_path=raw_plan_path,
         compile_commands_path=raw_compile_commands_path,
     )
-    canonical_embedded_manifest["extension"] = destination.name
+    canonical_embedded_manifest["extension"] = relative_artifact.as_posix()
     canonical_embedded_manifest = _compact_source_extension_manifest(
         canonical_embedded_manifest
     )
@@ -1494,15 +1493,9 @@ def _stage_extension(
         authority=f"embedded extension manifest for {produced.module}",
     )
 
-    staged_sources = _stage_compiled_inputs(raw_manifest, publish_root=publish_root)
-    source_references = {
-        source: _relative_manifest_path(publish_root / relative, sidecar_path.parent)
-        for source, relative in staged_sources.items()
-    }
     manifest = _canonicalize_locations(
-        raw_manifest,
+        sidecar_inputs,
         location_roots,
-        source_references,
     )
     assert isinstance(manifest, dict)
     manifest["extension"] = destination.name
@@ -1613,13 +1606,27 @@ def _stage_extension(
             produced.wheel_path,
             wheel_destination,
             canonical_embedded_manifest=canonical_embedded_manifest,
+            retained_inputs={
+                relative.as_posix(): publish_root / relative
+                for relative in staged_sources.values()
+            },
         )
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         raise SourceExtensionProducerError(
             f"failed to finalize canonical extension wheel: {exc}"
         ) from exc
     manifest["wheel_sha256"] = wheel_sha256
-    _atomic_write_json(sidecar_path, manifest, sort_keys=True, indent=2)
+    try:
+        _atomic_copy_file(
+            produced.artifact_path,
+            destination,
+            expected_sha256=produced.artifact_sha256,
+        )
+        _atomic_write_json(sidecar_path, manifest, sort_keys=True, indent=2)
+    except (ValueError, OSError) as exc:
+        raise SourceExtensionProducerError(
+            f"cannot publish verified source-extension artifact: {exc}"
+        ) from exc
     return replace(
         produced,
         artifact_path=destination,

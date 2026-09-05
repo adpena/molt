@@ -47,7 +47,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 43 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 58 |
 
 ## Scheduled families
 
@@ -256,7 +256,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-leaf` | 2 | 1 | no |
 | `stringprep-tables` | 3 | 2 | no |
 | `llvm-runtime-abi` | 8 | 2 | no |
-| `source-extension-package-sets` | 16 | 2 | no |
+| `source-extension-package-sets` | 28 | 2 | no |
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |

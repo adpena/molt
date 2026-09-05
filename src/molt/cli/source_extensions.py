@@ -7,10 +7,10 @@ import platform
 import re
 import shlex
 import sys
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
@@ -20,6 +20,19 @@ from molt._wasm_abi_generated import (
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
+from molt.cli.python_module_names import encode_python_module_names
+from molt.cli.source_extension_input_custody import (
+    SourceExtensionInputCustodyError,
+    read_source_extension_manifest_input,
+    source_extension_manifest_input_rows,
+)
+from molt.cli.source_extension_manifest_codec import (
+    _expand_source_extension_manifest_authorities,
+    _manifest_dependencies,
+)
+from molt.cli.source_extension_runtime_imports import (
+    source_extension_runtime_python_imports,
+)
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
 from molt.cli.extension_scan_surface import _extract_preprocessor_definitions
@@ -54,9 +67,9 @@ from molt.wasm_artifact import WasmImport
 
 
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
+_SourceScanResult = TypeVar("_SourceScanResult")
 _MOLT_NUMPY_UFUNC_API_CAPSULE = "numpy.core._multiarray_umath._UFUNC_API"
 _C_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-_PY_MODULE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _SOURCE_EXTENSION_CAPSULE_IMPORT_TOKENS: dict[str, str] = {
     "import_array": _MOLT_NUMPY_ARRAY_API_CAPSULE,
     "import_array1": _MOLT_NUMPY_ARRAY_API_CAPSULE,
@@ -94,14 +107,6 @@ _SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX = (
     "extension_manifest.json source missing:"
 )
 _MESON_EXTENSION_TARGET_TYPES = {"shared module", "shared library", "library"}
-_SOURCE_EXTENSION_EAGER_IMPORT_CALLEES = frozenset({"IMPORT_GLOBAL", "IMPORT_NAME"})
-_SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES = frozenset(
-    {
-        "npy_cache_import",
-        "npy_cache_import_runtime",
-        "npy_import",
-    }
-)
 _SOURCE_EXTENSION_SIGNATURED_WASM_IMPORTS = frozenset(
     {name for _module, name in WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES}
     | {
@@ -2139,212 +2144,6 @@ def validate_source_extension_artifact_object_closure(
     return errors
 
 
-def _source_extension_runtime_import_callee(callee: str) -> str | None:
-    if callee in _SOURCE_EXTENSION_EAGER_IMPORT_CALLEES:
-        return "eager"
-    if callee.startswith("PyImport_"):
-        return "generic"
-    if callee in _SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES:
-        return "generic"
-    lowered = callee.lower()
-    if (
-        lowered == "import"
-        or lowered.startswith("import_")
-        or lowered.endswith("_import")
-        or "_import_" in lowered
-    ):
-        return "generic"
-    return None
-
-
-def _source_extension_function_name_before_brace(
-    source_text: str,
-    brace_pos: int,
-) -> str | None:
-    paren_pos = source_text.rfind("(", 0, brace_pos)
-    if paren_pos < 0:
-        return None
-    end = paren_pos
-    while end > 0 and source_text[end - 1].isspace():
-        end -= 1
-    start = end
-    while start > 0:
-        ch = source_text[start - 1]
-        if ch == "_" or ch.isalnum():
-            start -= 1
-            continue
-        break
-    if start == end or not (source_text[start] == "_" or source_text[start].isalpha()):
-        return None
-    return source_text[start:end]
-
-
-def _source_extension_eager_import_function_name(function_name: str | None) -> bool:
-    if function_name is None:
-        return False
-    lowered = function_name.lower()
-    return (
-        function_name == "exec"
-        or function_name == "module_exec"
-        or function_name.startswith("PyInit_")
-        or "pymod_exec" in lowered
-        or lowered.endswith("_exec")
-        or _source_extension_cython_eager_modinit_function_name(function_name)
-    )
-
-
-# Cython 3.x emits its module-init imports inside dedicated ``__Pyx_modinit_*``
-# helper functions that ``__pyx_pymod_exec_<mod>`` calls unconditionally during
-# ``Py_mod_exec``. Those helpers are eager import contexts even though their
-# names do not end in ``_exec``: ``__Pyx_modinit_shared_function_import_code``
-# imports Cython's shared-utility module (e.g. ``scipy._cyutility``),
-# ``__Pyx_modinit_type_import_code`` imports the modules whose extension types
-# the module subclasses (e.g. ``numpy``), and the sibling
-# ``function_import``/``variable_import``/``global_init``/``type_init`` helpers
-# resolve the remaining cimport dependencies. Recognizing exactly this
-# ``__Pyx_modinit_`` family (not arbitrary lazy Cython helpers) admits those
-# unconditional exec-time imports as AOT roots.
-_SOURCE_EXTENSION_CYTHON_MODINIT_PREFIX = "__Pyx_modinit_"
-
-
-def _source_extension_cython_eager_modinit_function_name(function_name: str) -> bool:
-    return function_name.startswith(_SOURCE_EXTENSION_CYTHON_MODINIT_PREFIX)
-
-
-def _skip_c_ws_comments(source_text: str, pos: int) -> int:
-    n = len(source_text)
-    while pos < n:
-        if source_text[pos].isspace():
-            pos += 1
-            continue
-        if source_text.startswith("//", pos):
-            newline = source_text.find("\n", pos + 2)
-            return n if newline < 0 else _skip_c_ws_comments(source_text, newline + 1)
-        if source_text.startswith("/*", pos):
-            end = source_text.find("*/", pos + 2)
-            return n if end < 0 else _skip_c_ws_comments(source_text, end + 2)
-        return pos
-    return pos
-
-
-def _skip_c_string_or_char(source_text: str, pos: int) -> int:
-    quote = source_text[pos]
-    pos += 1
-    n = len(source_text)
-    escaped = False
-    while pos < n:
-        ch = source_text[pos]
-        pos += 1
-        if escaped:
-            escaped = False
-            continue
-        if ch == "\\":
-            escaped = True
-            continue
-        if ch == quote:
-            break
-    return pos
-
-
-def _parse_c_string_literal(source_text: str, pos: int) -> tuple[str | None, int]:
-    n = len(source_text)
-    for prefix in ("u8", "U", "u", "L"):
-        if source_text.startswith(prefix + '"', pos):
-            pos += len(prefix)
-            break
-    if pos >= n or source_text[pos] != '"':
-        return None, pos
-    pos += 1
-    chars: list[str] = []
-    escaped = False
-    while pos < n:
-        ch = source_text[pos]
-        pos += 1
-        if escaped:
-            chars.append(ch)
-            escaped = False
-            continue
-        if ch == "\\":
-            escaped = True
-            continue
-        if ch == '"':
-            value = "".join(chars)
-            return (
-                (value if _PY_MODULE_NAME_RE.fullmatch(value) else None),
-                pos,
-            )
-        chars.append(ch)
-    return None, pos
-
-
-def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]:
-    """Return dotted module names a C extension imports at runtime.
-
-    Source-recompiled extensions import Python modules dynamically from
-    module init paths (``PyImport_ImportModule("math")``,
-    numpy's ``IMPORT_GLOBAL("numpy.exceptions", ...)`` /
-    ``npy_cache_import("numpy._core._internal", ...)`` conventions). Those
-    imports are invisible to the AOT import graph, so tree-shaking would
-    drop the modules and the extension init fails at runtime with
-    ``No module named ...``. The scan keys on the C convention of an
-    import-named callsite taking a leading dotted-module string literal,
-    but generic import helpers are admitted as eager roots only inside a
-    module init/exec function. Helper-body imports are lazy runtime edges;
-    treating them as AOT roots drags broad stdlib closures into small
-    browser builds. Resolution against module roots decides admission
-    downstream.
-    """
-    names: set[str] = set()
-    pos = 0
-    n = len(source_text)
-    eager_context_stack: list[bool] = []
-    while pos < n:
-        ch = source_text[pos]
-        if ch in {'"', "'"}:
-            pos = _skip_c_string_or_char(source_text, pos)
-            continue
-        if source_text.startswith("//", pos) or source_text.startswith("/*", pos):
-            pos = _skip_c_ws_comments(source_text, pos)
-            continue
-        if ch == "{":
-            is_eager_context = _source_extension_eager_import_function_name(
-                _source_extension_function_name_before_brace(source_text, pos)
-            )
-            if eager_context_stack:
-                is_eager_context = eager_context_stack[-1] or is_eager_context
-            eager_context_stack.append(is_eager_context)
-            pos += 1
-            continue
-        if ch == "}":
-            if eager_context_stack:
-                eager_context_stack.pop()
-            pos += 1
-            continue
-        if not (ch == "_" or ch.isalpha()):
-            pos += 1
-            continue
-        start = pos
-        pos += 1
-        while pos < n and (source_text[pos] == "_" or source_text[pos].isalnum()):
-            pos += 1
-        callee = source_text[start:pos]
-        import_kind = _source_extension_runtime_import_callee(callee)
-        if import_kind is None:
-            continue
-        call_pos = _skip_c_ws_comments(source_text, pos)
-        if call_pos >= n or source_text[call_pos] != "(":
-            continue
-        if import_kind == "generic" and not (
-            eager_context_stack and eager_context_stack[-1]
-        ):
-            continue
-        module_pos = _skip_c_ws_comments(source_text, call_pos + 1)
-        module_name, _end_pos = _parse_c_string_literal(source_text, module_pos)
-        if module_name is not None:
-            names.add(module_name)
-    return tuple(sorted(names))
-
-
 def source_extension_required_capsule_imports(
     source_text: str,
 ) -> dict[str, tuple[str, ...]]:
@@ -2371,58 +2170,6 @@ def source_extension_manifest_path(raw_path: str, *, manifest_path: Path) -> Pat
     return source_path.resolve()
 
 
-def _manifest_source_plan_relocation_roots(
-    manifest: Mapping[str, Any],
-) -> tuple[Path, ...]:
-    source_plan = manifest.get("source_plan")
-    if not isinstance(source_plan, Mapping):
-        return ()
-    roots: list[Path] = []
-    for field_name in ("source_root", "build_root"):
-        source_root = source_plan.get(field_name)
-        if isinstance(source_root, str) and source_root.strip():
-            roots.append(Path(source_root).expanduser())
-    return tuple(roots)
-
-
-def _source_extension_relocation_roots(
-    source_root: Path,
-    *,
-    manifest_path: Path,
-) -> tuple[Path, ...]:
-    candidates: list[Path] = []
-    if source_root.exists():
-        candidates.append(source_root)
-    search_bases = [manifest_path.parent, *manifest_path.parents, Path.cwd()]
-    for base in search_bases:
-        candidates.append(base / source_root.name)
-    parts = source_root.parts
-    if "bench" in parts:
-        suffix = Path(*parts[parts.index("bench") :])
-        for base in search_bases:
-            candidates.append(base / suffix)
-    for index, part in enumerate(parts):
-        if part == "tmp":
-            suffix = Path(*parts[index:])
-            for base in search_bases:
-                candidates.append(base / suffix)
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        unique.append(resolved)
-    return tuple(unique)
-
-
-def _source_extension_hash_matches(path: Path, expected_sha256: str | None) -> bool:
-    if not expected_sha256:
-        return True
-    return _sha256_file(path) == expected_sha256
-
-
 def _source_extension_missing_source_error(field_name: str, path: Path) -> str:
     return f"{_SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX} {field_name}: {path}"
 
@@ -2436,278 +2183,57 @@ def source_extension_manifest_errors_are_missing_sources(
     )
 
 
-def source_extension_manifest_source_path(
-    raw_path: str,
-    *,
-    manifest: Mapping[str, Any],
-    manifest_path: Path,
-    expected_sha256: str | None = None,
-) -> tuple[Path | None, list[str]]:
-    return SourceExtensionManifestSourceResolver(
-        manifest=manifest,
-        manifest_path=manifest_path,
-    ).resolve(raw_path, expected_sha256=expected_sha256)
-
-
-class SourceExtensionManifestSourceResolver:
-    def __init__(
-        self,
-        *,
-        manifest: Mapping[str, Any],
-        manifest_path: Path,
-    ) -> None:
-        self._manifest_path = manifest_path
-        self._source_roots = _manifest_source_plan_relocation_roots(manifest)
-        self._relocation_roots = {
-            source_root: _source_extension_relocation_roots(
-                source_root,
-                manifest_path=manifest_path,
-            )
-            for source_root in self._source_roots
-        }
-
-    def resolve(
-        self,
-        raw_path: str,
-        *,
-        expected_sha256: str | None = None,
-    ) -> tuple[Path | None, list[str]]:
-        source_path = source_extension_manifest_path(
-            raw_path,
-            manifest_path=self._manifest_path,
-        )
-        if source_path.is_file():
-            if not _source_extension_hash_matches(source_path, expected_sha256):
-                return None, [
-                    f"extension_manifest.json source checksum mismatch: {source_path}"
-                ]
-            return source_path, []
-
-        raw_source_path = Path(raw_path).expanduser()
-        if not self._source_roots:
-            return None, []
-        relative_roots: list[tuple[Path, Path]] = []
-        if raw_source_path.is_absolute():
-            for source_root in self._source_roots:
-                try:
-                    relative_roots.append(
-                        (source_root, raw_source_path.relative_to(source_root))
-                    )
-                except ValueError:
-                    continue
-        else:
-            relative_roots.extend(
-                (source_root, raw_source_path) for source_root in self._source_roots
-            )
-        if not relative_roots:
-            return None, []
-        mismatched_candidates: list[Path] = []
-        for source_root, relative_source in relative_roots:
-            for root in self._relocation_roots[source_root]:
-                candidate = (root / relative_source).resolve()
-                if not candidate.is_file():
-                    continue
-                if not _source_extension_hash_matches(candidate, expected_sha256):
-                    mismatched_candidates.append(candidate)
-                    continue
-                return candidate, []
-        if mismatched_candidates:
-            return None, [
-                "extension_manifest.json relocated source checksum mismatch: "
-                + ", ".join(str(path) for path in mismatched_candidates[:3])
-            ]
-        return None, []
-
-
-def _source_extension_object_source_sha256(
-    objects: Any,
-) -> dict[str, str]:
-    if not isinstance(objects, list):
-        return {}
-    by_source: dict[str, str] = {}
-    for item in objects:
-        if not isinstance(item, Mapping):
-            continue
-        source = item.get("source")
-        source_sha256 = item.get("source_sha256")
-        if (
-            isinstance(source, str)
-            and source.strip()
-            and isinstance(source_sha256, str)
-            and source_sha256.strip()
-        ):
-            by_source[source] = source_sha256.strip()
-    return by_source
-
-
-def _resolve_source_extension_manifest_source(
-    raw_source: str,
-    *,
-    manifest: Mapping[str, Any],
-    manifest_path: Path,
-    expected_sha256: str | None,
-    field_name: str,
-) -> tuple[Path | None, list[str]]:
-    source_path, errors = source_extension_manifest_source_path(
-        raw_source,
-        manifest=manifest,
-        manifest_path=manifest_path,
-        expected_sha256=expected_sha256,
-    )
-    if errors:
-        return None, errors
-    if source_path is None:
-        return None, [
-            _source_extension_missing_source_error(
-                field_name,
-                source_extension_manifest_path(
-                    raw_source,
-                    manifest_path=manifest_path,
-                ),
-            )
-        ]
-    return source_path, []
-
-
-def _dedupe_source_extension_manifest_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for path in paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        unique.append(path)
-    return tuple(unique)
-
-
-def _source_extension_manifest_source_paths(
+def _scan_source_extension_manifest_inputs(
     manifest: Mapping[str, Any],
     *,
     manifest_path: Path,
+    scanner: Callable[[str], _SourceScanResult],
     allow_missing_sources: bool = False,
-) -> tuple[tuple[Path, ...] | None, list[str]]:
-    """Resolve manifest source paths through relocation custody.
+) -> tuple[dict[Path, _SourceScanResult] | None, list[str]]:
+    """Resolve the validated object-input authority, including dependencies.
 
-    With ``allow_missing_sources`` the missing-source error class does not
-    nullify the resolvable subset: sealed roots carry deliberate source
-    subsets (build-generated sources are not resealable), so consumers whose
-    failure mode is already fail-closed at runtime may scan what resolves and
-    surface the missing entries as diagnostics. Any non-missing error class
-    still nullifies.
+    Capsule consumers may explicitly request a partial scan with missing-input
+    diagnostics. Structural or checksum errors always invalidate the scan;
+    eager Python import canonicalization never allows partial source custody.
     """
+    try:
+        rows = source_extension_manifest_input_rows(manifest)
+    except SourceExtensionInputCustodyError as exc:
+        return None, [str(exc)]
     errors: list[str] = []
-    paths: list[Path] = []
-    object_closure = manifest.get("object_closure")
-    objects = (
-        object_closure.get("objects") if isinstance(object_closure, Mapping) else None
-    )
-    source_sha256_by_raw = _source_extension_object_source_sha256(objects)
-    if isinstance(object_closure, Mapping):
-        if objects is not None:
-            if not isinstance(objects, list):
-                errors.append(
-                    "extension_manifest.json object_closure.objects must be a list"
+    results: dict[Path, _SourceScanResult] = {}
+    inspected: set[tuple[str, str]] = set()
+    for field, raw_path, digest in rows:
+        if (raw_path, digest) in inspected:
+            continue
+        inspected.add((raw_path, digest))
+        source_path, content, source_errors = read_source_extension_manifest_input(
+            raw_path,
+            manifest_path=manifest_path,
+            expected_sha256=digest,
+        )
+        errors.extend(source_errors)
+        if source_path is not None:
+            assert content is not None
+            if source_path not in results:
+                results[source_path] = scanner(
+                    content.decode("utf-8", errors="replace")
                 )
-            for index, item in enumerate(objects if isinstance(objects, list) else ()):
-                if not isinstance(item, Mapping):
-                    continue
-                source = item.get("source")
-                if isinstance(source, str) and source.strip():
-                    source_sha256 = item.get("source_sha256")
-                    source_path, source_errors = (
-                        _resolve_source_extension_manifest_source(
-                            source,
-                            manifest=manifest,
-                            manifest_path=manifest_path,
-                            expected_sha256=(
-                                source_sha256.strip()
-                                if isinstance(source_sha256, str)
-                                and source_sha256.strip()
-                                else None
-                            ),
-                            field_name=f"object_closure.objects[{index}].source",
-                        )
-                    )
-                    errors.extend(source_errors)
-                    if source_path is not None:
-                        paths.append(source_path)
-                dependencies = item.get("dependencies", [])
-                if not isinstance(dependencies, list):
-                    errors.append(
-                        "extension_manifest.json object_closure.objects"
-                        f"[{index}].dependencies must be a list"
-                    )
-                    continue
-                for dependency_index, dependency in enumerate(dependencies):
-                    if not isinstance(dependency, Mapping):
-                        errors.append(
-                            "extension_manifest.json object_closure dependency "
-                            "must be an object"
-                        )
-                        continue
-                    raw_dependency = dependency.get("path")
-                    dependency_sha256 = dependency.get("sha256")
-                    if not (
-                        isinstance(raw_dependency, str)
-                        and raw_dependency.strip()
-                        and isinstance(dependency_sha256, str)
-                        and dependency_sha256.strip()
-                    ):
-                        errors.append(
-                            "extension_manifest.json object_closure dependency "
-                            "requires path and sha256"
-                        )
-                        continue
-                    dependency_path, dependency_errors = (
-                        _resolve_source_extension_manifest_source(
-                            raw_dependency,
-                            manifest=manifest,
-                            manifest_path=manifest_path,
-                            expected_sha256=dependency_sha256,
-                            field_name=(
-                                f"object_closure.objects[{index}].dependencies"
-                                f"[{dependency_index}].path"
-                            ),
-                        )
-                    )
-                    errors.extend(dependency_errors)
-                    if dependency_path is not None:
-                        paths.append(dependency_path)
+        elif not source_errors:
+            errors.append(
+                _source_extension_missing_source_error(
+                    field,
+                    source_extension_manifest_path(
+                        raw_path, manifest_path=manifest_path
+                    ),
+                )
+            )
     if errors and not (
         allow_missing_sources
         and source_extension_manifest_errors_are_missing_sources(errors)
     ):
         return None, errors
-    if paths:
-        return _dedupe_source_extension_manifest_paths(paths), errors
-
-    raw_sources = manifest.get("sources")
-    if raw_sources is not None:
-        if not isinstance(raw_sources, list):
-            errors.append("extension_manifest.json sources must be a list of paths")
-        else:
-            for index, raw_source in enumerate(raw_sources):
-                if not isinstance(raw_source, str) or not raw_source.strip():
-                    errors.append(
-                        "extension_manifest.json sources must be a list of paths"
-                    )
-                    continue
-                source_path, source_errors = _resolve_source_extension_manifest_source(
-                    raw_source,
-                    manifest=manifest,
-                    manifest_path=manifest_path,
-                    expected_sha256=source_sha256_by_raw.get(raw_source),
-                    field_name=f"sources[{index}]",
-                )
-                errors.extend(source_errors)
-                if source_path is not None:
-                    paths.append(source_path)
-    if errors and not (
-        allow_missing_sources
-        and source_extension_manifest_errors_are_missing_sources(errors)
-    ):
-        return None, errors
-    return _dedupe_source_extension_manifest_paths(paths), errors
+    return results, errors
 
 
 def source_extension_manifest_required_capsule_imports_by_source(
@@ -2718,15 +2244,14 @@ def source_extension_manifest_required_capsule_imports_by_source(
 ) -> tuple[dict[Path, dict[str, tuple[str, ...]]] | None, list[str]]:
     """Map each resolvable manifest source to its required capsule imports.
 
-    ``allow_missing_sources`` mirrors the source-path resolver: a sealed root
-    deliberately omits build-generated sources, so a re-derivation over an
-    already-sealed manifest scans the resolvable subset and surfaces the missing
-    entries as diagnostics rather than nullifying the capsule scan. Any
-    non-missing error class still nullifies.
+    ``allow_missing_sources`` explicitly permits capsule consumers to scan the
+    resolvable subset while retaining missing-input diagnostics. It never relaxes
+    structural input validation or checksum custody.
     """
-    sources, source_errors = _source_extension_manifest_source_paths(
+    by_source, source_errors = _scan_source_extension_manifest_inputs(
         manifest,
         manifest_path=manifest_path,
+        scanner=source_extension_required_capsule_imports,
         allow_missing_sources=allow_missing_sources,
     )
     non_missing_errors = [
@@ -2736,26 +2261,16 @@ def source_extension_manifest_required_capsule_imports_by_source(
     ]
     if non_missing_errors:
         return None, source_errors
-    if sources is None:
+    if by_source is None:
         return None, source_errors
     missing_diagnostics = [
         error
         for error in source_errors
         if error.startswith(_SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX)
     ]
-    by_source: dict[Path, dict[str, tuple[str, ...]]] = {}
-    for source_path in sources:
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            return None, [
-                "cannot verify source-derived capsule requirements because "
-                f"manifest source {source_path} is unreadable: {exc}"
-            ]
-        required = source_extension_required_capsule_imports(source_text)
-        if required:
-            by_source[source_path] = required
-    return by_source, missing_diagnostics
+    return {
+        source: required for source, required in by_source.items() if required
+    }, missing_diagnostics
 
 
 def canonicalize_source_extension_manifest_required_capsules(
@@ -2765,8 +2280,12 @@ def canonicalize_source_extension_manifest_required_capsules(
     allow_missing_sources: bool = False,
 ) -> list[str]:
     """Persist source-derived capsule custody into the closure and its objects."""
+    try:
+        projected = _expand_source_extension_manifest_authorities(manifest)
+    except ValueError as exc:
+        return [str(exc)]
     by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
-        manifest,
+        projected,
         manifest_path=manifest_path,
         allow_missing_sources=allow_missing_sources,
     )
@@ -2778,8 +2297,8 @@ def canonicalize_source_extension_manifest_required_capsules(
     if by_source is None:
         return errors
     if not by_source:
-        return []
-    object_closure = manifest.get("object_closure")
+        return errors
+    object_closure = projected.get("object_closure")
     if not isinstance(object_closure, dict):
         return ["source-extension manifest requires non-empty object_closure custody"]
 
@@ -2793,41 +2312,54 @@ def canonicalize_source_extension_manifest_required_capsules(
     required_capsules = string_set(object_closure.get("required_capsules"))
     for imports_by_capsule in by_source.values():
         required_capsules.update(imports_by_capsule)
-    object_closure["required_capsules"] = sorted(required_capsules)
-
     objects = object_closure.get("objects")
     if not isinstance(objects, list):
-        return []
+        return ["source-extension manifest requires non-empty object_closure.objects"]
+    updates: list[tuple[dict[str, Any], list[str]]] = []
     for item in objects:
         if not isinstance(item, dict):
-            continue
+            return ["source-extension manifest object must be mutable"]
         source = item.get("source")
         if not isinstance(source, str) or not source.strip():
             continue
-        source_sha256 = item.get("source_sha256")
-        source_path, source_errors = source_extension_manifest_source_path(
-            source,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            expected_sha256=(
-                source_sha256.strip()
-                if isinstance(source_sha256, str) and source_sha256.strip()
-                else None
-            ),
-        )
-        if source_errors and not (
-            allow_missing_sources
-            and source_extension_manifest_errors_are_missing_sources(source_errors)
-        ):
-            return source_errors
-        if source_path is None:
-            continue
-        imports_by_capsule = by_source.get(source_path)
-        if not imports_by_capsule:
-            continue
         item_capsules = string_set(item.get("required_capsules"))
-        item_capsules.update(imports_by_capsule)
-        item["required_capsules"] = sorted(item_capsules)
+        inputs = [source]
+        if "dependencies" in item:
+            inputs.extend(
+                dependency["path"]
+                for dependency in _manifest_dependencies(projected, item)
+            )
+        for raw_input in inputs:
+            source_path = source_extension_manifest_path(
+                raw_input, manifest_path=manifest_path
+            )
+            item_capsules.update(by_source.get(source_path, {}))
+        updates.append((item, sorted(item_capsules)))
+    object_closure["required_capsules"] = sorted(required_capsules)
+    for item, capsules in updates:
+        item["required_capsules"] = capsules
+    manifest.clear()
+    manifest.update(projected)
+    return errors
+
+
+def canonicalize_source_extension_manifest_runtime_python_imports(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> list[str]:
+    """Persist known eager import facts only after scanning every owned input."""
+    scanned, errors = source_extension_manifest_runtime_python_imports(
+        manifest, manifest_path=manifest_path
+    )
+    if errors:
+        return errors
+    try:
+        manifest["runtime_python_import_modules"] = encode_python_module_names(
+            scanned, field="runtime_python_import_modules"
+        )
+    except ValueError as exc:
+        return [str(exc)]
     return []
 
 
@@ -2836,36 +2368,22 @@ def source_extension_manifest_runtime_python_imports(
     *,
     manifest_path: Path,
 ) -> tuple[tuple[str, ...], list[str]]:
-    """Scan manifest sources for dynamic Python imports made from C code.
+    """Derive known eager C imports from the complete owned source closure.
 
-    Runtime import closure uses the same manifest source authority as
-    source-derived capsule custody: object-closure source entries, relocation,
-    and source hashes win over top-level source lists. Missing sources are
-    tolerated: sealed roots deliberately omit build-generated sources, so the
-    scan covers the resolvable subset and reports the missing entries as skip
-    diagnostics; an import that only a missing source declares fails closed at
-    runtime with a precise ImportError naming the module.
+    Missing, unreadable or corrupt inputs never become an empty/partial seal.
+    Nonliteral runtime import names retain the existing dynamic execution policy;
+    scanning literal roots is not proof of arbitrary dynamic import completeness.
     """
-    source_paths, errors = _source_extension_manifest_source_paths(
+    scanned, errors = _scan_source_extension_manifest_inputs(
         manifest,
         manifest_path=manifest_path,
-        allow_missing_sources=True,
+        scanner=source_extension_runtime_python_imports,
+        allow_missing_sources=False,
     )
-    if source_paths is None:
+    if scanned is None:
         return (), errors
-    names: set[str] = set()
-    read_errors: list[str] = []
-    for source_path in source_paths:
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            read_errors.append(
-                "cannot scan source-derived runtime Python imports because "
-                f"manifest source {source_path} is unreadable: {exc}"
-            )
-            continue
-        names.update(source_extension_runtime_python_imports(source_text))
-    return tuple(sorted(names)), [*errors, *read_errors]
+    names = {name for imports in scanned.values() for name in imports}
+    return tuple(sorted(names)), errors
 
 
 def source_extension_manifest_required_capsule_imports(

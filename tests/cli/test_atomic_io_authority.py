@@ -28,6 +28,35 @@ def _identity(kind: str, pair: dict[str, object]) -> RuntimeBuildIdentity:
     return RuntimeBuildIdentity(_digest(payload), _digest(pair), payload)
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_verified_copy_checks_staged_bytes_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"expected")
+    destination = tmp_path / "destination"
+    if existing:
+        destination.write_bytes(b"previous")
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    copyfile = atomic_io.shutil.copyfile
+
+    def changed_copy(src: Path, staged: Path) -> None:
+        copyfile(src, staged)
+        staged.write_bytes(b"changed during copy")
+
+    monkeypatch.setattr(atomic_io.shutil, "copyfile", changed_copy)
+    with pytest.raises(ValueError, match="source changed while staging verified copy"):
+        atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
+    assert not list(tmp_path.glob(".*.tmp"))
+    if existing:
+        assert destination.read_bytes() == b"previous"
+    else:
+        assert not destination.exists()
+    monkeypatch.setattr(atomic_io.shutil, "copyfile", copyfile)
+    atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
+    assert destination.read_bytes() == b"expected"
+
+
 def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
