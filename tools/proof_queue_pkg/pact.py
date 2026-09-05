@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, NotRequired, Sequence, TypedDict
 
 from molt.browser_asset_closure import wasm_loader_asset_scope_paths
 from molt.cli.source_extension_set_registry import (
@@ -31,6 +31,19 @@ from molt.scientific_stack_versions import (
     scientific_witness_variant,
 )
 from tools.proof_queue_pkg import policy, runner, state
+
+
+class NamedProofSpec(TypedDict):
+    logical_id: str
+    reason: str
+    command: list[str]
+    resource_family: str
+    contention_key: str
+    scopes: list[str]
+    env_overrides: dict[str, str]
+    locked_env: NotRequired[tuple[str, ...]]
+    notes: list[str]
+    timeout: float
 
 
 def _scientific_extension_set_seal_validation(
@@ -163,7 +176,7 @@ def _temporary_environment(overrides: Mapping[str, str]):
 
 def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = state.ROOT
-) -> dict[str, object]:
+) -> NamedProofSpec:
     canonical_inputs = _pact_canonical_input_environment(repo_root)
     with _temporary_environment(canonical_inputs):
         git_snapshot = state._git_snapshot(repo_root)
@@ -218,7 +231,7 @@ def _pact_witness_acceptance_spec(
     }
 
 
-def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]:
+def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
     return {
         "logical_id": "pact-witness-oracle-parity",
         "reason": (
@@ -239,6 +252,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
             _PACT_WITNESS_REQUIREMENTS,
         ],
         "env_overrides": {},
+        "notes": [],
         "timeout": timeout if timeout is not None else 900.0,
     }
 
@@ -299,7 +313,7 @@ def _r6_target_version_parity_spec(
     python_version: str,
     timeout: float | None = None,
     fixtures: Sequence[str] | None = None,
-) -> dict[str, object]:
+) -> NamedProofSpec:
     normalized_version = python_version.strip()
     if not normalized_version:
         raise SystemExit("--python-version must not be empty")
@@ -355,7 +369,7 @@ def _native_molt_run_spec(
     script_args: Sequence[str] | None = None,
     timeout: float | None = None,
     repo_root: Path = state.ROOT,
-) -> dict[str, object]:
+) -> NamedProofSpec:
     root = repo_root.resolve()
     entry_path = Path(entry)
     if not entry_path.is_absolute():
@@ -403,42 +417,26 @@ def _native_molt_run_spec(
     }
 
 
-def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
+def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
     env_overrides = policy._named_spec_env_overrides(spec, args.env)
-    initial_notes = state._notes_from_raw(spec.get("note"))
-    initial_notes.extend(state._notes_from_raw(spec.get("notes")))
+    initial_notes = list(spec["notes"])
     initial_notes.extend(getattr(args, "note", []) or [])
-    runnable = {
+    runnable: NamedProofSpec = {
         **spec,
         "env_overrides": env_overrides,
     }
     if args.print_spec:
         print(json.dumps(runnable, indent=2, sort_keys=True))
         return 0
-    if getattr(args, "queue_only", False):
-        rc, _run_id = runner._queue_one(
-            args,
-            logical_id=str(runnable["logical_id"]),
-            reason=str(runnable["reason"]),
-            command=list(runnable["command"]),
-            resource_family=str(runnable["resource_family"]),
-            contention_key=str(runnable["contention_key"]),
-            scopes=list(runnable["scopes"]),
-            env_overrides=dict(runnable["env_overrides"]),
-            initial_notes=initial_notes,
-            depends_on=getattr(args, "depends_on", []) or [],
-            edge_kind=getattr(args, "edge_kind", state.DEFAULT_EDGE_KIND),
-            edge_note=getattr(args, "edge_note", None),
-        )
-        return rc
-    if getattr(args, "detach", False):
+    queue_only = getattr(args, "queue_only", False)
+    if queue_only or getattr(args, "detach", False):
         rc, run_id = runner._queue_one(
             args,
-            logical_id=str(runnable["logical_id"]),
-            reason=str(runnable["reason"]),
+            logical_id=runnable["logical_id"],
+            reason=runnable["reason"],
             command=list(runnable["command"]),
-            resource_family=str(runnable["resource_family"]),
-            contention_key=str(runnable["contention_key"]),
+            resource_family=runnable["resource_family"],
+            contention_key=runnable["contention_key"],
             scopes=list(runnable["scopes"]),
             env_overrides=dict(runnable["env_overrides"]),
             initial_notes=initial_notes,
@@ -446,15 +444,15 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
             edge_kind=getattr(args, "edge_kind", state.DEFAULT_EDGE_KIND),
             edge_note=getattr(args, "edge_note", None),
         )
-        if rc != 0 or run_id is None:
+        if queue_only or rc != 0 or run_id is None:
             return rc
-        conn = state._connect(state._db_path(args))
-        dispatch = runner._dispatch_detached_runner(
-            args,
-            conn,
-            run_id=run_id,
-            timeout=float(runnable["timeout"]),
-        )
+        with contextlib.closing(state._connect(state._db_path(args))) as conn:
+            dispatch = runner._dispatch_detached_runner(
+                args,
+                conn,
+                run_id=run_id,
+                timeout=runnable["timeout"],
+            )
         if dispatch is None:
             return 0
         pid, runner_log = dispatch
@@ -463,14 +461,14 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         return 0
     return runner._run_one(
         args,
-        logical_id=str(runnable["logical_id"]),
-        reason=str(runnable["reason"]),
+        logical_id=runnable["logical_id"],
+        reason=runnable["reason"],
         command=list(runnable["command"]),
-        resource_family=str(runnable["resource_family"]),
-        contention_key=str(runnable["contention_key"]),
+        resource_family=runnable["resource_family"],
+        contention_key=runnable["contention_key"],
         scopes=list(runnable["scopes"]),
         env_overrides=dict(runnable["env_overrides"]),
-        timeout=float(runnable["timeout"]),
+        timeout=runnable["timeout"],
         initial_notes=initial_notes,
         depends_on=getattr(args, "depends_on", []) or [],
         edge_kind=getattr(args, "edge_kind", state.DEFAULT_EDGE_KIND),

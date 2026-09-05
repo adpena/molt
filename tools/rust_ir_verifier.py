@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+from ctypes import wintypes
 import json
 import math
 import os
@@ -22,6 +23,7 @@ if str(SRC) not in sys.path:
 
 from molt.dx import development_artifact_env  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.windows_process_api import bind_process_query_api  # noqa: E402
 
 _BINARY_NAME = "molt-ir-verify.exe" if os.name == "nt" else "molt-ir-verify"
 _BUILD_LOCK = threading.Lock()
@@ -47,9 +49,6 @@ def _request_timeout_seconds(env: dict[str, str]) -> float:
 def _process_metrics(pid: int) -> tuple[float, int]:
     if os.name == "nt":
 
-        class FileTime(ctypes.Structure):
-            _fields_ = [("low", ctypes.c_ulong), ("high", ctypes.c_ulong)]
-
         class MemoryCounters(ctypes.Structure):
             _fields_ = [
                 ("cb", ctypes.c_ulong),
@@ -65,32 +64,22 @@ def _process_metrics(pid: int) -> tuple[float, int]:
                 ("private_usage", ctypes.c_size_t),
             ]
 
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.GetProcessTimes.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(FileTime),
-            ctypes.POINTER(FileTime),
-            ctypes.POINTER(FileTime),
-            ctypes.POINTER(FileTime),
-        ]
-        kernel32.GetProcessTimes.restype = ctypes.c_int
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        bind_process_query_api(kernel32)
         kernel32.K32GetProcessMemoryInfo.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(MemoryCounters),
             ctypes.c_ulong,
         ]
         kernel32.K32GetProcessMemoryInfo.restype = ctypes.c_int
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         handle = kernel32.OpenProcess(0x1410, False, pid)
         if not handle:
             return (0.0, 0)
         try:
-            created = FileTime()
-            exited = FileTime()
-            kernel = FileTime()
-            user = FileTime()
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
             cpu_seconds = 0.0
             if kernel32.GetProcessTimes(
                 handle,
@@ -99,13 +88,13 @@ def _process_metrics(pid: int) -> tuple[float, int]:
                 ctypes.byref(kernel),
                 ctypes.byref(user),
             ):
-                kernel_ticks = (kernel.high << 32) | kernel.low
-                user_ticks = (user.high << 32) | user.low
+                kernel_ticks = (kernel.dwHighDateTime << 32) | kernel.dwLowDateTime
+                user_ticks = (user.dwHighDateTime << 32) | user.dwLowDateTime
                 cpu_seconds = (kernel_ticks + user_ticks) / 10_000_000
             counters = MemoryCounters()
             counters.cb = ctypes.sizeof(counters)
             peak_rss = 0
-            if ctypes.windll.kernel32.K32GetProcessMemoryInfo(
+            if kernel32.K32GetProcessMemoryInfo(
                 handle,
                 ctypes.byref(counters),
                 counters.cb,
@@ -319,8 +308,7 @@ class RustIrVerifier:
         except queue.Empty as exc:
             self.close(graceful=False)
             raise TimeoutError(
-                f"Rust IR verifier request {request_id} exceeded "
-                f"{request_timeout:.3f}s"
+                f"Rust IR verifier request {request_id} exceeded {request_timeout:.3f}s"
             ) from exc
         if response is None:
             raise RuntimeError(self._process_failure("before response"))

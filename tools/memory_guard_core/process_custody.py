@@ -395,7 +395,9 @@ def _rusage_maxrss_kb(rusage: object) -> int:
     return raw
 
 
-def _poll_wait4_child(proc: subprocess.Popen[str]) -> ChildExitResourceUsage | None:
+def _poll_wait4_child(
+    proc: subprocess.Popen[str] | subprocess.Popen[bytes],
+) -> ChildExitResourceUsage | None:
     if os.name != "posix" or not hasattr(os, "wait4"):
         return None
     if proc.returncode is not None:
@@ -517,10 +519,13 @@ def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
 def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
     if _is_windows_process_model():
         return _pid_exited_or_unobservable(pgid, grace=grace)
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        return False
     deadline = time.monotonic() + max(0.0, grace)
     while time.monotonic() < deadline:
         try:
-            os.killpg(pgid, 0)
+            killpg(pgid, 0)
         except ProcessLookupError:
             return True
         except OSError:
@@ -590,8 +595,17 @@ def _send_process_group_signal_action(
     pgid: int,
     signum: int,
 ) -> GuardTerminationAction:
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        return _termination_action(
+            target_kind="process_group",
+            target_id=pgid,
+            signum=signum,
+            result="failed",
+            error="host has no POSIX process-group signal capability",
+        )
     try:
-        os.killpg(pgid, signum)
+        killpg(pgid, signum)
     except ProcessLookupError:
         return _termination_action(
             target_kind="process_group",

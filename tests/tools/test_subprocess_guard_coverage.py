@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_TOOL = REPO_ROOT / "tools" / "check_subprocess_guard_coverage.py"
@@ -63,6 +65,81 @@ def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:
     assert audit.unexpected[0].path == "bad.py"
     assert audit.unexpected[0].qualname == "launch"
     assert audit.unexpected[0].method == "run"
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ('getattr(os, "killpg", None)', "os.killpg"),
+        ('getattr(os, "kill")', "os.kill"),
+        ('getattr(subprocess, "run")', "run"),
+        ('getattr(os, "system")', "os.system"),
+        ('getattr(proc, "terminate")', "process.terminate"),
+        ("subprocess.Popen", "Popen"),
+        ("proc.kill", "process.kill"),
+    ],
+)
+def test_raw_callable_aliases_remain_audited(
+    tmp_path: Path, expression: str, expected: str
+) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "aliases.py"
+    source.write_text(
+        "import os, subprocess\n"
+        "def invoke(proc):\n"
+        f"    operation = {expression}\n"
+        "    alias: object = operation\n"
+        "    if alias is not None:\n"
+        "        alias(123, 0)\n",
+        encoding="utf-8",
+    )
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+    # Merely retrieving a capability is not a call; invoking its alias is.
+    assert [(call.qualname, call.method) for call in audit.raw_calls] == [
+        ("invoke", expected),
+        *([("invoke", "shell.exec")] if expected == "os.system" else []),
+    ]
+
+
+def test_callable_alias_scope_shadowing_and_immediate_getattr(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "shadowing.py"
+    source.write_text(
+        "import subprocess as sp\n"
+        "launch = sp.run\n"
+        "def shadow(launch):\n"
+        "    launch([])\n"
+        "def reassigned():\n"
+        "    launch = lambda _: None\n"
+        "    launch([])\n"
+        "def real():\n"
+        "    launch(['echo safe'], shell=True)\n"
+        "    getattr(sp, 'run')(['true'])\n",
+        encoding="utf-8",
+    )
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+    assert [(call.qualname, call.method) for call in audit.raw_calls] == [
+        ("real", "run"),
+        ("real", "shell.exec"),
+        ("real", "run"),
+    ]
+
+
+def test_direct_import_alias_and_constant_capability_name(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "import_alias.py"
+    source.write_text(
+        "import os as host\n"
+        "from os import killpg as signal_group\n"
+        "alias = signal_group\n"
+        "name = 'killpg'\n"
+        "def invoke():\n"
+        "    alias(123, 0)\n"
+        "    getattr(host, name, None)(123, 0)\n",
+        encoding="utf-8",
+    )
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+    assert [call.method for call in audit.raw_calls] == ["os.killpg", "os.killpg"]
 
 
 def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:

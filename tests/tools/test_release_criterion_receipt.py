@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +12,7 @@ from molt import verified_subset as verified_authority
 from tools import release_criterion_receipt as receipt
 from tools import verified_subset
 from tools.compat import comparison, test_policy
+from tests.process_guard_common import run_guarded_test_process
 
 
 SOURCE_SHA = "a" * 40
@@ -589,7 +589,7 @@ def test_verified_subset_receipt_binds_compiler_target_python(
 
 
 def _git(root: Path, *args: str) -> str:
-    completed = subprocess.run(
+    completed = run_guarded_test_process(
         ["git", "-C", str(root), *args],
         check=True,
         capture_output=True,

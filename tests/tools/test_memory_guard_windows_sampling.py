@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.memory_guard_core import process_custody
+
 from tools.memory_guard_core import windows_snapshot
 from tools.memory_guard_core import process_model
 
@@ -61,7 +63,7 @@ def test_parse_windows_process_snapshot_rows_builds_process_samples() -> None:
 
 
 def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     sample = module.ProcessSample(pid=7, ppid=1, rss_kb=9, command="python.exe")
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
@@ -76,14 +78,16 @@ def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
     reason="Linux process sampling uses native /proc rather than ps",
 )
 def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = process_custody
 
     def missing_ps(*args, **kwargs):  # noqa: ANN002, ANN003
         raise FileNotFoundError("ps")
 
     monkeypatch.setattr(module.subprocess, "run", missing_ps)
 
-    with pytest.raises(module.ProcessSnapshotError, match="POSIX process snapshot"):
+    with pytest.raises(
+        windows_snapshot.ProcessSnapshotError, match="POSIX process snapshot"
+    ):
         module.sample_processes_posix()
 
 
@@ -248,7 +252,7 @@ def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
 
 
 def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = process_custody
 
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Windows sampler must not shell out")
@@ -269,14 +273,16 @@ def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) 
 
 
 def test_sample_processes_windows_timeout_fails_closed(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = process_custody
 
     def timed_out():
         raise TimeoutError("snapshot deadline")
 
     monkeypatch.setattr(module, "_windows_process_snapshot_rows", timed_out)
 
-    with pytest.raises(module.ProcessSnapshotError, match="Windows process snapshot"):
+    with pytest.raises(
+        windows_snapshot.ProcessSnapshotError, match="Windows process snapshot"
+    ):
         module.sample_processes_windows()
 
 
@@ -976,10 +982,19 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
     assert module.INTERNAL_COMMAND_ENV in env
 
 
+def test_process_group_signal_without_host_capability_fails_closed(monkeypatch) -> None:
+    monkeypatch.delattr(process_custody.os, "killpg", raising=False)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
+    action = process_custody._send_process_group_signal_action(100, 15)
+    assert action.result == "failed"
+    assert action.error == "host has no POSIX process-group signal capability"
+    assert not process_custody.process_group_exited_or_unobservable(100, grace=0.01)
+
+
 def test_terminate_watched_processes_windows_kills_owned_descendants(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100, ppid=50, rss_kb=1, command="uv.exe", started_at_ns=100
@@ -1021,7 +1036,7 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
 def test_windows_termination_revalidates_identity_between_discovery_and_term(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     original = module.ProcessSample(
         pid=200,
         ppid=1,
@@ -1063,7 +1078,7 @@ def test_windows_termination_revalidates_identity_between_discovery_and_term(
 def test_windows_termination_revalidates_identity_between_term_and_kill(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     original = module.ProcessSample(
         pid=200,
         ppid=1,
@@ -1106,7 +1121,7 @@ def test_windows_termination_revalidates_identity_between_term_and_kill(
 def test_terminate_watched_processes_windows_refuses_codex_root(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100,
@@ -1147,7 +1162,7 @@ def test_terminate_watched_processes_windows_refuses_codex_root(
 def test_terminate_watched_processes_windows_refuses_owned_root_with_empty_samples(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
@@ -1174,7 +1189,7 @@ def test_terminate_watched_processes_windows_refuses_owned_root_with_empty_sampl
 def test_terminate_watched_processes_windows_refuses_external_codex_descendant_root(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100,
@@ -1290,7 +1305,7 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
 def test_terminate_single_pid_windows_refuses_external_codex_lineage(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100,
@@ -1330,7 +1345,7 @@ def test_terminate_single_pid_windows_refuses_external_codex_lineage(
 def test_terminate_single_pid_windows_rechecks_identity_before_signal(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     owned = {
         200: module.ProcessSample(
             pid=200,
@@ -1496,7 +1511,7 @@ def test_pid_signal_windows_refuses_current_guard_shell_child(
 def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100,
@@ -1553,7 +1568,7 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
 def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     samples = {
         100: module.ProcessSample(
             pid=100,
@@ -1613,7 +1628,7 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
 def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = process_custody
     tracker = module.ProcessTreeTracker(root_pid=100)
     initial = {
         100: module.ProcessSample(

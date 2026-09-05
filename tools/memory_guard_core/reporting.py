@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
-from typing import TextIO
+from typing import TextIO, TypedDict, Unpack
 
 from tools.memory_guard_core.cargo_quarantine import (
     _cargo_incremental_quarantine_message,
@@ -27,6 +27,28 @@ from tools.memory_guard_core.process_custody import (
     GuardTerminationAction,
     GuardedChildProcess,
 )
+
+
+class GuardReportContext(TypedDict):
+    command: Sequence[str]
+    cwd: str | Path | None
+    environ: Mapping[str, str]
+    max_rss_kb: int
+    max_total_rss_kb: int | None
+    max_global_rss_kb: int | None
+    child_rlimit_kb: int | None
+    timeout_s: float | None
+    poll_interval_s: float
+
+
+def _validate_report_context(context: GuardReportContext) -> None:
+    required = GuardReportContext.__required_keys__
+    missing = sorted(required - context.keys())
+    unexpected = sorted(context.keys() - required)
+    if missing or unexpected:
+        raise TypeError(
+            f"invalid guard report context: missing={missing}, unexpected={unexpected}"
+        )
 
 
 WINDOWS_PROCESS_SIGNAL_EXIT_CODES = frozenset(
@@ -317,19 +339,21 @@ def incident_payload(
 def write_summary_json(
     path: str,
     *,
-    command: Sequence[str],
-    cwd: str | Path | None,
-    environ: Mapping[str, str],
-    max_rss_kb: int,
-    max_total_rss_kb: int | None,
-    max_global_rss_kb: int | None,
-    child_rlimit_kb: int | None,
-    timeout_s: float | None,
-    poll_interval_s: float,
     result: GuardResult,
     signal_payload: Callable[[int], dict[str, object] | None],
     repro_context_provider: Callable[..., dict[str, object]],
+    **context: Unpack[GuardReportContext],
 ) -> None:
+    _validate_report_context(context)
+    command = context["command"]
+    cwd = context["cwd"]
+    environ = context["environ"]
+    max_rss_kb = context["max_rss_kb"]
+    max_total_rss_kb = context["max_total_rss_kb"]
+    max_global_rss_kb = context["max_global_rss_kb"]
+    child_rlimit_kb = context["child_rlimit_kb"]
+    timeout_s = context["timeout_s"]
+    poll_interval_s = context["poll_interval_s"]
     summary_path = Path(path)
     if summary_path.parent:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,18 +500,20 @@ def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:
 def write_running_summary_json(
     path: str,
     *,
-    command: Sequence[str],
-    cwd: str | Path | None,
-    environ: Mapping[str, str],
-    max_rss_kb: int,
-    max_total_rss_kb: int | None,
-    max_global_rss_kb: int | None,
-    child_rlimit_kb: int | None,
-    timeout_s: float | None,
-    poll_interval_s: float,
     child_process: GuardedChildProcess | None = None,
     repro_context_provider: Callable[..., dict[str, object]],
+    **context: Unpack[GuardReportContext],
 ) -> None:
+    _validate_report_context(context)
+    command = context["command"]
+    cwd = context["cwd"]
+    environ = context["environ"]
+    max_rss_kb = context["max_rss_kb"]
+    max_total_rss_kb = context["max_total_rss_kb"]
+    max_global_rss_kb = context["max_global_rss_kb"]
+    child_rlimit_kb = context["child_rlimit_kb"]
+    timeout_s = context["timeout_s"]
+    poll_interval_s = context["poll_interval_s"]
     summary_path = Path(path)
     if summary_path.parent:
         summary_path.parent.mkdir(parents=True, exist_ok=True)

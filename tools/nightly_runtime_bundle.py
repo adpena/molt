@@ -40,8 +40,10 @@ from tools.artifact_publish import (  # noqa: E402
     publish_validated_outputs,
     staged_output_path,
 )
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 
+_COMMANDS = CommandExecutor.for_file(__file__)
 SCHEMA_VERSION = 1
 KIND = "molt_nightly_runtime_bundle"
 MANIFEST_NAME = "nightly-runtime-manifest.json"
@@ -105,7 +107,7 @@ def _run_identity_command(
     argv: Sequence[str], *, cwd: Path, allow_empty: bool = False
 ) -> str:
     try:
-        result = subprocess.run(
+        result = _COMMANDS.run(
             list(argv),
             cwd=cwd,
             check=True,
@@ -115,7 +117,7 @@ def _run_identity_command(
             encoding="utf-8",
             errors="strict",
         )
-    except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise NightlyRuntimeBundleError(
             f"cannot establish bundle identity with {' '.join(argv)}: {exc}"
         ) from exc

@@ -7,7 +7,6 @@ import datetime as dt
 import json
 import math
 import re
-import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -17,7 +16,9 @@ from molt.exact_json import ExactJsonError, loads_exact, write_exact
 from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.toolchain_identity import stable_file_sha256
 from tools.git_identity import is_git_object_id
+from tools.command_execution import CommandExecutor
 
+_COMMANDS = CommandExecutor.for_file(__file__)
 SCHEMA_VERSION = 1
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
@@ -228,7 +229,7 @@ def add_receipt_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _git(repo_root: Path, *args: str) -> str:
-    completed = subprocess.run(
+    completed = _COMMANDS.run(
         ["git", "-C", str(repo_root), *args],
         check=False,
         capture_output=True,

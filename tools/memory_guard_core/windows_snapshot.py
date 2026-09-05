@@ -10,6 +10,11 @@ import time
 from functools import lru_cache
 from types import SimpleNamespace
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.windows_process_api import bind_process_query_api, process_query_api  # noqa: E402
+
 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
 WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV = "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC"
@@ -221,16 +226,8 @@ def windows_process_handle_started_at_ns(handle: object) -> int | None:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = process_query_api()
         get_process_times = kernel32.GetProcessTimes
-        get_process_times.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(wintypes.FILETIME),
-            ctypes.POINTER(wintypes.FILETIME),
-            ctypes.POINTER(wintypes.FILETIME),
-            ctypes.POINTER(wintypes.FILETIME),
-        ]
-        get_process_times.restype = wintypes.BOOL
         created = wintypes.FILETIME()
         exited = wintypes.FILETIME()
         kernel = wintypes.FILETIME()
@@ -308,6 +305,7 @@ def _windows_snapshot_api() -> SimpleNamespace:
         ]
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    bind_process_query_api(kernel32)
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     psapi = ctypes.WinDLL("psapi", use_last_error=True)
     counters_type = _windows_process_memory_counters_type(ctypes, wintypes)
@@ -321,20 +319,8 @@ def _windows_snapshot_api() -> SimpleNamespace:
     process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
     process_next.restype = wintypes.BOOL
     close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [wintypes.HANDLE]
-    close_handle.restype = wintypes.BOOL
     open_process = kernel32.OpenProcess
-    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    open_process.restype = wintypes.HANDLE
     get_process_times = kernel32.GetProcessTimes
-    get_process_times.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-    ]
-    get_process_times.restype = wintypes.BOOL
     query_image = kernel32.QueryFullProcessImageNameW
     query_image.argtypes = [
         wintypes.HANDLE,
