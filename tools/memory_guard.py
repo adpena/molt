@@ -152,6 +152,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     windows_process_handle_started_at_ns as windows_process_handle_started_at_ns,
 )
 from tools.process_spawn import (  # noqa: E402
+    ProcessGroupKwargs,
     detached_process_group_kwargs,
     inherit_stdio_kwargs,
 )
@@ -579,7 +580,7 @@ def _close_fds(fds: Sequence[int | None]) -> None:
             os.close(fd)
 
 
-def _guarded_popen_process_isolation_kwargs() -> dict[str, object]:
+def _guarded_popen_process_isolation_kwargs() -> ProcessGroupKwargs:
     return detached_process_group_kwargs(
         windows=_is_windows_process_model(),
         subprocess_module=subprocess,
@@ -710,9 +711,13 @@ def run_guarded(
         raise ValueError("capture_tail_bytes must be positive")
     if capture_tail_bytes is not None and stdout_capture_path is None:
         raise ValueError("capture_tail_bytes requires external capture paths")
-    if stdout_capture_path is not None and Path(stdout_capture_path).resolve() == Path(
-        stderr_capture_path  # type: ignore[arg-type]
-    ).resolve():
+    if (
+        stdout_capture_path is not None
+        and Path(stdout_capture_path).resolve()
+        == Path(
+            stderr_capture_path  # type: ignore[arg-type]
+        ).resolve()
+    ):
         raise ValueError("stdout/stderr capture paths must be distinct")
     if keepalive_interval is not None and keepalive_interval <= 0:
         keepalive_interval = None
@@ -1326,7 +1331,9 @@ def run_guarded(
                 nonlocal max_sampling_wall_time_s, max_sampling_cpu_time_s
                 nonlocal sampling_process_rows, max_sampling_process_rows
                 wall_cost = (time.perf_counter_ns() - sample_started_ns) / 1_000_000_000
-                cpu_cost = (time.process_time_ns() - sample_cpu_started_ns) / 1_000_000_000
+                cpu_cost = (
+                    time.process_time_ns() - sample_cpu_started_ns
+                ) / 1_000_000_000
                 last_sample_cost_s = wall_cost
                 sampling_wall_time_s += wall_cost
                 sampling_cpu_time_s += cpu_cost
@@ -1701,9 +1708,13 @@ def run_guarded(
                 if capture_tail_bytes is not None and stdout_capture_path is not None:
                     with Path(stdout_capture_path).open("rb") as tail_handle:
                         tail_handle.seek(0, os.SEEK_END)
-                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_handle.seek(
+                            max(0, tail_handle.tell() - capture_tail_bytes)
+                        )
                         tail_data = tail_handle.read()
-                    stdout = tail_data.decode(encoding, errors=errors) if text else tail_data
+                    stdout = (
+                        tail_data.decode(encoding, errors=errors) if text else tail_data
+                    )
                 else:
                     stdout_capture.seek(0)
                     stdout = stdout_capture.read()
@@ -1712,9 +1723,13 @@ def run_guarded(
                 if capture_tail_bytes is not None and stderr_capture_path is not None:
                     with Path(stderr_capture_path).open("rb") as tail_handle:
                         tail_handle.seek(0, os.SEEK_END)
-                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_handle.seek(
+                            max(0, tail_handle.tell() - capture_tail_bytes)
+                        )
                         tail_data = tail_handle.read()
-                    stderr = tail_data.decode(encoding, errors=errors) if text else tail_data
+                    stderr = (
+                        tail_data.decode(encoding, errors=errors) if text else tail_data
+                    )
                 else:
                     stderr_capture.seek(0)
                     stderr = stderr_capture.read()

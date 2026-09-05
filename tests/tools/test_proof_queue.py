@@ -2128,6 +2128,32 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
             )
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [None, [], {"identity_sha256": 123}, {"identity_sha256": "a" * 64, 1: "invalid"}],
+)
+def test_execution_context_rejects_malformed_toolchain_objects(
+    identity: object, tmp_path: Path
+) -> None:
+    envelope = {"toolchains": ["python"]}
+    nonce = "a" * 64
+    context = {
+        "run_id": "malformed-receipt",
+        "execution_nonce_sha256": hashlib.sha256(nonce.encode()).hexdigest(),
+        "command_envelope": envelope,
+        "toolchains": {"python": identity},
+    }
+    with pytest.raises(ValueError, match="toolchain closure is incomplete"):
+        runner._validated_execution_context(
+            context,
+            execution_path=tmp_path / "run.execution.json",
+            envelope=envelope,
+            run_id="malformed-receipt",
+            execution_nonce=nonce,
+            returncode=0,
+        )
+
+
 def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -12762,6 +12788,30 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     )
     assert any("candidate_outputs.npz" in note for note in spec["notes"])
     assert policy._proof_command_policy_error(command) is None
+
+
+@pytest.mark.parametrize(
+    "raw", [{1: "value"}, {"NAME": 1}, ["NAME=value", 1], "NAME=value"]
+)
+def test_proof_queue_environment_spec_rejects_untyped_values(raw: object) -> None:
+    with pytest.raises(SystemExit, match="proof env"):
+        policy._env_overrides_from_spec(raw)
+
+
+@pytest.mark.parametrize("raw", [None, "NAME", [""], [1], ["NAME", "name"]])
+def test_proof_queue_named_spec_rejects_invalid_locked_authority(raw: object) -> None:
+    with pytest.raises(SystemExit, match="locked_env authority"):
+        policy._named_spec_env_overrides(
+            {"logical_id": "invalid-locks", "locked_env": raw}, []
+        )
+
+
+@pytest.mark.parametrize("raw", [None, ["NAME=value"], {1: "value"}, {"NAME": 1}])
+def test_proof_queue_named_spec_rejects_untyped_defaults(raw: object) -> None:
+    with pytest.raises(SystemExit, match="invalid env_overrides authority"):
+        policy._named_spec_env_overrides(
+            {"logical_id": "invalid-defaults", "env_overrides": raw}, []
+        )
 
 
 def test_proof_queue_named_spec_locked_environment_authority_is_generic(

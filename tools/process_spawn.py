@@ -3,8 +3,21 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from types import ModuleType
-from typing import Any
+from typing import Any, TextIO, TypedDict
+
+
+class ProcessGroupKwargs(TypedDict, total=False):
+    creationflags: int
+    start_new_session: bool
+    preexec_fn: Callable[[], None]
+
+
+class InheritedStdioKwargs(TypedDict, total=False):
+    stdin: TextIO
+    stdout: TextIO
+    stderr: TextIO
 
 
 def _subprocess_flag(module: ModuleType | Any, name: str) -> int:
@@ -21,7 +34,7 @@ def _stream_has_real_handle(stream: Any) -> bool:
     return True
 
 
-def inherit_stdio_kwargs() -> dict[str, object]:
+def inherit_stdio_kwargs() -> InheritedStdioKwargs:
     """Explicit stdio passthrough for hidden-console Windows children.
 
     `CREATE_NO_WINDOW` children get a fresh hidden console instead of the
@@ -31,7 +44,7 @@ def inherit_stdio_kwargs() -> dict[str, object]:
     without a real OS handle (e.g. pythonw, closed streams) are omitted so the
     child falls back to the default behavior.
     """
-    kwargs: dict[str, object] = {}
+    kwargs: InheritedStdioKwargs = {}
     if _stream_has_real_handle(sys.stdin):
         kwargs["stdin"] = sys.stdin
     if _stream_has_real_handle(sys.stdout):
@@ -54,7 +67,7 @@ def hidden_windows_process_group_kwargs(
     *,
     windows: bool | None = None,
     subprocess_module: ModuleType | Any = subprocess,
-) -> dict[str, object]:
+) -> ProcessGroupKwargs:
     if windows is None:
         windows = os.name == "nt"
     if not windows:
@@ -69,7 +82,7 @@ def detached_process_group_kwargs(
     *,
     windows: bool | None = None,
     subprocess_module: ModuleType | Any = subprocess,
-) -> dict[str, object]:
+) -> ProcessGroupKwargs:
     if windows is None:
         windows = os.name == "nt"
     if windows:

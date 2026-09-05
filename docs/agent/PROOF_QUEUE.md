@@ -22,6 +22,14 @@ load NumPy/SciPy witness tooling. New behavior belongs in its owning module;
 `tools/proof_queue.py` must not become a compatibility facade or re-export
 internal implementation symbols.
 
+Process launch options come from the typed `tools/process_spawn.py` authority,
+shared by queue custody, the memory guard, and pytest bootstrap. Keep explicit
+launch arguments and text streams typed through their consumers. Named proof
+environments are parsed by `policy` into string tables and case-folded locked
+names before admission; receipt objects and string lists are validated by
+`runner` before they reach custody verification. Malformed input must produce a
+policy or receipt diagnostic, never an unchecked cast or incidental type error.
+
 ## When To Use It
 
 Use the queue for Cargo builds, WASM/browser proofs, benchmark lanes,
