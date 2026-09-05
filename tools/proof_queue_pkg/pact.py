@@ -484,7 +484,10 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
     # traceback. _run_named_spec revalidates the completed spec before use.
     policy._named_spec_user_env_overrides(
         _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID,
-        _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+        policy._named_spec_locked_env(
+            _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID,
+            _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+        ),
         args.env,
     )
     return _run_named_spec(

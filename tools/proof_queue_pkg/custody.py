@@ -10,9 +10,11 @@ import subprocess
 from subprocess import Popen, TimeoutExpired
 import sys
 from pathlib import Path
+from typing import TextIO
 
 from tools import harness_memory_guard, memory_guard
 from tools.process_spawn import (
+    ProcessGroupKwargs,
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
 )
@@ -46,7 +48,7 @@ PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS = 6 * 60 * 60.0
 
 def _terminate_queue_owned_guard_process(
     proc: Popen[str],
-    log: object,
+    log: TextIO,
     *,
     run_id: str,
 ) -> int | None:
@@ -166,22 +168,18 @@ def _launch_detached_runner(
         "--timeout",
         str(timeout),
     ]
-    popen_kwargs: dict[str, object] = {
-        "cwd": state._repo_root(args),
-        "stdin": subprocess.DEVNULL,
-        "text": True,
-    }
-    popen_kwargs.update(
-        detached_process_group_kwargs(
-            windows=_queue_process_spawn_is_windows(),
-            subprocess_module=subprocess,
-        )
+    popen_kwargs = detached_process_group_kwargs(
+        windows=_queue_process_spawn_is_windows(),
+        subprocess_module=subprocess,
     )
     with runner_log.open("w", encoding="utf-8") as log:
         print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
         print(f"command={shlex.join(command)}", file=log, flush=True)
         proc = Popen(
             command,
+            cwd=state._repo_root(args),
+            stdin=subprocess.DEVNULL,
+            text=True,
             stdout=log,
             stderr=subprocess.STDOUT,
             **popen_kwargs,
@@ -193,7 +191,7 @@ def _queue_process_spawn_is_windows() -> bool:
     return os.name == "nt"
 
 
-def _queued_command_process_kwargs() -> dict[str, object]:
+def _queued_command_process_kwargs() -> ProcessGroupKwargs:
     return hidden_windows_process_group_kwargs(
         windows=_queue_process_spawn_is_windows(),
         subprocess_module=subprocess,
@@ -205,7 +203,7 @@ def _launch_queued_command(
     *,
     cwd: Path,
     env: dict[str, str],
-    stdout: object,
+    stdout: TextIO,
 ) -> Popen[str]:
     """Launch through the queue-owned process boundary.
 

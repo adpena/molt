@@ -16,16 +16,18 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
 try:
     from tools import memory_guard, process_sentinel
-    from tools.process_spawn import detached_process_group_kwargs
+    from tools.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs
 except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import memory_guard  # type: ignore
-    import process_sentinel  # type: ignore
-    from process_spawn import detached_process_group_kwargs  # type: ignore
+    import memory_guard
+    import process_sentinel
+    from process_spawn import ProcessGroupKwargs, detached_process_group_kwargs
 
 try:
     from tools.memory_guard_core import harness_outcomes as _harness_outcomes
+    from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - direct tools/ import
-    from memory_guard_core import harness_outcomes as _harness_outcomes  # type: ignore
+    from memory_guard_core import harness_outcomes as _harness_outcomes
+    from memory_guard_core.memory_limits import ResolvedMemoryLimits
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -93,20 +95,20 @@ def canonical_interpreter(executable: str) -> str:
     return str(abs_path)
 
 
-class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
+class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[Output]):
     def __init__(
         self,
         args: Sequence[str],
         returncode: int,
-        stdout: str | bytes | None,
-        stderr: str | bytes | None,
+        stdout: Output | None,
+        stderr: Output | None,
         *,
         elapsed_s: float | None,
         violation: memory_guard.RssViolation | None = None,
         peak: memory_guard.RssViolation | None = None,
         peak_total: memory_guard.RssViolation | None = None,
         timed_out: bool = False,
-        limit_at_violation: memory_guard.ResolvedMemoryLimits | None = None,
+        limit_at_violation: ResolvedMemoryLimits | None = None,
         orphaned_process_groups: Sequence[int] = (),
         cargo_incremental_quarantine: (
             memory_guard.CargoIncrementalQuarantine | None
@@ -243,7 +245,7 @@ class HarnessMemoryLimits:
         env: Mapping[str, str] | None = None,
         *,
         accounted_rss_kb: int = 0,
-    ) -> memory_guard.ResolvedMemoryLimits:
+    ) -> ResolvedMemoryLimits:
         source = _effective_env(env)
 
         def provider(accounted: int) -> memory_guard.AdaptiveMemoryBudget:
@@ -620,8 +622,7 @@ def limits_from_env(
         dynamic_total_rss=effective_total_override is None,
         dynamic_global_rss=effective_global_override is None,
         dynamic_child_rlimit=(
-            child_rlimit_override is None
-            and resolved_defaults.child_rlimit_gb is None
+            child_rlimit_override is None and resolved_defaults.child_rlimit_gb is None
         ),
         interactive_budget=interactive_budget,
     )
@@ -869,7 +870,7 @@ def _append_guarded_command_profile(
     timeout_s: float | None,
     violation: memory_guard.RssViolation | None,
     timed_out: bool,
-    limit_at_violation: memory_guard.ResolvedMemoryLimits | None,
+    limit_at_violation: ResolvedMemoryLimits | None,
     orphaned_process_groups: Sequence[int],
     peak: memory_guard.RssViolation | None = None,
     peak_total: memory_guard.RssViolation | None = None,
@@ -1047,7 +1048,7 @@ def _repo_sentinel_repro_payload(
     cwd: str | Path | None,
     env: Mapping[str, str] | None,
     limits: HarnessMemoryLimits,
-    resolved_limits: memory_guard.ResolvedMemoryLimits,
+    resolved_limits: ResolvedMemoryLimits,
     label: str,
     accounted_rss_kb: int,
     timeout_s: float | None = None,
@@ -1110,7 +1111,7 @@ def _prune_stale_repo_processes(
         root=_REPO_ROOT,
         self_pid=os.getpid(),
         self_pgid=memory_guard._safe_getpgrp(),
-        owned_pids=frozenset(),
+        owned_pids=set(),
     )
     accounted_rss_kb = sum(group.total_rss_kb for group in groups)
     current_limits = limits.current_memory_limits(
@@ -1513,6 +1514,7 @@ def guarded_completed_process_to_tempfiles(
     direct child exits.
     """
 
+    cwd = Path(cwd) if cwd is not None else None
     env, _cargo_policies = cargo_subprocess_environment(command, env)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
@@ -1697,7 +1699,7 @@ def batch_process_group_kwargs(
     limits: HarnessMemoryLimits | None = None,
     *,
     env: Mapping[str, str] | None = None,
-) -> dict[str, object]:
+) -> ProcessGroupKwargs:
     resolved_limits = limits or limits_from_env("MOLT", env)
     if os.name == "nt":
         return detached_process_group_kwargs(
@@ -1706,7 +1708,7 @@ def batch_process_group_kwargs(
         )
     if os.name != "posix":
         return {}
-    kwargs: dict[str, object] = {"start_new_session": True}
+    kwargs: ProcessGroupKwargs = {"start_new_session": True}
     child_rlimit_kb = resolved_limits.current_child_rlimit_kb(env)
     if child_rlimit_kb is not None:
         kwargs["preexec_fn"] = _child_resource_limit_preexec(child_rlimit_kb)
@@ -1768,7 +1770,7 @@ class RepoProcessMemorySentinel:
         on_scan: Callable[
             [
                 Sequence[process_sentinel.ProcessGroup],
-                memory_guard.ResolvedMemoryLimits,
+                ResolvedMemoryLimits,
                 float,
             ],
             None,
@@ -1777,7 +1779,7 @@ class RepoProcessMemorySentinel:
         on_violation: Callable[
             [
                 process_sentinel.SentinelViolation,
-                memory_guard.ResolvedMemoryLimits,
+                ResolvedMemoryLimits,
                 Mapping[str, object],
             ],
             None,
@@ -1921,7 +1923,7 @@ class RepoProcessMemorySentinel:
     def _notify_scan(
         self,
         groups: Sequence[process_sentinel.ProcessGroup],
-        limits: memory_guard.ResolvedMemoryLimits,
+        limits: ResolvedMemoryLimits,
     ) -> None:
         if self._on_scan is None:
             return
@@ -1939,7 +1941,7 @@ class RepoProcessMemorySentinel:
     def _notify_violation(
         self,
         violation: process_sentinel.SentinelViolation,
-        limits: memory_guard.ResolvedMemoryLimits,
+        limits: ResolvedMemoryLimits,
         payload: Mapping[str, object],
     ) -> None:
         if self._on_violation is None:
@@ -2257,7 +2259,7 @@ def repo_process_sentinel(
     on_scan: Callable[
         [
             Sequence[process_sentinel.ProcessGroup],
-            memory_guard.ResolvedMemoryLimits,
+            ResolvedMemoryLimits,
             float,
         ],
         None,
@@ -2266,7 +2268,7 @@ def repo_process_sentinel(
     on_violation: Callable[
         [
             process_sentinel.SentinelViolation,
-            memory_guard.ResolvedMemoryLimits,
+            ResolvedMemoryLimits,
             Mapping[str, object],
         ],
         None,
@@ -2380,7 +2382,7 @@ class HarnessExecutionContext:
             sampling_scope=sampling_scope,
         )
 
-    def process_group_kwargs(self) -> dict[str, object]:
+    def process_group_kwargs(self) -> ProcessGroupKwargs:
         return batch_process_group_kwargs(self.limits, env=self.env)
 
     def force_close_process_group(self, proc: subprocess.Popen[str]) -> None:
@@ -2398,7 +2400,7 @@ class HarnessExecutionContext:
         on_scan: Callable[
             [
                 Sequence[process_sentinel.ProcessGroup],
-                memory_guard.ResolvedMemoryLimits,
+                ResolvedMemoryLimits,
                 float,
             ],
             None,
@@ -2407,7 +2409,7 @@ class HarnessExecutionContext:
         on_violation: Callable[
             [
                 process_sentinel.SentinelViolation,
-                memory_guard.ResolvedMemoryLimits,
+                ResolvedMemoryLimits,
                 Mapping[str, object],
             ],
             None,
@@ -2459,7 +2461,7 @@ def guarded_harness_scope(
     on_scan: Callable[
         [
             Sequence[process_sentinel.ProcessGroup],
-            memory_guard.ResolvedMemoryLimits,
+            ResolvedMemoryLimits,
             float,
         ],
         None,
@@ -2468,7 +2470,7 @@ def guarded_harness_scope(
     on_violation: Callable[
         [
             process_sentinel.SentinelViolation,
-            memory_guard.ResolvedMemoryLimits,
+            ResolvedMemoryLimits,
             Mapping[str, object],
         ],
         None,

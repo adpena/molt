@@ -23,6 +23,7 @@ if str(SRC_ROOT) not in sys.path:
 from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
 from molt.dx import checkout_custody  # noqa: E402
 from tools.process_spawn import (  # noqa: E402
+    ProcessGroupKwargs,
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
 )
@@ -114,7 +115,7 @@ def _process_exit_code(returncode: int | None) -> int:
     )
 
 
-def _windows_process_group_kwargs() -> dict[str, object]:
+def _windows_process_group_kwargs() -> ProcessGroupKwargs:
     return hidden_windows_process_group_kwargs(
         windows=_is_windows_process_model(),
         subprocess_module=subprocess,
