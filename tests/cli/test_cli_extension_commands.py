@@ -58,7 +58,6 @@ def _source_extension_target_plan(
 ) -> cli_source_extension_target.SourceExtensionTargetPlan:
     return cli_source_extension_target.resolve_source_extension_target_plan(
         requested,
-        host_target_triple="x86_64-unknown-linux-gnu",
         host_platform="linux",
         host_arch="x86_64",
     )
@@ -386,6 +385,7 @@ def _finalize_test_extension_object_closure(
     for item, source_fallback in zip(objects, source_fallbacks, strict=True):
         assert isinstance(item, dict)
         item.setdefault("source", source_fallback)
+        item.setdefault("language", "c")
         item.setdefault(
             "source_sha256",
             hashlib.sha256(Path(source_fallback).read_bytes()).hexdigest(),
@@ -396,7 +396,8 @@ def _finalize_test_extension_object_closure(
         item.setdefault("defined_symbols", [])
         item.setdefault("undefined_symbols", [])
         item.setdefault(
-            "compile_command", ["fixture-compiler", "-c", str(item["source"])]
+            "compile_command",
+            ["fixture-compiler", "-x", "c", "-c", str(item["source"])],
         )
         item["symbol_authority"] = SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
         item.pop("symbol_command", None)
@@ -2101,6 +2102,13 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert manifest["build"]["source_plan_skipped_generated_source_count"] == 0
     assert manifest["build"]["object_count"] == 2
     assert manifest["build"]["linked_object_count"] == 2
+    for obj in manifest["object_closure"]["objects"]:
+        assert obj["language"] == "c"
+        assert Path(obj["source"]).suffix == ""
+        command = obj["compile_command"]
+        language_index = command.index("-x")
+        assert command[language_index + 1] == "c"
+        assert language_index < command.index("-c")
     assert manifest["build"]["source_c_api_scan"][
         "project_generated_c_api_prefixes"
     ] == ["npy_generated_"]
@@ -2385,6 +2393,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         *,
         pyx_path: Path,
         original_c: Path,
+        language: cli_commands.SourceExtensionLanguage,
         out_dir: Path,
         include_dirs: object,
         cython_version: str,
@@ -2393,6 +2402,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         ninja_command: object = (),
     ) -> tuple[cli_commands._source_extension_cython.CythonRegeneration, None]:
         del include_dirs, cython_version, python_exe, ninja_command
+        assert language is cli_commands.SourceExtensionLanguage.C
         observed_package_roots.append(
             tuple(Path(path).resolve() for path in package_roots)
         )
@@ -3117,7 +3127,6 @@ def test_native_target_metadata_commands_drive_real_extension_build(
 ) -> None:
     target_plan = cli_source_extension_target.resolve_source_extension_target_plan(
         "native",
-        host_target_triple=cli_commands._host_target_triple(),
         host_platform=cli_commands.sys.platform,
         host_arch=cli_commands.platform.machine(),
     )
@@ -4471,6 +4480,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
             "objects": [
                 {
                     "object": "0_multiarray.o",
+                    "language": "c",
                     "source_sha256": extension_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__multiarray_umath"],
@@ -4573,6 +4583,7 @@ def _minimal_static_extension_manifest(
             "objects": [
                 {
                     "object": "0_multiarray.o",
+                    "language": "c",
                     "source_sha256": extension_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__multiarray_umath"],
@@ -4723,6 +4734,7 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
                 {
                     "source": str(source_path),
                     "object": "0_nd_image.o",
+                    "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__nd_image"],
@@ -4826,6 +4838,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
                 {
                     "source": str(source_path),
                     "object": "0_multiarray.o",
+                    "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__multiarray_umath"],
@@ -4939,6 +4952,7 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
                 {
                     "source": str(source_path),
                     "object": "0_multiarray.o",
+                    "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__multiarray_umath"],
@@ -4949,6 +4963,7 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
                 {
                     "source": str(generated_source_path),
                     "object": "1_loops.o",
+                    "language": "c",
                     "source_sha256": generated_source_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["npy_generated_loop"],
@@ -5082,6 +5097,7 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
                 {
                     "source": str(stale_source),
                     "object": "0_multiarray.o",
+                    "language": "c",
                     "source_sha256": "1" * 64,
                     "object_sha256": extension_sha256,
                     "defined_symbols": ["PyInit__multiarray_umath"],
@@ -5172,6 +5188,7 @@ def test_extension_seal_rejects_fake_module_attr_callable_export(
             "objects": [
                 {
                     "object": "0_nd_image.o",
+                    "language": "c",
                     "source_sha256": hashlib.sha256(
                         source_path.read_bytes()
                     ).hexdigest(),
@@ -5321,6 +5338,7 @@ def test_extension_seal_publishes_provider_module_support_source(
             "objects": [
                 {
                     "object": "0_nd_image.o",
+                    "language": "c",
                     "source_sha256": hashlib.sha256(
                         source_path.read_bytes()
                     ).hexdigest(),

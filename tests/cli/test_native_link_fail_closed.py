@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 
 from molt.cli import backend_output_pipeline, extension_commands, native_toolchain
-from molt.cli import link_pipeline
+from molt.cli import link_pipeline, native_link_command
 
 
 def test_native_link_has_one_attempt_and_no_post_failure_fallback() -> None:
@@ -181,11 +181,13 @@ def test_bolt_script_emits_atomic_phase_telemetry_when_requested() -> None:
 
 
 def test_extension_link_applies_identity_policy_after_user_link_arguments() -> None:
-    source = inspect.getsource(extension_commands.extension_build)
-    policy = source.index("_source_extension_link_policy_args(")
-    user_args = source.rindex("link_command.extend(link_args)", 0, policy)
-    run = source.index("link_result = _run_completed_command(", policy)
-    assert user_args < policy < run
+    # Source extensions publish archives plus typed link requirements. Their
+    # identity policy is applied by the one final native linker, not the producer.
+    source = inspect.getsource(native_link_command._build_native_link_plan)
+    requirements = source.index("render_source_extension_link_arguments(requirements)")
+    inputs = source.index("link_cmd.extend(link_inputs)")
+    policy = source.index("native_link_policy_flags(")
+    assert requirements < inputs < policy
 
 
 def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> None:
@@ -207,15 +209,14 @@ def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> 
 
     main_link = inspect.getsource(link_pipeline._prepare_native_link)
     extension_link = inspect.getsource(extension_commands.extension_build)
-    extension_policy = inspect.getsource(
-        __import__(
-            "molt.cli.source_extensions",
-            fromlist=["_source_extension_link_policy_args"],
-        )._source_extension_link_policy_args
-    )
+    final_link = inspect.getsource(native_link_command._build_native_link_plan)
     assert "_build_native_link_plan(" in main_link
     assert "_native_link_execution_command(" in main_link
-    assert "_source_extension_link_policy_args(" in extension_link
-    assert "native_link_policy_flags(" in extension_policy
+    assert "source_extension_link_requirements(" in extension_link
+    assert '"rcsD"' in extension_link
+    assert "native_link_policy_flags(" in final_link
+    assert "_source_extension_link_policy_args" not in (
+        cli_root / "source_extensions.py"
+    ).read_text(encoding="utf-8")
     assert "_retry_native_link" not in main_link
     assert "Linker fallback:" not in main_link

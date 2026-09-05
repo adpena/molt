@@ -8,8 +8,9 @@ import sys
 import pytest
 
 import molt.cli as cli
-from molt.cli import build_results, native_link_command, source_extensions
+from molt.cli import build_results, native_link_command, native_link_plan
 from molt.cli.native_link_plan import NativeObjectFormat
+from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
 
 
 def _managed_tool(directory: Path, name: str) -> Path:
@@ -30,6 +31,7 @@ def _plan(
     linker: str | None = None,
     bolt_requested: bool = False,
     cc: str = "clang",
+    external_target: str | None = None,
 ):
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -69,6 +71,11 @@ def _plan(
         bolt_requested=bolt_requested,
         host_platform=host_platform,
         host_arch=host_arch,
+        external_link_requirements=(
+            ()
+            if external_target is None
+            else (SourceExtensionLinkRequirements(external_target),)
+        ),
     )
 
 
@@ -91,6 +98,65 @@ def test_link_plan_is_immutable_and_preserves_elf_function_identity(
     assert plan.policy.strip_after_link
     with pytest.raises(FrozenInstanceError):
         plan.linker_hint = None  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "foreign_target", ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+)
+def test_host_native_link_rejects_foreign_architecture_or_abi(
+    monkeypatch, tmp_path, foreign_target
+):
+    with pytest.raises(RuntimeError, match="cross target triples"):
+        _plan(
+            monkeypatch, tmp_path, host_platform="linux", external_target=foreign_target
+        )
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        "--target=aarch64-unknown-linux-gnu",
+        "-target x86_64-unknown-linux-musl",
+        "-m32",
+        "-mx32",
+    ],
+)
+def test_native_link_rejects_cflags_target_drift(monkeypatch, tmp_path, flags):
+    monkeypatch.setenv("CFLAGS", flags)
+    with pytest.raises(RuntimeError, match="target custody"):
+        _plan(monkeypatch, tmp_path, host_platform="linux")
+
+
+def test_native_link_rejects_cc_target_drift(monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match="target custody"):
+        _plan(
+            monkeypatch,
+            tmp_path,
+            host_platform="linux",
+            cc="clang --target=aarch64-unknown-linux-gnu",
+        )
+
+
+def test_native_link_preserves_matching_target_flags(monkeypatch, tmp_path):
+    monkeypatch.setenv("CFLAGS", "-m64")
+    plan = _plan(
+        monkeypatch,
+        tmp_path,
+        host_platform="linux",
+        cc="clang --target=x86_64-unknown-linux-gnu",
+    )
+    assert "--target=x86_64-unknown-linux-gnu" in plan.command
+    assert "-m64" in plan.command
+
+
+def test_host_native_link_accepts_exact_extension_target(monkeypatch, tmp_path):
+    plan = _plan(
+        monkeypatch,
+        tmp_path,
+        host_platform="linux",
+        external_target="x86_64-unknown-linux-gnu",
+    )
+    assert plan.target.arch == "x86_64"
 
 
 def test_macho_plan_preserves_identity_without_suppressing_warnings(
@@ -549,21 +615,21 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         ),
     ],
 )
-def test_extension_links_share_native_identity_and_dead_strip_policy(
-    monkeypatch: pytest.MonkeyPatch,
+def test_native_identity_flags_are_driver_ready(
     host_platform: str,
     cc: tuple[str, ...],
     expected: tuple[str, ...],
 ) -> None:
-    monkeypatch.setattr(source_extensions.sys, "platform", host_platform)
-    monkeypatch.setattr(source_extensions.platform, "machine", lambda: "x86_64")
-
+    target = native_link_plan.resolve_native_target_spec(
+        None, host_platform=host_platform, host_arch="x86_64"
+    )
+    capabilities = native_link_plan.native_link_capabilities(
+        target=target,
+        linker_hint=native_link_plan.native_linker_name_from_driver_command(cc),
+    )
     assert (
-        tuple(
-            source_extensions._source_extension_link_policy_args(
-                cc_cmd=cc,
-                target_triple=None,
-            )
+        native_link_plan.native_link_policy_flags(
+            target=target, capabilities=capabilities, msvc_driver=cc[0] == "clang-cl"
         )
         == expected
     )

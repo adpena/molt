@@ -13352,6 +13352,7 @@ def _write_current_scientific_seal(
                 {
                     "source": source_reference,
                     "object": "0.o",
+                    "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": "2" * 64,
                     "defined_symbols": [init_symbol],
@@ -13359,6 +13360,8 @@ def _write_current_scientific_seal(
                     "compile_command": [
                         "@llvm-bin/clang",
                         "--target=wasm32-wasip1",
+                        "-x",
+                        "c",
                         "-c",
                         source_reference,
                     ],

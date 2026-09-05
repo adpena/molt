@@ -3,8 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
-import platform
 import re
 import zipfile
 from dataclasses import dataclass
@@ -15,6 +13,7 @@ from typing import Any, Mapping
 from molt.capability_policy import split_capability_tokens
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
+from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
 from molt.cli.python_module_names import (
     canonical_python_module_name,
     canonical_python_module_names,
@@ -618,30 +617,8 @@ def _cpu_baseline(target_triple: str | None) -> str:
 
 
 def _extension_binary_suffix(target_triple: str | None = None) -> str:
-    target = (target_triple or "").strip().lower()
-    if "windows" in target:
-        return ".pyd"
-    if os.name == "nt" and not target:
-        return ".pyd"
-    return ".so"
-
-
-def _host_target_triple() -> str:
-    system = platform.system().lower()
-    arch = platform.machine().lower() or "unknown"
-    arch_aliases = {
-        "amd64": "x86_64",
-        "x86-64": "x86_64",
-        "arm64": "aarch64",
-    }
-    arch = arch_aliases.get(arch, arch)
-    if system == "darwin":
-        return f"{arch}-apple-darwin"
-    if system == "linux":
-        return f"{arch}-unknown-linux-gnu"
-    if system == "windows":
-        return f"{arch}-pc-windows-msvc"
-    return f"{arch}-{system}"
+    target = resolve_native_target_spec(target_triple)
+    return ".pyd" if target.os == "windows" else ".so"
 
 
 def _default_molt_c_api_version(molt_root: Path) -> str:
@@ -777,11 +754,14 @@ def _validate_extension_manifest(
             artifact_kind = manifest.get("artifact_kind")
             if runtime_linkage == "static_link":
                 target_triple = manifest.get("target_triple")
-                expected_artifact_kind = (
-                    source_extension_artifact_kind(target_triple)
-                    if isinstance(target_triple, str)
-                    else None
-                )
+                expected_artifact_kind = None
+                if isinstance(target_triple, str):
+                    try:
+                        expected_artifact_kind = source_extension_artifact_kind(
+                            target_triple
+                        )
+                    except ValueError as exc:
+                        errors.append(str(exc))
                 if artifact_kind != expected_artifact_kind:
                     errors.append(
                         "runtime_linkage 'static_link' target/artifact mismatch: "

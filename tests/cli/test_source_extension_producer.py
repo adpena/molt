@@ -171,11 +171,12 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
                 {
                     "source": source_reference,
                     "object": "0.o",
+                    "language": "c",
                     "source_sha256": source_sha256,
                     "object_sha256": artifact_sha256,
                     "defined_symbols": [root_symbol],
                     "undefined_symbols": [],
-                    "compile_command": ["clang"],
+                    "compile_command": ["clang", "-x", "c", "-c", source_reference],
                     "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                     "dependencies": [],
                     "required_c_api_symbols": [],
@@ -2203,11 +2204,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             {
                 "source": str(source),
                 "object": "0.o",
+                "language": "c",
                 "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "object_sha256": "1" * 64,
                 "defined_symbols": ["source_symbol"],
                 "undefined_symbols": [],
-                "compile_command": ["clang", "-c", str(source)],
+                "compile_command": ["clang", "-x", "c", "-c", str(source)],
                 "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": [
                     {
@@ -2222,11 +2224,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             {
                 "source": str(generated),
                 "object": "1.o",
+                "language": "c",
                 "source_sha256": hashlib.sha256(generated.read_bytes()).hexdigest(),
                 "object_sha256": "2" * 64,
                 "defined_symbols": ["PyInit__nd_image"],
                 "undefined_symbols": [],
-                "compile_command": ["clang", "-c", str(generated)],
+                "compile_command": ["clang", "-x", "c", "-c", str(generated)],
                 "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                 "dependencies": [],
                 "required_c_api_symbols": [],

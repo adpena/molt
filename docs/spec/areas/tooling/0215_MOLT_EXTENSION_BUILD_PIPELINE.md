@@ -32,6 +32,15 @@ Flags (implemented):
 - `--target <native|wasm|wasm-freestanding|triple>` selects the typed target
   plan. Native targets emit deterministic `.molt.a` static archives; wasm32
   targets emit relocatable `.molt.wasm` objects.
+- The inner target resolver requires an explicit nonblank target; only the CLI
+  boundary defaults an omitted target to `native`. Native host triples and
+  object-format policy share `native_link_plan`; WASM source extensions admit
+  only `wasm32-wasip1` and `wasm32-unknown-unknown`. This policy classifies
+  artifacts, not an assertion of compiled OS/architecture/ABI conformance.
+- Recorded native target facts are checked against the artifact's exact triple,
+  never the inspecting host. Native linking requires exact extension target
+  identity even when no cross-target option was supplied; matching object
+  formats alone cannot establish architecture or ABI compatibility.
 - `--capabilities <file|list|profiles>` (override extension capability metadata)
 - `--deterministic/--no-deterministic`
 - `--json` / `--verbose`
@@ -332,7 +341,20 @@ source search.
   artifacts:
   `wasm_relocatable_object` artifacts must export the declared function symbol,
   and `static_archive` artifacts must list it in
-  `object_closure.defined_symbols`. Sidecar object-closure schema v2 carries
+  `object_closure.defined_symbols`. Sidecar object-closure schema v3 carries
+  each translation unit's canonical `language` (`c`, `cpp`, `objc`, or `objcpp`).
+  The existing Meson language fact and explicit language switches are normalized
+  once at the producer boundary; direct sources infer language only from their
+  original filenames. Compiler role, C++ header selection, and Cython generation
+  consume this typed fact. The compiler receives exactly one canonical
+  `-x <language> -c <source>` clause. Command custody rejects missing,
+  contradictory, repeated, and after-source selectors. The original compilation
+  operand remains in the command when source custody relocates its retained
+  bytes. Digest-addressed paths and declared language values never supply missing
+  command evidence.
+  Language is required in object and compact-unit identities; v2 manifests must
+  be rebuilt from original build metadata, not restamped from retained filenames.
+  Schema v3 also carries
   separate canonical linker and import boards. `defined_symbols` and
   `undefined_symbols` are the exact reachable linking-section facts.
   `wasm_imports` is the exact sorted set of `{module, name, kind}` receipts from
