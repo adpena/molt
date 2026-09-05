@@ -9,6 +9,10 @@ static int pending_runtime_error(void *unused) {
 static PyObject *arm_runtime_error(PyObject *self, PyObject *args) {
     (void)self;
     (void)args;
+    /* Called on the interpreter's main thread from the Python finally body.
+       Return with work queued: each interpreter's own post-call safepoint
+       must deliver it. Do not force Py_MakePendingCalls here; that would test
+       synchronous C-error propagation instead of the observer boundary. */
     if (Py_AddPendingCall(pending_runtime_error, NULL) != 0) {
         PyErr_SetString(PyExc_RuntimeError, "pending-call queue full");
         return NULL;

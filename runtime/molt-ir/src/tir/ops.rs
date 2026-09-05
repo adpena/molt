@@ -503,6 +503,15 @@ impl TirOp {
         true
     }
 
+    /// Retire only the asynchronous-work role, preserving the underlying
+    /// exception observation, its SSA payload, and its exceptional successor.
+    /// Redundant synchronous checks belong to exception-check elimination.
+    pub fn clear_async_work_poll(&mut self) -> bool {
+        let changed = self.is_async_work_poll();
+        self.attrs.remove(ASYNC_WORK_POLL_ATTR);
+        changed
+    }
+
     /// True only for a structural SSA value copy.
     ///
     /// `OpCode::Copy` is also the legacy fallback carrier for SimpleIR
@@ -558,6 +567,28 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retiring_poll_role_preserves_exception_payload_and_source() {
+        let original = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![ValueId(7), ValueId(8)],
+            results: vec![],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+            source_span: Some((10, 20)),
+        };
+        let mut observation = original.clone();
+        assert!(observation.mark_async_work_poll());
+        assert!(observation.clear_async_work_poll());
+        assert!(!observation.clear_async_work_poll());
+        assert_eq!(observation.opcode, original.opcode);
+        assert_eq!(observation.dialect, original.dialect);
+        assert_eq!(observation.operands, original.operands);
+        assert_eq!(observation.results, original.results);
+        assert_eq!(observation.attrs, original.attrs);
+        assert_eq!(observation.source_span, original.source_span);
+    }
 
     #[test]
     fn dead_placeholder_constants_match_representation_defaults() {

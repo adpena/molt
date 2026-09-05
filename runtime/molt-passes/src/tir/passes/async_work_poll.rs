@@ -314,10 +314,15 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
         })
 }
 
-/// Marked loop observations that serve only a latch, not a preceding call.
-/// Generator fusion removes these when the consumer and producer backedges are
-/// structurally merged; dual-role call observations remain intact.
-pub(crate) fn standalone_latch_poll_sites(func: &TirFunction) -> BTreeSet<(BlockId, usize)> {
+/// Observations whose asynchronous-work role belongs exclusively to one loop.
+/// A shared call-return or surviving-loop role cannot be retired. Observation
+/// sites may precede their latch in a unique fallthrough predecessor block.
+/// These facts authorize clearing the marker, never deleting the synchronous
+/// exception check or its payload-bearing edge.
+pub(crate) fn loop_only_poll_sites(
+    func: &TirFunction,
+    retired_header: BlockId,
+) -> BTreeSet<(BlockId, usize)> {
     let mut analyses = AnalysisManager::new();
     let plan = placement_plan(func, &mut analyses);
     let call_observations: BTreeSet<_> = plan
@@ -338,22 +343,31 @@ pub(crate) fn standalone_latch_poll_sites(func: &TirFunction) -> BTreeSet<(Block
             }
         })
         .collect();
-    plan.latch_sites
-        .iter()
-        .filter_map(|(latch, _, target)| {
-            latch_check_site(
-                func,
-                *latch,
-                *target,
-                &plan.predecessors,
-                &plan.value_types,
-                &plan.const_ints,
-            )
-        })
-        .filter(|site| {
+    let mut observation_headers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for (latch, headers, target) in &plan.latch_sites {
+        if let Some(site) = latch_check_site(
+            func,
+            *latch,
+            *target,
+            &plan.predecessors,
+            &plan.value_types,
+            &plan.const_ints,
+        ) {
+            observation_headers
+                .entry(site)
+                .or_default()
+                .extend(headers.iter().copied());
+        }
+    }
+    observation_headers
+        .into_iter()
+        .filter(|(site, headers)| {
             func.blocks[&site.0].ops[site.1].is_async_work_poll()
                 && !call_observations.contains(site)
+                && headers.len() == 1
+                && headers.contains(&retired_header)
         })
+        .map(|(site, _)| site)
         .collect()
 }
 
@@ -1583,6 +1597,8 @@ mod tests {
             .count();
         assert_eq!(polls, 1, "one insertion boundary must have one poll");
         assert_eq!(check_label(&func.blocks[&latch].ops[0]), Some(50));
+        assert!(loop_only_poll_sites(&func, outer).is_empty());
+        assert!(loop_only_poll_sites(&func, inner).is_empty());
     }
 
     #[test]
