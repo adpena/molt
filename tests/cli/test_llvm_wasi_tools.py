@@ -448,7 +448,6 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
 
     target_plan = source_extension_target.resolve_source_extension_target_plan(
         "wasm",
-        host_target_triple="x86_64-unknown-linux-gnu",
         host_platform="linux",
         host_arch="x86_64",
     )
@@ -532,7 +531,6 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     )
     target_plan = source_extension_target.resolve_source_extension_target_plan(
         "wasm",
-        host_target_triple="x86_64-unknown-linux-gnu",
         host_platform="linux",
         host_arch="x86_64",
     )

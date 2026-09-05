@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import platform
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, cast
@@ -14,7 +12,6 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-from molt.cli.extension_manifest import _host_target_triple
 from molt.cli.source_build_environment import source_build_environment_problems
 from molt.cli.source_extension_manifest_codec import (
     _manifest_sequence,
@@ -47,7 +44,7 @@ from molt.cli.source_extension_set_registry import (
     source_extension_set_expected_identity,
 )
 from molt.cli.source_extension_target import (
-    resolve_source_extension_target_plan,
+    source_extension_recorded_target_plan,
     source_extension_artifact_suffix,
     source_extension_target_is_wasm,
 )
@@ -58,6 +55,7 @@ from molt.cli.source_package_seal import (
 )
 from molt.cli.source_extension_toolchain import MOLT_PKGCONF_REQUIREMENT
 from molt.file_hashing import _sha256_file
+from molt.cli.source_extension_language import require_source_extension_language
 
 
 class SourceExtensionSetValidationError(ValueError):
@@ -426,11 +424,9 @@ def validate_source_extension_set_publish_root(
             "extension-set target metadata has no requested-target authority"
         )
     try:
-        target_plan = resolve_source_extension_target_plan(
+        target_plan = source_extension_recorded_target_plan(
             requested_target,
-            host_target_triple=_host_target_triple(),
-            host_platform=sys.platform,
-            host_arch=platform.machine(),
+            target_triple=variant.target_triple,
         )
     except ValueError as exc:
         raise SourceExtensionSetValidationError(
@@ -826,8 +822,10 @@ def validate_source_extension_set_publish_root(
                     f"extension sidecar object[{object_index}] is invalid"
                 )
             closure_object = cast(Mapping[str, Any], closure_object)
-            source = closure_object.get("source")
             try:
+                language = require_source_extension_language(
+                    closure_object.get("language")
+                )
                 compile_command = _manifest_sequence(
                     sidecar, closure_object, "compile_command"
                 )
@@ -836,13 +834,11 @@ def validate_source_extension_set_publish_root(
                 )
             except ValueError as exc:
                 raise SourceExtensionSetValidationError(str(exc)) from exc
-            compiler_role = (
-                "cpp"
-                if isinstance(source, str)
-                and Path(source).suffix.lower() in {".cc", ".cpp", ".cxx", ".c++"}
-                else "c"
-            )
-            expected_compiler = target_commands[compiler_role]
+            expected_compiler = target_commands.get(language.compiler_role)
+            if not expected_compiler:
+                raise SourceExtensionSetValidationError(
+                    f"extension object language {language.value} has no canonical compiler"
+                )
             expected_nm = target_commands["nm"]
             symbol_authority = closure_object.get("symbol_authority")
             symbol_custody_matches = (

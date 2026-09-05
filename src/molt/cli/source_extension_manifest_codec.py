@@ -11,6 +11,10 @@ from typing import Any, cast
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
+from molt.cli.source_extension_language import (
+    require_source_extension_language,
+    validate_source_extension_language_command,
+)
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
@@ -198,7 +202,13 @@ def _object_unit_identity(
     excluded.update(_OBJECT_SEQUENCE_FIELDS)
     excluded.update(f"{field}_ref" for field in _OBJECT_SEQUENCE_FIELDS)
     payload = {key: item.get(key) for key in sorted(item) if key not in excluded}
-    payload["compile_command"] = _manifest_sequence(manifest, item, "compile_command")
+    compile_command = _manifest_sequence(manifest, item, "compile_command")
+    if compile_command is None:
+        raise ValueError("source-extension object is missing compile_command authority")
+    validate_source_extension_language_command(
+        require_source_extension_language(item.get("language")), compile_command
+    )
+    payload["compile_command"] = compile_command
     symbol_command = _manifest_sequence(manifest, item, "symbol_command")
     if symbol_command is not None:
         payload["symbol_command"] = symbol_command
@@ -294,6 +304,7 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
         if not isinstance(item, dict):
             raise ValueError(f"object_closure.objects[{index}] must be an object")
         item = cast(dict[str, Any], item)
+        require_source_extension_language(item.get("language"))
         stale_compact_fields = sorted(
             key
             for key in item
@@ -448,6 +459,7 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
         if not isinstance(item, Mapping):
             raise ValueError(f"object_closure.objects[{index}] is invalid")
         item = cast(Mapping[str, Any], item)
+        require_source_extension_language(item.get("language"))
         if require_sequence(item, "compile_command", required=True) is None:
             raise ValueError(
                 f"object_closure.objects[{index}] compile command is missing"

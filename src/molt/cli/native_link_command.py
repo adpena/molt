@@ -8,6 +8,7 @@ import sys
 from typing import Mapping, Sequence
 
 from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
 from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
     llvm_named_tool_candidates,
@@ -25,6 +26,7 @@ from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeObjectFormat,
+    _host_target_triple,
     native_link_capabilities,
     native_link_policy_flags,
     native_linker_name_from_driver_command,
@@ -39,7 +41,6 @@ from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
     _detect_macos_deployment_target,
-    _strip_arch_flags,
     _zig_target_query,
 )
 from molt.cli.source_extension_target import source_extension_link_dialect
@@ -144,10 +145,7 @@ def _resolve_native_linker_hint(
             host_platform=host_platform,
             linker_role=linker_role,
         )
-        target_is_linux = (target_triple is not None and "linux" in target_triple) or (
-            target_triple is None and host_platform.startswith("linux")
-        )
-        if selected == "mold" and not target_is_linux:
+        if selected == "mold" and target.os != "linux":
             raise RuntimeError("mold is supported only for Linux ELF link targets.")
         return selected
     is_host_fast_linker = target_triple is None and (
@@ -210,16 +208,7 @@ def _build_native_link_driver_command(
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
-    linker_hint = _resolve_native_linker_hint(
-        profile=profile,
-        target_triple=target_triple,
-        driver_command=link_cmd,
-        host_platform=host_platform,
-    )
-    if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
-        link_cmd.append(f"-fuse-ld={linker_hint}")
     if host_platform == "darwin" and not target_triple:
-        link_cmd = _strip_arch_flags(link_cmd)
         arch = (
             os.environ.get("MOLT_ARCH")
             or (None if output_obj is None else _detect_macos_arch(output_obj))
@@ -229,6 +218,27 @@ def _build_native_link_driver_command(
         deployment_target = _detect_macos_deployment_target(arch)
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
+    try:
+        validate_compiler_target(
+            link_cmd,
+            compiler_target_triple(
+                link_cmd,
+                target_triple
+                or _host_target_triple(
+                    host_platform=host_platform, host_arch=host_arch
+                ),
+            ),
+        )
+    except ValueError as exc:
+        raise RuntimeError(f"Native link compiler target custody: {exc}") from exc
+    linker_hint = _resolve_native_linker_hint(
+        profile=profile,
+        target_triple=target_triple,
+        driver_command=link_cmd,
+        host_platform=host_platform,
+    )
+    if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
+        link_cmd.append(f"-fuse-ld={linker_hint}")
     return link_cmd, linker_hint, normalized_target
 
 
@@ -304,14 +314,14 @@ def _build_native_link_plan(
         host_arch=host_arch,
     )
     external_link_arguments: tuple[str, ...] = ()
+    effective_target_triple = target.triple or _host_target_triple(
+        host_platform=host_platform, host_arch=host_arch
+    )
     for requirements in external_link_requirements:
-        if (
-            target_triple is not None
-            and requirements.target_triple != target_triple.lower()
-        ):
+        if requirements.target_triple != effective_target_triple:
             raise RuntimeError(
                 "External source-extension link requirements cross target triples: "
-                f"{requirements.target_triple} != {target_triple.lower()}"
+                f"{requirements.target_triple} != {effective_target_triple}"
             )
         if (
             source_extension_link_dialect(requirements.target_triple)

@@ -754,7 +754,7 @@ def parse_source_extension_link_requirements(
         )
     try:
         dialect = source_extension_link_dialect(expected_target_triple)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         return None, [str(exc)]
     target = raw.get("target_triple")
     if not isinstance(target, str) or not target:

@@ -31,7 +31,6 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
-    _host_target_triple,
     _manifest_dotted_name_tuple,
     _validate_extension_manifest,
 )
@@ -1281,7 +1280,6 @@ def _build_extension(
 ) -> _ProducedExtension:
     target_plan = resolve_source_extension_target_plan(
         target,
-        host_target_triple=_host_target_triple(),
         host_platform=sys.platform,
         host_arch=platform.machine(),
     )
@@ -2196,7 +2194,6 @@ def produce_source_extension_set(
         )
         target_plan = resolve_source_extension_target_plan(
             target,
-            host_target_triple=_host_target_triple(),
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )

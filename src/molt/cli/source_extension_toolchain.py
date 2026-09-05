@@ -13,13 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from molt.file_hashing import _sha256_file
+from molt.cli.compiler_target import (
+    compiler_target_triple,
+    is_zig_compiler_command,
+    validate_compiler_target,
+)
 from molt.cli.llvm_wasi_tools import (
     LlvmToolRole,
     LlvmWasiToolFamily,
     resolve_explicit_tool_command,
     resolve_llvm_wasi_tool_family,
 )
-from molt.cli.native_toolchain import _zig_target_query
 from molt.cli.source_extension_target import SourceExtensionTargetPlan
 from molt.target_python import _parse_target_python_version
 from molt.cli.wasm_toolchain import (
@@ -88,49 +92,15 @@ def _source_extension_toolchain_advice() -> str:
     return "; ".join(_wasi_sysroot_setup_advice(os.name))
 
 
-def _compiler_target_values(command: tuple[str, ...]) -> tuple[str, ...]:
-    targets: list[str] = []
-    index = 0
-    while index < len(command):
-        argument = command[index]
-        if argument in {"-target", "--target"}:
-            if index + 1 >= len(command) or command[index + 1].startswith("-"):
-                raise ValueError(
-                    f"compiler command has {argument} without a target value"
-                )
-            targets.append(command[index + 1])
-            index += 2
-            continue
-        for prefix in ("-target=", "--target="):
-            if argument.startswith(prefix):
-                value = argument.removeprefix(prefix)
-                if not value:
-                    raise ValueError(
-                        f"compiler command has {prefix} without a target value"
-                    )
-                targets.append(value)
-                break
-        index += 1
-    return tuple(targets)
-
-
 def _compiler_probe_target_args(
     command: tuple[str, ...], target_triple: str
 ) -> tuple[str, ...]:
-    configured_targets = _compiler_target_values(command)
-    mismatched = sorted(
-        {
-            target
-            for target in configured_targets
-            if target.strip().lower() != target_triple.lower()
-        }
+    target_triple = compiler_target_triple(command, target_triple)
+    return (
+        ()
+        if validate_compiler_target(command, target_triple)
+        else ("-target", target_triple)
     )
-    if mismatched:
-        raise ValueError(
-            "compiler command target conflicts with source-extension target "
-            f"{target_triple}: {', '.join(mismatched)}"
-        )
-    return () if configured_targets else ("-target", target_triple)
 
 
 def _compiler_sysroot_arg_value(args: Sequence[str]) -> str | None:
@@ -398,13 +368,8 @@ def _resolve_source_extension_wasm_toolchain(
                 + "; zig is available",
             )
         assert zig_tools.cc is not None
-        zig_probe_command = (
-            *zig_tools.cc.command,
-            "-target",
-            _zig_target_query(target_plan.target_triple),
-        )
         probe_error = _probe_wasm_source_extension_compiler(
-            zig_probe_command,
+            zig_tools.cc.command,
             target_plan=target_plan,
         )
         if probe_error is not None:
@@ -555,8 +520,11 @@ def _meson_value(value: object) -> str:
 def _compiler_command_with_target(
     command: tuple[str, ...],
     target: str,
+    *,
+    explicit_target: bool = True,
 ) -> tuple[str, ...]:
-    if not _compiler_probe_target_args(command, target):
+    target = compiler_target_triple(command, target)
+    if validate_compiler_target(command, target) or not explicit_target:
         return command
     return (*command, "-target", target)
 
@@ -566,11 +534,7 @@ def _source_extension_c_commands(
     toolchain: _SourceExtensionWasmToolchain,
     target_plan: SourceExtensionTargetPlan,
 ) -> dict[str, tuple[str, ...]]:
-    target_arg = (
-        _zig_target_query(target_plan.target_triple)
-        if toolchain.compiler_kind == "zig"
-        else (target_plan.compiler_target_triple or target_plan.target_triple)
-    )
+    target_arg = target_plan.target_triple
     tools = toolchain.tools
     if tools.missing_roles():
         raise ValueError(
@@ -584,7 +548,7 @@ def _source_extension_c_commands(
     assert tools.nm is not None
     assert tools.strip is not None
     c_cmd = _compiler_command_with_target(tools.cc.command, target_arg)
-    if toolchain.compiler_kind == "zig" or len(tools.cxx.command) > 1:
+    if is_zig_compiler_command(tools.cc.command) or len(tools.cxx.command) > 1:
         cxx_base = tools.cxx.command
     else:
         cxx_base = (*tools.cxx.command, *tools.cc.command[1:])
@@ -633,15 +597,10 @@ def _resolve_source_extension_native_toolchain(
         )
         compiler_kind = "host"
 
-    compiler_target = (
-        _zig_target_query(cross_target)
-        if cross_target is not None and compiler_kind == "zig"
-        else cross_target
-    )
-    c_command = (
-        _compiler_command_with_target(c_base, compiler_target)
-        if compiler_target is not None
-        else c_base
+    c_command = _compiler_command_with_target(
+        c_base,
+        target_plan.target_triple,
+        explicit_target=cross_target is not None,
     )
     explicit_tools: dict[LlvmToolRole, tuple[str, ...]] = {"cc": c_command}
     cxx_env_name = "MOLT_CROSS_CXX" if cross_target is not None else "CXX"
@@ -651,12 +610,12 @@ def _resolve_source_extension_native_toolchain(
             configured_cxx,
             label=cxx_env_name,
         )
-        explicit_tools["cxx"] = (
-            _compiler_command_with_target(cxx_base, compiler_target)
-            if compiler_target is not None
-            else cxx_base
+        explicit_tools["cxx"] = _compiler_command_with_target(
+            cxx_base,
+            target_plan.target_triple,
+            explicit_target=cross_target is not None,
         )
-    elif compiler_kind == "zig":
+    elif is_zig_compiler_command(c_command):
         explicit_tools["cxx"] = (
             c_command[0],
             "c++",
@@ -687,10 +646,10 @@ def _resolve_source_extension_native_toolchain(
         cxx_base = tools.cxx.command
         if len(cxx_base) == 1 and len(c_command) > 1:
             cxx_base = (*cxx_base, *c_command[1:])
-        commands["cpp"] = (
-            _compiler_command_with_target(cxx_base, compiler_target)
-            if compiler_target is not None
-            else cxx_base
+        commands["cpp"] = _compiler_command_with_target(
+            cxx_base,
+            target_plan.target_triple,
+            explicit_target=cross_target is not None,
         )
     missing = sorted({"c", "ar", "nm"} - commands.keys())
     if missing:

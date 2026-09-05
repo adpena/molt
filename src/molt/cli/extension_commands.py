@@ -15,6 +15,11 @@ from typing import Any, Mapping, Sequence
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.python_module_names import encode_python_module_names
+from molt.cli.compiler_target import compiler_target_triple
+from molt.cli.source_extension_language import (
+    SourceExtensionLanguage,
+    resolve_source_extension_compile_language,
+)
 from molt.cli.source_extension_input_custody import (
     SourceExtensionInputCustodyError,
     project_source_extension_manifest_inputs,
@@ -43,7 +48,6 @@ from molt.cli.extension_manifest import (
     _MOLT_C_API_VERSION_RE,
     _coerce_str_list,
     _default_molt_c_api_version,
-    _host_target_triple,
     _infer_module_attr_callable_export_payloads,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
@@ -101,8 +105,6 @@ from molt.cli.wasm_toolchain import (
 )
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 
-_SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
-
 
 def _extension_source_text_by_path(source_paths: list[Path]) -> dict[Path, str]:
     return {
@@ -128,8 +130,7 @@ def extension_metadata(
     assert root is not None
     try:
         target_plan = resolve_source_extension_target_plan(
-            target,
-            host_target_triple=_host_target_triple(),
+            "native" if target is None else target,
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )
@@ -206,17 +207,6 @@ def _source_plan_abi_include_order(
         seen.add(resolved)
         fallback_roots.append(include_root)
     return python_include_root, fallback_roots
-
-
-def _source_extension_compile_command_for_source(
-    *,
-    source_path: Path,
-    cc_cmd: Sequence[str],
-    cxx_cmd: Sequence[str],
-) -> list[str]:
-    if source_path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES:
-        return list(cxx_cmd)
-    return list(cc_cmd)
 
 
 def _extension_export_package(module_parts: list[str]) -> str:
@@ -608,26 +598,19 @@ def extension_build(
 
     try:
         target_plan = resolve_source_extension_target_plan(
-            target,
-            host_target_triple=_host_target_triple(),
+            "native" if target is None else target,
             host_platform=sys.platform,
             host_arch=platform.machine(),
         )
     except ValueError as exc:
-        errors.append(str(exc))
-        target_plan = resolve_source_extension_target_plan(
-            "native",
-            host_target_triple=_host_target_triple(),
-            host_platform=sys.platform,
-            host_arch=platform.machine(),
-        )
+        return _fail(str(exc), json_output, command="extension-build")
     runtime_target_triple = target_plan.compiler_target_triple
     wasm_static_link = target_plan.is_wasm
     if loaded_source_plan is not None:
         errors.extend(
             _source_extensions._validate_source_extension_build_plan_target(
                 loaded_source_plan,
-                target_triple=runtime_target_triple,
+                target_triple=target_plan.target_triple,
             )
         )
 
@@ -829,11 +812,30 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
+    try:
+        source_compile_languages = [
+            resolve_source_extension_compile_language(
+                source_path=source_path,
+                language=(
+                    loaded_source_plan.compile_units[index].language
+                    if loaded_source_plan is not None
+                    else None
+                ),
+                compile_args=(
+                    loaded_source_plan.compile_units[index].compile_args
+                    if loaded_source_plan is not None
+                    else compile_args
+                ),
+            )
+            for index, source_path in enumerate(source_paths)
+        ]
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-build")
     if not wasm_static_link:
         required_native_roles = {"c", "ar", "nm"}
         if any(
-            path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES
-            for path in source_paths
+            language.compiler_role == "cpp"
+            for language, _args in source_compile_languages
         ):
             required_native_roles.add("cpp")
         missing_native_roles = sorted(
@@ -892,14 +894,16 @@ def extension_build(
                 )
                 if path.suffix.lower() == ".pyx"
             ]
-            cython_targets: list[tuple[Path, Path]] = []
+            cython_targets: list[tuple[Path, Path, SourceExtensionLanguage]] = []
             for unit in loaded_source_plan.compile_units:
                 pyx_path = _source_extension_cython.pair_generated_c_with_pyx(
                     generated_c=unit.source_path,
                     pyx_candidates=pyx_candidates,
                 )
                 if pyx_path is not None and pyx_path.is_file():
-                    cython_targets.append((unit.source_path.resolve(), pyx_path))
+                    cython_targets.append(
+                        (unit.source_path.resolve(), pyx_path, unit.language)
+                    )
             if cython_targets:
                 cython_requirement = (
                     _source_extension_cython.cython_build_requirement_from_pyproject(
@@ -926,7 +930,7 @@ def extension_build(
                 cython_out_dir = (
                     loaded_source_plan.build_root / "molt_cython_standalone"
                 )
-                for original_c, pyx_path in cython_targets:
+                for original_c, pyx_path, language in cython_targets:
                     plan_include_dirs = [
                         unit.include_dirs
                         for unit in loaded_source_plan.compile_units
@@ -941,6 +945,7 @@ def extension_build(
                         _source_extension_cython.regenerate_cython_c_standalone(
                             pyx_path=pyx_path,
                             original_c=original_c,
+                            language=language,
                             out_dir=cython_out_dir,
                             include_dirs=flat_includes,
                             cython_version=cython_version,
@@ -990,23 +995,27 @@ def extension_build(
                     unit_include_paths,
                     python_header=python_header,
                 )
-            unit_compile_args = (
-                list(plan_unit.compile_args) if plan_unit is not None else compile_args
-            )
-            unit_cc_cmd = _source_extension_compile_command_for_source(
-                source_path=source_path,
-                cc_cmd=cc_cmd,
-                cxx_cmd=effective_tool_commands.get("cpp", ()),
+            unit_language, unit_compile_args = source_compile_languages[idx]
+            unit_cc_cmd = list(
+                effective_tool_commands.get(unit_language.compiler_role, ())
             )
             if not unit_cc_cmd:
                 return _fail(
                     "Canonical source-extension tool authority has no compiler "
-                    f"for {source_path.suffix or 'this source kind'}.",
+                    f"for language {unit_language.value}.",
                     json_output,
                     command="extension-build",
                 )
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
-            cmd = [*unit_cc_cmd, "-c", str(source_path), "-o", str(object_path)]
+            cmd = [
+                *unit_cc_cmd,
+                "-x",
+                unit_language.driver_language,
+                "-c",
+                str(source_path),
+                "-o",
+                str(object_path),
+            ]
             dependency_file: Path | None = None
             if loaded_source_plan is not None:
                 driver = Path(unit_cc_cmd[0]).name.lower() if unit_cc_cmd else ""
@@ -1093,11 +1102,7 @@ def extension_build(
                 # `fatal error: 'atomic' file not found` without it. molt enables
                 # exception handling (-mexception-handling), so select the eh
                 # variant.
-                if wasm_static_link and source_path.suffix.lower() in {
-                    ".cpp",
-                    ".cxx",
-                    ".cc",
-                }:
+                if wasm_static_link and unit_language.compiler_role == "cpp":
                     libcxx_inc = wasi_libcxx_include_dir(
                         wasi_sysroot,
                         target_triple=runtime_target_triple,
@@ -1111,11 +1116,17 @@ def extension_build(
             # selectors, immediately before the source-plan unit authority.
             if regeneration is not None:
                 cmd.extend(_source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS)
-            cmd.extend(
-                _source_extensions._source_extension_replay_compile_args(
-                    unit_compile_args,
+            try:
+                cmd.extend(
+                    _source_extensions._source_extension_replay_compile_args(
+                        unit_compile_args,
+                        compiler_target=compiler_target_triple(
+                            unit_cc_cmd, target_plan.target_triple
+                        ),
+                    )
                 )
-            )
+            except ValueError as exc:
+                return _fail(str(exc), json_output, command="extension-build")
             result = _run_completed_command(
                 cmd,
                 cwd=project_root,
@@ -1154,6 +1165,7 @@ def extension_build(
                     _source_extensions._source_extension_object_fact(
                         source_path=source_path,
                         object_path=object_path,
+                        language=unit_language,
                         compile_command=cmd,
                         dependency_paths=(
                             *dependency_paths,
@@ -1183,6 +1195,7 @@ def extension_build(
                     _source_extensions._source_extension_object_fact(
                         source_path=source_path,
                         object_path=object_path,
+                        language=unit_language,
                         compile_command=cmd,
                         dependency_paths=(source_path,),
                         nm_command=effective_tool_commands.get("nm"),

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import platform
+import re
+import sys
 from typing import Sequence
 
 
@@ -21,6 +24,7 @@ class NativeLinkerKind(str, Enum):
 _ARCH_ALIASES = {
     "amd64": "x86_64",
     "x64": "x86_64",
+    "x86-64": "x86_64",
     "arm64": "aarch64",
 }
 _BOLT_ARCHES = frozenset({"x86_64", "aarch64"})
@@ -127,38 +131,79 @@ def native_link_policy_flags(
 
 
 def _normalize_arch(raw: str) -> str:
-    normalized = raw.strip().lower().replace(" ", "_")
-    return _ARCH_ALIASES.get(normalized, normalized)
+    normalized = raw.strip().lower()
+    arch = _ARCH_ALIASES.get(normalized, normalized)
+    if not re.fullmatch(r"[a-z0-9_]+", arch) or arch == "unknown":
+        raise RuntimeError(f"Native target has no valid architecture: {raw!r}.")
+    return arch
+
+
+def _host_target_triple(
+    *, host_platform: str | None = None, host_arch: str | None = None
+) -> str:
+    """Project the same host facts used by the native object-format policy."""
+    target = resolve_native_target_spec(
+        None, host_platform=host_platform, host_arch=host_arch
+    )
+    suffix = {
+        "windows": "pc-windows-msvc",
+        "macos": "apple-darwin",
+        "linux": "unknown-linux-gnu",
+    }[target.os]
+    return f"{target.arch}-{suffix}"
 
 
 def resolve_native_target_spec(
     target_triple: str | None,
     *,
-    host_platform: str,
-    host_arch: str,
+    host_platform: str | None = None,
+    host_arch: str | None = None,
 ) -> NativeTargetSpec:
-    triple = target_triple.lower() if target_triple else None
-    if triple:
-        arch = _normalize_arch(triple.split("-", 1)[0])
-        if "windows" in triple or "msvc" in triple or "mingw" in triple:
-            return NativeTargetSpec(target_triple, "windows", arch, NativeObjectFormat.COFF)
-        if "apple" in triple or "darwin" in triple or "macos" in triple:
-            return NativeTargetSpec(target_triple, "macos", arch, NativeObjectFormat.MACHO)
-        if "linux" in triple:
-            return NativeTargetSpec(target_triple, "linux", arch, NativeObjectFormat.ELF)
+    if target_triple is not None:
+        triple = target_triple.strip().lower()
+        parts = triple.split("-")
+        # Classify target components, never substrings (e.g. notlinux, apple-ios,
+        # or a conflicting linux/windows triple). Toolchains own arch support.
+        if (
+            len(parts) >= 3
+            and not parts[0].startswith("wasm")
+            and all(re.fullmatch(r"[a-z0-9_+.]+", p) for p in parts)
+        ):
+            arch = _normalize_arch(parts[0])
+            os_parts = set(parts[1:]) & {
+                "linux",
+                "windows",
+                "darwin",
+                "macos",
+                "ios",
+                "tvos",
+                "watchos",
+                "visionos",
+                "android",
+            }
+            if os_parts == {"windows"}:
+                return NativeTargetSpec(
+                    triple, "windows", arch, NativeObjectFormat.COFF
+                )
+            if os_parts in ({"darwin"}, {"macos"}):
+                return NativeTargetSpec(triple, "macos", arch, NativeObjectFormat.MACHO)
+            if os_parts == {"linux"} and not set(parts[1:]) & {"msvc", "mingw32"}:
+                return NativeTargetSpec(triple, "linux", arch, NativeObjectFormat.ELF)
         raise RuntimeError(
-            "Native linking has no object-format policy for target "
-            f"{target_triple!r}."
+            f"Native linking has no object-format policy for target {target_triple!r}."
         )
 
-    arch = _normalize_arch(host_arch)
+    host_platform = sys.platform if host_platform is None else host_platform
+    arch = _normalize_arch(platform.machine() if host_arch is None else host_arch)
     if host_platform == "win32":
         return NativeTargetSpec(None, "windows", arch, NativeObjectFormat.COFF)
     if host_platform == "darwin":
         return NativeTargetSpec(None, "macos", arch, NativeObjectFormat.MACHO)
     if host_platform.startswith("linux"):
         return NativeTargetSpec(None, "linux", arch, NativeObjectFormat.ELF)
-    raise RuntimeError(f"Native linking is unsupported on host platform {host_platform!r}.")
+    raise RuntimeError(
+        f"Native linking is unsupported on host platform {host_platform!r}."
+    )
 
 
 def native_link_capabilities(

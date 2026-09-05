@@ -1117,7 +1117,6 @@ from molt.cli.extension_manifest import (
     _cpu_baseline,
     _default_molt_c_api_version,
     _extension_binary_suffix,
-    _host_target_triple,
     _is_extension_manifest,
     _load_manifest,
     _manifest_errors,
@@ -1130,6 +1129,7 @@ from molt.cli.extension_manifest import (
     _write_zip_member,
 )
 from molt.cli.extension_audit import extension_audit
+from molt.cli.native_link_plan import _host_target_triple
 from molt.cli.extension_scan import extension_scan
 from molt.cli.extension_seal import extension_seal
 from molt.cli.models import (

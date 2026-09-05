@@ -35,6 +35,7 @@ def _manifest(first: Path, second: Path, dependency: Path) -> dict[str, object]:
             "objects": [
                 {
                     "source": str(first),
+                    "language": "c",
                     "source_sha256": source_digest,
                     "dependencies": [
                         {"path": str(dependency), "sha256": dependency_digest}
@@ -42,6 +43,7 @@ def _manifest(first: Path, second: Path, dependency: Path) -> dict[str, object]:
                 },
                 {
                     "source": str(second),
+                    "language": "c",
                     "source_sha256": source_digest,
                     "dependencies": [],
                 },
@@ -106,6 +108,37 @@ def test_stage_and_rewrite_share_content_addresses_across_roles(tmp_path: Path) 
     validate_source_extension_manifest_input_custody(rewritten)
     assert objects[0]["source"] == objects[1]["source"]
     assert objects[0]["source"].endswith(source_digest)
+
+
+def test_input_projection_merges_byte_identical_header_aliases(tmp_path: Path) -> None:
+    source = tmp_path / "source.c"
+    first_header = tmp_path / "first.h"
+    second_header = tmp_path / "second.h"
+    source.write_bytes(b"int source;\n")
+    first_header.write_bytes(b"#define HEADER 1\n")
+    second_header.write_bytes(first_header.read_bytes())
+    manifest = _manifest(source, source, first_header)
+    digest = _sha256_bytes(first_header.read_bytes())
+    manifest["object_closure"]["objects"][0]["dependencies"].append(
+        {"path": str(second_header), "sha256": digest}
+    )
+    manifest_path = tmp_path / "extension_manifest.json"
+    staged = stage_source_extension_manifest_inputs(
+        manifest, manifest_path=manifest_path, publish_root=tmp_path / "sealed"
+    )
+    rewrite_source_extension_manifest_input_references(
+        manifest,
+        source_manifest_path=manifest_path,
+        output_manifest_path=tmp_path / "sealed" / "extension_manifest.json",
+        publish_root=tmp_path / "sealed",
+        staged_inputs=staged,
+    )
+    assert manifest["object_closure"]["objects"][0]["dependencies"] == [
+        {
+            "path": source_extension_input_custody_path(digest).as_posix(),
+            "sha256": digest,
+        }
+    ]
 
 
 def test_stage_rejects_corrupt_existing_content_address(tmp_path: Path) -> None:

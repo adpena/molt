@@ -65,6 +65,7 @@ def _custodied_inputs() -> tuple[dict[str, Any], dict[str, bytes]]:
                 "objects": [
                     {
                         "source": source_ref,
+                        "language": "c",
                         "source_sha256": source_sha256,
                         "dependencies": [{"path": header_ref, "sha256": header_sha256}],
                     }

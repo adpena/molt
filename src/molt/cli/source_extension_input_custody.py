@@ -423,5 +423,17 @@ def rewrite_source_extension_manifest_input_references(
         item["source"] = rewritten[(item["source"], item["source_sha256"])]
         for dependency in item.get("dependencies", []):
             dependency["path"] = rewritten[(dependency["path"], dependency["sha256"])]
+        if "dependencies" in item:
+            # Content-address projection can reorder names and merge identical
+            # header blobs. Preserve one canonical dependency set in this view.
+            item["dependencies"] = [
+                {"path": path, "sha256": digest}
+                for path, digest in sorted(
+                    {
+                        (dependency["path"], dependency["sha256"])
+                        for dependency in item["dependencies"]
+                    }
+                )
+            ]
     manifest.clear()
     manifest.update(projected)
