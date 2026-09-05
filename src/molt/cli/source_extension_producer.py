@@ -15,7 +15,8 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+import warnings
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
@@ -27,7 +28,6 @@ from molt.cli.atomic_io import (
     _atomic_write_bytes,
     _atomic_write_json,
     _atomic_write_text,
-    _remove_file_or_tree,
 )
 from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
@@ -95,9 +95,7 @@ from molt.cli.source_extension_target import (
 )
 from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-    _require_expected_source_extension_set_identity,
     _source_extension_reproduction_comparison,
-    _source_extension_set_identity,
 )
 from molt.cli.source_extension_set_registry import (
     SourceExtensionSet,
@@ -109,15 +107,33 @@ from molt.cli.source_extension_set_registry import (
     verify_source_extension_abi_headers,
     verify_source_extension_checkout,
 )
-from molt.cli.source_extension_set_validation import (
+from molt.cli.source_extension_set_validation_target import (
     _source_extension_tool_role_contract,
-    validate_source_extension_set_publish_root,
 )
+from molt.cli.source_extension_set_validation import (
+    validate_source_extension_set_candidate_seal,
+    validate_source_extension_set_seal_contents,
+    require_source_extension_set_receipt_identity,
+    rebind_source_extension_set_receipt,
+)
+from molt.cli.source_extension_candidate_attestation import (
+    finalize_source_extension_candidate_attestation,
+    resolve_source_extension_candidate_custody_path,
+    resolve_source_extension_candidate_output,
+)
+from molt.cli.source_extension_candidate_transaction import (
+    SourceExtensionCandidateTransactionCustody,
+    begin_source_extension_candidate_transaction,
+    fail_source_extension_candidate_transaction,
+    recover_and_prune_source_extension_candidate_transactions,
+    source_extension_candidate_transaction_custody,
+)
+from molt.file_publication import durable_remove_path
+from molt.exact_json import write_exact
 from molt.cli.source_extension_publication import (
-    SourceExtensionPublicationCustody,
     _source_extension_publication_custody,
     publish_source_extension_candidate,
-    recover_source_extension_publication,
+    recover_and_prune_source_extension_transactions,
 )
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
@@ -130,7 +146,6 @@ from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
     commit_source_package_seal,
     prepare_source_package_seal_commit,
-    recover_source_package_seal_commits,
     stage_source_package_seal,
     validate_source_package_relative_path,
     verify_source_package_seal,
@@ -546,6 +561,8 @@ def _run_locked_source_extension_producer(
     target: str,
     abi_tier: str,
     json_output: bool,
+    command: Literal["produce-set", "attest-set-candidate"] = "produce-set",
+    candidate_output: str | None = None,
     expected_identity_sha256: str | None = None,
     expected_candidate_identity_sha256: str | None = None,
 ) -> int:
@@ -555,7 +572,7 @@ def _run_locked_source_extension_producer(
         "-m",
         "molt.cli",
         "extension",
-        "produce-set",
+        command,
         "--package",
         package,
         "--package-version",
@@ -573,6 +590,16 @@ def _run_locked_source_extension_producer(
         "--abi-tier",
         abi_tier,
     ]
+    if command == "attest-set-candidate":
+        if candidate_output is None:
+            raise SourceExtensionProducerError(
+                "candidate attestation re-exec requires an output root"
+            )
+        argv.extend(("--output", candidate_output))
+    elif candidate_output is not None:
+        raise SourceExtensionProducerError(
+            "registered publication cannot receive candidate-only output custody"
+        )
     if json_output:
         argv.append("--json")
     if expected_identity_sha256 is not None:
@@ -2132,33 +2159,7 @@ def _materialize_generated_inputs(
     return tuple(sorted(missing))
 
 
-def _recover_and_prune_producer_transactions(
-    destination: Path, *, publication_custody: SourceExtensionPublicationCustody
-) -> None:
-    """Recover durable publication commits, then remove abandoned build state."""
-
-    for prior in sorted(destination.parent.glob(f".{destination.name}.produce-*")):
-        recovered_publication = recover_source_extension_publication(
-            prior, custody=publication_custody
-        )
-        if (
-            recovered_publication is not None
-            and recovered_publication.get("state") != "committed"
-        ):
-            raise SourceExtensionProducerError(
-                f"identity publication recovery did not commit: {prior}"
-            )
-        recover_source_package_seal_commits(prior / "package-store")
-        retired = prior / "retired-destination"
-        if retired.exists():
-            raise SourceExtensionProducerError(
-                "legacy producer transaction contains a retired canonical "
-                f"destination and requires manual custody review: {retired}"
-            )
-        _remove_file_or_tree(prior)
-
-
-def produce_source_extension_set(
+def _build_source_extension_set(
     *,
     package: str,
     package_version: str,
@@ -2166,17 +2167,26 @@ def produce_source_extension_set(
     python_version: str,
     source: str,
     build_root: str,
-    target: str = "wasm",
+    target: str,
     abi_tier: str = "cpython-abi",
+    candidate_output: str | None = None,
     expected_identity_sha256: str | None = None,
     expected_candidate_identity_sha256: str | None = None,
     json_output: bool = False,
 ) -> int:
+    candidate_mode = candidate_output is not None
+    command: Literal["produce-set", "attest-set-candidate"] = (
+        "attest-set-candidate" if candidate_mode else "produce-set"
+    )
     source_root = Path(source).expanduser().resolve()
     resolved_build_root = Path(build_root).expanduser().resolve()
+    resolved_candidate_output: Path | None = None
     transaction_root: Path | None = None
     producer_lock = None
     publication_custody = None
+    candidate_transaction_custody: SourceExtensionCandidateTransactionCustody | None = (
+        None
+    )
     published = False
     incumbent_identity: Mapping[str, Any] | None = None
     incumbent_seal = None
@@ -2193,9 +2203,7 @@ def produce_source_extension_set(
             registry=registry,
         )
         target_plan = resolve_source_extension_target_plan(
-            target,
-            host_platform=sys.platform,
-            host_arch=platform.machine(),
+            target, host_platform=sys.platform, host_arch=platform.machine()
         )
         variant = SourceExtensionVariant(
             target_python=_parse_target_python_version(python_version),
@@ -2203,23 +2211,35 @@ def produce_source_extension_set(
             target_triple=target_plan.target_triple,
         )
         target_python = variant.target_python
-        registered_candidate_identity_sha256 = source_extension_set_expected_identity(
-            extension_set,
-            variant=variant,
-            registry=registry,
-        )
-        if (
-            expected_candidate_identity_sha256 is not None
-            and expected_candidate_identity_sha256
-            != registered_candidate_identity_sha256
-        ):
-            raise SourceExtensionProducerError(
-                "--expected-candidate-identity-sha256 differs from the registered "
-                f"identity for {variant.cpython}/{variant.abi_tier}/"
-                f"{variant.target_triple}: expected "
-                f"{registered_candidate_identity_sha256}, got "
-                f"{expected_candidate_identity_sha256}"
+        registered_candidate_identity_sha256: str | None = None
+        if candidate_mode:
+            if (
+                expected_identity_sha256 is not None
+                or expected_candidate_identity_sha256 is not None
+            ):
+                raise SourceExtensionProducerError(
+                    "candidate attestation does not accept publication identities"
+                )
+        else:
+            registered_candidate_identity_sha256 = (
+                source_extension_set_expected_identity(
+                    extension_set,
+                    variant=variant,
+                    registry=registry,
+                )
             )
+            if (
+                expected_candidate_identity_sha256 is not None
+                and expected_candidate_identity_sha256
+                != registered_candidate_identity_sha256
+            ):
+                raise SourceExtensionProducerError(
+                    "--expected-candidate-identity-sha256 differs from the "
+                    "registered identity for "
+                    f"{variant.cpython}/{variant.abi_tier}/{variant.target_triple}: "
+                    f"expected {registered_candidate_identity_sha256}, got "
+                    f"{expected_candidate_identity_sha256}"
+                )
         locked_environment = source_build_environment(
             _REPO_ROOT, extension_set.build_dependency_group
         )
@@ -2237,32 +2257,70 @@ def produce_source_extension_set(
                 build_root=str(resolved_build_root),
                 target=target,
                 abi_tier=abi_tier,
+                command=command,
+                candidate_output=candidate_output,
                 expected_identity_sha256=expected_identity_sha256,
                 expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
                 json_output=json_output,
             )
-        destination = source_extension_set_root(
-            extension_set,
-            variant=variant,
-            registry=registry,
-        )
+        if candidate_mode:
+            assert candidate_output is not None
+            resolved_candidate_output = resolve_source_extension_candidate_custody_path(
+                candidate_output
+            )
+            if any(
+                left == right
+                or left.is_relative_to(right)
+                or right.is_relative_to(left)
+                for left, right in (
+                    (resolved_candidate_output, source_root),
+                    (resolved_candidate_output, resolved_build_root),
+                )
+            ):
+                raise SourceExtensionProducerError(
+                    "candidate output must be disjoint from the source checkout "
+                    "and build root"
+                )
+            destination = resolved_candidate_output
+        else:
+            destination = source_extension_set_root(
+                extension_set,
+                variant=variant,
+                registry=registry,
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = destination.parent / f".{destination.name}.producer.lock"
+        lock_role = "candidate" if candidate_mode else "producer"
+        lock_path = destination.parent / f".{destination.name}.{lock_role}.lock"
         producer_lock = _acquire_file_lock(
             lock_path,
             timeout_s=300.0,
             timeout_message=(
-                "timed out waiting for the canonical extension-set producer "
-                f"lock {lock_path}; another producer owns {destination}"
+                f"timed out waiting for the extension-set {lock_role} lock "
+                f"{lock_path}; another producer owns {destination}"
             ),
         )
-        publication_custody = _source_extension_publication_custody(
-            destination, producer_lock
-        )
-        _recover_and_prune_producer_transactions(
-            destination, publication_custody=publication_custody
-        )
-        if destination.exists():
+        if candidate_mode:
+            # Recover a completed rename before requiring absence for a new build.
+            assert resolved_candidate_output is not None
+            destination = resolved_candidate_output
+            candidate_transaction_custody = (
+                source_extension_candidate_transaction_custody(
+                    destination,
+                    producer_lock,
+                )
+            )
+            recover_and_prune_source_extension_candidate_transactions(
+                custody=candidate_transaction_custody
+            )
+            resolve_source_extension_candidate_output(destination)
+        else:
+            publication_custody = _source_extension_publication_custody(
+                destination, producer_lock
+            )
+            recover_and_prune_source_extension_transactions(
+                destination, custody=publication_custody
+            )
+        if not candidate_mode and destination.exists():
             if (
                 expected_identity_sha256 is None
                 or expected_candidate_identity_sha256 is None
@@ -2273,15 +2331,13 @@ def produce_source_extension_set(
                     "--expected-candidate-identity-sha256 so publication proves "
                     "the complete compare-and-swap transition before mutation"
                 )
-            incumbent_seal = verify_source_package_seal(destination)
-            incumbent_identity = _require_expected_source_extension_set_identity(
-                incumbent_seal.payload_root,
+            incumbent_receipt = require_source_extension_set_receipt_identity(
+                validate_source_extension_set_seal_contents(destination),
                 expected_identity_sha256,
-                inventory_sha256={
-                    entry.relative_path: entry.sha256 for entry in incumbent_seal.files
-                },
             )
-        elif expected_identity_sha256 is not None:
+            incumbent_seal = incumbent_receipt.seal
+            incumbent_identity = incumbent_receipt.identity_payload()
+        elif not candidate_mode and expected_identity_sha256 is not None:
             raise SourceExtensionProducerError(
                 "--expected-identity-sha256 requires an incumbent canonical seal"
             )
@@ -2327,9 +2383,26 @@ def produce_source_extension_set(
 
         transaction_root = Path(
             tempfile.mkdtemp(
-                prefix=f".{destination.name}.produce-", dir=destination.parent
+                prefix=(
+                    f".{destination.name}.attest-"
+                    if candidate_mode
+                    else f".{destination.name}.produce-"
+                ),
+                dir=destination.parent,
             )
         )
+        if candidate_mode:
+            assert candidate_transaction_custody is not None
+            begin_source_extension_candidate_transaction(
+                transaction_root,
+                custody=candidate_transaction_custody,
+                package=extension_set.package,
+                package_version=extension_set.package_version,
+                module_set=extension_set.name,
+                cpython=variant.cpython,
+                abi_tier=variant.abi_tier,
+                target_triple=variant.target_triple,
+            )
         publish_root = transaction_root / "publish"
         publish_root.mkdir()
         metadata_root = transaction_root / "target-metadata"
@@ -2516,12 +2589,6 @@ def produce_source_extension_set(
             set_manifest,
             sort_keys=True,
         )
-        validate_source_extension_set_publish_root(
-            publish_root=publish_root,
-            extension_set=extension_set,
-            variant=variant,
-            set_manifest=set_manifest,
-        )
         package_store = transaction_root / "package-store"
         seal = stage_source_package_seal(
             package_store,
@@ -2535,13 +2602,60 @@ def produce_source_extension_set(
                 if path.is_file()
             ],
         )
-        verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
-        candidate_identity = _source_extension_set_identity(
-            seal.payload_root,
-            inventory_sha256={
-                entry.relative_path: entry.sha256 for entry in seal.files
-            },
+        validated_candidate = validate_source_extension_set_candidate_seal(
+            seal.root,
+            extension_set,
+            variant=variant,
+            registry=registry,
         )
+        seal = validated_candidate.seal
+        candidate_identity = validated_candidate.identity_payload()
+        if candidate_mode:
+            assert resolved_candidate_output is not None
+            assert candidate_transaction_custody is not None
+            attestation = finalize_source_extension_candidate_attestation(
+                transaction_root=transaction_root,
+                output=resolved_candidate_output,
+                custody=candidate_transaction_custody,
+                validated_candidate=validated_candidate,
+                extension_set=extension_set,
+                variant=variant,
+                registry=registry,
+            )
+            transaction_root = None
+            data = {
+                "package": extension_set.package,
+                "module_set": extension_set.name,
+                "root": str(attestation.root),
+                "report": str(attestation.report_path),
+                "candidate_seal_root": str(attestation.seal.root),
+                "candidate_seal_sha256": attestation.seal.seal_sha256,
+                "identity_sha256": attestation.canonical_identity["canonical_sha256"],
+                "registered_identity_sha256": (attestation.registered_identity_sha256),
+                "publication_performed": False,
+                "modules": [item.module for item in produced],
+                "target": metadata.target_triple,
+                "abi_tier": abi_tier,
+            }
+            if json_output:
+                _emit_json(
+                    _json_payload(
+                        "extension-attest-set-candidate",
+                        "ok",
+                        data=data,
+                    ),
+                    json_output=True,
+                )
+            else:
+                print(f"Validated detached extension-set candidate: {attestation.root}")
+                print(
+                    "Required registry identity: "
+                    f"{attestation.canonical_identity['canonical_sha256']}"
+                )
+                print(f"Attestation: {attestation.report_path}")
+                print("Publication performed: no")
+            return 0
+        assert registered_candidate_identity_sha256 is not None
         if (
             candidate_identity["canonical_sha256"]
             != registered_candidate_identity_sha256
@@ -2587,15 +2701,22 @@ def produce_source_extension_set(
             publication = publish_source_extension_candidate(
                 custody=publication_custody,
                 destination=destination,
-                candidate_seal=seal,
+                candidate_receipt=validated_candidate,
                 transaction_root=transaction_root,
+                expected_incumbent_seal_sha256=incumbent_seal.seal_sha256,
                 expected_incumbent_identity_sha256=expected_identity_sha256,
                 expected_candidate_identity_sha256=(
                     registered_candidate_identity_sha256
                 ),
             )
+            published_receipt = rebind_source_extension_set_receipt(
+                validated_candidate,
+                verify_source_package_seal(
+                    destination, expected_sha256=seal.seal_sha256
+                ),
+            )
+            published_seal = published_receipt.seal
             published = True
-            published_seal = verify_source_package_seal(destination)
             data = {
                 "package": extension_set.package,
                 "module_set": extension_set.name,
@@ -2613,7 +2734,7 @@ def produce_source_extension_set(
             }
             if json_output:
                 _emit_json(
-                    _json_payload("extension-produce-set", "ok", data=data),
+                    _json_payload(f"extension-{command}", "ok", data=data),
                     json_output=True,
                 )
             else:
@@ -2634,10 +2755,13 @@ def produce_source_extension_set(
             destination,
         )
         committed = commit_source_package_seal(commit)
-        published_seal = verify_source_package_seal(
-            committed.destination,
-            expected_sha256=seal.seal_sha256,
-        )
+        published_seal = rebind_source_extension_set_receipt(
+            validated_candidate,
+            verify_source_package_seal(
+                committed.destination,
+                expected_sha256=seal.seal_sha256,
+            ),
+        ).seal
         published = True
         data = {
             "package": extension_set.package,
@@ -2652,7 +2776,7 @@ def produce_source_extension_set(
         }
         if json_output:
             _emit_json(
-                _json_payload("extension-produce-set", "ok", data=data),
+                _json_payload(f"extension-{command}", "ok", data=data),
                 json_output=True,
             )
         else:
@@ -2670,10 +2794,101 @@ def produce_source_extension_set(
         detail = str(exc)
         if transaction_root is not None and transaction_root.exists():
             detail += f"; preserved producer transaction: {transaction_root}"
-        return _fail(detail, json_output, command="extension-produce-set")
+        if candidate_transaction_custody is not None and transaction_root is not None:
+            try:
+                fail_source_extension_candidate_transaction(
+                    transaction_root,
+                    custody=candidate_transaction_custody,
+                    error=str(exc),
+                )
+            except (OSError, RuntimeError, ValueError) as recording_error:
+                detail += f"; failure evidence could not be recorded: {recording_error}"
+        elif transaction_root is not None and transaction_root.exists():
+            try:
+                write_exact(
+                    transaction_root / "producer-failure.json",
+                    {
+                        "schema_version": 1,
+                        "command": command,
+                        "error": str(exc),
+                        "transaction_root": str(transaction_root),
+                    },
+                )
+            except (OSError, ValueError) as recording_error:
+                detail += f"; failure evidence could not be recorded: {recording_error}"
+        return _fail(detail, json_output, command=f"extension-{command}")
     finally:
-        if published and transaction_root is not None and transaction_root.exists():
-            with contextlib.suppress(OSError):
-                _remove_file_or_tree(transaction_root)
-        if producer_lock is not None:
-            _release_file_lock(producer_lock)
+        try:
+            if published and transaction_root is not None and transaction_root.exists():
+                try:
+                    durable_remove_path(transaction_root)
+                except (OSError, ValueError) as cleanup_error:
+                    warnings.warn(
+                        f"publication committed; transaction cleanup failed at "
+                        f"{transaction_root}: {cleanup_error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+        finally:
+            if producer_lock is not None:
+                _release_file_lock(producer_lock)
+
+
+def attest_source_extension_set_candidate(
+    *,
+    package: str,
+    package_version: str,
+    module_set: str,
+    python_version: str,
+    source: str,
+    build_root: str,
+    output: str,
+    target: str,
+    abi_tier: str = "cpython-abi",
+    json_output: bool = False,
+) -> int:
+    """Build and validate a detached candidate without publication custody."""
+
+    return _build_source_extension_set(
+        package=package,
+        package_version=package_version,
+        module_set=module_set,
+        python_version=python_version,
+        source=source,
+        build_root=build_root,
+        target=target,
+        abi_tier=abi_tier,
+        candidate_output=output,
+        json_output=json_output,
+    )
+
+
+def produce_source_extension_set(
+    *,
+    package: str,
+    package_version: str,
+    module_set: str,
+    python_version: str,
+    source: str,
+    build_root: str,
+    target: str = "wasm",
+    abi_tier: str = "cpython-abi",
+    expected_identity_sha256: str | None = None,
+    expected_candidate_identity_sha256: str | None = None,
+    json_output: bool = False,
+) -> int:
+    """Reproduce and publish a variant whose exact identity is registered."""
+
+    return _build_source_extension_set(
+        package=package,
+        package_version=package_version,
+        module_set=module_set,
+        python_version=python_version,
+        source=source,
+        build_root=build_root,
+        target=target,
+        abi_tier=abi_tier,
+        expected_identity_sha256=expected_identity_sha256,
+        expected_candidate_identity_sha256=expected_candidate_identity_sha256,
+        json_output=json_output,
+    )

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -24,7 +23,16 @@ import shutil
 from typing import Iterable, cast
 import uuid
 
-from molt.cli.atomic_io import _atomic_write_bytes
+from molt.exact_json import canonical_json_bytes, loads_exact
+from molt.portable_paths import portable_relative_path, portable_path_identity
+from molt.file_publication import (
+    atomic_write_bytes,
+    durable_publish_directory_exclusive,
+    durable_publish_exclusive,
+    durable_remove_path,
+    is_link_like,
+    resolve_owned_path,
+)
 
 
 _MANIFEST_SCHEMA = "molt.source-package-seal/1"
@@ -90,15 +98,6 @@ class SourcePackageSealCommit:
     state: str
 
 
-def _canonical_json(payload: object) -> bytes:
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -113,37 +112,10 @@ def _sha256_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _fsync_directory(path: Path) -> None:
-    if os.name != "posix":
-        return
-    try:
-        directory_fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-    finally:
-        os.close(directory_fd)
-
-
-def _copy_file_durable(source: Path, destination: Path) -> None:
+def _copy_staged_file(source: Path, destination: Path) -> None:
+    """Copy private staging bytes; the directory commit owns their one flush."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(
-        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
-    try:
-        with source.open("rb") as source_handle, temporary.open("xb") as output:
-            while chunk := source_handle.read(_COPY_CHUNK_BYTES):
-                output.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, destination)
-        _fsync_directory(destination.parent)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+    shutil.copyfile(source, destination)
 
 
 def _validate_sha256(value: object, *, field: str) -> str:
@@ -155,25 +127,12 @@ def _validate_sha256(value: object, *, field: str) -> str:
 
 
 def validate_source_package_relative_path(value: object, *, field: str) -> str:
-    if not isinstance(value, str) or not value:
+    try:
+        return portable_relative_path(value).as_posix()
+    except ValueError as exc:
         raise SourcePackageSealVerificationError(
-            f"{field} must be a non-empty root-relative POSIX path"
-        )
-    if "\\" in value or "\x00" in value:
-        raise SourcePackageSealVerificationError(
-            f"{field} must use canonical POSIX path separators"
-        )
-    path = PurePosixPath(value)
-    if (
-        path.is_absolute()
-        or value in {".", ".."}
-        or ".." in path.parts
-        or str(path) != value
-    ):
-        raise SourcePackageSealVerificationError(
-            f"{field} must be a canonical root-relative POSIX path: {value!r}"
-        )
-    return value
+            f"{field} must be a canonical portable root-relative POSIX path: {value!r}"
+        ) from exc
 
 
 def _validate_role(value: object) -> str:
@@ -213,7 +172,7 @@ def _manifest_document(
 def _manifest_bytes(
     entries: tuple[SealFileInventoryEntry, ...], seal_sha256: str
 ) -> bytes:
-    return _canonical_json(_manifest_document(entries, seal_sha256)) + b"\n"
+    return canonical_json_bytes(_manifest_document(entries, seal_sha256)) + b"\n"
 
 
 def _parse_inventory(payload: object) -> tuple[SealFileInventoryEntry, ...]:
@@ -233,7 +192,7 @@ def _parse_inventory(payload: object) -> tuple[SealFileInventoryEntry, ...]:
         relative_path = validate_source_package_relative_path(
             raw_entry["path"], field=f"files[{index}].path"
         )
-        portable_path = relative_path.casefold()
+        portable_path = portable_path_identity(relative_path)
         if relative_path in seen_paths or portable_path in seen_portable_paths:
             raise SourcePackageSealVerificationError(
                 f"seal inventory has a duplicate or case-colliding path: {relative_path}"
@@ -264,12 +223,12 @@ def _parse_inventory(payload: object) -> tuple[SealFileInventoryEntry, ...]:
 
 
 def _decode_canonical_document(path: Path) -> tuple[dict[str, object], bytes]:
-    if not path.is_file() or path.is_symlink():
+    if not path.is_file() or is_link_like(path):
         raise SourcePackageSealVerificationError(f"missing regular file: {path}")
     try:
         raw_bytes = path.read_bytes()
-        decoded = json.loads(raw_bytes.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        decoded = loads_exact(raw_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise SourcePackageSealVerificationError(
             f"cannot decode canonical JSON document {path}: {exc}"
         ) from exc
@@ -295,7 +254,7 @@ def _expected_payload_directories(
 def _verify_payload_tree(
     payload_root: Path, entries: tuple[SealFileInventoryEntry, ...]
 ) -> None:
-    if not payload_root.is_dir() or payload_root.is_symlink():
+    if not payload_root.is_dir() or is_link_like(payload_root):
         raise SourcePackageSealVerificationError(
             f"seal payload is not a regular directory: {payload_root}"
         )
@@ -307,7 +266,7 @@ def _verify_payload_tree(
         for name in dirnames:
             child = directory_path / name
             relative = child.relative_to(payload_root).as_posix()
-            if child.is_symlink() or child.is_junction():
+            if is_link_like(child):
                 raise SourcePackageSealVerificationError(
                     f"seal payload contains a link or junction: {relative}"
                 )
@@ -315,7 +274,7 @@ def _verify_payload_tree(
         for name in filenames:
             child = directory_path / name
             relative = child.relative_to(payload_root).as_posix()
-            if child.is_symlink() or child.is_junction() or not child.is_file():
+            if is_link_like(child) or not child.is_file():
                 raise SourcePackageSealVerificationError(
                     f"seal payload contains a linked or non-regular file: {relative}"
                 )
@@ -363,8 +322,8 @@ def verify_source_package_seal(
     non-regular, size-mismatched, or digest-mismatched content is rejected.
     """
 
-    seal_root = Path(seal_root)
-    if not seal_root.is_dir() or seal_root.is_symlink():
+    seal_root = resolve_owned_path(seal_root)
+    if not seal_root.is_dir() or is_link_like(seal_root):
         raise SourcePackageSealVerificationError(
             f"seal root is not a regular directory: {seal_root}"
         )
@@ -388,7 +347,7 @@ def verify_source_package_seal(
     entries = _parse_inventory(document["files"])
     recorded_sha256 = _validate_sha256(document["seal_sha256"], field="seal_sha256")
     computed_sha256 = _sha256_bytes(
-        _canonical_json(_manifest_identity_payload(entries))
+        canonical_json_bytes(_manifest_identity_payload(entries))
     )
     if recorded_sha256 != computed_sha256:
         raise SourcePackageSealVerificationError(
@@ -428,13 +387,11 @@ def _ingest_blob(transaction_root: Path, source: Path) -> tuple[str, int, Path]:
                 blob_handle.write(chunk)
                 digest.update(chunk)
                 size += len(chunk)
-            blob_handle.flush()
-            os.fsync(blob_handle.fileno())
         sha256 = digest.hexdigest()
         blob = transaction_root / "blobs" / "sha256" / sha256[:2] / sha256
         blob.parent.mkdir(parents=True, exist_ok=True)
         if blob.exists():
-            if blob.is_symlink() or not blob.is_file():
+            if is_link_like(blob) or not blob.is_file():
                 raise SourcePackageSealVerificationError(
                     f"content-addressed blob is not a regular file: {blob}"
                 )
@@ -444,17 +401,21 @@ def _ingest_blob(transaction_root: Path, source: Path) -> tuple[str, int, Path]:
                     f"content-addressed blob is corrupt: {blob}"
                 )
         else:
-            os.replace(incoming, blob)
-            _fsync_directory(blob.parent)
+            try:
+                durable_publish_exclusive(incoming, blob)
+            except FileExistsError:
+                if is_link_like(blob) or not blob.is_file():
+                    raise SourcePackageSealVerificationError(
+                        f"competing blob is not a regular file: {blob}"
+                    )
+                if _sha256_file(blob) != (sha256, size):
+                    raise SourcePackageSealVerificationError(
+                        f"competing content-addressed blob is corrupt: {blob}"
+                    )
         return sha256, size, blob
     finally:
         if incoming.exists():
             incoming.unlink()
-
-
-def _remove_tree(path: Path) -> None:
-    if path.exists():
-        shutil.rmtree(path)
 
 
 def stage_source_package_seal(
@@ -468,7 +429,7 @@ def stage_source_package_seal(
     case-colliding destinations fail closed.
     """
 
-    transaction_root = Path(transaction_root).resolve()
+    transaction_root = resolve_owned_path(transaction_root)
     transaction_root.mkdir(parents=True, exist_ok=True)
     admitted: dict[str, tuple[SealFileInventoryEntry, Path]] = {}
     portable_paths: dict[str, str] = {}
@@ -484,7 +445,7 @@ def stage_source_package_seal(
             role = _validate_role(item.role)
         except SourcePackageSealVerificationError as exc:
             raise SourcePackageSealError(str(exc)) from exc
-        portable_path = relative_path.casefold()
+        portable_path = portable_path_identity(relative_path)
         previous_spelling = portable_paths.get(portable_path)
         if previous_spelling is not None and previous_spelling != relative_path:
             raise SourcePackageSealError(
@@ -515,7 +476,9 @@ def stage_source_package_seal(
     entries = tuple(
         admitted[path][0] for path in sorted(admitted, key=lambda value: value)
     )
-    seal_sha256 = _sha256_bytes(_canonical_json(_manifest_identity_payload(entries)))
+    seal_sha256 = _sha256_bytes(
+        canonical_json_bytes(_manifest_identity_payload(entries))
+    )
     final_root = transaction_root / "seals" / "sha256" / seal_sha256[:2] / seal_sha256
     if final_root.exists():
         return verify_source_package_seal(final_root, expected_sha256=seal_sha256)
@@ -529,23 +492,22 @@ def stage_source_package_seal(
             destination = payload_root.joinpath(
                 *PurePosixPath(entry.relative_path).parts
             )
-            _copy_file_durable(blob, destination)
-        _atomic_write_bytes(
+            _copy_staged_file(blob, destination)
+        atomic_write_bytes(
             staging_root / _MANIFEST_NAME,
             _manifest_bytes(entries, seal_sha256),
         )
         verify_source_package_seal(staging_root, expected_sha256=seal_sha256)
         final_root.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.replace(staging_root, final_root)
-            _fsync_directory(final_root.parent)
-        except OSError:
+            durable_publish_directory_exclusive(staging_root, final_root)
+        except FileExistsError:
             if not final_root.exists():
                 raise
             verify_source_package_seal(final_root, expected_sha256=seal_sha256)
         return verify_source_package_seal(final_root, expected_sha256=seal_sha256)
     finally:
-        _remove_tree(staging_root)
+        durable_remove_path(staging_root)
 
 
 def _commit_identity_payload(seal_sha256: str, destination: Path) -> dict[str, object]:
@@ -571,9 +533,9 @@ def _commit_document(commit: SourcePackageSealCommit) -> dict[str, object]:
 
 
 def _write_commit_record(commit: SourcePackageSealCommit) -> None:
-    _atomic_write_bytes(
+    atomic_write_bytes(
         commit.record_path,
-        _canonical_json(_commit_document(commit)) + b"\n",
+        canonical_json_bytes(_commit_document(commit)) + b"\n",
     )
 
 
@@ -582,8 +544,10 @@ def load_source_package_seal_commit(
 ) -> SourcePackageSealCommit:
     """Load and strictly validate one durable commit record."""
 
-    transaction_root = Path(transaction_root).resolve()
-    record_path = Path(record_path).resolve()
+    if is_link_like(transaction_root) or is_link_like(record_path):
+        raise SourcePackageSealVerificationError("seal commit has indirect custody")
+    transaction_root = resolve_owned_path(transaction_root)
+    record_path = resolve_owned_path(record_path)
     records_root = transaction_root / "commits"
     if record_path.parent != records_root or record_path.suffix != ".json":
         raise SourcePackageSealVerificationError(
@@ -617,7 +581,7 @@ def load_source_package_seal_commit(
             "commit destination must be a canonical absolute path"
         )
     expected_commit_id = _sha256_bytes(
-        _canonical_json(_commit_identity_payload(seal_sha256, destination))
+        canonical_json_bytes(_commit_identity_payload(seal_sha256, destination))
     )
     if commit_id != expected_commit_id:
         raise SourcePackageSealVerificationError("commit identity mismatch")
@@ -643,7 +607,7 @@ def load_source_package_seal_commit(
         destination=destination,
         state=state,
     )
-    if raw_bytes != _canonical_json(_commit_document(commit)) + b"\n":
+    if raw_bytes != canonical_json_bytes(_commit_document(commit)) + b"\n":
         raise SourcePackageSealVerificationError(
             "commit record is not in canonical deterministic encoding"
         )
@@ -666,18 +630,17 @@ def _copy_seal_candidate(source: Path, candidate: Path, seal_sha256: str) -> Non
             destination_file = temporary.joinpath(
                 _PAYLOAD_DIRECTORY, *PurePosixPath(entry.relative_path).parts
             )
-            _copy_file_durable(source_file, destination_file)
-        _copy_file_durable(source / _MANIFEST_NAME, temporary / _MANIFEST_NAME)
+            _copy_staged_file(source_file, destination_file)
+        _copy_staged_file(source / _MANIFEST_NAME, temporary / _MANIFEST_NAME)
         verify_source_package_seal(temporary, expected_sha256=seal_sha256)
         try:
-            os.replace(temporary, candidate)
-            _fsync_directory(candidate.parent)
-        except OSError:
+            durable_publish_directory_exclusive(temporary, candidate)
+        except FileExistsError:
             if not candidate.exists():
                 raise
             verify_source_package_seal(candidate, expected_sha256=seal_sha256)
     finally:
-        _remove_tree(temporary)
+        durable_remove_path(temporary)
 
 
 def prepare_source_package_seal_commit(
@@ -691,17 +654,19 @@ def prepare_source_package_seal_commit(
     root so the candidate-to-destination rename is atomic.  An existing root is
     admitted only when it verifies as the exact same seal; publication never
     replaces a different identity behind a stable package/version name.
+    The source seal may be external: its verified bytes are copied directly
+    into the transaction's commit candidate, never moved or adopted in place.
     """
 
-    transaction_root = Path(transaction_root).resolve()
+    if is_link_like(transaction_root) or is_link_like(destination):
+        raise SourcePackageSealVerificationError(
+            "seal publication has indirect custody"
+        )
+    transaction_root = resolve_owned_path(transaction_root)
     transaction_root.mkdir(parents=True, exist_ok=True)
     verified = verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
     seal_root = verified.root.resolve()
-    if not seal_root.is_relative_to(transaction_root):
-        raise SourcePackageSealError(
-            "the staged seal must belong to the supplied transaction root"
-        )
-    destination = Path(destination).resolve()
+    destination = resolve_owned_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     different_windows_volume = (
         os.name == "nt"
@@ -715,7 +680,9 @@ def prepare_source_package_seal_commit(
             "transaction root and seal destination must share a filesystem"
         )
     commit_id = _sha256_bytes(
-        _canonical_json(_commit_identity_payload(verified.seal_sha256, destination))
+        canonical_json_bytes(
+            _commit_identity_payload(verified.seal_sha256, destination)
+        )
     )
     record_path = transaction_root / "commits" / f"{commit_id}.json"
     candidate = transaction_root / "commit-candidates" / commit_id
@@ -770,7 +737,7 @@ def commit_source_package_seal(
             verify_source_package_seal(
                 current.candidate_root, expected_sha256=current.seal_sha256
             )
-            _remove_tree(current.candidate_root)
+            durable_remove_path(current.candidate_root)
         return current
 
     if destination_exists:
@@ -781,16 +748,17 @@ def commit_source_package_seal(
             verify_source_package_seal(
                 current.candidate_root, expected_sha256=current.seal_sha256
             )
-            _remove_tree(current.candidate_root)
+            durable_remove_path(current.candidate_root)
     else:
         verify_source_package_seal(
             current.candidate_root, expected_sha256=current.seal_sha256
         )
         current.destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.replace(current.candidate_root, current.destination)
-            _fsync_directory(current.destination.parent)
-        except OSError:
+            durable_publish_directory_exclusive(
+                current.candidate_root, current.destination
+            )
+        except FileExistsError:
             if not current.destination.exists():
                 raise
             verify_source_package_seal(
@@ -814,19 +782,31 @@ def commit_source_package_seal(
 
 def recover_source_package_seal_commits(
     transaction_root: Path,
+    *,
+    expected_destination: Path | None = None,
 ) -> tuple[SourcePackageSealCommit, ...]:
     """Complete every durable commit record directly under a transaction root."""
 
-    transaction_root = Path(transaction_root).resolve()
+    if is_link_like(transaction_root):
+        raise SourcePackageSealVerificationError("seal recovery has indirect custody")
+    transaction_root = resolve_owned_path(transaction_root)
     records_root = transaction_root / "commits"
     if not records_root.exists():
         return ()
-    if not records_root.is_dir() or records_root.is_symlink():
+    if not records_root.is_dir() or is_link_like(records_root):
         raise SourcePackageSealVerificationError(
             f"transaction commit root is not a regular directory: {records_root}"
         )
-    recovered: list[SourcePackageSealCommit] = []
-    for record_path in sorted(records_root.glob("*.json")):
-        record = load_source_package_seal_commit(transaction_root, record_path)
-        recovered.append(commit_source_package_seal(record))
-    return tuple(recovered)
+    records = tuple(
+        load_source_package_seal_commit(transaction_root, record_path)
+        for record_path in sorted(records_root.glob("*.json"))
+    )
+    if expected_destination is not None:
+        destination = resolve_owned_path(expected_destination)
+        for record in records:
+            if record.destination != destination:
+                raise SourcePackageSealVerificationError(
+                    f"seal recovery journal {record.record_path} targets "
+                    f"{record.destination}, outside destination custody {destination}"
+                )
+    return tuple(commit_source_package_seal(record) for record in records)

@@ -9,7 +9,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.cli.atomic_io import _atomic_write_text, _durable_replace
+from molt.cli.atomic_io import _atomic_write_text
+from molt.file_publication import durable_replace
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
 
 
@@ -117,7 +118,7 @@ def _publish_immutable_member(staged: Path, member: Path, source: Path) -> None:
             raise ValueError(f"immutable runtime member is corrupt: {member.name}")
         staged.unlink()
         return
-    _durable_replace(staged, member)
+    durable_replace(staged, member)
     # Content durability and namespace commit precede final (possibly read-only) mode.
     try:
         shutil.copymode(source, member)

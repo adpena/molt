@@ -1053,7 +1053,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1065,7 +1065,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1077,7 +1077,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2522,6 +2522,10 @@ globs = [
   "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
   "src/molt/scientific_stack_versions.py",
   "src/molt/cli/atomic_io.py",
+  "src/molt/file_publication.py",
+  "src/molt/cli/source_package_seal.py",
+  "src/molt/cli/entrypoint_parser.py",
+  "src/molt/cli/entrypoint_dispatch.py",
   "src/molt/cli/extension_commands.py",
   "src/molt/cli/extension_manifest.py",
   "src/molt/cli/extension_seal.py",
@@ -2538,6 +2542,8 @@ globs = [
   "tools/profile_source_extension_set.py",
   "tools/proof_queue_pkg/pact.py",
   "tests/cli/test_atomic_io_authority.py",
+  "tests/cli/test_source_package_seal.py",
+  "tests/test_exact_json.py",
   "tests/cli/test_cli_extension_commands.py",
   "tests/cli/test_cli_import_collection.py",
   "tests/cli/test_external_native_scipy_package_seal.py",
@@ -2548,7 +2554,7 @@ globs = [
   "tests/tools/test_scientific_stack_versions.py",
 ]
 gates = [
-  "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+  "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
   "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
 ]
 

@@ -9,6 +9,7 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import time
@@ -57,6 +58,24 @@ def is_link_like(path: Path) -> bool:
     except (FileNotFoundError, NotADirectoryError):
         return False
     return _metadata_is_link_like(metadata)
+
+
+def resolve_owned_path(path: Path) -> Path:
+    """Resolve custody only after rejecting each lexical link/reparse component.
+
+    Check the supplied spelling before resolution can erase an indirect root,
+    including dangling links and components preceding a parent traversal.
+    """
+
+    lexical = Path(path).expanduser()
+    if not lexical.is_absolute():
+        lexical = Path.cwd() / lexical
+    cursor = Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        cursor /= part
+        if is_link_like(cursor):
+            raise ValueError(f"owned path traverses a link or junction: {cursor}")
+    return lexical.resolve()
 
 
 def windows_move_file_api() -> tuple[MoveFileEx, GetLastError]:
@@ -157,9 +176,7 @@ def durable_namespace_replace(staged: Path, destination: Path) -> None:
     source_parent = staged.parent
     destination_parent = destination.parent
     namespace_replace_once(staged, destination)
-    fsync_directory(destination_parent)
-    if source_parent != destination_parent:
-        fsync_directory(source_parent)
+    _sync_publication_parents_after_commit(source_parent, destination_parent)
 
 
 def _raise_posix_rename_error(staged: Path, destination: Path) -> None:
@@ -313,7 +330,7 @@ def _flush_staged_directory_tree(root: Path) -> None:
         fsync_directory(directory)
 
 
-def _sync_directory_publication_parents_after_commit(
+def _sync_publication_parents_after_commit(
     source_parent: Path, destination_parent: Path
 ) -> None:
     failures: list[str] = []
@@ -324,7 +341,7 @@ def _sync_directory_publication_parents_after_commit(
             failures.append(f"{parent}: {exc}")
     if failures:
         _warn_after_commit(
-            "exclusive directory publication committed, but a parent-directory "
+            "namespace publication committed, but a parent-directory "
             "durability barrier failed: " + "; ".join(failures)
         )
 
@@ -370,7 +387,49 @@ def durable_publish_directory_exclusive(staged: Path, destination: Path) -> None
             destination,
         )
     _namespace_publish_directory_exclusive_once(staged, destination)
-    _sync_directory_publication_parents_after_commit(source_parent, destination_parent)
+    _sync_publication_parents_after_commit(source_parent, destination_parent)
+
+
+def durable_namespace_publish_directory_exclusive(
+    source: Path, destination: Path
+) -> None:
+    """Move an already-owned tree without following it or replacing a rival.
+
+    This namespace-only operation is for quarantine: damaged contents must be
+    preserved even when they cannot pass the staged-payload durability barrier.
+    Normal artifact publication must use durable_publish_directory_exclusive.
+    """
+
+    source = resolve_owned_path(source)
+    destination = resolve_owned_path(destination)
+    _real_directory(source, label="quarantine source")
+    _real_directory(source.parent, label="quarantine source parent")
+    _real_directory(destination.parent, label="quarantine destination parent")
+    _namespace_publish_directory_exclusive_once(source, destination)
+    _sync_publication_parents_after_commit(source.parent, destination.parent)
+
+
+def durable_remove_path(path: Path) -> None:
+    """Remove one caller-owned leaf and persist its parent namespace change.
+
+    Refuse indirect roots and filesystem roots; recursive deletion does not
+    follow symlinks or Windows directory junctions contained in the tree.
+    """
+
+    path = resolve_owned_path(path)
+    if path == path.parent or is_link_like(path):
+        raise ValueError(f"cleanup requires a real owned leaf: {path}")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(metadata.st_mode):
+        shutil.rmtree(path)
+    elif stat.S_ISREG(metadata.st_mode):
+        path.unlink()
+    else:
+        raise ValueError(f"cleanup refuses special entry: {path}")
+    fsync_directory(path.parent)
 
 
 def _flush_staged_file(staged: Path) -> int:
@@ -434,8 +493,6 @@ def durable_publish_exclusive(staged: Path, destination: Path) -> None:
 
     staged = Path(staged)
     destination = Path(destination)
-    if staged.parent != destination.parent:
-        raise ValueError("exclusive file publication requires one directory authority")
     _flush_staged_file(staged)
     if destination.exists() or is_link_like(destination):
         raise FileExistsError(destination)
@@ -451,10 +508,10 @@ def durable_publish_exclusive(staged: Path, destination: Path) -> None:
         )
     elif os.name == "posix":
         os.link(staged, destination, follow_symlinks=False)
-        fsync_directory(destination.parent)
+        _sync_publication_parents_after_commit(destination.parent, destination.parent)
         try:
             staged.unlink()
-            fsync_directory(destination.parent)
+            _sync_publication_parents_after_commit(staged.parent, staged.parent)
         except OSError as exc:
             _warn_after_commit(
                 f"exclusive file publication retained staged residue {staged}: {exc}"

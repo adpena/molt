@@ -20,6 +20,53 @@ from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 from molt.wasm_optimization import WASM_OPT_LEVELS
 
 
+def _add_source_extension_set_build_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--package",
+        required=True,
+        help="Registered package name (for example: scipy).",
+    )
+    parser.add_argument(
+        "--package-version",
+        required=True,
+        help="Registered upstream package version (for example: 1.18.0).",
+    )
+    parser.add_argument(
+        "--module-set",
+        required=True,
+        help="Configured extension-set name (for example: pact-witness).",
+    )
+    parser.add_argument(
+        "--python-version",
+        required=True,
+        help="Registered target CPython feature version (for example: 3.12).",
+    )
+    parser.add_argument(
+        "--source",
+        required=True,
+        help="Pinned upstream source checkout.",
+    )
+    parser.add_argument(
+        "--build-root",
+        required=True,
+        help="Absent or empty build root for the single upstream Meson setup.",
+    )
+    parser.add_argument(
+        "--target",
+        default="wasm",
+        help=(
+            "Extension-set target: native, wasm, wasm-freestanding, or an explicit "
+            "Rust target triple (default: wasm)."
+        ),
+    )
+    parser.add_argument(
+        "--abi-tier",
+        choices=("cpython-abi",),
+        default="cpython-abi",
+        help="Extension-set ABI tier (default: cpython-abi).",
+    )
+
+
 def _build_entrypoint_parser() -> argparse.ArgumentParser:
     from molt import __version__
 
@@ -609,50 +656,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "from upstream Meson metadata."
         ),
     )
-    extension_produce_set_parser.add_argument(
-        "--package",
-        required=True,
-        help="Registered package name (for example: scipy).",
-    )
-    extension_produce_set_parser.add_argument(
-        "--package-version",
-        required=True,
-        help="Registered upstream package version (for example: 1.18.0).",
-    )
-    extension_produce_set_parser.add_argument(
-        "--module-set",
-        required=True,
-        help="Configured extension-set name (for example: pact-witness).",
-    )
-    extension_produce_set_parser.add_argument(
-        "--python-version",
-        required=True,
-        help="Registered target CPython feature version (for example: 3.12).",
-    )
-    extension_produce_set_parser.add_argument(
-        "--source",
-        required=True,
-        help="Pinned upstream source checkout.",
-    )
-    extension_produce_set_parser.add_argument(
-        "--build-root",
-        required=True,
-        help="Absent or empty build root for the single upstream Meson setup.",
-    )
-    extension_produce_set_parser.add_argument(
-        "--target",
-        default="wasm",
-        help=(
-            "Extension-set target: native, wasm, wasm-freestanding, or an explicit "
-            "Rust target triple (default: wasm)."
-        ),
-    )
-    extension_produce_set_parser.add_argument(
-        "--abi-tier",
-        choices=("cpython-abi",),
-        default="cpython-abi",
-        help="Extension-set ABI tier (default: cpython-abi).",
-    )
+    _add_source_extension_set_build_arguments(extension_produce_set_parser)
     extension_produce_set_parser.add_argument(
         "--expected-identity-sha256",
         help=(
@@ -670,6 +674,50 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         ),
     )
     extension_produce_set_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+
+    extension_attest_set_candidate_parser = extension_subparsers.add_parser(
+        "attest-set-candidate",
+        help=(
+            "Build and validate an unregistered source-extension variant in "
+            "detached candidate custody without publication authority."
+        ),
+    )
+    _add_source_extension_set_build_arguments(extension_attest_set_candidate_parser)
+    extension_attest_set_candidate_parser.add_argument(
+        "--output",
+        required=True,
+        help=("New detached bundle root below canonical package-candidates custody."),
+    )
+    extension_attest_set_candidate_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+
+    extension_publish_set_candidate_parser = extension_subparsers.add_parser(
+        "publish-set-candidate",
+        help=(
+            "Promote an exact sealed candidate only after its identity is "
+            "registered; this command never builds package content."
+        ),
+    )
+    extension_publish_set_candidate_parser.add_argument(
+        "--candidate",
+        required=True,
+        help="Existing detached candidate bundle below package-candidates custody.",
+    )
+    extension_publish_set_candidate_parser.add_argument(
+        "--expected-incumbent-seal-sha256",
+        help=(
+            "Required exact current canonical seal digest when replacing an "
+            "existing seal."
+        ),
+    )
+    extension_publish_set_candidate_parser.add_argument(
+        "--expected-incumbent-identity-sha256",
+        help=("Required current canonical identity when replacing an existing seal."),
+    )
+    extension_publish_set_candidate_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
 

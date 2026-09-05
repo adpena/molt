@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -99,3 +101,73 @@ def test_exclusive_publication_never_replaces_an_existing_leaf(
 
     assert staged.read_bytes() == b"candidate"
     assert destination.read_bytes() == b"prior"
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_owned_path_rejects_ancestor_links_before_resolution(
+    tmp_path: Path,
+    dangling: bool,
+) -> None:
+    real = tmp_path / "real"
+    if not dangling:
+        real.mkdir()
+    link = tmp_path / "alias"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("host does not permit creating directory symlinks")
+    for path in (link / "child", link / ".." / "child"):
+        with pytest.raises(ValueError, match="link or junction"):
+            file_publication.resolve_owned_path(path)
+    assert not (real / "child").exists()
+
+
+def test_staging_names_are_bounded_unique_and_destination_bound(tmp_path: Path) -> None:
+    destination = tmp_path / ("authority-" * 10 + ".json")
+    first = file_publication.staged_file_path(destination)
+    second = file_publication.staged_file_path(destination)
+    expected = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
+    assert first.parent == second.parent == destination.parent
+    assert first != second
+    assert first.name.startswith(f".molt-write-{expected}-")
+    assert first.name.endswith(".tmp")
+    assert len(first.name) == len(".molt-write--.tmp") + 16 + 32
+    assert not first.exists() and not second.exists()
+
+
+@pytest.mark.parametrize("parent_traversal", [False, True])
+def test_owned_cleanup_rejects_resolved_filesystem_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent_traversal: bool
+) -> None:
+    root = Path(tmp_path.anchor)
+    supplied = root / "molt-missing-child" / ".." if parent_traversal else root
+
+    def refuse_delete(path: Path) -> None:
+        raise AssertionError(f"root must be rejected before deletion: {path}")
+
+    monkeypatch.setattr(file_publication.shutil, "rmtree", refuse_delete)
+    with pytest.raises(ValueError, match="real owned leaf"):
+        file_publication.durable_remove_path(supplied)
+
+
+def test_owned_cleanup_and_quarantine_reject_ancestor_links(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    evidence = real / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "payload").write_bytes(b"preserve")
+    link = tmp_path / "alias"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("host does not permit creating directory symlinks")
+    with pytest.raises(ValueError, match="link or junction"):
+        file_publication.durable_remove_path(link / "evidence")
+    with pytest.raises(ValueError, match="link or junction"):
+        file_publication.durable_namespace_publish_directory_exclusive(
+            link / "evidence", tmp_path / "quarantine"
+        )
+    with pytest.raises(ValueError, match="link or junction"):
+        file_publication.durable_namespace_publish_directory_exclusive(
+            evidence, link / "quarantine"
+        )
+    assert (evidence / "payload").read_bytes() == b"preserve"

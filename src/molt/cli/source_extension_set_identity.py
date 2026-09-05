@@ -6,53 +6,76 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from molt.cli.extension_manifest import (
+    _EXTENSION_SUPPORT_FILE_SUFFIXES,
     _manifest_callable_exports,
-    _manifest_support_file_payloads,
 )
-from molt.cli.source_extension_manifest_codec import (
-    _validate_compact_source_extension_manifest,
-)
-from molt.cli.source_extension_object_closure import (
-    source_extension_object_closure_identity_payload,
-)
+from molt.cli.models import _ExternalNativeCallableExport
 from molt.cli.source_extension_reproducibility import _require_location_neutral
-from molt.cli.source_extension_set_registry import (
-    validate_source_extension_module_target,
-)
-from molt.cli.source_extension_target import (
-    source_extension_artifact_kind,
-    source_extension_artifact_suffix,
-)
 from molt.target_python import _parse_target_python_version
+from molt.cli.source_package_seal import (
+    SealFileInventoryEntry,
+    validate_source_package_relative_path,
+)
+from molt.exact_json import loads_exact
 
 SOURCE_EXTENSION_SET_SCHEMA_VERSION = 5
 
 
 def _digest_payload(payload: Any) -> str:
     return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
     ).hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+@dataclass(frozen=True, slots=True)
+class SealedSourceExtensionSupportFile:
+    """One exact inventory member, never a producer-side source remapping."""
+
+    rel_path: str
+    sha256: str
+
+    def digest_payload(self) -> dict[str, str]:
+        return {"path": self.rel_path, "sha256": self.sha256}
 
 
-def _extension_content_projection(
+@dataclass(frozen=True, slots=True)
+class ValidatedSourceExtensionExecutionMetadata:
+    callable_exports: tuple[_ExternalNativeCallableExport, ...]
+    support_files: tuple[SealedSourceExtensionSupportFile, ...]
+
+    @property
+    def direct_function_exports(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    export.symbol
+                    for export in self.callable_exports
+                    if export.binding == "direct_symbol" and export.symbol is not None
+                }
+            )
+        )
+
+
+def validate_source_extension_execution_metadata(
     manifest: Mapping[str, Any],
     *,
-    payload_root: Path,
-) -> dict[str, Any]:
-    closure = manifest.get("object_closure")
-    objects = closure.get("objects") if isinstance(closure, Mapping) else None
-    if not isinstance(objects, list) or not objects:
-        raise ValueError("extension identity requires a non-empty object closure")
-    source_plan = manifest.get("source_plan")
+    inventory_sha256: Mapping[str, str],
+) -> ValidatedSourceExtensionExecutionMetadata:
+    """Bind execution metadata to exact verified payload-inventory facts.
+
+    Producer support APIs may map a source into a different destination. A
+    sealed manifest instead contains only the emitted destination and digest;
+    both its source and destination are that same inventoried file. No external
+    source path is consulted, and no independently hashed bytes can substitute
+    for the bytes owned by the seal.
+    """
+
     module = manifest.get("module")
     if not isinstance(module, str) or not module:
         raise ValueError("extension identity requires a module name")
@@ -62,16 +85,53 @@ def _extension_content_projection(
         package=module.split(".", 1)[0],
         errors=errors,
     )
-    support_files = _manifest_support_file_payloads(
-        manifest.get("support_files"),
-        field_name="support_files",
-        root=payload_root,
-        errors=errors,
-    )
     if errors:
         raise ValueError(
             "extension identity has invalid execution metadata: " + "; ".join(errors)
         )
+    raw_support_files = manifest.get("support_files", [])
+    if not isinstance(raw_support_files, list):
+        raise ValueError("sealed support_files must be a list of path/sha256 objects")
+    support_files: list[SealedSourceExtensionSupportFile] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_support_files):
+        label = f"sealed support_files[{index}]"
+        if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+            raise ValueError(
+                f"{label} must contain exactly path and sha256; "
+                "producer source remapping is not sealed support authority"
+            )
+        relative = validate_source_package_relative_path(item.get("path"), field=label)
+        if not relative.endswith(_EXTENSION_SUPPORT_FILE_SUFFIXES):
+            raise ValueError(f"{label} must name a supported artifact or Python source")
+        sha256 = item.get("sha256")
+        if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise ValueError(f"{label}.sha256 must be a canonical lowercase SHA-256")
+        if relative in seen:
+            raise ValueError(f"{label} duplicates support file {relative!r}")
+        if inventory_sha256.get(relative) != sha256:
+            raise ValueError(
+                f"{label} source/destination bytes differ from the sealed inventory: {relative}"
+            )
+        seen.add(relative)
+        support_files.append(SealedSourceExtensionSupportFile(relative, sha256))
+    return ValidatedSourceExtensionExecutionMetadata(
+        callable_exports=callable_exports,
+        support_files=tuple(sorted(support_files, key=lambda entry: entry.rel_path)),
+    )
+
+
+def _extension_content_projection(
+    manifest: Mapping[str, Any],
+    *,
+    validated_closure: tuple[dict[str, Any], str],
+    execution_metadata: ValidatedSourceExtensionExecutionMetadata,
+) -> dict[str, Any]:
+    closure = manifest.get("object_closure")
+    objects = closure.get("objects") if isinstance(closure, Mapping) else None
+    if not isinstance(objects, list) or not objects:
+        raise ValueError("extension identity requires a non-empty object closure")
+    source_plan = manifest.get("source_plan")
     projection = {
         key: manifest.get(key)
         for key in (
@@ -105,10 +165,11 @@ def _extension_content_projection(
         if key in manifest
     }
     projection["callable_exports"] = [
-        export.digest_payload() for export in callable_exports
+        export.digest_payload() for export in execution_metadata.callable_exports
     ]
     projection["support_files"] = [
-        support_file.digest_payload() for support_file in support_files
+        support_file.digest_payload()
+        for support_file in execution_metadata.support_files
     ]
     projection["source_plan"] = {
         key: source_plan.get(key)
@@ -121,10 +182,7 @@ def _extension_content_projection(
         )
         if isinstance(source_plan, Mapping) and key in source_plan
     }
-    projection["object_closure"] = source_extension_object_closure_identity_payload(
-        closure,
-        manifest=manifest,
-    )
+    projection["object_closure"] = validated_closure[0]
     return projection
 
 
@@ -200,219 +258,98 @@ def _target_semantic_projection(set_manifest: Mapping[str, Any]) -> dict[str, An
     return projection
 
 
-def _source_extension_set_identity(
-    payload_root: Path,
-    *,
-    inventory_sha256: Mapping[str, str],
-    set_manifest: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Project verified inventory into semantic identity and full attestation."""
+@dataclass(frozen=True, slots=True)
+class SourceExtensionSetIdentity:
+    """Location-neutral identity; all receipt fields are immutable scalars."""
 
-    root = payload_root.resolve()
-    if set_manifest is None:
-        path = root / "extension_set_manifest.json"
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"cannot read extension-set manifest {path}: {exc}"
-            ) from exc
-        if not isinstance(loaded, Mapping):
-            raise ValueError(f"extension-set manifest is not an object: {path}")
-        set_manifest = loaded
-    target_semantics = _target_semantic_projection(set_manifest)
-    extensions = set_manifest.get("extensions")
-    if not isinstance(extensions, list) or not extensions:
-        raise ValueError("extension-set identity requires extension sidecars")
-    if not all(isinstance(item, Mapping) for item in extensions):
-        raise ValueError("extension-set identity has invalid extension entries")
-    extension_keys = [
-        validate_source_extension_module_target(item.get("module"), item.get("target"))
-        for item in extensions
-    ]
-    if len(set(extension_keys)) != len(extension_keys):
-        raise ValueError("extension-set identity has duplicate extension keys")
-    target_triple = set_manifest.get("target_triple")
-    if not isinstance(target_triple, str) or not target_triple:
-        raise ValueError("extension-set identity requires a target triple")
-    artifact_suffix = source_extension_artifact_suffix(target_triple)
-    abi_tier = set_manifest.get("abi_tier")
-    cpython = set_manifest.get("cpython")
-    package_version = set_manifest.get("package_version")
-    assert isinstance(abi_tier, str)
-    assert isinstance(cpython, str)
-    if not isinstance(package_version, str) or not package_version:
-        raise ValueError("extension-set identity requires package version custody")
-    target_python = _parse_target_python_version(cpython)
-    artifact_paths = [
-        root.joinpath(
-            *str(module).split(".")[:-1],
-            f"{target}{artifact_suffix}",
-        )
-        for module, target in extension_keys
-    ]
-    sidecar_paths = [
-        artifact.with_name(f"{artifact.name}.extension_manifest.json")
-        for artifact in artifact_paths
-    ]
-    expected_artifacts = {path.relative_to(root).as_posix() for path in artifact_paths}
-    inventoried_artifacts = {
-        path for path in inventory_sha256 if path.endswith((".molt.wasm", ".molt.a"))
-    }
-    if inventoried_artifacts != expected_artifacts:
-        raise ValueError(
-            "extension-set identity artifact inventory differs from typed set"
-        )
-    expected_sidecars = {path.relative_to(root).as_posix() for path in sidecar_paths}
-    inventoried_sidecars = {
-        path
-        for path in inventory_sha256
-        if path.endswith(
-            (
-                ".molt.wasm.extension_manifest.json",
-                ".molt.a.extension_manifest.json",
-            )
-        )
-    }
-    if inventoried_sidecars != expected_sidecars:
-        raise ValueError(
-            "extension-set identity sidecar inventory differs from typed set"
-        )
-    extension_content: list[dict[str, Any]] = []
-    producer_sidecars: list[dict[str, Any]] = []
-    for set_entry, (module, target), artifact_path, path in zip(
-        extensions,
-        extension_keys,
-        artifact_paths,
-        sidecar_paths,
-        strict=True,
-    ):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read extension sidecar {path}: {exc}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"extension sidecar is not an object: {path}")
-        try:
-            _validate_compact_source_extension_manifest(payload)
-        except ValueError as exc:
-            raise ValueError(f"extension sidecar is invalid: {path}: {exc}") from exc
-        source_plan = payload.get("source_plan")
-        expected_contract = {
-            "module": module,
-            "version": package_version,
-            "target_triple": target_triple,
-            "abi_tier": abi_tier,
-            "target_python": target_python.tag,
-            "artifact_kind": source_extension_artifact_kind(target_triple),
-            "python_exports": set_entry.get("python_exports"),
-            "capabilities": set_entry.get("capabilities"),
-            "provided_capsules": set_entry.get("provided_capsules"),
+    target_semantic_sha256: str
+    content_sha256: str
+    canonical_sha256: str
+    producer_attestation_sha256: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "target_semantic_sha256": self.target_semantic_sha256,
+            "content_sha256": self.content_sha256,
+            "canonical_sha256": self.canonical_sha256,
+            "producer_attestation_sha256": self.producer_attestation_sha256,
         }
-        mismatches = [
-            f"{field}: expected {expected!r}, got {payload.get(field)!r}"
-            for field, expected in expected_contract.items()
-            if payload.get(field) != expected
-        ]
-        actual_target = (
-            source_plan.get("target_selector")
-            if isinstance(source_plan, Mapping)
-            else None
-        )
-        if actual_target != target:
-            mismatches.append(
-                "source_plan.target_selector: "
-                f"expected {target!r}, got {actual_target!r}"
-            )
-        if mismatches:
-            raise ValueError(
-                "extension sidecar differs from set variant contract: "
-                + "; ".join(mismatches)
-            )
-        artifact_relative = artifact_path.relative_to(root).as_posix()
-        artifact_sha256 = inventory_sha256.get(artifact_relative)
-        if (
-            not artifact_path.is_file()
-            or not isinstance(artifact_sha256, str)
-            or _sha256_file(artifact_path) != artifact_sha256
-            or payload.get("extension_sha256") != artifact_sha256
-        ):
-            raise ValueError(
-                "extension-set artifact bytes differ from sidecar and inventory: "
-                f"{artifact_relative}"
-            )
-        relative = path.relative_to(root).as_posix()
-        extension_content.append(
-            {
-                "path": relative,
-                "identity": _extension_content_projection(
-                    payload,
-                    payload_root=root,
-                ),
-            }
-        )
-        producer_sidecars.append({"path": relative, "manifest": dict(payload)})
-    installed = set_manifest.get("installed_package_files")
-    if not isinstance(installed, list) or not all(
-        isinstance(value, str) and value for value in installed
-    ):
-        raise ValueError("extension-set installed package inventory is invalid")
-    if installed != sorted(set(installed)):
-        raise ValueError("extension-set installed package inventory is not canonical")
-    installed_content = []
-    for relative in installed:
-        path = root / relative
-        sha256 = inventory_sha256.get(relative)
-        if (
-            not path.is_file()
-            or not path.resolve().is_relative_to(root)
-            or not isinstance(sha256, str)
-        ):
-            raise ValueError(f"extension-set installed content is missing: {relative}")
-        installed_content.append({"path": relative, "sha256": sha256})
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedSourceExtensionIdentitySidecar:
+    """One validated sidecar snapshot, independent of its filesystem location."""
+
+    module: str
+    target: str
+    artifact_relative_path: str
+    sidecar_relative_path: str
+    artifact_sha256: str
+    sidecar_sha256: str
+    manifest_json: bytes
+    content_json: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedSourceExtensionSetIdentityInputs:
+    """Only the structural validator produces these immutable identity inputs."""
+
+    set_manifest_json: bytes
+    target_semantics_json: bytes
+    installed_package_files: tuple[str, ...]
+    sidecars: tuple[ValidatedSourceExtensionIdentitySidecar, ...]
+    inventory: tuple[SealFileInventoryEntry, ...]
+
+
+def _source_extension_set_identity(
+    inputs: ValidatedSourceExtensionSetIdentityInputs,
+) -> SourceExtensionSetIdentity:
+    """Pure projection of validated facts: no filesystem reads or trust switch."""
+
+    inventory_sha256 = {entry.relative_path: entry.sha256 for entry in inputs.inventory}
+    extension_content = [
+        {
+            "path": sidecar.sidecar_relative_path,
+            "identity": loads_exact(sidecar.content_json.decode("utf-8")),
+        }
+        for sidecar in inputs.sidecars
+    ]
+    installed_content = [
+        {"path": relative, "sha256": inventory_sha256[relative]}
+        for relative in inputs.installed_package_files
+    ]
     content = {"installed": installed_content, "extensions": extension_content}
+    target_semantics = loads_exact(inputs.target_semantics_json.decode("utf-8"))
     _require_location_neutral(target_semantics, authority="target semantic identity")
     _require_location_neutral(content, authority="extension content identity")
     target_semantic_sha256 = _digest_payload(target_semantics)
     content_sha256 = _digest_payload(content)
-    producer_inventory = [
-        {"path": path, "sha256": sha256}
-        for path, sha256 in sorted(inventory_sha256.items())
-    ]
     producer_attestation = {
-        "set_manifest": dict(set_manifest),
-        "sidecars": producer_sidecars,
-        "inventory": producer_inventory,
+        "set_manifest": loads_exact(inputs.set_manifest_json.decode("utf-8")),
+        "sidecars": [
+            {
+                "path": sidecar.sidecar_relative_path,
+                "manifest": loads_exact(sidecar.manifest_json.decode("utf-8")),
+            }
+            for sidecar in inputs.sidecars
+        ],
+        "inventory": [
+            {"path": path, "sha256": sha256}
+            for path, sha256 in sorted(inventory_sha256.items())
+        ],
     }
     identity_payload = {
         "schema_version": 1,
         "target_semantic_sha256": target_semantic_sha256,
         "content_sha256": content_sha256,
     }
-    return identity_payload | {
-        "canonical_sha256": _digest_payload(identity_payload),
-        "producer_attestation_sha256": _digest_payload(producer_attestation),
-    }
-
-
-def _require_expected_source_extension_set_identity(
-    payload_root: Path,
-    expected_sha256: str,
-    *,
-    inventory_sha256: Mapping[str, str],
-) -> dict[str, Any]:
-    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("expected source-extension identity must be lowercase SHA-256")
-    identity = _source_extension_set_identity(
-        payload_root,
-        inventory_sha256=inventory_sha256,
+    return SourceExtensionSetIdentity(
+        target_semantic_sha256=target_semantic_sha256,
+        content_sha256=content_sha256,
+        canonical_sha256=_digest_payload(identity_payload),
+        producer_attestation_sha256=_digest_payload(producer_attestation),
     )
-    if identity["canonical_sha256"] != expected_sha256:
-        raise ValueError(
-            "source-extension canonical identity mismatch: "
-            f"expected {expected_sha256}, got {identity['canonical_sha256']}"
-        )
-    return identity
 
 
 def _source_extension_reproduction_comparison(
