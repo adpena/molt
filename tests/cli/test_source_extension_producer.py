@@ -20,6 +20,17 @@ from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
+from molt.cli.extension_seal import (
+    _resolve_declared_artifact,
+    _source_package_root_for_manifest,
+)
+from molt.cli.source_extension_input_custody import (
+    project_source_extension_manifest_inputs,
+    resolve_source_extension_manifest_input,
+    source_extension_input_custody_path,
+    stage_source_extension_manifest_inputs,
+    validate_source_extension_manifest_input_custody,
+)
 from molt.cli.source_extension_publication import (
     _source_extension_publication_custody,
 )
@@ -30,7 +41,10 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
-from molt.cli.source_extension_manifest_codec import _manifest_sequence
+from molt.cli.source_extension_manifest_codec import (
+    _manifest_dependencies,
+    _manifest_sequence,
+)
 from molt.cli.source_extension_set_registry import (
     SourceExtensionSet,
     SourceExtensionSource,
@@ -2147,6 +2161,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     module = "scipy.ndimage._nd_image"
     source = source_root / "scipy/ndimage/src/nd_image.c"
     generated = build_root / "scipy/ndimage/_nd_image.c"
+    header = source_root / "scipy/ndimage/src/nd_image.h"
     for path, content in (
         (
             source,
@@ -2154,9 +2169,16 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
             b"int import_numpy(void) { return _import_array(); }\n",
         ),
         (generated, b"int PyInit__nd_image(void) { return 2; }\n"),
+        (header, b"#define ND_IMAGE_VALUE 1\n"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    expected_inputs = {
+        source_extension_input_custody_path(
+            hashlib.sha256(path.read_bytes()).hexdigest()
+        ).as_posix(): path.read_bytes()
+        for path in (source, generated, header)
+    }
     artifact = output / "scipy/ndimage/_nd_image.molt.wasm"
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"\x00asm-object")
@@ -2187,7 +2209,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
                 "undefined_symbols": [],
                 "compile_command": ["clang", "-c", str(source)],
                 "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
-                "dependencies": [],
+                "dependencies": [
+                    {
+                        "path": str(header),
+                        "sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
+                    }
+                ],
                 "required_c_api_symbols": [],
                 "required_capsules": [],
                 "project_generated_c_api_symbols": [],
@@ -2274,6 +2301,8 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     )
 
     staged_manifest = json.loads(staged.artifact_manifest_path.read_text())
+    validate_source_extension_manifest_input_custody(staged_manifest)
+    assert staged_manifest["runtime_python_import_modules"] == []
     assert "source_root" not in staged_manifest["source_plan"]
     assert "build_root" not in staged_manifest["source_plan"]
     assert "compile_units" not in staged_manifest["source_plan"]
@@ -2305,25 +2334,112 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     assert staged.wheel_sha256 == staged_manifest["wheel_sha256"]
     with zipfile.ZipFile(staged_wheel) as archive:
         embedded = json.loads(archive.read("extension_manifest.json"))
-        assert embedded["extension"] == "_nd_image.molt.wasm"
+        assert embedded["extension"] == "scipy/ndimage/_nd_image.molt.wasm"
         assert archive.read(embedded["extension"]) == staged.artifact_path.read_bytes()
-        assert "scipy/ndimage/_nd_image.molt.wasm" not in archive.namelist()
+        assert "_nd_image.molt.wasm" not in archive.namelist()
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
         assert embedded["object_closure"]["required_capsules"] == [expected_capsule]
+        validate_source_extension_manifest_input_custody(embedded)
+        assert embedded["runtime_python_import_modules"] == []
         assert _manifest_sequence(
             embedded,
             embedded["object_closure"]["objects"][0],
             "required_capsules",
         ) == [expected_capsule]
-        assert embedded["object_closure"]["objects"][0]["source"].startswith("@source/")
-        assert embedded["object_closure"]["objects"][1]["source"].startswith("@build/")
+        embedded_inputs = {
+            item["source"] for item in embedded["object_closure"]["objects"]
+        }
+        embedded_inputs.update(
+            dependency["path"]
+            for item in embedded["object_closure"]["objects"]
+            for dependency in _manifest_dependencies(embedded, item)
+        )
+        assert embedded_inputs == set(expected_inputs)
+        for member, data in expected_inputs.items():
+            assert archive.namelist().count(member) == 1
+            assert archive.read(member) == data
         assert all(
             info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist()
         )
     assert staged_manifest["object_closure"]["closure_sha256"] == (
         staged.object_closure_sha256
     )
+
+    # The extracted wheel, not either producer checkout or the publication
+    # directory, must own every input needed to restage a sealed extension.
+    for original_input in (source, generated, header):
+        original_input.unlink()
+    extracted = tmp_path / "scipy" / "relocated" / "scipy" / "extracted"
+    with zipfile.ZipFile(staged_wheel) as archive:
+        archive.extractall(extracted)
+    for member in expected_inputs:
+        (publish / member).unlink()
+    extracted_manifest_path = extracted / "extension_manifest.json"
+    extracted_manifest = json.loads(extracted_manifest_path.read_text(encoding="utf-8"))
+    # This fixture has synthetic artifact bytes, so prove the real seal layout
+    # helpers here without claiming full binary admission or command resealing.
+    extracted_artifact, artifact_errors = _resolve_declared_artifact(
+        manifest=extracted_manifest,
+        manifest_path=extracted_manifest_path,
+    )
+    assert artifact_errors == []
+    assert extracted_artifact is not None
+    assert (
+        extracted_artifact
+        == (extracted / "scipy/ndimage/_nd_image.molt.wasm").resolve()
+    )
+    assert (
+        _source_package_root_for_manifest(
+            artifact_path=extracted_artifact,
+            module_parts=tuple(extracted_manifest["module"].split(".")),
+        )
+        == extracted.resolve()
+    )
+    resealed_root = tmp_path / "resealed"
+    resealed_manifest_path = (
+        resealed_root / "scipy/ndimage/_nd_image.molt.wasm.extension_manifest.json"
+    )
+    restaged_inputs = stage_source_extension_manifest_inputs(
+        extracted_manifest,
+        manifest_path=extracted_manifest_path,
+        publish_root=resealed_root,
+    )
+    resealed_manifest = project_source_extension_manifest_inputs(
+        extracted_manifest,
+        source_manifest_path=extracted_manifest_path,
+        output_manifest_path=resealed_manifest_path,
+        publish_root=resealed_root,
+        staged_inputs=restaged_inputs,
+    )
+    validate_source_extension_manifest_input_custody(resealed_manifest)
+    assert len(restaged_inputs) == len(expected_inputs)
+    assert resealed_manifest["runtime_python_import_modules"] == []
+    for item in resealed_manifest["object_closure"]["objects"]:
+        inputs = [(item["source"], item["source_sha256"])]
+        inputs.extend(
+            (dependency["path"], dependency["sha256"])
+            for dependency in _manifest_dependencies(resealed_manifest, item)
+        )
+        for reference, digest in inputs:
+            resolved, errors = resolve_source_extension_manifest_input(
+                reference,
+                manifest_path=resealed_manifest_path,
+                expected_sha256=digest,
+            )
+            assert errors == []
+            assert (
+                resolved
+                == (
+                    resealed_root / source_extension_input_custody_path(digest)
+                ).resolve()
+            )
+            assert (
+                resolved.read_bytes()
+                == expected_inputs[
+                    source_extension_input_custody_path(digest).as_posix()
+                ]
+            )
 
 
 def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(

@@ -14,6 +14,12 @@ from typing import Any, Mapping, Sequence
 
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
+from molt.cli.python_module_names import encode_python_module_names
+from molt.cli.source_extension_input_custody import (
+    SourceExtensionInputCustodyError,
+    project_source_extension_manifest_inputs,
+    stage_source_extension_manifest_inputs,
+)
 from molt.cli.source_extension_reproducibility import (
     _canonical_extension_manifest_for_wheel,
     _source_extension_deterministic_path_args,
@@ -230,13 +236,27 @@ def _extension_manifest_public_exports(
     package: str,
     errors: list[str],
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    export_manifest = {
-        "python_exports": extension_meta.get("python_exports")
-        or extension_meta.get("python-exports"),
-        "callable_exports": extension_meta.get("callable_exports")
-        or extension_meta.get("callable-exports"),
-    }
+    export_manifest: dict[str, Any] = {}
     export_errors: list[str] = []
+    for field in ("python_exports", "callable_exports"):
+        alias = field.replace("_", "-")
+        if field in extension_meta and alias in extension_meta:
+            export_errors.append(
+                f"tool.molt.extension must not specify both {field!r} and {alias!r}"
+            )
+        if field in extension_meta:
+            export_manifest[field] = extension_meta[field]
+        elif alias in extension_meta:
+            export_manifest[field] = extension_meta[alias]
+    raw_python_exports = export_manifest.get("python_exports")
+    if isinstance(raw_python_exports, list):
+        try:
+            export_manifest["python_exports"] = encode_python_module_names(
+                raw_python_exports, field="tool.molt.extension.python_exports"
+            )
+        except ValueError as exc:
+            export_errors.append(str(exc))
+            export_manifest.pop("python_exports")
     python_exports = _manifest_dotted_name_tuple(
         export_manifest,
         "python_exports",
@@ -1386,14 +1406,12 @@ def extension_build(
                 and str(export.get("symbol")).strip()
             }
         )
-        if wasm_static_link:
-            _atomic_copy_file(built_extension, output_root / module_rel)
-
         extension_bytes = (
             artifact_symbol_inspection.artifact_bytes
             if artifact_symbol_inspection.artifact_bytes is not None
             else built_extension.read_bytes()
         )
+        extension_sha = hashlib.sha256(extension_bytes).hexdigest()
         extension_archive_path = module_rel.as_posix()
         runtime_linkage = "static_link"
         artifact_kind = target_plan.artifact_kind
@@ -1440,6 +1458,7 @@ def extension_build(
             "effects": effects,
             "wheel": wheel_name,
             "extension": extension_archive_path,
+            "extension_sha256": extension_sha,
             "support_files": [entry.digest_payload() for entry in support_files],
             "build": build_payload,
         }
@@ -1483,6 +1502,7 @@ def extension_build(
             for fact in source_plan_object_closure.objects
         }
         runtime_requirement_symbols = artifact_undefined_symbols
+        runtime_symbols: tuple[str, ...] = ()
         if wasm_static_link:
             assert wasm_import_receipts is not None
             runtime_requirement_symbols = tuple(
@@ -1491,20 +1511,17 @@ def extension_build(
                     | {item["name"] for item in wasm_import_receipts}
                 )
             )
+            runtime_symbols = wasm_static_link_runtime_symbols_for_imports(
+                runtime_requirement_symbols,
+                typed_imports=(
+                    (item["module"], item["name"]) for item in wasm_import_receipts
+                ),
+            )
         object_closure_payload = source_plan_object_closure.manifest_payload(
             defined_symbols=artifact_defined_symbols,
             undefined_symbols=artifact_undefined_symbols,
             wasm_imports=wasm_import_receipts,
-            runtime_symbols=(
-                wasm_static_link_runtime_symbols_for_imports(
-                    runtime_requirement_symbols,
-                    typed_imports=(
-                        (item["module"], item["name"]) for item in wasm_import_receipts
-                    ),
-                )
-                if wasm_static_link
-                else ()
-            ),
+            runtime_symbols=runtime_symbols,
             required_c_api_by_source=required_c_api_by_source,
             required_capsules_by_source=(
                 source_c_api_requirements.required_capsules_by_source
@@ -1562,8 +1579,46 @@ def extension_build(
                 wheel_identity_roots.append(
                     (Path(command[0]).resolve().parent, "@toolchain")
                 )
+        runtime_import_errors = _source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
+            manifest_payload, manifest_path=output_root / "extension_manifest.json"
+        )
+        if runtime_import_errors:
+            return _fail(
+                "Cannot derive source-owned eager imports: "
+                + "; ".join(runtime_import_errors),
+                json_output,
+                command="extension-build",
+            )
+        try:
+            staged_inputs = stage_source_extension_manifest_inputs(
+                manifest_payload,
+                manifest_path=output_root / "extension_manifest.json",
+                publish_root=output_root,
+            )
+            root_input_manifest = project_source_extension_manifest_inputs(
+                manifest_payload,
+                source_manifest_path=output_root / "extension_manifest.json",
+                output_manifest_path=output_root / "extension_manifest.json",
+                publish_root=output_root,
+                staged_inputs=staged_inputs,
+            )
+            artifact_input_manifest = project_source_extension_manifest_inputs(
+                manifest_payload,
+                source_manifest_path=output_root / "extension_manifest.json",
+                output_manifest_path=(output_root / extension_archive_path).with_name(
+                    Path(extension_archive_path).name + ".extension_manifest.json"
+                ),
+                publish_root=output_root,
+                staged_inputs=staged_inputs,
+            )
+        except (SourceExtensionInputCustodyError, OSError) as exc:
+            return _fail(
+                f"Cannot retain source-extension compilation inputs: {exc}",
+                json_output,
+                command="extension-build",
+            )
         wheel_manifest_payload = _canonical_extension_manifest_for_wheel(
-            manifest_payload,
+            root_input_manifest,
             location_roots=tuple(wheel_identity_roots),
             meson_plan_path=(
                 loaded_source_plan.plan_path if loaded_source_plan is not None else None
@@ -1605,25 +1660,56 @@ def extension_build(
             (f"{dist_info}/WHEEL", wheel_metadata),
             (f"{dist_info}/METADATA", package_metadata),
         ]
-        for support in support_files:
-            wheel_entries.append((support.rel_path, support.source_path.read_bytes()))
-        for link_input in link_requirements.inputs:
-            wheel_entries.append(
-                (
-                    f"{module_parts[0]}/{link_input.path}",
-                    (output_root / module_parts[0] / link_input.path).read_bytes(),
+        try:
+            for support in support_files:
+                wheel_entries.append(
+                    (support.rel_path, support.source_path.read_bytes())
                 )
+            package_init_entries: list[tuple[str, bytes]] = []
+            support_entry_bytes = dict(wheel_entries)
+            for index in range(1, len(module_parts)):
+                relative_init = Path(*module_parts[:index], "__init__.py")
+                source_init = project_root / relative_init
+                if not source_init.is_file():
+                    continue
+                name = relative_init.as_posix()
+                data = source_init.read_bytes()
+                package_init_entries.append((name, data))
+                if name in support_entry_bytes:
+                    if support_entry_bytes[name] != data:
+                        return _fail(
+                            f"Package initializer conflicts with declared support bytes: {name}",
+                            json_output,
+                            command="extension-build",
+                        )
+                else:
+                    wheel_entries.append((name, data))
+            for relative in sorted(set(staged_inputs.values())):
+                wheel_entries.append(
+                    (relative.as_posix(), (output_root / relative).read_bytes())
+                )
+            for link_input in link_requirements.inputs:
+                wheel_entries.append(
+                    (
+                        f"{module_parts[0]}/{link_input.path}",
+                        (output_root / module_parts[0] / link_input.path).read_bytes(),
+                    )
+                )
+            record_path = f"{dist_info}/RECORD"
+            _write_extension_wheel(
+                wheel_path,
+                entries=wheel_entries,
+                record_path=record_path,
             )
-        record_path = f"{dist_info}/RECORD"
-        _write_extension_wheel(
-            wheel_path,
-            entries=wheel_entries,
-            record_path=record_path,
-        )
+        except (ValueError, OSError) as exc:
+            return _fail(
+                f"Cannot publish verified extension wheel: {exc}",
+                json_output,
+                command="extension-build",
+            )
 
     wheel_sha = _sha256_file(wheel_path)
-    extension_sha = hashlib.sha256(extension_bytes).hexdigest()
-    sidecar_payload = dict(manifest_payload)
+    sidecar_payload = dict(root_input_manifest)
     sidecar_payload["wheel_sha256"] = wheel_sha
     sidecar_payload["extension_sha256"] = extension_sha
     if deterministic:
@@ -1637,19 +1723,22 @@ def extension_build(
     extracted_extension_path = output_root / extension_archive_path
     _atomic_write_bytes(extracted_extension_path, extension_bytes)
     extracted_package_init_files: list[Path] = []
-    for index in range(1, len(module_parts)):
-        source_init = project_root.joinpath(*module_parts[:index], "__init__.py")
-        if not source_init.exists() or not source_init.is_file():
-            continue
-        dest_init = output_root.joinpath(*module_parts[:index], "__init__.py")
-        _atomic_copy_file(source_init, dest_init)
+    for relative_init, init_bytes in package_init_entries:
+        dest_init = output_root / relative_init
+        _atomic_write_bytes(dest_init, init_bytes)
         extracted_package_init_files.append(dest_init)
     extracted_support_files: list[Path] = []
     for support in support_files:
         dest_support = output_root / Path(support.rel_path)
         _atomic_copy_file(support.source_path, dest_support)
         extracted_support_files.append(dest_support)
-    artifact_manifest_payload = dict(sidecar_payload)
+    artifact_manifest_payload = dict(artifact_input_manifest)
+    artifact_manifest_payload.update(
+        {
+            field: sidecar_payload[field]
+            for field in ("wheel_sha256", "extension_sha256", "generated_at_utc")
+        }
+    )
     artifact_manifest_payload["extension"] = extracted_extension_path.name
     artifact_manifest_path = extracted_extension_path.with_name(
         extracted_extension_path.name + ".extension_manifest.json"
@@ -1694,7 +1783,7 @@ def extension_build(
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
                 "object_closure_sha256": (
-                    object_closure_sha256
+                    sidecar_payload["build"]["object_closure_sha256"]
                     if source_plan_object_closure is not None
                     else None
                 ),

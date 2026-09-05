@@ -34,7 +34,9 @@ from molt.cli.models import (
 )
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.source_extensions import source_extension_manifest_source_path
+from molt.cli.source_extension_input_custody import (
+    resolve_source_extension_manifest_input,
+)
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1076,9 +1078,8 @@ def _native_artifact_object_closure_source_custody(
                 r"[0-9a-fA-F]{64}", raw_sha256.strip()
             ):
                 source_hashes.add(raw_sha256.strip().lower())
-            source_path, errors = source_extension_manifest_source_path(
+            source_path, errors = resolve_source_extension_manifest_input(
                 raw_source,
-                manifest=manifest,
                 manifest_path=artifact.manifest_path,
                 expected_sha256=(
                     raw_sha256.strip()
@@ -1119,6 +1120,7 @@ def _native_support_artifact_source_candidates(
             artifact.package_dir / "src",
             *_native_support_artifact_manifest_search_roots(
                 manifest=native_artifact_manifests[artifact.manifest_path.resolve()],
+                manifest_path=artifact.manifest_path,
             ),
         )
         for search_root in search_roots:
@@ -1134,16 +1136,38 @@ def _native_support_artifact_source_candidates(
 def _native_support_artifact_manifest_search_roots(
     *,
     manifest: Mapping[str, object],
+    manifest_path: Path,
 ) -> tuple[Path, ...]:
     roots: list[Path] = []
-    for raw_path in manifest.get("sources") or ():
-        if isinstance(raw_path, str) and raw_path.strip():
-            roots.append(Path(raw_path).expanduser().resolve().parent)
+    sources = manifest.get("sources", [])
+    if not isinstance(sources, list):
+        raise ValueError(f"manifest sources must be a list: {manifest_path}")
+    for raw_path in sources:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError(
+                f"manifest source must be a non-empty path: {manifest_path}"
+            )
+        source = Path(raw_path).expanduser()
+        if not source.is_absolute():
+            source = manifest_path.parent / source
+        roots.append(source.resolve().parent)
     build = manifest.get("build")
     if isinstance(build, Mapping):
-        for raw_path in build.get("include_dirs") or ():
-            if isinstance(raw_path, str) and raw_path.strip():
-                roots.append(Path(raw_path).expanduser().resolve())
+        include_dirs = build.get("include_dirs", [])
+        if not isinstance(include_dirs, list):
+            raise ValueError(f"manifest include_dirs must be a list: {manifest_path}")
+        for raw_path in include_dirs:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError(
+                    f"manifest include directory must be a path: {manifest_path}"
+                )
+            # Location-neutral build tokens are provenance, not search roots.
+            if raw_path.startswith("@"):
+                continue
+            root = Path(raw_path).expanduser()
+            if not root.is_absolute():
+                root = manifest_path.parent / root
+            roots.append(root.resolve())
     return tuple(dict.fromkeys(roots))
 
 
