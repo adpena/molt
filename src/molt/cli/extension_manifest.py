@@ -15,6 +15,10 @@ from typing import Any, Mapping
 from molt.capability_policy import split_capability_tokens
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
+from molt.cli.python_module_names import (
+    canonical_python_module_name,
+    canonical_python_module_names,
+)
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
@@ -30,10 +34,6 @@ _MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
 _CURRENT_MOLT_C_API_VERSION = "4"
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
-_PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PYTHON_DOTTED_NAME_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-)
 _PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _NATIVE_SYMBOL_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
 _PYMETHODDEF_ENTRY_RE = re.compile(
@@ -129,15 +129,16 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
             isinstance(item, str) for item in exports
         ):
             errors.append("exports must be a list of strings")
-    runtime_python_import_modules = manifest.get("runtime_python_import_modules")
-    if runtime_python_import_modules is not None:
-        # Sealed roots persist the source-derived dynamic-import closure (e.g.
-        # numpy's IMPORT_GLOBAL("numpy._core._exceptions", ...)) so the build
-        # consumer need not re-scan the C sources, which a sealed root omits.
-        if not isinstance(runtime_python_import_modules, list) or not all(
-            isinstance(item, str) for item in runtime_python_import_modules
-        ):
-            errors.append("runtime_python_import_modules must be a list of strings")
+    if "runtime_python_import_modules" in manifest:
+        # Producers persist known eager C-import roots. Admission validates this
+        # field without rescanning the checksum-addressed retained inputs.
+        try:
+            canonical_python_module_names(
+                manifest["runtime_python_import_modules"],
+                field="runtime_python_import_modules",
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
     return errors
 
 
@@ -164,32 +165,24 @@ def _manifest_dotted_name_tuple(
     package: str,
     errors: list[str],
 ) -> tuple[str, ...]:
-    value = manifest.get(field_name)
-    if value is None:
+    if field_name not in manifest:
         return ()
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        errors.append(
-            f"extension_manifest.json {field_name!r} must be a list of dotted "
-            "Python import names"
+    initial_error_count = len(errors)
+    try:
+        decoded = canonical_python_module_names(
+            manifest[field_name],
+            field=f"extension_manifest.json {field_name!r}",
         )
+    except ValueError as exc:
+        errors.append(str(exc))
         return ()
-    out: set[str] = set()
-    for item in value:
-        stripped = item.strip()
-        if not stripped or _PYTHON_DOTTED_NAME_RE.fullmatch(stripped) is None:
+    for item in decoded:
+        if item != package and not item.startswith(package + "."):
             errors.append(
-                f"extension_manifest.json {field_name!r} contains invalid "
-                f"Python import name {item!r}"
-            )
-            continue
-        if stripped != package and not stripped.startswith(package + "."):
-            errors.append(
-                f"extension_manifest.json {field_name!r} entry {stripped!r} "
+                f"extension_manifest.json {field_name!r} entry {item!r} "
                 f"escapes admitted package {package!r}"
             )
-            continue
-        out.add(stripped)
-    return tuple(sorted(out))
+    return decoded if len(errors) == initial_error_count else ()
 
 
 def _manifest_support_file_payloads(
@@ -335,15 +328,12 @@ def _manifest_callable_exports(
         deterministic = raw_export.get("deterministic", False)
         effects_raw = raw_export.get("effects", [])
 
-        if not isinstance(module, str) or not module.strip():
-            errors.append(f"extension_manifest.json {label}.module must be non-empty")
-            continue
-        module = module.strip()
-        if _PYTHON_DOTTED_NAME_RE.fullmatch(module) is None:
-            errors.append(
-                f"extension_manifest.json {label}.module has invalid dotted name "
-                f"{module!r}"
+        try:
+            module = canonical_python_module_name(
+                module, field=f"extension_manifest.json {label}.module"
             )
+        except ValueError as exc:
+            errors.append(str(exc))
             continue
         if module != package and not module.startswith(package + "."):
             errors.append(
@@ -403,18 +393,13 @@ def _manifest_callable_exports(
                     "for module_attr binding"
                 )
                 continue
-            if not isinstance(provider_module, str) or not provider_module.strip():
-                errors.append(
-                    f"extension_manifest.json {label}.provider_module must be a "
-                    "non-empty dotted name when present"
+            try:
+                normalized_provider_module = canonical_python_module_name(
+                    provider_module,
+                    field=f"extension_manifest.json {label}.provider_module",
                 )
-                continue
-            normalized_provider_module = provider_module.strip()
-            if _PYTHON_DOTTED_NAME_RE.fullmatch(normalized_provider_module) is None:
-                errors.append(
-                    f"extension_manifest.json {label}.provider_module has invalid "
-                    f"dotted name {normalized_provider_module!r}"
-                )
+            except ValueError as exc:
+                errors.append(str(exc))
                 continue
             if (
                 normalized_provider_module != package
@@ -592,13 +577,15 @@ def _coerce_str_list(
 
 
 def _module_parts(module_name: str) -> list[str] | None:
-    stripped = module_name.strip()
-    if not stripped:
+    try:
+        canonical = canonical_python_module_name(module_name, field="module")
+    except ValueError:
         return None
-    parts = stripped.split(".")
-    if any(_PY_IDENTIFIER_RE.match(part) is None for part in parts):
+    # Extension entry points use the ASCII PyInit_<leaf> ABI. Unicode import
+    # names are valid at the shared codec boundary, but not this producer ABI.
+    if not canonical.isascii():
         return None
-    return parts
+    return canonical.split(".")
 
 
 def _wheel_token(value: str) -> str:
@@ -759,7 +746,12 @@ def _validate_extension_manifest(
         )
 
     module_value = manifest.get("module")
-    manifest_module = module_value.strip() if isinstance(module_value, str) else ""
+    manifest_module = ""
+    if "module" in manifest:
+        try:
+            manifest_module = canonical_python_module_name(module_value, field="module")
+        except ValueError as exc:
+            errors.append(str(exc))
     loader_kind = manifest.get("loader_kind")
     if loader_kind is not None:
         if not isinstance(loader_kind, str) or not loader_kind.strip():

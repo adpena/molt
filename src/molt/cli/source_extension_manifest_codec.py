@@ -53,28 +53,28 @@ def _manifest_sequence(
 ) -> list[str] | None:
     inline = owner.get(field)
     reference = owner.get(f"{field}_ref")
-    if inline is not None and reference is not None:
+    has_inline = field in owner
+    has_reference = f"{field}_ref" in owner
+    if has_inline and has_reference:
         raise ValueError(f"{field} has both inline and referenced authority")
-    if inline is not None:
+    if has_inline:
         if not isinstance(inline, list):
             raise ValueError(f"{field} inline authority is invalid")
         values = [value for value in inline if isinstance(value, str) and value]
         if len(values) != len(inline):
             raise ValueError(f"{field} inline authority is invalid")
         return values
-    if reference is None:
+    if not has_reference:
         return None
+    if not isinstance(reference, str):
+        raise ValueError(f"{field} references an invalid sequence authority")
     authorities = manifest.get("build_authorities")
     sequences = (
         authorities.get("sequences") if isinstance(authorities, Mapping) else None
     )
     strings = authorities.get("strings") if isinstance(authorities, Mapping) else None
     encoded = sequences.get(reference) if isinstance(sequences, Mapping) else None
-    if (
-        not isinstance(reference, str)
-        or not isinstance(strings, list)
-        or not isinstance(encoded, list)
-    ):
+    if not isinstance(strings, list) or not isinstance(encoded, list):
         raise ValueError(f"{field} references an invalid sequence authority")
     string_values = [value for value in strings if isinstance(value, str) and value]
     indexes = [
@@ -91,7 +91,7 @@ def _manifest_sequence(
         raise ValueError(f"{field} sequence authority digest is false")
     if field == "compile_command":
         operands = owner.get("compile_command_operands")
-        if operands is not None:
+        if "compile_command_operands" in owner:
             if not isinstance(operands, list):
                 raise ValueError("compile_command_operands is invalid")
             replacements: list[tuple[int, str]] = []
@@ -132,10 +132,9 @@ def _manifest_dependencies(
     manifest: Mapping[str, Any], owner: Mapping[str, Any]
 ) -> list[dict[str, str]]:
     inline = owner.get("dependencies")
-    reference = owner.get("dependencies_ref")
-    if inline is not None and reference is not None:
+    if "dependencies" in owner and "dependencies_ref" in owner:
         raise ValueError("dependencies has both inline and referenced authority")
-    if inline is not None:
+    if "dependencies" in owner:
         if not isinstance(inline, list):
             raise ValueError("inline dependencies authority is invalid")
         dependencies: list[dict[str, str]] = []
@@ -277,9 +276,9 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
                 + ", ".join(stale_build_refs)
             )
         for field in _BUILD_SEQUENCE_FIELDS:
-            raw = build.pop(field, None)
-            if raw is None:
+            if field not in build:
                 continue
+            raw = build.pop(field)
             if not isinstance(raw, list) or not all(
                 isinstance(value, str) and value for value in raw
             ):
@@ -307,9 +306,9 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
                 + ", ".join(stale_compact_fields)
             )
         for field in ("compile_command", "symbol_command"):
-            raw = item.pop(field, None)
-            if raw is None and field == "symbol_command":
+            if field not in item and field == "symbol_command":
                 continue
+            raw = item.pop(field, None)
             if not isinstance(raw, list) or not raw:
                 raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
             values = [value for value in raw if isinstance(value, str) and value]
@@ -339,17 +338,15 @@ def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, An
         else:
             item["dependencies"] = []
         for field in _OBJECT_SEQUENCE_FIELDS:
-            raw = item.pop(field, None)
-            if raw:
-                if not isinstance(raw, list):
-                    raise ValueError(
-                        f"object_closure.objects[{index}].{field} is invalid"
-                    )
-                values = [value for value in raw if isinstance(value, str) and value]
-                if len(values) != len(raw):
-                    raise ValueError(
-                        f"object_closure.objects[{index}].{field} is invalid"
-                    )
+            if field not in item:
+                continue
+            raw = item.pop(field)
+            if not isinstance(raw, list):
+                raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
+            values = [value for value in raw if isinstance(value, str) and value]
+            if len(values) != len(raw):
+                raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
+            if values:
                 item[f"{field}_ref"] = _intern_sequence(pool, values)
     strings = sorted({value for values in pool.values() for value in values})
     string_indexes = {value: index for index, value in enumerate(strings)}
@@ -396,8 +393,8 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
         isinstance(authorities, Mapping)
         and authorities.get("schema_version") == 1
         and isinstance(strings, list)
-        and strings == sorted(set(strings))
         and all(isinstance(value, str) and value for value in strings)
+        and strings == sorted(set(strings))
         and isinstance(sequences, Mapping)
         and sequences
     ):
@@ -405,7 +402,10 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
     referenced_string_indexes: set[int] = set()
     for digest, encoded in sequences.items():
         if not isinstance(encoded, list) or not all(
-            isinstance(index, int) and 0 <= index < len(strings) for index in encoded
+            isinstance(index, int)
+            and not isinstance(index, bool)
+            and 0 <= index < len(strings)
+            for index in encoded
         ):
             raise ValueError("extension manifest has invalid sequence indexes")
         if _canonical_sequence_digest([strings[index] for index in encoded]) != digest:
@@ -419,14 +419,13 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
         if field in owner:
             raise ValueError(f"compact manifest retains inline {field}")
         reference = owner.get(f"{field}_ref")
-        if reference is None:
+        if f"{field}_ref" not in owner:
             if required:
                 raise ValueError(f"compact manifest is missing {field}_ref")
             return None
-        if not isinstance(reference, str):
-            raise ValueError(f"compact manifest {field}_ref is invalid")
-        used_sequences.add(reference)
-        return _manifest_sequence(manifest, owner, field)
+        values = _manifest_sequence(manifest, owner, field)
+        used_sequences.add(cast(str, reference))
+        return values
 
     build = manifest.get("build")
     if isinstance(build, Mapping):

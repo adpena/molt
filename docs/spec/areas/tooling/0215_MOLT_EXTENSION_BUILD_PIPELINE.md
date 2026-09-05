@@ -194,6 +194,60 @@ bare system providers, and explicitly admitted semantic options. Output modes,
 tool selection, search/sysroot paths, response files, secondary outputs, and
 unsealed scripts are not representable.
 
+### 5.1 Known eager Python-import authority
+
+Build, set publication, and resealing derive `runtime_python_import_modules`
+from the complete checksummed owned input closure: every object source and its
+declared header/dependency inputs. `source_extension_runtime_imports.py` owns
+the lexical scanner; `source_extensions.py` binds its results to manifest
+input custody. Missing, unreadable, or checksum-mismatched inputs fail
+derivation; scanning only the available subset cannot publish fresh facts.
+Successful derivation replaces stale facts rather than unioning them.
+
+The persisted field is always a sorted, unique array of canonical dotted
+module names, including explicit `[]` when no known eager literal imports are
+found. `python_module_names.py` owns that name/list codec. Admission consumes
+the persisted array without rescanning C/C++ inputs for Python-import roots;
+missing, null, malformed, or noncanonical fields require rebuilding or resealing.
+An attested root is not discarded merely because no Python file is present:
+the graph still needs to resolve native sibling and self-module ownership.
+
+These are known eager literal facts, not a C evaluator or a completeness claim
+for arbitrary dynamic imports. Nonliteral names, object expressions, relative
+package contexts, and runtime-dependent calls retain their existing runtime
+semantics and capability policy. A complete owned-input scan does not prove
+that all possible Python imports have been statically closed.
+
+### 5.2 Retained compilation-input custody
+
+`source_extension_input_custody.py` owns input resolution, retention, and
+manifest projection. Each source and declared dependency is retained at
+`provenance/compiled-inputs/sha256/<first-two-hex>/<sha256>` under the output
+root. Byte-identical inputs share one address regardless of original filename
+or source/build directory. Manifests declare the canonical `input_custody`
+descriptor; `sources` exactly projects object-source order, and every source
+and dependency reference is digest-derived and relative to that manifest.
+Each projection rebinds object-closure identity to its actual references.
+
+Sidecars and embedded wheel manifests therefore describe the same retained
+bytes in their own relative namespaces. Wheels include the complete retained
+input closure and package initializer bytes, with artifacts kept at their
+module-relative package paths. The artifact checksum is bound before producing
+any manifest view. `extension_wheel.py` owns canonical member emission and complete
+RECORD regeneration: identical retained members are emitted once, conflicting
+bytes fail, each retained member is checked against its input digest before ZIP
+publication, and manifest replacement updates checksums and sizes. Publication
+uses the shared `atomic_io.py` authority. Wheel inputs are validated before
+atomic ZIP replacement; validation failures preserve the previous wheel.
+
+An extracted wheel can be resealed from its embedded manifest and retained
+inputs after the original checkout/build inputs are deleted. Resealing
+revalidates those bytes, derives fresh eager-import facts, and projects custody
+into the new output root. Resolution follows explicit manifest-relative paths
+or bound input roots, never basename guesses, ancestor searches, or historical
+checkout locations. Missing retained bytes require repair, not an alternate
+source search.
+
 ---
 
 ## 6. Determinism + Security

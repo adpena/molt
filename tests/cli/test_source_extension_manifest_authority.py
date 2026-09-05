@@ -14,10 +14,19 @@ import pytest
 
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_manifest_codec import (
+    _BUILD_SEQUENCE_FIELDS,
+    _OBJECT_SEQUENCE_FIELDS,
     _compact_source_extension_manifest,
     _manifest_dependencies,
     _manifest_sequence,
     _validate_compact_source_extension_manifest,
+)
+from molt.cli.source_extension_input_custody import (
+    SourceExtensionInputCustodyError,
+    source_extension_manifest_input_rows,
+)
+from molt.cli.source_extensions import (
+    canonicalize_source_extension_manifest_runtime_python_imports,
 )
 from molt.cli.source_extension_reproducibility import (
     _canonicalize_locations,
@@ -48,6 +57,20 @@ from molt.cli.source_extension_publication import (
 )
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.cli.source_package_seal import SourcePackageSealVerificationError
+
+
+_SEQUENCE_OWNER_FIELDS = (
+    *(("build", field) for field in _BUILD_SEQUENCE_FIELDS),
+    *(
+        ("object", field)
+        for field in (
+            "compile_command",
+            "symbol_command",
+            "dependencies",
+            *_OBJECT_SEQUENCE_FIELDS,
+        )
+    ),
+)
 
 
 @pytest.mark.parametrize(
@@ -337,6 +360,127 @@ def test_compact_manifest_rejects_unused_sequence_authority() -> None:
     compact["build_authorities"]["sequences"][digest] = [0]
     with pytest.raises(ValueError, match="unused or dangling sequence authority"):
         _validate_compact_source_extension_manifest(compact)
+
+
+@pytest.mark.parametrize("reference", [None, [], {}, True, False, 1])
+@pytest.mark.parametrize(
+    ("owner_kind", "field"),
+    _SEQUENCE_OWNER_FIELDS,
+)
+def test_shared_sequence_family_rejects_invalid_reference_before_lookup(
+    owner_kind: str, field: str, reference: object
+) -> None:
+    compact = _compact_source_extension_manifest(_manifest(object_count=1))
+    item = compact["object_closure"]["objects"][0]
+    owner = compact["build"] if owner_kind == "build" else item
+    owner.pop(field, None)
+    owner[f"{field}_ref"] = reference
+    if field == "symbol_command":
+        item["symbol_authority"] = SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY
+    with pytest.raises(ValueError, match=f"{field} references an invalid sequence"):
+        _manifest_sequence(compact, owner, field)
+    with pytest.raises(ValueError, match=f"{field} references an invalid sequence"):
+        _validate_compact_source_extension_manifest(compact)
+
+
+@pytest.mark.parametrize("reference", [None, [], {}, True, False])
+def test_invalid_dependency_reference_becomes_producer_diagnostic(
+    tmp_path: Path, reference: object
+) -> None:
+    manifest = _compact_source_extension_manifest(_manifest(object_count=1))
+    manifest["object_closure"]["objects"][0]["dependencies_ref"] = reference
+    manifest["runtime_python_import_modules"] = ["retained"]
+    before = copy.deepcopy(manifest)
+    with pytest.raises(ValueError, match="dependencies references an invalid sequence"):
+        _manifest_dependencies(manifest, manifest["object_closure"]["objects"][0])
+    with pytest.raises(SourceExtensionInputCustodyError, match="invalid sequence"):
+        source_extension_manifest_input_rows(manifest)
+    errors = canonicalize_source_extension_manifest_runtime_python_imports(
+        manifest, manifest_path=tmp_path / "extension_manifest.json"
+    )
+    assert errors == ["dependencies references an invalid sequence authority"]
+    assert manifest == before
+
+
+@pytest.mark.parametrize(("_owner_kind", "field"), _SEQUENCE_OWNER_FIELDS)
+@pytest.mark.parametrize(
+    ("inline", "reference"),
+    [(None, None), (None, "reference"), ([], None), ([], "reference")],
+)
+def test_shared_sequence_family_rejects_both_present_even_when_null(
+    _owner_kind: str, field: str, inline: object, reference: object
+) -> None:
+    owner = {field: inline, f"{field}_ref": reference}
+    with pytest.raises(ValueError, match="has both inline and referenced authority"):
+        _manifest_sequence({}, owner, field)
+    if field == "dependencies":
+        with pytest.raises(
+            ValueError, match="has both inline and referenced authority"
+        ):
+            _manifest_dependencies({}, owner)
+
+
+@pytest.mark.parametrize(("_owner_kind", "field"), _SEQUENCE_OWNER_FIELDS)
+def test_shared_sequence_family_distinguishes_absent_empty_and_null(
+    _owner_kind: str, field: str
+) -> None:
+    assert _manifest_sequence({}, {}, field) is None
+    assert _manifest_sequence({}, {field: []}, field) == []
+    with pytest.raises(ValueError, match="inline authority is invalid"):
+        _manifest_sequence({}, {field: None}, field)
+    if field == "dependencies":
+        assert _manifest_dependencies({}, {field: []}) == []
+        with pytest.raises(
+            ValueError, match="inline dependencies authority is invalid"
+        ):
+            _manifest_dependencies({}, {field: None})
+
+
+@pytest.mark.parametrize(("owner_kind", "field"), _SEQUENCE_OWNER_FIELDS)
+@pytest.mark.parametrize("value", [None, False, 0, "", {}])
+def test_compaction_does_not_discard_explicit_invalid_inline_fields(
+    owner_kind: str, field: str, value: object
+) -> None:
+    manifest = _manifest(object_count=1)
+    owner = (
+        manifest["build"]
+        if owner_kind == "build"
+        else manifest["object_closure"]["objects"][0]
+    )
+    owner[field] = value
+    with pytest.raises(ValueError, match=field):
+        _compact_source_extension_manifest(manifest)
+
+
+def test_explicit_null_compile_operands_are_not_absent() -> None:
+    manifest = _compact_source_extension_manifest(_manifest(object_count=1))
+    item = manifest["object_closure"]["objects"][0]
+    item["compile_command_operands"] = None
+    with pytest.raises(ValueError, match="compile_command_operands is invalid"):
+        _manifest_sequence(manifest, item, "compile_command")
+    with pytest.raises(ValueError, match="compile_command_operands is invalid"):
+        _validate_compact_source_extension_manifest(manifest)
+
+
+@pytest.mark.parametrize("value", [[], {}, True, False])
+def test_compact_string_pool_rejects_invalid_values_before_canonicalization(
+    value: object,
+) -> None:
+    manifest = _compact_source_extension_manifest(_manifest(object_count=1))
+    manifest["build_authorities"]["strings"].append(value)
+    with pytest.raises(ValueError, match="build authority is invalid"):
+        _validate_compact_source_extension_manifest(manifest)
+
+
+@pytest.mark.parametrize("value", [[], {}, True, False])
+def test_compact_sequence_pool_rejects_invalid_indexes_before_lookup(
+    value: object,
+) -> None:
+    manifest = _compact_source_extension_manifest(_manifest(object_count=1))
+    sequence = next(iter(manifest["build_authorities"]["sequences"].values()))
+    sequence[0] = value
+    with pytest.raises(ValueError, match="invalid sequence indexes"):
+        _validate_compact_source_extension_manifest(manifest)
 
 
 def test_path_canonicalization_handles_joined_flags_double_slashes_and_urls() -> None:

@@ -50,13 +50,13 @@ from molt.cli.models import (
     _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.module_resolution import _case_exact_file
+from molt.cli.python_module_names import canonical_python_module_names
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
-    source_extension_manifest_runtime_python_imports,
     validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_extension_link_requirements import (
@@ -627,68 +627,19 @@ _RUNTIME_PYTHON_IMPORT_MODULES_FIELD = "runtime_python_import_modules"
 def _resolve_manifest_runtime_python_imports(
     manifest: Mapping[str, Any],
     *,
-    manifest_path: Path,
     package: str,
 ) -> tuple[tuple[str, ...], list[str]]:
-    """Resolve the extension's source-derived runtime Python import closure.
-
-    Seal is the custody boundary that resolves a source-recompiled extension's
-    dynamic Python imports (e.g. numpy's ``IMPORT_GLOBAL`` calls in
-    ``npy_static_data.c``) while the C sources are still present, and persists
-    them into the sealed manifest as ``runtime_python_import_modules``. A sealed
-    root deliberately omits its build-generated (and eventually its original C)
-    sources, so the build-time re-scan can no longer see a C-only-imported
-    submodule such as ``numpy._core._exceptions``. Prefer the persisted field so
-    the sealed root is self-contained.
-
-    Re-scan the C sources only as a fallback for older manifests that predate the
-    field. When the field is absent *and* the manifest is a sealed root whose
-    sources no longer fully resolve, a required runtime import may have silently
-    vanished from the scan; fail closed with a precise diagnostic naming the
-    unresolved sources rather than staging an incomplete support surface that
-    fails at runtime with ``No module named ...``.
-    """
-    if _RUNTIME_PYTHON_IMPORT_MODULES_FIELD in manifest:
-        value = manifest.get(_RUNTIME_PYTHON_IMPORT_MODULES_FIELD)
-        if not isinstance(value, list) or not all(
-            isinstance(item, str) for item in value
-        ):
-            return (), [
-                f"{package}: extension manifest "
-                f"'{_RUNTIME_PYTHON_IMPORT_MODULES_FIELD}' must be a list of "
-                "module-name strings"
-            ]
-        return (
-            tuple(sorted({item.strip() for item in value if item.strip()})),
-            [],
-        )
-
-    scanned, scan_errors = source_extension_manifest_runtime_python_imports(
-        manifest,
-        manifest_path=manifest_path,
-    )
-    missing_source_errors = source_extension_manifest_errors_are_missing_sources(
-        scan_errors
-    )
-    if scan_errors and not missing_source_errors:
-        return (), [f"{package}: {error}" for error in scan_errors]
-    if scan_errors and _manifest_has_sealed_extension_custody(manifest):
-        # A sealed root whose sources no longer fully resolve cannot prove its
-        # runtime-import closure by re-scan, and it predates the persisted
-        # field, so a required C-only import may already be missing. Fail
-        # closed: re-seal the root (which persists
-        # ``runtime_python_import_modules`` from the sources at seal time)
-        # rather than admit an artifact whose support surface may drop a
-        # required module.
+    """Consume exactly the producer-attested eager roots; never rescan C inputs."""
+    field = _RUNTIME_PYTHON_IMPORT_MODULES_FIELD
+    if field not in manifest:
         return (), [
-            f"{package}: sealed extension manifest lacks a "
-            f"'{_RUNTIME_PYTHON_IMPORT_MODULES_FIELD}' field and its C sources "
-            "no longer resolve, so its runtime Python import closure cannot be "
-            "proven. Re-seal the extension root through 'molt extension seal' to "
-            "persist the source-derived runtime imports. Unresolved sources: "
-            + "; ".join(scan_errors[:3])
+            f"{package}: extension manifest lacks '{field}'; rebuild or re-seal "
+            "with complete source input custody before admission"
         ]
-    return scanned, []
+    try:
+        return canonical_python_module_names(manifest[field], field=field), []
+    except ValueError as exc:
+        return (), [f"{package}: {exc}"]
 
 
 def _validate_manifest_source_capsule_requirements(
@@ -1090,7 +1041,6 @@ def _validate_external_package_native_artifact(
         runtime_python_imports, runtime_import_derivation_errors = (
             _resolve_manifest_runtime_python_imports(
                 manifest,
-                manifest_path=manifest_path,
                 package=package,
             )
         )
@@ -1214,7 +1164,10 @@ def _validate_external_package_native_artifact(
                 source_path.read_text(encoding="utf-8", errors="replace"),
                 filename=str(source_path),
             )
-        except (OSError, SyntaxError):
+        except (OSError, SyntaxError) as exc:
+            errors.append(
+                f"{package}: cannot read runtime import source {source_path}: {exc}"
+            )
             return set()
         names = set(
             _module_import_scanner._collect_imports(
@@ -1251,9 +1204,11 @@ def _validate_external_package_native_artifact(
             continue
         candidate = _package_module_candidate(import_name)
         if candidate is None:
-            # Sealed roots carry a deliberate source subset; unresolved
-            # package attrs (from-import names) end here too and are
-            # simply not modules.
+            # An attested root may be a sibling native extension, not a .py
+            # file. Preserve it for exact module-graph admission; only
+            # speculative from-import attributes may stop here.
+            if import_name in runtime_python_imports:
+                external_runtime_python_imports.append(import_name)
             continue
         rel_path = candidate.relative_to(package_source_root).as_posix()
         runtime_import_support_file_sha256.append((rel_path, _sha256_file(candidate)))
@@ -1262,6 +1217,8 @@ def _validate_external_package_native_artifact(
         # Python closure of every runtime-imported module: its imports run
         # at module exec and need the same sidecar custody.
         pending_names.extend(_package_module_imports(import_name, candidate))
+    if errors:
+        return None, errors
     support_file_sha256 = tuple(
         sorted(
             {
@@ -1289,7 +1246,7 @@ def _validate_external_package_native_artifact(
             artifact_kind=artifact_kind,
             link_requirements=(
                 link_requirements
-                if resolved_link_requirements is not None
+                if link_requirements is not None
                 else SourceExtensionLinkRequirements(
                     (target_triple or expected_target_triple).lower()
                 )
@@ -1347,7 +1304,7 @@ def _load_external_artifact_manifest(
     )
 
 
-def _external_artifact_requested_target_triple(target: str) -> str:
+def _external_artifact_requested_target_triple(target: str | None) -> str:
     return resolve_source_extension_target_plan(
         target,
         host_target_triple=_host_target_triple(),
@@ -1486,7 +1443,7 @@ def _resolve_external_package_native_artifact_plan(
     *,
     external_module_roots: Sequence[Path],
     admitted_packages: Collection[str],
-    target: str,
+    target: str | None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     required_modules: Collection[str] | None = None,
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:

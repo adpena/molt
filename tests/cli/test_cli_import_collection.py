@@ -57,6 +57,7 @@ from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import non_native_output as cli_non_native_output
 from molt.cli import runtime_features as cli_runtime_features
 from molt.cli import source_extensions as cli_source_extensions
+from molt.cli import source_extension_runtime_imports as cli_runtime_imports
 from molt.cli import typecheck as cli_typecheck
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.cli.app_export_contract import build_app_export_contract
@@ -1031,7 +1032,7 @@ def test_source_extension_runtime_python_imports_detects_c_import_calls() -> Non
     }
     """
 
-    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+    assert cli_runtime_imports.source_extension_runtime_python_imports(source) == (
         "math",
         "nativepkg._core._internal",
         "nativepkg.exceptions",
@@ -1055,7 +1056,7 @@ def test_source_extension_runtime_python_imports_skips_helper_body_imports() -> 
     }
     """
 
-    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+    assert cli_runtime_imports.source_extension_runtime_python_imports(source) == (
         "math",
         "numpy",
     )
@@ -1077,7 +1078,7 @@ def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> 
     }
     """
 
-    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+    assert cli_runtime_imports.source_extension_runtime_python_imports(source) == (
         "math",
     )
 
@@ -1114,7 +1115,7 @@ def test_source_extension_runtime_python_imports_admits_cython_modinit_helpers()
     }
     """
 
-    imports = cli_source_extensions.source_extension_runtime_python_imports(source)
+    imports = cli_runtime_imports.source_extension_runtime_python_imports(source)
     # Teeth: both exec-time helper imports must be admitted...
     assert "scipy._cyutility" in imports
     assert "numpy" in imports
@@ -1127,7 +1128,7 @@ def test_source_extension_eager_import_function_name_precise_cython_modinit() ->
     # The eager admission is scoped to the ``__Pyx_modinit_`` init family only;
     # arbitrary Cython runtime helpers stay lazy so their imports are not
     # dragged in as AOT roots.
-    eager = cli_source_extensions._source_extension_eager_import_function_name
+    eager = cli_runtime_imports._source_extension_eager_import_function_name
     assert eager("__Pyx_modinit_shared_function_import_code")
     assert eager("__Pyx_modinit_type_import_code")
     assert eager("__Pyx_modinit_function_import_code")
@@ -1171,6 +1172,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
+        derive_runtime_imports=True,
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -1257,15 +1259,13 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
 
     numpy imports ``numpy._core._exceptions`` only from its C source
     (``npy_static_data.c`` via ``IMPORT_GLOBAL``); no Python module importer
-    pulls it. A sealed root omits its C sources, so the build cannot re-scan
-    them. The persisted ``runtime_python_import_modules`` field must let the
-    build stage that submodule anyway (the self-contained property). Pre-fix
-    (no field, source dropped) the submodule silently vanished and the runtime
-    raised ``No module named 'nativepkg.hidden'``.
+    pulls it. The retained source-input closure is for verification/resealing;
+    admission must consume persisted facts without re-running the C scanner.
+    The field must stage that submodule even when the original build checkout
+    is absent. Without the field the submodule used to silently vanish.
     """
     external_root = tmp_path / "site"
-    # The runtime-imported package-internal submodule that only the (absent) C
-    # source would name. It has NO Python importer inside the package.
+    # The runtime-imported package-internal submodule has NO Python importer.
     hidden_path = external_root / "nativepkg" / "hidden.py"
     hidden_path.parent.mkdir(parents=True)
     hidden_path.write_text(
@@ -1279,7 +1279,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
         "runtime_linkage": "static_link",
         "artifact_kind": "wasm_relocatable_object",
         "python_exports": ["nativepkg.dynamic"],
-        # No "sources": the sealed root deliberately omits its C sources.
+        # This test supplies an already persisted projection, not a source scan.
         "runtime_python_import_modules": ["math", "nativepkg.hidden"],
     }
     overrides.update(_sealed_manifest_custody_overrides())
@@ -1289,6 +1289,15 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
         relative_module="_native",
         artifact_name="_native.molt.wasm",
         manifest_overrides=overrides,
+    )
+
+    def unexpected_runtime_import_scan(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("admission must not scan C runtime imports")
+
+    monkeypatch.setattr(
+        cli_source_extensions,
+        "source_extension_manifest_runtime_python_imports",
+        unexpected_runtime_import_scan,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
@@ -1307,54 +1316,110 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     assert ("nativepkg/hidden.py", hidden_sha) in artifact.support_file_sha256
 
 
-def test_sealed_manifest_without_runtime_field_and_missing_source_fails_closed(
+@pytest.mark.parametrize("source_present", [False, True])
+def test_manifest_without_runtime_import_custody_fails_closed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    source_present: bool,
 ) -> None:
-    """An older sealed manifest lacking the field, with unresolved sources, fails closed.
-
-    Before this fix the runtime-import scan silently tolerated missing sources,
-    so a C-only import that only an absent source declared vanished and failed
-    at runtime. A sealed root that predates ``runtime_python_import_modules``
-    and whose C sources no longer resolve cannot prove its runtime-import
-    closure, so admission must fail closed with a precise diagnostic that names
-    the unresolved sources and directs the operator to re-seal.
-    """
-    external_root = tmp_path / "site"
-    (external_root / "nativepkg").mkdir(parents=True)
-    missing_source = tmp_path / "gone" / "npy_static_data.c"
-    overrides = {
-        "target_triple": "wasm32-wasip1",
-        "platform_tag": "wasm32_wasip1",
-        "runtime_linkage": "static_link",
-        "artifact_kind": "wasm_relocatable_object",
-        "python_exports": ["nativepkg.dynamic"],
-        # A declared source that is not present on disk, and NO persisted
-        # runtime_python_import_modules field (older sealed manifest).
-        "sources": [str(missing_source)],
-    }
-    overrides.update(_sealed_manifest_custody_overrides())
-    artifact_path, manifest_path = _write_external_native_artifact(
-        external_root,
-        package="nativepkg",
-        relative_module="_native",
-        artifact_name="_native.molt.wasm",
-        manifest_overrides=overrides,
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert "runtime_python_import_modules" not in manifest
-
+    """Source availability never substitutes for missing publisher facts."""
+    source = tmp_path / "native_exec.c"
+    if source_present:
+        source.write_text(
+            'int module_exec(void) { PyImport_ImportModule("math"); }', encoding="utf-8"
+        )
+    manifest = {"sources": [str(source)], **_sealed_manifest_custody_overrides()}
     result, errors = cli_external_native._resolve_manifest_runtime_python_imports(
         manifest,
-        manifest_path=manifest_path,
         package="nativepkg",
     )
     assert result == ()
-    assert errors, "a missing-source sealed manifest without the field must fail closed"
+    assert errors, "missing publisher custody must not activate a source rescan"
     joined = " ".join(errors)
     assert "runtime_python_import_modules" in joined
     assert "re-seal" in joined.lower()
-    assert "npy_static_data.c" in joined
+
+
+@pytest.mark.parametrize(
+    "value", [None, "math", ["math", "math"], ["re", "math"], [" math"], [1]]
+)
+def test_admission_rejects_malformed_persisted_runtime_imports(value: object) -> None:
+    result, errors = cli_external_native._resolve_manifest_runtime_python_imports(
+        {"runtime_python_import_modules": value},
+        package="nativepkg",
+    )
+    assert result == ()
+    assert errors and "runtime_python_import_modules" in errors[0]
+
+
+def test_admission_accepts_attested_empty_runtime_imports() -> None:
+    assert cli_external_native._resolve_manifest_runtime_python_imports(
+        {"runtime_python_import_modules": []},
+        package="nativepkg",
+    ) == ((), [])
+
+
+@pytest.mark.parametrize(
+    "imported_module", ["nativepkg.missing", "nativepkg._sibling", "nativepkg._native"]
+)
+def test_attested_runtime_module_without_python_source_survives_admission(
+    tmp_path: Path,
+    imported_module: str,
+) -> None:
+    external_root = tmp_path / "site"
+    if imported_module == "nativepkg._sibling":
+        _write_external_native_artifact(
+            external_root,
+            package="nativepkg",
+            relative_module="_sibling",
+        )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        manifest_overrides={"runtime_python_import_modules": [imported_module]},
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="native",
+    )
+    assert errors == []
+    assert plan is not None
+    artifact = next(
+        item for item in plan.artifacts if item.module == "nativepkg._native"
+    )
+    # Missing Python source cannot distinguish a missing dependency from a
+    # native sibling/self module. Preserve the exact fact for graph resolution.
+    assert imported_module in artifact.runtime_python_imports
+
+
+@pytest.mark.parametrize("source_imports", [(), ("math",)])
+def test_runtime_import_producer_replaces_stale_facts_and_records_empty_closure(
+    tmp_path: Path,
+    source_imports: tuple[str, ...],
+) -> None:
+    source = tmp_path / "exec.c"
+    statements = "".join(f'PyImport_ImportModule("{name}");' for name in source_imports)
+    source.write_text(
+        f"int module_exec(void) {{{statements} return 0;}}", encoding="utf-8"
+    )
+    manifest: dict[str, Any] = {
+        "runtime_python_import_modules": ["nativepkg.stale"],
+        "object_closure": {
+            "objects": [
+                {
+                    "source": str(source),
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                }
+            ]
+        },
+    }
+    errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=tmp_path / "extension_manifest.json",
+    )
+    assert errors == []
+    assert manifest["runtime_python_import_modules"] == list(source_imports)
 
 
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(
@@ -1721,7 +1786,7 @@ static int module_exec(PyObject *module) {
 }
 """
 
-    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+    assert cli_runtime_imports.source_extension_runtime_python_imports(source) == (
         "math",
         "nativepkg._internal",
         "numpy._core._internal",
@@ -1774,7 +1839,7 @@ def test_source_extension_manifest_runtime_python_imports_uses_object_closure_so
     assert imports == ("math",)
 
 
-def test_source_extension_manifest_runtime_python_imports_preserves_resolvable_subset(
+def test_source_extension_manifest_runtime_python_imports_rejects_partial_closure(
     tmp_path: Path,
 ) -> None:
     closure_source = tmp_path / "closure.c"
@@ -1787,7 +1852,7 @@ def test_source_extension_manifest_runtime_python_imports_preserves_resolvable_s
         encoding="utf-8",
     )
     manifest_path = tmp_path / "artifact.extension_manifest.json"
-    manifest = {
+    manifest: dict[str, Any] = {
         "object_closure": {
             "objects": [
                 {
@@ -1811,12 +1876,19 @@ def test_source_extension_manifest_runtime_python_imports_preserves_resolvable_s
         )
     )
 
-    assert imports == ("math",)
+    assert imports == ()
     assert errors == [
         "extension_manifest.json source missing: "
         "object_closure.objects[0].source: "
         f"{missing_source}"
     ]
+    manifest["runtime_python_import_modules"] = ["nativepkg.persisted"]
+    publication_errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    assert publication_errors == errors
+    assert manifest["runtime_python_import_modules"] == ["nativepkg.persisted"]
 
 
 def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
@@ -1860,6 +1932,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
+        derive_runtime_imports=True,
         manifest_overrides={
             **wasm_manifest,
             "python_exports": ["nativepkg"],
@@ -1978,6 +2051,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
+        derive_runtime_imports=True,
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -4423,6 +4497,10 @@ def _libmolt_source_manifest_fields(
             "retained_symbols": [],
         },
         "provided_capsules": [],
+        # These baseline synthetic object bytes contain no eager C imports.
+        # Fixtures with real import-bearing sources explicitly derive the field
+        # through the producer canonicalizer before writing their manifest.
+        "runtime_python_import_modules": [],
         "object_closure": {
             "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": init_symbol,
@@ -4612,6 +4690,7 @@ def _write_external_native_package(
     checksum_override: str | None = None,
     manifest_overrides: dict[str, Any] | None = None,
     intentionally_invalid_object_closure: bool = False,
+    derive_runtime_imports: bool = False,
     shim_source: str | None = None,
 ) -> tuple[Path, Path, Path]:
     external_root = tmp_path / "site"
@@ -4645,6 +4724,11 @@ def _write_external_native_package(
             intentionally_invalid_object_closure=(intentionally_invalid_object_closure),
         )
         _record_static_archive_symbol_facts(artifact_path, manifest)
+        if derive_runtime_imports:
+            errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
+                manifest, manifest_path=manifest_path
+            )
+            assert errors == [], errors
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     if shim_source is not None:
         (package_dir / f"{artifact_name}.molt.py").write_text(
@@ -4663,6 +4747,7 @@ def _write_external_native_artifact(
     artifact_bytes: bytes | None = None,
     manifest_overrides: dict[str, Any] | None = None,
     intentionally_invalid_object_closure: bool = False,
+    derive_runtime_imports: bool = False,
 ) -> tuple[Path, Path]:
     package_dir = external_root.joinpath(*package.split("."))
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -4698,6 +4783,11 @@ def _write_external_native_artifact(
         intentionally_invalid_object_closure=intentionally_invalid_object_closure,
     )
     _record_static_archive_symbol_facts(artifact_path, manifest)
+    if derive_runtime_imports:
+        errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
+            manifest, manifest_path=manifest_path
+        )
+        assert errors == [], errors
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return artifact_path, manifest_path
 
@@ -8030,7 +8120,7 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
     ]
 
 
-def test_external_native_artifact_plan_relocates_source_plan_manifest_sources(
+def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest_sources(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8098,13 +8188,14 @@ def test_external_native_artifact_plan_relocates_source_plan_manifest_sources(
         required_modules={"scipy.ndimage"},
     )
 
-    assert errors == []
-    assert plan is not None
-    by_module = {artifact.module: artifact for artifact in plan.artifacts}
-    assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
+    assert plan is None
+    assert any(
+        "source missing" in error and str(stale_source_path) in error
+        for error in errors
+    )
 
 
-def test_external_native_artifact_plan_relocates_source_plan_build_sources(
+def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_sources(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8172,11 +8263,11 @@ def test_external_native_artifact_plan_relocates_source_plan_build_sources(
         required_modules={"scipy.ndimage"},
     )
 
-    assert errors == []
-    assert plan is not None
-    by_module = {artifact.module: artifact for artifact in plan.artifacts}
-    assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
-    assert by_module["numpy._core._multiarray_umath"].provided_capsules == (capsule,)
+    assert plan is None
+    assert any(
+        "source missing" in error and str(stale_source_path) in error
+        for error in errors
+    )
 
 
 def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_runtime_imports(
@@ -8207,7 +8298,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
         artifact_name="_multiarray_umath.molt.wasm",
         manifest_overrides={**wasm_manifest, "provided_capsules": [capsule]},
     )
-    _write_external_native_artifact(
+    _artifact_path, missing_runtime_manifest = _write_external_native_artifact(
         external_root,
         package="scipy",
         relative_module="ndimage._nd_image",
@@ -8243,6 +8334,13 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
             },
         },
     )
+    missing_runtime_payload = json.loads(
+        missing_runtime_manifest.read_text(encoding="utf-8")
+    )
+    missing_runtime_payload.pop("runtime_python_import_modules")
+    missing_runtime_manifest.write_text(
+        json.dumps(missing_runtime_payload), encoding="utf-8"
+    )
 
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
@@ -8254,7 +8352,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
     assert plan is None
     assert len(errors) == 1
     assert "runtime_python_import_modules" in errors[0]
-    assert "no longer resolve" in errors[0]
+    assert "re-seal" in errors[0].lower()
 
 
 def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
@@ -8315,15 +8413,13 @@ def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
     )
 
 
-def test_external_native_artifact_plan_rejects_relocated_source_hash_mismatch(
+def test_external_native_artifact_plan_rejects_declared_source_hash_mismatch(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "numpy.core._multiarray_umath._ARRAY_API"
     source_root = tmp_path / "scipy_source"
-    stale_source_root = tmp_path / "deleted" / "scipy_source"
     source_path = source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
-    stale_source_path = stale_source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
     source_path.parent.mkdir(parents=True)
     source_path.write_text(
         "static int module_exec(PyObject *module) {\n"
@@ -8345,13 +8441,11 @@ def test_external_native_artifact_plan_rejects_relocated_source_hash_mismatch(
         artifact_name="_nd_image.molt.wasm",
         manifest_overrides={
             **wasm_manifest,
-            "sources": [str(stale_source_path)],
-            "source_plan": {"source_root": str(stale_source_root)},
             "object_closure": {
                 "required_capsules": [capsule],
                 "objects": [
                     {
-                        "source": str(stale_source_path),
+                        "source": str(source_path),
                         "object": "0_nd_image.o",
                         "source_sha256": "0" * 64,
                         "object_sha256": "1" * 64,
@@ -8373,7 +8467,10 @@ def test_external_native_artifact_plan_rejects_relocated_source_hash_mismatch(
     )
 
     assert plan is None
-    assert any("relocated source checksum mismatch" in error for error in errors)
+    assert any(
+        "source checksum mismatch" in error and str(source_path) in error
+        for error in errors
+    )
 
 
 def test_external_native_artifact_plan_rejects_sealed_source_checksum_mismatch(

@@ -12,9 +12,11 @@ from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
+    _module_parts as _extension_module_parts,
     _validate_extension_manifest,
 )
 from molt.cli.extension_support import module_attr_support_files
+from molt.cli.python_module_names import encode_python_module_names
 from molt.cli.project_roots import _find_molt_root
 from molt.cli.external_native import (
     _manifest_has_sealed_extension_custody,
@@ -26,14 +28,17 @@ from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
     canonicalize_source_extension_manifest_required_capsules,
-    source_extension_manifest_errors_are_missing_sources,
-    source_extension_manifest_runtime_python_imports,
-    source_extension_manifest_source_path,
+    canonicalize_source_extension_manifest_runtime_python_imports,
     validate_source_extension_artifact_object_closure,
 )
 from molt.cli.source_extension_link_requirements import (
     materialize_source_extension_link_requirements,
     parse_source_extension_link_requirements,
+)
+from molt.cli.source_extension_input_custody import (
+    SourceExtensionInputCustodyError,
+    project_source_extension_manifest_inputs,
+    stage_source_extension_manifest_inputs,
 )
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
@@ -42,7 +47,6 @@ from molt.cli.source_extension_manifest_codec import (
 )
 from molt.cli.source_extension_object_closure import (
     SourceExtensionObjectClosureError,
-    finalize_source_extension_object_closure,
     validate_source_extension_object_closure,
     validate_source_extension_object_closure_sources,
 )
@@ -52,7 +56,7 @@ from molt.target_python import _parse_target_python_version
 def _load_manifest(path: Path, errors: list[str]) -> dict[str, Any] | None:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         errors.append(f"Failed to read extension manifest {path}: {exc}")
         return None
     if not isinstance(loaded, dict):
@@ -84,18 +88,11 @@ def _resolve_declared_artifact(
     if not isinstance(extension, str) or not extension.strip():
         return None, ["extension artifact path missing"]
     extension_path = Path(extension.strip()).expanduser()
-    candidates = (
-        (extension_path,)
-        if extension_path.is_absolute()
-        else (
-            manifest_path.parent / extension_path,
-            manifest_path.parent / extension_path.name,
-        )
-    )
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate.resolve(), []
-    return None, [f"extension artifact not found: {candidates[0]}"]
+    if not extension_path.is_absolute():
+        extension_path = manifest_path.parent / extension_path
+    if extension_path.is_file():
+        return extension_path.resolve(), []
+    return None, [f"extension artifact not found: {extension_path}"]
 
 
 def _module_parts(manifest: Mapping[str, Any], errors: list[str]) -> tuple[str, ...]:
@@ -103,7 +100,11 @@ def _module_parts(manifest: Mapping[str, Any], errors: list[str]) -> tuple[str, 
     if not isinstance(module, str) or not module.strip():
         errors.append("extension manifest has no valid module")
         return ()
-    parts = tuple(part for part in module.strip().split(".") if part)
+    parsed_parts = _extension_module_parts(module)
+    if parsed_parts is None:
+        errors.append("extension manifest has no canonical extension module")
+        return ()
+    parts = tuple(parsed_parts)
     if len(parts) < 2:
         errors.append("extension manifest module must name a package child module")
         return ()
@@ -129,34 +130,17 @@ def _copy_package_init_chain(
 
 def _source_package_root_for_manifest(
     *,
-    manifest: Mapping[str, Any],
-    manifest_path: Path,
-    package: str,
+    artifact_path: Path,
+    module_parts: tuple[str, ...],
 ) -> Path:
-    source_package_root = manifest_path.parent
-    package_index = None
-    for index, part in enumerate(manifest_path.parent.parts):
-        if part == package:
-            package_index = index
-            break
-    if package_index is not None:
-        return Path(*manifest_path.parent.parts[:package_index])
-    package_parts = tuple(part for part in package.split(".") if part)
-    raw_sources = manifest.get("sources")
-    if isinstance(raw_sources, list):
-        for raw_source in raw_sources:
-            if not isinstance(raw_source, str) or not raw_source.strip():
-                continue
-            source_path = Path(raw_source).expanduser()
-            if not source_path.is_absolute():
-                source_path = (manifest_path.parent / source_path).resolve()
-            else:
-                source_path = source_path.resolve()
-            parts = source_path.parts
-            for index in range(0, len(parts) - len(package_parts) + 1):
-                if tuple(parts[index : index + len(package_parts)]) == package_parts:
-                    return Path(*parts[:index])
-    return source_package_root
+    """Derive package custody from the exact module-relative artifact layout."""
+    parents = module_parts[:-1]
+    if artifact_path.parent.parts[-len(parents) :] != parents:
+        raise ValueError(
+            "extension artifact does not occupy its declared module layout: "
+            f"{'.'.join(module_parts)}: {artifact_path}"
+        )
+    return artifact_path.parents[len(parents)]
 
 
 def _copy_support_files(
@@ -169,8 +153,10 @@ def _copy_support_files(
     for support_file in support_files:
         dest = output_root / Path(support_file.rel_path)
         try:
-            _atomic_copy_file(support_file.source_path, dest)
-        except OSError as exc:
+            _atomic_copy_file(
+                support_file.source_path, dest, expected_sha256=support_file.sha256
+            )
+        except (OSError, ValueError) as exc:
             errors.append(
                 f"support file copy failed for {support_file.rel_path}: {exc}"
             )
@@ -289,147 +275,26 @@ def _canonicalize_object_closure_c_api_requirements(
         )
 
 
-def _string_set(value: Any) -> set[str]:
-    if not isinstance(value, list):
-        return set()
-    return {item.strip() for item in value if isinstance(item, str) and item.strip()}
-
-
-def _canonicalize_runtime_python_import_modules(
+def _sealed_manifest_projection(
     manifest: dict[str, Any],
     *,
-    manifest_path: Path,
-) -> list[str]:
-    # Some C-extension runtime Python imports (numpy's
-    # ``IMPORT_GLOBAL("numpy._core._exceptions", ...)`` from
-    # ``npy_static_data.c``) have no Python importer, so the AOT import graph
-    # never pulls them and the build-time source scan is the only authority
-    # that knows they are required. A sealed root deliberately omits its
-    # build-generated (and, over time, its original C) sources, so a later
-    # build cannot re-derive that fact. Seal is the custody boundary where the
-    # sources still resolve, so persist the source-derived runtime-Python-import
-    # closure as a first-class manifest field, mirroring the source-derived
-    # capsule-requirement custody above. Consumers prefer this persisted field
-    # over re-scanning, which makes the sealed root self-contained.
-    #
-    # Re-sealing an already-sealed root may run where the sources no longer
-    # resolve; in that case preserve the previously persisted field rather than
-    # nullifying it. If no such field exists, fail closed instead of laundering a
-    # partial source scan into a new seal.
-    scanned, errors = source_extension_manifest_runtime_python_imports(
+    source_manifest_path: Path,
+    output_manifest_path: Path,
+    output_root: Path,
+    staged_inputs: Mapping[Path, Path],
+) -> dict[str, Any]:
+    """Project retained inputs into one sidecar and finalize its exact identity."""
+    projected = project_source_extension_manifest_inputs(
         manifest,
-        manifest_path=manifest_path,
+        source_manifest_path=source_manifest_path,
+        output_manifest_path=output_manifest_path,
+        publish_root=output_root,
+        staged_inputs=staged_inputs,
     )
-    non_missing_errors = [
-        error
-        for error in errors
-        if not source_extension_manifest_errors_are_missing_sources([error])
-    ]
-    if non_missing_errors:
-        return non_missing_errors
-    persisted = _string_set(manifest.get("runtime_python_import_modules"))
-    if errors and not persisted:
-        return [
-            "extension seal cannot derive runtime_python_import_modules from a "
-            "partial source scan. Re-run seal where every object_closure source "
-            "resolves, or rebuild the extension manifest from source custody "
-            "before sealing. Unresolved sources: " + "; ".join(errors[:3])
-        ]
-    persisted.update(scanned)
-    if persisted:
-        manifest["runtime_python_import_modules"] = sorted(persisted)
-    else:
-        manifest.pop("runtime_python_import_modules", None)
-    return []
-
-
-def _object_source_plan_roots(
-    manifest: Mapping[str, Any],
-) -> tuple[Path, ...]:
-    source_plan = manifest.get("source_plan")
-    if not isinstance(source_plan, Mapping):
-        return ()
-    roots: list[Path] = []
-    for field_name in ("source_root", "build_root"):
-        raw_root = source_plan.get(field_name)
-        if isinstance(raw_root, str) and raw_root.strip():
-            roots.append(Path(raw_root).expanduser().resolve())
-    return tuple(roots)
-
-
-def _source_plan_relative_path(
-    source_path: Path,
-    *,
-    roots: tuple[Path, ...],
-) -> str | None:
-    matches: list[Path] = []
-    resolved_source = source_path.resolve()
-    for root in roots:
-        try:
-            matches.append(resolved_source.relative_to(root))
-        except ValueError:
-            continue
-    if not matches:
-        return None
-    return min(matches, key=lambda path: len(path.parts)).as_posix()
-
-
-def _canonicalize_object_closure_source_paths(
-    manifest: dict[str, Any],
-    *,
-    manifest_path: Path,
-) -> list[str]:
-    roots = _object_source_plan_roots(manifest)
-    if not roots:
-        return []
-    object_closure = manifest.get("object_closure")
-    if not isinstance(object_closure, dict):
-        return ["extension seal requires non-empty object_closure custody"]
-    objects = object_closure.get("objects")
-    if not isinstance(objects, list):
-        return ["extension seal requires object_closure.objects custody"]
-
-    errors: list[str] = []
-    for index, item in enumerate(objects):
-        if not isinstance(item, dict):
-            errors.append(f"object_closure.objects[{index}] must be an object")
-            continue
-        item = cast(dict[str, Any], item)
-        raw_source = item.get("source")
-        if not isinstance(raw_source, str) or not raw_source.strip():
-            continue
-        source_sha256 = item.get("source_sha256")
-        source_path, source_errors = source_extension_manifest_source_path(
-            raw_source,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            expected_sha256=(
-                source_sha256.strip()
-                if isinstance(source_sha256, str) and source_sha256.strip()
-                else None
-            ),
-        )
-        if source_errors:
-            errors.extend(source_errors)
-            continue
-        if source_path is None:
-            errors.append(
-                "extension seal cannot resolve "
-                f"object_closure.objects[{index}].source through source_plan "
-                f"roots: {raw_source}"
-            )
-            continue
-        relative_source = _source_plan_relative_path(source_path, roots=roots)
-        if relative_source is None:
-            errors.append(
-                "extension seal requires "
-                f"object_closure.objects[{index}].source to live under "
-                "source_plan.source_root or source_plan.build_root: "
-                f"{source_path}"
-            )
-            continue
-        item["source"] = relative_source
-    return errors
+    projected = _compact_source_extension_manifest(projected)
+    _validate_compact_source_extension_manifest(projected)
+    validate_source_extension_object_closure(projected)
+    return projected
 
 
 def _restamp_current_runtime_abi(
@@ -517,11 +382,13 @@ def extension_seal(
     assert artifact_path is not None
     package = module_parts[0]
     module_name = ".".join(module_parts)
-    source_package_root = _source_package_root_for_manifest(
-        manifest=manifest,
-        manifest_path=manifest_path,
-        package=package,
-    )
+    try:
+        source_package_root = _source_package_root_for_manifest(
+            artifact_path=artifact_path,
+            module_parts=module_parts,
+        )
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-seal")
     validation = _validate_extension_manifest(
         manifest,
         manifest_dir=manifest_path.parent,
@@ -592,11 +459,14 @@ def extension_seal(
     if target_python is None:
         return _fail("; ".join(errors), json_output, command="extension-seal")
 
-    raw_python_exports = (
-        list(python_export or [])
-        if python_export
-        else list(manifest.get("python_exports") or [])
-    )
+    raw_python_exports = manifest.get("python_exports", [])
+    if python_export is not None:
+        try:
+            raw_python_exports = encode_python_module_names(
+                python_export, field="--python-export"
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
     export_manifest = {"python_exports": raw_python_exports}
     python_export_errors: list[str] = []
     python_exports = _manifest_dotted_name_tuple(
@@ -705,7 +575,6 @@ def extension_seal(
     source_capsule_errors = canonicalize_source_extension_manifest_required_capsules(
         sealed_manifest,
         manifest_path=manifest_path,
-        allow_missing_sources=_manifest_has_sealed_extension_custody(sealed_manifest),
     )
     if source_capsule_errors:
         return _fail(
@@ -713,9 +582,11 @@ def extension_seal(
             json_output,
             command="extension-seal",
         )
-    runtime_import_errors = _canonicalize_runtime_python_import_modules(
-        sealed_manifest,
-        manifest_path=manifest_path,
+    runtime_import_errors = (
+        canonicalize_source_extension_manifest_runtime_python_imports(
+            sealed_manifest,
+            manifest_path=manifest_path,
+        )
     )
     if runtime_import_errors:
         return _fail(
@@ -723,20 +594,21 @@ def extension_seal(
             json_output,
             command="extension-seal",
         )
-    source_path_errors = _canonicalize_object_closure_source_paths(
-        sealed_manifest,
-        manifest_path=manifest_path,
-    )
-    if source_path_errors:
-        return _fail(
-            "; ".join(source_path_errors),
-            json_output,
-            command="extension-seal",
-        )
-
     output_root = Path(out_dir).expanduser()
     if not output_root.is_absolute():
         output_root = (Path.cwd() / output_root).absolute()
+    try:
+        staged_inputs = stage_source_extension_manifest_inputs(
+            sealed_manifest,
+            manifest_path=manifest_path,
+            publish_root=output_root,
+        )
+    except (SourceExtensionInputCustodyError, OSError) as exc:
+        return _fail(
+            f"extension seal cannot retain compilation inputs: {exc}",
+            json_output,
+            command="extension-seal",
+        )
     target_triple = sealed_manifest.get("target_triple")
     assert isinstance(target_triple, str)
     link_requirements, link_requirement_errors = (
@@ -772,22 +644,6 @@ def extension_seal(
     )
     dest_artifact_rel = Path(*module_parts[:-1], artifact_path.name)
     dest_artifact_path = output_root / dest_artifact_rel
-    _atomic_copy_file(artifact_path, dest_artifact_path)
-    copied_inits = _copy_package_init_chain(
-        module_parts=module_parts,
-        source_package_root=source_package_root,
-        output_root=output_root,
-    )
-    copied_support_files, support_errors = _copy_support_files(
-        support_files,
-        output_root=output_root,
-    )
-    if support_errors:
-        return _fail(
-            "; ".join(support_errors),
-            json_output,
-            command="extension-seal",
-        )
 
     sealed_manifest["python_exports"] = list(python_exports)
     if support_files:
@@ -803,11 +659,25 @@ def extension_seal(
     sealed_manifest["extension_sha256"] = actual_extension_sha
     sealed_manifest["sealed_from_manifest_sha256"] = _sha256_file(manifest_path)
     sealed_manifest["sealed_from_extension_sha256"] = actual_extension_sha
+    root_manifest_path = output_root / "extension_manifest.json"
+    artifact_manifest_path = dest_artifact_path.with_name(
+        dest_artifact_path.name + ".extension_manifest.json"
+    )
     try:
-        finalize_source_extension_object_closure(sealed_manifest)
-        sealed_manifest = _compact_source_extension_manifest(sealed_manifest)
-        _validate_compact_source_extension_manifest(sealed_manifest)
-        validate_source_extension_object_closure(sealed_manifest)
+        root_manifest = _sealed_manifest_projection(
+            sealed_manifest,
+            source_manifest_path=manifest_path,
+            output_manifest_path=root_manifest_path,
+            output_root=output_root,
+            staged_inputs=staged_inputs,
+        )
+        artifact_manifest = _sealed_manifest_projection(
+            sealed_manifest,
+            source_manifest_path=manifest_path,
+            output_manifest_path=artifact_manifest_path,
+            output_root=output_root,
+            staged_inputs=staged_inputs,
+        )
     except (SourceExtensionObjectClosureError, ValueError) as exc:
         return _fail(
             f"extension seal cannot finalize object closure: {exc}",
@@ -815,21 +685,44 @@ def extension_seal(
             command="extension-seal",
         )
 
-    root_manifest = dict(sealed_manifest)
+    try:
+        _atomic_copy_file(
+            artifact_path, dest_artifact_path, expected_sha256=actual_extension_sha
+        )
+        copied_inits = _copy_package_init_chain(
+            module_parts=module_parts,
+            source_package_root=source_package_root,
+            output_root=output_root,
+        )
+    except (OSError, ValueError) as exc:
+        return _fail(
+            f"extension seal cannot publish artifact files: {exc}",
+            json_output,
+            command="extension-seal",
+        )
+    copied_support_files, support_errors = _copy_support_files(
+        support_files,
+        output_root=output_root,
+    )
+    if support_errors:
+        return _fail("; ".join(support_errors), json_output, command="extension-seal")
+
     root_manifest["extension"] = dest_artifact_rel.as_posix()
-    artifact_manifest = dict(sealed_manifest)
     artifact_manifest["extension"] = dest_artifact_path.name
-    root_manifest_path = output_root / "extension_manifest.json"
-    artifact_manifest_path = dest_artifact_path.with_name(
-        dest_artifact_path.name + ".extension_manifest.json"
-    )
-    _atomic_write_json(root_manifest_path, root_manifest, sort_keys=True, indent=2)
-    _atomic_write_json(
-        artifact_manifest_path,
-        artifact_manifest,
-        sort_keys=True,
-        indent=2,
-    )
+    try:
+        _atomic_write_json(root_manifest_path, root_manifest, sort_keys=True, indent=2)
+        _atomic_write_json(
+            artifact_manifest_path,
+            artifact_manifest,
+            sort_keys=True,
+            indent=2,
+        )
+    except OSError as exc:
+        return _fail(
+            f"extension seal cannot publish manifest custody: {exc}",
+            json_output,
+            command="extension-seal",
+        )
     if json_output:
         payload = _json_payload(
             "extension-seal",
