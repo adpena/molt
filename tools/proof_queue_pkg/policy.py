@@ -239,41 +239,62 @@ def _env_overrides_from_pairs(pairs: list[str]) -> dict[str, str]:
     return env
 
 
+def _env_table(raw: object, *, error: str) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        raise SystemExit(error)
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise SystemExit(error)
+        result[key] = value
+    return result
+
+
 def _env_overrides_from_spec(raw: object) -> dict[str, str]:
     if raw is None:
         return {}
-    if isinstance(raw, dict):
-        if not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in raw.items()
-        ):
-            raise SystemExit(
-                "proof env table must contain string keys and string values"
-            )
-        return dict(raw)
-    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-        return _env_overrides_from_pairs(list(raw))
+    if isinstance(raw, Mapping):
+        return _env_table(
+            raw, error="proof env table must contain string keys and string values"
+        )
+    if isinstance(raw, list):
+        pairs: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                raise SystemExit(
+                    "proof env must be a table of strings or a list of NAME=VALUE strings"
+                )
+            pairs.append(item)
+        return _env_overrides_from_pairs(pairs)
     raise SystemExit(
         "proof env must be a table of strings or a list of NAME=VALUE strings"
     )
 
 
+def _named_spec_locked_env(logical_id: str, raw_locked: object) -> dict[str, str]:
+    error = (
+        f"named proof {logical_id!r} has invalid locked_env authority; "
+        "expected a list of non-empty environment variable names"
+    )
+    if not isinstance(raw_locked, (list, tuple)):
+        raise SystemExit(error)
+    locked_by_casefold: dict[str, str] = {}
+    for name in raw_locked:
+        if not isinstance(name, str) or not name:
+            raise SystemExit(error)
+        folded = name.casefold()
+        if folded in locked_by_casefold:
+            raise SystemExit(
+                f"named proof {logical_id!r} has duplicate locked_env authority"
+            )
+        locked_by_casefold[folded] = name
+    return locked_by_casefold
+
+
 def _named_spec_user_env_overrides(
-    logical_id: str, raw_locked: object, user_pairs: list[str]
+    logical_id: str, locked_by_casefold: Mapping[str, str], user_pairs: list[str]
 ) -> dict[str, str]:
-    """Admit user diagnostics without weakening a named proof's custody."""
-    if not isinstance(raw_locked, (list, tuple)) or not all(
-        isinstance(name, str) and name for name in raw_locked
-    ):
-        raise SystemExit(
-            f"named proof {logical_id!r} has invalid locked_env authority; "
-            "expected a list of non-empty environment variable names"
-        )
-    locked_by_casefold = {name.casefold(): name for name in raw_locked}
-    if len(locked_by_casefold) != len(raw_locked):
-        raise SystemExit(
-            f"named proof {logical_id!r} has duplicate locked_env authority"
-        )
+    """Admit user diagnostics against the validated named environment authority."""
 
     user_overrides = _env_overrides_from_pairs(user_pairs)
     conflicts = sorted(
@@ -296,24 +317,21 @@ def _named_spec_env_overrides(
 ) -> dict[str, str]:
     """Merge admitted diagnostics with a named proof's canonical environment."""
     logical_id = str(spec.get("logical_id") or "named-proof")
+    locked_by_casefold = _named_spec_locked_env(logical_id, spec.get("locked_env", ()))
     user_overrides = _named_spec_user_env_overrides(
-        logical_id, spec.get("locked_env", ()), user_pairs
+        logical_id, locked_by_casefold, user_pairs
     )
 
     raw_defaults = spec.get("env_overrides", {})
-    if not isinstance(raw_defaults, Mapping) or not all(
-        isinstance(name, str) and isinstance(value, str)
-        for name, value in raw_defaults.items()
-    ):
-        raise SystemExit(
-            f"named proof {logical_id!r} has invalid env_overrides authority"
-        )
-    env_overrides = dict(raw_defaults)
-    locked_names = spec.get("locked_env", ())
-    assert isinstance(locked_names, (list, tuple))
+    env_overrides = _env_table(
+        raw_defaults,
+        error=f"named proof {logical_id!r} has invalid env_overrides authority",
+    )
     defaults_by_casefold = {name.casefold() for name in env_overrides}
     missing_locked = sorted(
-        name for name in locked_names if name.casefold() not in defaults_by_casefold
+        name
+        for folded, name in locked_by_casefold.items()
+        if folded not in defaults_by_casefold
     )
     if missing_locked:
         raise SystemExit(
