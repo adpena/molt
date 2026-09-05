@@ -17,6 +17,11 @@ from molt.cli.source_extension_manifest_codec import (
     _manifest_dependencies,
     _manifest_sequence,
 )
+from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
+from molt.cli.source_extension_language import (
+    require_source_extension_language,
+    validate_source_extension_language_command,
+)
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
     SOURCE_EXTENSION_OBJECT_CLOSURE_FIELDS,
@@ -173,9 +178,20 @@ def validate_source_extension_wasm_import_shapes(
             (receipt["module"], name)
         )
         if external_signature is not None:
+            params = external_signature["params"]
+            result = external_signature["result"]
+            if (
+                not isinstance(params, (tuple, list))
+                or not all(isinstance(value, str) for value in params)
+                or not isinstance(result, str)
+            ):
+                errors.append(
+                    f"WASM import {name!r} has malformed generated ABI signature"
+                )
+                continue
             expected_signature = (
-                tuple(str(value) for value in external_signature["params"]),
-                str(external_signature["result"]),
+                tuple(cast(Sequence[str], params)),
+                result,
             )
         else:
             runtime_signature = wasm_import_signature(name)
@@ -219,7 +235,7 @@ def _canonical_string_array(
         raise SourceExtensionObjectClosureError(
             f"extension object_closure.{field} is not canonical"
         )
-    return list(value)
+    return list(cast(list[str], value))
 
 
 def _object_sequence(
@@ -320,7 +336,7 @@ def source_extension_object_closure_identity_payload(
     digest_objects: list[dict[str, Any]] = []
     symbol_authorities: set[str] = set()
     object_names: set[str] = set()
-    source_names: set[str] = set()
+    source_digests: dict[str, str] = {}
     root_owners: list[str] = []
     object_defined_union: set[str] = set()
     object_undefined_union: set[str] = set()
@@ -351,6 +367,12 @@ def source_extension_object_closure_identity_payload(
                 "only in compact authority form"
             )
         source = item.get("source")
+        try:
+            language = require_source_extension_language(item.get("language"))
+        except ValueError as exc:
+            raise SourceExtensionObjectClosureError(
+                f"extension object_closure.objects[{index}]: {exc}"
+            ) from exc
         object_path = item.get("object")
         source_sha256 = _require_canonical_sha256(
             item.get("source_sha256"),
@@ -369,15 +391,36 @@ def source_extension_object_closure_identity_payload(
             raise SourceExtensionObjectClosureError(
                 f"extension object_closure.objects[{index}] lacks checksum custody"
             )
-        if object_path in object_names or source in source_names:
+        if object_path in object_names:
             raise SourceExtensionObjectClosureError(
-                "extension object_closure has duplicate object or source custody"
+                "extension object_closure has duplicate object custody"
             )
         object_names.add(object_path)
-        source_names.add(source)
+        # A source blob may back several compile units (different language,
+        # flags, or logical originals with identical content). Object custody,
+        # not the retained source path, identifies the unit.
+        if source in source_digests and source_digests[source] != source_sha256:
+            raise SourceExtensionObjectClosureError(
+                "extension object_closure has conflicting source checksum custody"
+            )
+        source_digests[source] = source_sha256
         compile_command = _object_sequence(
             authority, item, "compile_command", required=True
         )
+        if manifest is not None and isinstance(manifest.get("target_triple"), str):
+            try:
+                validate_compiler_target(
+                    compile_command,
+                    compiler_target_triple(compile_command, manifest["target_triple"]),
+                )
+            except ValueError as exc:
+                raise SourceExtensionObjectClosureError(
+                    f"extension object_closure.objects[{index}] target custody: {exc}"
+                ) from exc
+        try:
+            validate_source_extension_language_command(language, compile_command)
+        except ValueError as exc:
+            raise SourceExtensionObjectClosureError(str(exc)) from exc
         object_defined_symbols = _object_sequence(
             authority, item, "defined_symbols", canonical=True
         )
@@ -411,6 +454,7 @@ def source_extension_object_closure_identity_payload(
         symbol_authorities.add(symbol_authority)
         digest_object: dict[str, Any] = {
             "source": source,
+            "language": language.value,
             "object": object_path,
             "source_sha256": source_sha256,
             "object_sha256": object_sha256,
@@ -724,7 +768,9 @@ def validate_source_extension_object_closure_sources(
                 f"extension object_closure source checksum mismatch: {source_path}"
             )
         try:
-            dependencies = _manifest_dependencies(authority, item)
+            dependencies = _manifest_dependencies(
+                authority, cast(Mapping[str, Any], item)
+            )
         except ValueError as exc:
             raise SourceExtensionObjectClosureError(str(exc)) from exc
         for dependency_index, dependency in enumerate(dependencies):

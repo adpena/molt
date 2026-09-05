@@ -3,10 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import re
 import shlex
-import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +19,12 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.python_module_names import encode_python_module_names
+from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
+from molt.cli.source_extension_target import source_extension_target_is_wasm
+from molt.cli.source_extension_language import (
+    SourceExtensionLanguage,
+    resolve_source_extension_compile_language,
+)
 from molt.cli.source_extension_input_custody import (
     SourceExtensionInputCustodyError,
     read_source_extension_manifest_input,
@@ -46,12 +50,6 @@ from molt.cli.external_link_providers import (
     wasm_external_link_provider_symbol_classes,
 )
 from molt.file_hashing import _sha256_file
-from molt.cli.native_link_plan import (
-    native_link_capabilities,
-    native_link_policy_flags,
-    native_linker_name_from_driver_command,
-    resolve_native_target_spec,
-)
 from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
@@ -141,6 +139,7 @@ class _SourceExtensionArtifactSymbolInspection:
 @dataclass(frozen=True)
 class _SourceExtensionObjectFact:
     source_path: Path
+    language: SourceExtensionLanguage
     object_path: Path
     source_sha256: str
     object_sha256: str
@@ -161,6 +160,7 @@ class _SourceExtensionObjectFact:
     ) -> dict[str, Any]:
         payload = {
             "source": str(self.source_path),
+            "language": self.language.value,
             "object": self.object_path.name,
             "source_sha256": self.source_sha256,
             "object_sha256": self.object_sha256,
@@ -343,7 +343,7 @@ class _SourceExtensionCAPIRequirements:
 class _SourceExtensionCompileUnit:
     source_path: Path
     generated: bool
-    language: str | None
+    language: SourceExtensionLanguage
     compiler: tuple[str, ...]
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
@@ -658,9 +658,31 @@ def _compile_command_semantic_args(
         return []
     _compiler, args = _compile_command_compiler_and_args(arguments)
     semantic_args: list[str] = []
+    source_seen = False
     idx = 0
     while idx < len(args):
         arg = args[idx]
+        if arg == "-x" or (arg.startswith("-x") and len(arg) > 2):
+            width = 2 if arg == "-x" else 1
+            if not source_seen:
+                semantic_args.extend(args[idx : idx + width])
+            idx += width
+            continue
+        if arg.startswith(("/Tc", "/Tp")):
+            raw_source = (
+                arg[3:]
+                if len(arg) > 3
+                else (args[idx + 1] if idx + 1 < len(args) else "")
+            )
+            if (
+                raw_source
+                and _resolve_compile_command_path(raw_source, directory=directory)
+                == source_path
+            ):
+                semantic_args.extend(["-x", "c" if arg.startswith("/Tc") else "c++"])
+                source_seen = True
+                idx += 1 if len(arg) > 3 else 2
+                continue
         if arg in {"-c", "/c"}:
             idx += 1
             continue
@@ -681,6 +703,7 @@ def _compile_command_semantic_args(
             continue
         try:
             if _resolve_compile_command_path(arg, directory=directory) == source_path:
+                source_seen = True
                 idx += 1
                 continue
         except OSError:
@@ -1405,10 +1428,19 @@ def _load_meson_intro_targets_source_extension_plan(
         unit_args: tuple[str, ...],
     ) -> None:
         resolved_source_path = source_path.resolve()
+        try:
+            resolved_language, unit_args = resolve_source_extension_compile_language(
+                source_path=resolved_source_path,
+                language=language,
+                compile_args=unit_args,
+            )
+        except ValueError as exc:
+            errors.append(f"invalid compile language for {resolved_source_path}: {exc}")
+            return
         unit = _SourceExtensionCompileUnit(
             source_path=resolved_source_path,
             generated=generated,
-            language=language,
+            language=resolved_language,
             compiler=unit_compiler,
             include_dirs=unit_includes,
             compile_args=unit_args,
@@ -1686,58 +1718,27 @@ def _load_source_extension_build_plan(
     return None, [f"unsupported source extension build plan kind: {kind!r}"]
 
 
-def _source_extension_compile_unit_mentions_target(
-    unit: _SourceExtensionCompileUnit,
-    *,
-    target_triple: str,
-) -> bool:
-    target = target_triple.lower()
-    if target.startswith("wasm32"):
-        target_markers = ("wasm32", "wasip1", "wasi")
-    else:
-        target_markers = tuple(part for part in target.split("-") if part)
-    tokens = [str(token).lower() for token in (*unit.compiler, *unit.compile_args)]
-    if any(any(marker in token for marker in target_markers) for token in tokens):
-        return True
-    for idx, token in enumerate(tokens[:-1]):
-        if token in {"-target", "--target"} and any(
-            marker in tokens[idx + 1] for marker in target_markers
-        ):
-            return True
-        for prefix in ("-target=", "--target="):
-            if token.startswith(prefix) and any(
-                marker in token[len(prefix) :] for marker in target_markers
-            ):
-                return True
-    return False
-
-
 def _validate_source_extension_build_plan_target(
     plan: _SourceExtensionBuildPlan,
     *,
-    target_triple: str | None,
+    target_triple: str,
 ) -> list[str]:
-    if target_triple is None or not target_triple.lower().startswith("wasm32"):
-        return []
-    nonmatching = [
-        unit
-        for unit in plan.compile_units
-        if not _source_extension_compile_unit_mentions_target(
-            unit,
-            target_triple=target_triple,
-        )
-    ]
-    if not nonmatching:
-        return []
-    preview = ", ".join(str(unit.source_path) for unit in nonmatching[:4])
-    suffix = "" if len(nonmatching) <= 4 else ", ..."
-    return [
-        "WASM source-extension builds require a target-specific upstream "
-        "compile_commands.json; selected compile command rows do not mention "
-        f"{target_triple}: {preview}{suffix}. Configure the upstream package "
-        "for wasm32 and pass that build root/compile database instead of "
-        "reusing native build metadata."
-    ]
+    require_explicit = source_extension_target_is_wasm(target_triple)
+    errors: list[str] = []
+    for unit in plan.compile_units:
+        try:
+            explicit = validate_compiler_target(
+                (*unit.compiler, *unit.compile_args),
+                compiler_target_triple(unit.compiler, target_triple),
+            )
+            if require_explicit and not explicit:
+                raise ValueError(
+                    "WASM source-extension builds require a target-specific upstream "
+                    f"compile_commands.json with an explicit {target_triple} target"
+                )
+        except ValueError as exc:
+            errors.append(f"Source-plan target custody for {unit.source_path}: {exc}")
+    return errors
 
 
 def _source_extension_gc_compile_args(*, target_triple: str | None) -> list[str]:
@@ -1769,6 +1770,8 @@ def _source_extension_wasm_compile_args(
 
 def _source_extension_replay_compile_args(
     unit_compile_args: Sequence[str],
+    *,
+    compiler_target: str,
 ) -> list[str]:
     """Replay semantic unit flags without duplicating target authority.
 
@@ -1777,6 +1780,7 @@ def _source_extension_replay_compile_args(
     flags, but may not silently override that attested command after it is
     materialized.
     """
+    validate_compiler_target(unit_compile_args, compiler_target)
     out: list[str] = []
     skip_next = False
     for token in unit_compile_args:
@@ -1792,35 +1796,11 @@ def _source_extension_replay_compile_args(
     return out
 
 
-def _source_extension_link_policy_args(
-    *,
-    cc_cmd: Sequence[str],
-    target_triple: str | None,
-) -> list[str]:
-    tool = Path(cc_cmd[0]).name.lower() if cc_cmd else ""
-    target = resolve_native_target_spec(
-        target_triple,
-        host_platform=sys.platform,
-        host_arch=platform.machine(),
-    )
-    selected_linker = native_linker_name_from_driver_command(cc_cmd)
-    capabilities = native_link_capabilities(
-        target=target,
-        linker_hint=selected_linker,
-    )
-    return list(
-        native_link_policy_flags(
-            target=target,
-            capabilities=capabilities,
-            msvc_driver=tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"},
-        )
-    )
-
-
 def _source_extension_object_fact(
     *,
     source_path: Path,
     object_path: Path,
+    language: SourceExtensionLanguage,
     compile_command: Sequence[str] = (),
     dependency_paths: Sequence[Path] = (),
     nm_command: Sequence[str] | None = None,
@@ -1876,6 +1856,7 @@ def _source_extension_object_fact(
     return (
         _SourceExtensionObjectFact(
             source_path=source_path.resolve(),
+            language=language,
             object_path=object_path,
             source_sha256=_sha256_file(source_path),
             object_sha256=_sha256_file(object_path),

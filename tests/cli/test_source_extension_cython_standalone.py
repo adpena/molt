@@ -147,6 +147,7 @@ def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=pyx_path,
         original_c=tmp_path / "limited_probe.c",
+        language=cython_authority.SourceExtensionLanguage.C,
         out_dir=tmp_path / "generated",
         include_dirs=(),
         cython_version=version,
@@ -423,9 +424,15 @@ def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "language", [cython_authority.SourceExtensionLanguage.C, cython_authority.SourceExtensionLanguage.CPP]
+)
+@pytest.mark.parametrize("upstream_cpp", [False, True])
 def test_regeneration_replays_real_ninja_cython_directives(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    language: cython_authority.SourceExtensionLanguage,
+    upstream_cpp: bool,
 ) -> None:
     source_root = tmp_path / "source"
     build_root = tmp_path / "build"
@@ -442,6 +449,7 @@ def test_regeneration_replays_real_ninja_cython_directives(
             "-3",
             "--fast-fail",
             "-Xfreethreading_compatible=True",
+            *(["--cplus"] if upstream_cpp else []),
             "--shared=scipy._cyutility",
             "--include-dir",
             "ignored",
@@ -477,6 +485,7 @@ def test_regeneration_replays_real_ninja_cython_directives(
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=pyx,
         original_c=original_c,
+        language=language,
         out_dir=build_root / "standalone",
         include_dirs=(),
         cython_version="test",
@@ -488,6 +497,13 @@ def test_regeneration_replays_real_ninja_cython_directives(
     assert error is None, error
     assert regeneration is not None
     assert generation_calls == [list(regeneration.cython_argv)]
+    assert ("--cplus" in regeneration.cython_argv) == (
+        language is cython_authority.SourceExtensionLanguage.CPP
+    )
+    assert regeneration.cython_argv.count("--cplus") <= 1
+    assert regeneration.regenerated_c.suffix == (
+        ".cpp" if language is cython_authority.SourceExtensionLanguage.CPP else ".c"
+    )
     assert query_calls[0][:3] == [sys.executable, "-m", "ninja"]
     argv = regeneration.cython_argv
     assert argv[:3] == (sys.executable, "-m", "cython")
@@ -604,6 +620,7 @@ def test_molt_regenerates_ni_label_standalone_without_cyutility(
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=PYX_PATH,
         original_c=Path("_ni_label.c"),
+        language=cython_authority.SourceExtensionLanguage.C,
         out_dir=tmp_path / "standalone",
         include_dirs=[PYX_PATH.parent],
         cython_version=version,

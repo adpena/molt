@@ -205,22 +205,6 @@ def _run_bolt_post_link(
     return 0
 
 
-def _strip_arch_flags(args: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "-arch":
-            skip_next = True
-            continue
-        if arg.startswith("-arch="):
-            continue
-        cleaned.append(arg)
-    return cleaned
-
-
 def _zig_target_query(target_triple: str) -> str:
     triple = target_triple.strip()
     if not triple:

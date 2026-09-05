@@ -1409,6 +1409,7 @@ def test_runtime_import_producer_replaces_stale_facts_and_records_empty_closure(
             "objects": [
                 {
                     "source": str(source),
+                    "language": "c",
                     "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 }
             ]
@@ -1820,6 +1821,7 @@ def test_source_extension_manifest_runtime_python_imports_uses_object_closure_so
             "objects": [
                 {
                     "source": str(closure_source),
+                    "language": "c",
                     "source_sha256": hashlib.sha256(
                         closure_source.read_bytes()
                     ).hexdigest(),
@@ -1857,10 +1859,12 @@ def test_source_extension_manifest_runtime_python_imports_rejects_partial_closur
             "objects": [
                 {
                     "source": str(missing_source),
+                    "language": "c",
                     "source_sha256": "0" * 64,
                 },
                 {
                     "source": str(closure_source),
+                    "language": "c",
                     "source_sha256": hashlib.sha256(
                         closure_source.read_bytes()
                     ).hexdigest(),
@@ -2437,12 +2441,15 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
                     {
                         "source": "_nd_image.molt.wasm",
                         "object": "_nd_image.o",
+                        "language": "c",
                         "source_sha256": artifact_sha256,
                         "object_sha256": artifact_sha256,
                         "defined_symbols": ["PyInit__nd_image"],
                         "undefined_symbols": [],
                         "compile_command": [
                             "fixture-compiler",
+                            "-x",
+                            "c",
                             "-c",
                             "_nd_image.molt.wasm",
                         ],
@@ -2455,12 +2462,15 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
                     {
                         "source": str(manifest_source),
                         "object": "_ni_label.o",
+                        "language": "c",
                         "source_sha256": source_sha,
                         "object_sha256": "0" * 64,
                         "defined_symbols": ["PyInit__ni_label"],
                         "undefined_symbols": [],
                         "compile_command": [
                             "fixture-compiler",
+                            "-x",
+                            "c",
                             "-c",
                             str(manifest_source),
                         ],
@@ -4516,11 +4526,12 @@ def _libmolt_source_manifest_fields(
                 {
                     "source": artifact_name,
                     "object": object_name,
+                    "language": "c",
                     "source_sha256": digest,
                     "object_sha256": digest,
                     "defined_symbols": defined_symbols,
                     "undefined_symbols": undefined_symbols,
-                    "compile_command": ["fixture-compiler", "-c", artifact_name],
+                    "compile_command": ["fixture-compiler", "-x", "c", "-c", artifact_name],
                     "symbol_authority": symbol_authority,
                     **(
                         {"symbol_command": ["fixture-nm"]}
@@ -4606,7 +4617,10 @@ def _apply_manifest_overrides(
             item.setdefault(
                 "undefined_symbols", list(initial_object.get("undefined_symbols", ()))
             )
-            item.setdefault("compile_command", ["fixture-compiler", "-c", source])
+            item.setdefault("language", "c")
+            item.setdefault(
+                "compile_command", ["fixture-compiler", "-x", "c", "-c", source]
+            )
             item.setdefault("symbol_authority", initial_object.get("symbol_authority"))
             item.setdefault("dependencies", [])
             item.setdefault("required_c_api_symbols", [])
@@ -6227,6 +6241,7 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
                 "objects": [
                     {
                         "source": str(entry_source),
+                        "language": "c",
                         "source_sha256": hashlib.sha256(
                             entry_source.read_bytes()
                         ).hexdigest(),
@@ -6240,6 +6255,7 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
                     },
                     {
                         "source": str(filters_source),
+                        "language": "c",
                         "source_sha256": hashlib.sha256(
                             filters_source.read_bytes()
                         ).hexdigest(),
@@ -8169,6 +8185,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest
                     {
                         "source": str(stale_source_path),
                         "object": "0_nd_image.o",
+                        "language": "c",
                         "source_sha256": source_sha256,
                         "object_sha256": artifact_sha256,
                         "defined_symbols": ["PyInit__nd_image"],
@@ -8244,6 +8261,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_so
                     {
                         "source": str(stale_source_path),
                         "object": "0_nd_image.o",
+                        "language": "c",
                         "source_sha256": source_sha256,
                         "object_sha256": artifact_sha256,
                         "defined_symbols": ["PyInit__nd_image"],

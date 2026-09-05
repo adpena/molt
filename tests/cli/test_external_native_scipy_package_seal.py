@@ -75,6 +75,7 @@ def _write_native_extension(
         "sealed_from_manifest_sha256": extension_sha256,
         "sealed_from_extension_sha256": extension_sha256,
         "provided_capsules": [],
+        "runtime_python_import_modules": [],
         "object_closure": {
             "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": init_symbol,
@@ -90,6 +91,7 @@ def _write_native_extension(
                 {
                     "source": artifact_name,
                     "object": "0.o",
+                    "language": "c",
                     "source_sha256": extension_sha256,
                     "object_sha256": extension_sha256,
                     "defined_symbols": [init_symbol],
@@ -97,6 +99,8 @@ def _write_native_extension(
                     "compile_command": [
                         "fixture-compiler",
                         "--target=wasm32-wasip1",
+                        "-x",
+                        "c",
                         "-c",
                         artifact_name,
                     ],

@@ -29,7 +29,6 @@ from molt.c_api_symbols import is_cpython_abi_link_symbol
 from molt.cli.extension_manifest import (
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
-    _host_target_triple,
     _py_methoddef_names,
     _validate_extension_manifest,
 )
@@ -66,6 +65,7 @@ from molt.cli.source_extension_link_requirements import (
     resolve_source_extension_link_requirements,
 )
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
+from molt.cli.native_link_plan import _host_target_triple
 from molt.cli.source_extension_object_closure import (
     SourceExtensionObjectClosureError,
     validate_source_extension_object_closure,
@@ -1306,8 +1306,7 @@ def _load_external_artifact_manifest(
 
 def _external_artifact_requested_target_triple(target: str | None) -> str:
     return resolve_source_extension_target_plan(
-        target,
-        host_target_triple=_host_target_triple(),
+        "native" if target is None else target,
         host_platform=sys.platform,
         host_arch=platform.machine(),
     ).target_triple

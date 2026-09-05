@@ -23,10 +23,14 @@ from molt.cli.source_extension_manifest_codec import (
 )
 from molt.cli.source_extension_input_custody import (
     SourceExtensionInputCustodyError,
+    project_source_extension_manifest_inputs,
+    source_extension_input_custody_path,
     source_extension_manifest_input_rows,
 )
+from molt.cli.source_extension_language import SourceExtensionLanguage
 from molt.cli.source_extensions import (
     canonicalize_source_extension_manifest_runtime_python_imports,
+    source_extension_manifest_path,
 )
 from molt.cli.source_extension_reproducibility import (
     _canonicalize_locations,
@@ -98,9 +102,10 @@ def test_native_object_closure_rejects_stale_aggregate_symbol_provenance(
                 {
                     "source": "native.c",
                     "object": "native.o",
+                    "language": "c",
                     "source_sha256": "1" * 64,
                     "object_sha256": "2" * 64,
-                    "compile_command": ["cc", "-c", "native.c"],
+                    "compile_command": ["cc", "-x", "c", "-c", "native.c"],
                     "symbol_command": ["nm", "native.o"],
                     "symbol_authority": SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
                     "dependencies": [],
@@ -153,6 +158,7 @@ def test_published_object_closure_rejects_payload_escape(
         "objects": [
             {
                 "source": os.path.relpath(source, manifest_dir).replace(os.sep, "/"),
+                "language": "c",
                 "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "dependencies": dependencies,
             }
@@ -212,6 +218,7 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
             {
                 "source": f"../../inputs/source-{index}.c",
                 "object": f"{index}.o",
+                "language": "c",
                 "source_sha256": hashlib.sha256(f"source-{index}".encode()).hexdigest(),
                 "object_sha256": hashlib.sha256(f"object-{index}".encode()).hexdigest(),
                 "defined_symbols": sorted(
@@ -224,6 +231,8 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
                 "undefined_symbols": ["shared_undefined"],
                 "compile_command": [
                     "clang",
+                    "-x",
+                    "c",
                     "-c",
                     f"../../inputs/source-{index}.c",
                     "-o",
@@ -279,6 +288,44 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
     return manifest
 
 
+@pytest.mark.parametrize("selector", ["--target=wasm32-unknown-unknown", "-m32"])
+def test_closure_identity_rejects_foreign_compiler_target(selector: str) -> None:
+    manifest = _manifest(1)
+    manifest["object_closure"]["objects"][0]["compile_command"].append(selector)
+    with pytest.raises(SourceExtensionObjectClosureError, match="target custody"):
+        finalize_source_extension_object_closure(manifest)
+
+
+def test_object_units_can_share_retained_source_content() -> None:
+    manifest = _manifest(2)
+    objects = manifest["object_closure"]["objects"]
+    first, second = objects
+    second["compile_command"] = [
+        first["source"] if arg == second["source"] else arg
+        for arg in second["compile_command"]
+    ]
+    second["source"] = first["source"]
+    second["source_sha256"] = first["source_sha256"]
+    finalize_source_extension_object_closure(manifest)
+    compact = _compact_source_extension_manifest(manifest)
+    assert source_extension_object_closure_digest(
+        compact["object_closure"], manifest=compact
+    )
+
+
+@pytest.mark.parametrize("conflict", ["object", "source_sha256"])
+def test_shared_source_does_not_weaken_object_or_checksum_custody(
+    conflict: str,
+) -> None:
+    manifest = _manifest(2)
+    first, second = manifest["object_closure"]["objects"]
+    second["source"] = first["source"]
+    if conflict == "object":
+        second["object"] = first["object"]
+    with pytest.raises(SourceExtensionObjectClosureError, match="custody"):
+        finalize_source_extension_object_closure(manifest)
+
+
 def test_132_unit_manifest_compaction_reconstructs_exact_commands_and_content() -> None:
     manifest = _manifest()
     original = copy.deepcopy(manifest)
@@ -324,6 +371,98 @@ def test_compact_unit_identity_detects_per_unit_operand_divergence() -> None:
     operand["value"] = "@object-root/diverged.o"
     with pytest.raises(ValueError, match="unit identity is false"):
         _validate_compact_source_extension_manifest(compact)
+
+
+@pytest.mark.parametrize("language", list(SourceExtensionLanguage))
+def test_object_language_survives_compaction_and_digest_input_projection(
+    tmp_path: Path, language: SourceExtensionLanguage
+) -> None:
+    manifest = _manifest(object_count=1)
+    item = manifest["object_closure"]["objects"][0]
+    item["language"] = language.value
+    command = item["compile_command"]
+    command[command.index("-x") + 1] = language.driver_language
+    finalize_source_extension_object_closure(manifest)
+    compact = _compact_source_extension_manifest(manifest)
+    _validate_compact_source_extension_manifest(compact)
+    source_manifest_path = tmp_path / "build" / "extension_manifest.json"
+    projected = project_source_extension_manifest_inputs(
+        compact,
+        source_manifest_path=source_manifest_path,
+        output_manifest_path=tmp_path / "publish" / "pkg" / "extension_manifest.json",
+        publish_root=tmp_path / "publish",
+        staged_inputs={
+            source_extension_manifest_path(
+                path, manifest_path=source_manifest_path
+            ): source_extension_input_custody_path(digest)
+            for _field, path, digest in source_extension_manifest_input_rows(compact)
+        },
+    )
+    projected_item = projected["object_closure"]["objects"][0]
+    assert Path(projected_item["source"]).suffix == ""
+    assert projected_item["language"] == language.value
+    recompacted = _compact_source_extension_manifest(projected)
+    _validate_compact_source_extension_manifest(recompacted)
+    assert recompacted["object_closure"]["objects"][0]["language"] == language.value
+
+
+def test_language_tampering_changes_object_closure_and_unit_identity() -> None:
+    manifest = _manifest(object_count=1)
+    original_digest = manifest["object_closure"]["closure_sha256"]
+    manifest["object_closure"]["objects"][0]["language"] = "cpp"
+    command = manifest["object_closure"]["objects"][0]["compile_command"]
+    command[command.index("-x") + 1] = "c++"
+    finalize_source_extension_object_closure(manifest)
+    assert manifest["object_closure"]["closure_sha256"] != original_digest
+    compact = _compact_source_extension_manifest(manifest)
+    compact["object_closure"]["objects"][0]["language"] = "c"
+    with pytest.raises(
+        ValueError, match="unit identity is false|differs from declared"
+    ):
+        _validate_compact_source_extension_manifest(compact)
+
+
+@pytest.mark.parametrize("language", [None, "c++", "cuda", False, {}])
+def test_object_closure_rejects_missing_or_noncanonical_language(
+    language: object,
+) -> None:
+    manifest = _manifest(object_count=1)
+    item = manifest["object_closure"]["objects"][0]
+    if language is None:
+        item.pop("language")
+    else:
+        item["language"] = language
+    with pytest.raises(SourceExtensionObjectClosureError, match="language"):
+        finalize_source_extension_object_closure(manifest)
+
+
+def test_object_closure_rejects_command_language_contradiction() -> None:
+    manifest = _manifest(object_count=1)
+    command = manifest["object_closure"]["objects"][0]["compile_command"]
+    command[command.index("-x") + 1] = "c++"
+    with pytest.raises(
+        SourceExtensionObjectClosureError, match="differs from declared"
+    ):
+        finalize_source_extension_object_closure(manifest)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["clang", "-c", "native.c"],
+        ["clang", "-c", "native.c", "-x", "c"],
+        ["clang", "-x", "c", "-c", "native.c", "-x", "c++"],
+    ],
+)
+def test_language_evidence_is_required_by_both_manifest_identities(
+    command: list[str],
+) -> None:
+    manifest = _manifest(object_count=1)
+    manifest["object_closure"]["objects"][0]["compile_command"] = command
+    with pytest.raises(SourceExtensionObjectClosureError, match="canonical.*language"):
+        finalize_source_extension_object_closure(copy.deepcopy(manifest))
+    with pytest.raises(ValueError, match="canonical.*language"):
+        _compact_source_extension_manifest(copy.deepcopy(manifest))
 
 
 def test_command_template_roundtrip_preserves_literal_placeholder_tokens() -> None:
@@ -602,12 +741,13 @@ def _write_identity_fixture(
                 {
                     "source": "../inputs/native.c",
                     "object": "0.o",
+                    "language": "c",
                     "source_sha256": "c" * 64,
                     "object_sha256": "d" * 64,
                     "defined_symbols": ["PyInit__native"],
                     "undefined_symbols": [],
                     "dependencies": [],
-                    "compile_command": ["clang", "-c", "../inputs/native.c"],
+                    "compile_command": ["clang", "-x", "c", "-c", "../inputs/native.c"],
                     "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                     "required_c_api_symbols": [],
                     "required_capsules": [],

@@ -33,6 +33,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from molt.cli.source_extension_language import SourceExtensionLanguage
 from typing import Any, Mapping, Sequence
 
 from molt.cli.dependency_files import parse_make_depfile
@@ -147,6 +148,8 @@ class CythonRegeneration:
                 else None
             ),
         }
+
+
 def _leading_int(version: str) -> int | None:
     match = re.match(r"(\d+)", version)
     return int(match.group(1)) if match else None
@@ -304,9 +307,7 @@ _CYTHON_BUILTIN_CIMPORT_ROOTS = frozenset(
 # cimport ...`` contributes the ``X`` side. Leading-dot modules are relative and
 # need no external package-root include.
 _BARE_CIMPORT_RE = re.compile(r"^[ \t]*cimport[ \t]+(?P<modules>.+?)\s*$")
-_FROM_CIMPORT_RE = re.compile(
-    r"^[ \t]*from[ \t]+(?P<module>[.\w]+)[ \t]+cimport\b"
-)
+_FROM_CIMPORT_RE = re.compile(r"^[ \t]*from[ \t]+(?P<module>[.\w]+)[ \t]+cimport\b")
 _CIMPORT_AS_RE = re.compile(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*\s*$")
 _TOP_LEVEL_CIMPORT_RE = re.compile(r"^(?P<top>[A-Za-z_][A-Za-z0-9_]*)")
 
@@ -516,7 +517,8 @@ def _cimport_header_dirs_from_pxd_roots(
     def _has_header_child(path: Path) -> bool:
         try:
             return any(
-                child.is_file() and child.suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
+                child.is_file()
+                and child.suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
                 for child in path.iterdir()
             )
         except OSError:
@@ -745,7 +747,9 @@ def _token_resolves_to_path(
     if token.startswith("-") or "$" in token:
         return False
     try:
-        return _resolve_generator_path(token, build_root=build_root) == expected.resolve()
+        return (
+            _resolve_generator_path(token, build_root=build_root) == expected.resolve()
+        )
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -968,8 +972,7 @@ def _cython_generator_args_from_ninja(
     )
     if directive_error is not None:
         return None, (
-            f"invalid Meson Cython generator metadata for {original}: "
-            f"{directive_error}"
+            f"invalid Meson Cython generator metadata for {original}: {directive_error}"
         )
     return directives, None
 
@@ -978,6 +981,7 @@ def regenerate_cython_c_standalone(
     *,
     pyx_path: Path,
     original_c: Path,
+    language: SourceExtensionLanguage,
     out_dir: Path,
     include_dirs: Sequence[Path],
     cython_version: str,
@@ -992,9 +996,14 @@ def regenerate_cython_c_standalone(
     ``__Pyx_modinit_shared_function_import`` shared-utility import.
     """
     interpreter = python_exe or sys.executable
-    is_cpp = original_c.suffix.lower() in {".cpp", ".cxx", ".cc"}
+    if language not in {SourceExtensionLanguage.C, SourceExtensionLanguage.CPP}:
+        return (
+            None,
+            f"Cython cannot generate source-extension language {language.value}",
+        )
+    is_cpp = language == SourceExtensionLanguage.CPP
     out_dir.mkdir(parents=True, exist_ok=True)
-    regenerated_c = out_dir / f"{pyx_path.stem}{original_c.suffix.lower()}"
+    regenerated_c = out_dir / f"{pyx_path.stem}{'.cpp' if is_cpp else '.c'}"
     cimport_packages = _parse_cimported_packages(pyx_path)
     cimport_search_roots = [
         *include_dirs,
@@ -1034,10 +1043,12 @@ def regenerate_cython_c_standalone(
         # Producer builds pass their unchanged build_root, whose Ninja command
         # is authoritative for every package-selected Cython directive.
         argv.append("-3")
-        if is_cpp:
-            argv.append("--cplus")
     else:
-        argv.extend(generator_args)
+        # Language belongs to the compiled unit, not an inherited generator
+        # command that may target a differently named intermediate source.
+        argv.extend(arg for arg in generator_args if arg not in {"--cplus", "-+"})
+    if is_cpp:
+        argv.append("--cplus")
     if "-M" not in argv and "--depfile" not in argv:
         argv.append("-M")
     for include_dir in resolved_includes:
@@ -1085,8 +1096,7 @@ def regenerate_cython_c_standalone(
     resolved_pyx = pyx_path.resolve()
     if resolved_pyx not in dependency_paths:
         return None, (
-            "Cython dependency closure omitted its primary input: "
-            f"{resolved_pyx}"
+            f"Cython dependency closure omitted its primary input: {resolved_pyx}"
         )
     dependencies = tuple(
         CythonDependency(path=path, sha256=_sha256_file(path))
