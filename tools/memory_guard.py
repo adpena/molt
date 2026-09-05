@@ -14,7 +14,8 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from types import FrameType
+from typing import Any, Unpack
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -153,6 +154,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
 )
 from tools.process_spawn import (  # noqa: E402
     ProcessGroupKwargs,
+    ProcessSpawnKwargs,
     detached_process_group_kwargs,
     inherit_stdio_kwargs,
 )
@@ -160,7 +162,6 @@ from tools import win_job as _win_job  # noqa: E402
 
 WindowsJobCleanup = _win_job.WindowsJobCleanup
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
-from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
@@ -169,6 +170,13 @@ from tools.memory_guard_core.paths import (  # noqa: E402
     pytest_guard_summary_dir,
 )
 from tools.memory_guard_core.process_custody import (  # noqa: E402
+    sample_processes_posix as sample_processes_posix,
+    sample_processes_windows as sample_processes_windows,
+    sample_processes_windows_hard_timeout as sample_processes_windows_hard_timeout,
+    sample_processes as sample_processes,
+    terminate_watched_processes as terminate_watched_processes,
+    cleanup_tracked_orphans as cleanup_tracked_orphans,
+    _terminate_single_pid as _terminate_single_pid,
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
     GuardResult as GuardResult,
@@ -256,28 +264,8 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTAB
 sample_processes_linux_proc = _process_model.sample_processes_linux_proc
 
 
-def sample_processes_posix() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_posix()
-
-
 def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
     return _process_model.parse_process_table_with_start(text)
-
-
-def sample_processes_windows() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_windows(_windows_process_snapshot_rows)
-
-
-def sample_processes_windows_hard_timeout() -> dict[int, ProcessSample]:
-    return _process_model.sample_processes_windows(
-        _windows_process_snapshot_rows_hard_timeout
-    )
-
-
-def sample_processes() -> dict[int, ProcessSample]:
-    if _is_windows_process_model():
-        return sample_processes_windows()
-    return sample_processes_posix()
 
 
 def _timeout_sampler(
@@ -286,32 +274,6 @@ def _timeout_sampler(
     if _is_windows_process_model() and sampler is sample_processes:
         return sample_processes_windows_hard_timeout
     return sampler
-
-
-def _sync_process_custody_facade() -> None:
-    _process_custody._is_windows_process_model = _is_windows_process_model
-    _process_custody.sample_processes = sample_processes
-    _process_custody.sample_processes_posix = sample_processes_posix
-    _process_custody.sample_processes_windows = sample_processes_windows
-    _process_custody.sample_processes_windows_hard_timeout = (
-        sample_processes_windows_hard_timeout
-    )
-    _process_custody._current_protected_process_group_ids = (
-        _current_protected_process_group_ids
-    )
-    _process_custody._filter_protected_watched_pids = _filter_protected_watched_pids
-
-
-_custody_terminate_watched_processes = _process_custody.terminate_watched_processes
-_custody_cleanup_tracked_orphans = _process_custody.cleanup_tracked_orphans
-_custody_terminate_single_pid = _process_custody._terminate_single_pid
-
-
-def terminate_watched_processes(
-    *args: object, **kwargs: object
-) -> GuardTerminationReport:
-    _sync_process_custody_facade()
-    return _custody_terminate_watched_processes(*args, **kwargs)
 
 
 def _validated_termination_report(
@@ -334,29 +296,6 @@ def _validated_termination_reports(
     return tuple(
         _validated_termination_report(report, caller=caller) for report in reports
     )
-
-
-_terminate_watched_processes_facade = terminate_watched_processes
-
-
-def cleanup_tracked_orphans(
-    *args: object, **kwargs: object
-) -> GuardOrphanCleanupResult:
-    _sync_process_custody_facade()
-    delegate = terminate_watched_processes
-    if delegate is _terminate_watched_processes_facade:
-        delegate = _custody_terminate_watched_processes
-    previous = _process_custody.terminate_watched_processes
-    _process_custody.terminate_watched_processes = delegate
-    try:
-        return _custody_cleanup_tracked_orphans(*args, **kwargs)
-    finally:
-        _process_custody.terminate_watched_processes = previous
-
-
-def _terminate_single_pid(pid: int, *, grace: float) -> bool:
-    _sync_process_custody_facade()
-    return _custody_terminate_single_pid(pid, grace=grace)
 
 
 def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
@@ -447,10 +386,10 @@ def _prune_active_guard_markers() -> None:
 
 
 def _apply_child_resource_limit(limit_kb: int) -> None:
-    if limit_kb <= 0:
+    if limit_kb <= 0 or sys.platform == "win32":
         return
     try:
-        import resource  # type: ignore
+        import resource
     except Exception:
         return
     limit_bytes = int(limit_kb * 1024)
@@ -713,10 +652,8 @@ def run_guarded(
         raise ValueError("capture_tail_bytes requires external capture paths")
     if (
         stdout_capture_path is not None
-        and Path(stdout_capture_path).resolve()
-        == Path(
-            stderr_capture_path  # type: ignore[arg-type]
-        ).resolve()
+        and stderr_capture_path is not None
+        and Path(stdout_capture_path).resolve() == Path(stderr_capture_path).resolve()
     ):
         raise ValueError("stdout/stderr capture paths must be distinct")
     if keepalive_interval is not None and keepalive_interval <= 0:
@@ -750,7 +687,9 @@ def run_guarded(
         if guard_signal is None:
             guard_signal = signum
 
-    installed_signal_handlers: dict[int, object] = {}
+    installed_signal_handlers: dict[
+        int, Callable[[int, FrameType | None], Any] | int | None
+    ] = {}
     if threading.current_thread() is threading.main_thread():
         for maybe_signal in (
             getattr(signal, "SIGTERM", None),
@@ -794,8 +733,9 @@ def run_guarded(
         )
         if capture_output:
             if stdout_capture_path is not None:
+                assert stderr_capture_path is not None
                 stdout_path = Path(stdout_capture_path)
-                stderr_path = Path(stderr_capture_path)  # type: ignore[arg-type]
+                stderr_path = Path(stderr_capture_path)
                 stdout_path.parent.mkdir(parents=True, exist_ok=True)
                 stderr_path.parent.mkdir(parents=True, exist_ok=True)
                 if text:
@@ -818,15 +758,15 @@ def run_guarded(
             else:
                 stdout_capture = tempfile.TemporaryFile(mode="w+b")
                 stderr_capture = tempfile.TemporaryFile(mode="w+b")
-        popen_kwargs: dict[str, object] = {
+        popen_kwargs: ProcessSpawnKwargs = {
             "cwd": cwd,
             "env": dict(launch.env) if launch.env is not None else None,
             "text": text,
             **_guarded_popen_process_isolation_kwargs(),
         }
         if capture_output:
-            popen_kwargs["stdout"] = stdout_capture
-            popen_kwargs["stderr"] = stderr_capture
+            popen_kwargs["stdout"] = stdout_capture.fileno()
+            popen_kwargs["stderr"] = stderr_capture.fileno()
         else:
             popen_kwargs.update(inherit_stdio_kwargs())
         if input is not None:
@@ -2193,10 +2133,16 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
     return _reporting.incident_payload(result, signal_payload=_exit_signal_payload)
 
 
-def _write_summary_json(path: str, **kwargs: object) -> None:
+def _write_summary_json(
+    path: str,
+    *,
+    result: GuardResult,
+    **context: Unpack[_reporting.GuardReportContext],
+) -> None:
     _reporting.write_summary_json(
         path,
-        **kwargs,
+        **context,
+        result=result,
         signal_payload=_exit_signal_payload,
         repro_context_provider=repro_context_payload,
     )
@@ -2226,10 +2172,16 @@ def _prune_default_incident_summaries(
     _reporting.prune_default_incident_summaries(directory, keep=keep)
 
 
-def _write_running_summary_json(path: str, **kwargs: object) -> None:
+def _write_running_summary_json(
+    path: str,
+    *,
+    child_process: GuardedChildProcess | None = None,
+    **context: Unpack[_reporting.GuardReportContext],
+) -> None:
     _reporting.write_running_summary_json(
         path,
-        **kwargs,
+        **context,
+        child_process=child_process,
         repro_context_provider=repro_context_payload,
     )
 
@@ -2279,7 +2231,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     hide_command_argv: bool = False,
-    execve: Callable[[str, Sequence[str], Mapping[str, str]], object] = os.execve,
+    execve: Callable[[str, list[str], Mapping[str, str]], object] = os.execve,
     environ: Mapping[str, str] | None = None,
 ) -> int:
     current_env = os.environ if environ is None else environ

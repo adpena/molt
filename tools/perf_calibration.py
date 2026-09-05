@@ -45,9 +45,11 @@ from typing import Any, Callable, Optional, Sequence
 try:
     from tools import harness_memory_guard
     from tools.command_execution import CommandExecutor
+    from tools.windows_process_api import bind_process_query_api
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
     import harness_memory_guard
     from command_execution import CommandExecutor
+    from windows_process_api import bind_process_query_api
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -75,10 +77,7 @@ if sys.platform == "win32":
         _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _kernel32.OpenProcess.restype = wintypes.HANDLE
-    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    bind_process_query_api(_kernel32)
     _kernel32.GetSystemTimes.argtypes = [
         ctypes.POINTER(_FILETIME),
         ctypes.POINTER(_FILETIME),

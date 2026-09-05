@@ -23,6 +23,7 @@ import time
 from ctypes import wintypes
 from functools import lru_cache
 from typing import Any
+from tools.windows_process_api import bind_process_query_api
 
 _WINDOWS = sys.platform.startswith("win")
 
@@ -210,6 +211,7 @@ def suspended_creationflag() -> int:
 @lru_cache(maxsize=1)
 def _k32() -> Any:
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    bind_process_query_api(k32)
     k32.CreateJobObjectW.restype = wintypes.HANDLE
     k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     k32.SetInformationJobObject.restype = wintypes.BOOL
@@ -233,8 +235,6 @@ def _k32() -> Any:
     k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     k32.TerminateProcess.restype = wintypes.BOOL
     k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    k32.CloseHandle.restype = wintypes.BOOL
-    k32.CloseHandle.argtypes = [wintypes.HANDLE]
     k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     k32.Thread32First.restype = wintypes.BOOL
@@ -245,22 +245,10 @@ def _k32() -> Any:
     k32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     k32.ResumeThread.restype = wintypes.DWORD
     k32.ResumeThread.argtypes = [wintypes.HANDLE]
-    k32.OpenProcess.restype = wintypes.HANDLE
-    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
-    k32.GetCurrentProcess.argtypes = []
     k32.GetProcessHandleCount.restype = wintypes.BOOL
     k32.GetProcessHandleCount.argtypes = [
         wintypes.HANDLE,
         ctypes.POINTER(wintypes.DWORD),
-    ]
-    k32.GetProcessTimes.restype = wintypes.BOOL
-    k32.GetProcessTimes.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
     ]
     k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
     k32.QueryFullProcessImageNameW.argtypes = [

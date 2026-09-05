@@ -5,7 +5,6 @@ from __future__ import annotations
 import keyword
 import os
 import re
-import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -13,6 +12,7 @@ from typing import Any
 
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.dx import checkout_custody
+from molt.process_guard import run_completed_command
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "source_extension_package_sets.toml"
@@ -641,8 +641,9 @@ def verify_source_extension_checkout(
     registered = require_registered_source_extension_set(
         extension_set, registry=registry
     )
-    result = subprocess.run(
+    result = run_completed_command(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
+        memory_guard_prefix=None,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -656,7 +657,7 @@ def verify_source_extension_checkout(
             f"{registered.package} source checkout {root} does not match registered "
             f"commit {registered.source.commit}: got {detail}"
         )
-    status = subprocess.run(
+    status = run_completed_command(
         [
             "git",
             "-C",
@@ -665,6 +666,7 @@ def verify_source_extension_checkout(
             "--porcelain=v1",
             "--untracked-files=all",
         ],
+        memory_guard_prefix=None,
         capture_output=True,
         text=True,
         encoding="utf-8",

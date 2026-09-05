@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 from molt.target_python import TargetPythonVersion, require_verified_subset_target
+from tests.process_guard_common import run_custody_subject_process
 
 
 def test_python_interpreter_import_stays_outside_cli_package() -> None:
@@ -17,7 +17,7 @@ def test_python_interpreter_import_stays_outside_cli_package() -> None:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root / "src")
-    result = subprocess.run(
+    result = run_custody_subject_process(
         [
             sys.executable,
             "-c",

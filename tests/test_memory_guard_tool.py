@@ -14,6 +14,8 @@ import types
 
 import pytest
 
+from tools.memory_guard_core import process_custody
+
 import tools.memory_guard as memory_guard
 from tools.memory_guard_core.paths import (
     active_guard_marker_dir,
@@ -68,6 +70,41 @@ def _patch_guard_popen_without_windows_job(
         memory_guard._win_job,
         "create_kill_on_close_job",
         lambda: None,
+    )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["terminate_watched_processes", "cleanup_tracked_orphans", "_terminate_single_pid"],
+)
+def test_guard_cleanup_does_not_rebind_shared_custody_callbacks(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    names = (
+        "_is_windows_process_model",
+        "sample_processes",
+        "sample_processes_posix",
+        "sample_processes_windows",
+        "sample_processes_windows_hard_timeout",
+        "_current_protected_process_group_ids",
+        "_filter_protected_watched_pids",
+        "terminate_watched_processes",
+    )
+    originals = {name: getattr(process_custody, name) for name in names}
+    for name, callback in originals.items():
+        # Restore custody even if a regressed facade mutates it before failing.
+        monkeypatch.setattr(process_custody, name, callback)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+    if operation == "cleanup_tracked_orphans":
+        memory_guard.cleanup_tracked_orphans(
+            0, tracker=process_custody.ProcessTreeTracker(0)
+        )
+    elif operation == "_terminate_single_pid":
+        memory_guard._terminate_single_pid(0, grace=0.0)
+    else:
+        memory_guard.terminate_watched_processes(0)
+    assert all(
+        getattr(process_custody, name) is value for name, value in originals.items()
     )
 
 
@@ -156,14 +193,10 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
     ).resolve(strict=False)
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
-        strict=False
-    )
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
-        strict=False
-    )
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
     state_root = tmp_path / "proof-control" / "memory_guard"
     assert active_guard_marker_dir(
         repo_root,
@@ -684,7 +717,7 @@ def test_process_tree_tracker_weak_reused_parent_cannot_admit_child() -> None:
 
 
 def test_windows_termination_requires_creation_identity(monkeypatch) -> None:
-    sample = memory_guard.ProcessSample(
+    sample = process_custody.ProcessSample(
         200,
         100,
         20,
@@ -692,19 +725,19 @@ def test_windows_termination_requires_creation_identity(monkeypatch) -> None:
         started_at_ns=None,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent.append((pid, sig)),
     )
 
-    report = memory_guard.terminate_watched_processes(
+    report = process_custody.terminate_watched_processes(
         100,
         samples={200: sample},
         watched={200},
-        expected_identities={200: memory_guard.process_identity(sample)},
+        expected_identities={200: process_custody.process_identity(sample)},
         root_owned=True,
     )
 
@@ -718,15 +751,15 @@ def test_windows_termination_requires_creation_identity(monkeypatch) -> None:
 def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
     monkeypatch,
 ) -> None:
-    tracker = memory_guard.ProcessTreeTracker(100)
-    original = memory_guard.ProcessSample(
+    tracker = process_custody.ProcessTreeTracker(100)
+    original = process_custody.ProcessSample(
         100,
         1,
         10,
         "guard.exe",
         started_at_ns=1,
     )
-    child = memory_guard.ProcessSample(
+    child = process_custody.ProcessSample(
         200,
         100,
         20,
@@ -734,7 +767,7 @@ def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
         started_at_ns=2,
     )
     tracker.update({100: original, 200: child})
-    reused = memory_guard.ProcessSample(
+    reused = process_custody.ProcessSample(
         200,
         4,
         20,
@@ -742,15 +775,15 @@ def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
         started_at_ns=3,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent.append((pid, sig)),
     )
 
-    report = memory_guard.terminate_watched_processes(
+    report = process_custody.terminate_watched_processes(
         100,
         samples={200: reused},
         watched={200},
@@ -768,7 +801,7 @@ def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
 def test_windows_termination_refuses_ambiguous_process_fanout(monkeypatch) -> None:
     root_pid = 100
     samples = {
-        pid: memory_guard.ProcessSample(
+        pid: process_custody.ProcessSample(
             pid,
             root_pid if pid != root_pid else 1,
             10,
@@ -777,17 +810,17 @@ def test_windows_termination_refuses_ambiguous_process_fanout(monkeypatch) -> No
         )
         for pid in range(
             root_pid,
-            root_pid + memory_guard.MAX_TERMINATION_PID_FANOUT + 1,
+            root_pid + process_custody.MAX_TERMINATION_PID_FANOUT + 1,
         )
     }
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(
-        memory_guard,
+        process_custody,
         "_terminate_pid_if_identity_action",
         lambda *_args, **_kwargs: pytest.fail("ambiguous tree must not be signaled"),
     )
 
-    report = memory_guard.terminate_watched_processes(
+    report = process_custody.terminate_watched_processes(
         root_pid,
         samples=samples,
         watched=set(samples),
@@ -863,59 +896,59 @@ def test_find_rss_violation_ignores_unobserved_reparented_process_group_member()
 def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 1, 20, "child", pgid=101),
-        102: memory_guard.ProcessSample(102, 1, 30, "grandchild", pgid=102),
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(101, 1, 20, "child", pgid=101),
+        102: process_custody.ProcessSample(102, 1, 30, "grandchild", pgid=102),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
-        if sig == memory_guard.signal.SIGTERM:
+        if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
-    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
+    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100, 101, 102},
         grace=0.001,
     )
 
-    assert (100, memory_guard.signal.SIGTERM) in sent_groups
-    assert (101, memory_guard.signal.SIGTERM) not in sent_groups
-    assert (102, memory_guard.signal.SIGTERM) not in sent_groups
-    assert (101, memory_guard.signal.SIGTERM) in sent_pids
-    assert (102, memory_guard.signal.SIGTERM) in sent_pids
-    assert (101, memory_guard.signal.SIGKILL) in sent_pids
-    assert (102, memory_guard.signal.SIGKILL) in sent_pids
+    assert (100, process_custody.signal.SIGTERM) in sent_groups
+    assert (101, process_custody.signal.SIGTERM) not in sent_groups
+    assert (102, process_custody.signal.SIGTERM) not in sent_groups
+    assert (101, process_custody.signal.SIGTERM) in sent_pids
+    assert (102, process_custody.signal.SIGTERM) in sent_pids
+    assert (101, process_custody.signal.SIGKILL) in sent_pids
+    assert (102, process_custody.signal.SIGKILL) in sent_pids
 
 
 def test_terminate_watched_processes_skips_host_control_plane_root_group(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(
             100,
             1,
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
         ),
-        101: memory_guard.ProcessSample(
+        101: process_custody.ProcessSample(
             101,
             100,
             250_000,
@@ -925,20 +958,20 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100, 101},
@@ -953,7 +986,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
     None
 ):
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     samples = {
         100: memory_guard.ProcessSample(
             100,
@@ -1008,7 +1041,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
     None
 ):
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     samples = {
         100: memory_guard.ProcessSample(
             100,
@@ -1062,7 +1095,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
 
 def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     samples = {
         100: memory_guard.ProcessSample(
             100,
@@ -1081,7 +1114,7 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
     }
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
     monkeypatch.setattr(
         memory_guard.os,
         "killpg",
@@ -1095,7 +1128,7 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
 
 def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     original = memory_guard.ProcessSample(
         101,
         100,
@@ -1132,7 +1165,7 @@ def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
 
 def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     original = memory_guard.ProcessSample(
         101,
         100,
@@ -1169,7 +1202,7 @@ def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
 
 def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     original = memory_guard.ProcessSample(
         101,
         100,
@@ -1207,11 +1240,11 @@ def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> N
 def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     observed = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(
             101,
             100,
             20,
@@ -1220,7 +1253,7 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
         ),
     }
     reused = {
-        101: memory_guard.ProcessSample(
+        101: process_custody.ProcessSample(
             101,
             1,
             20,
@@ -1230,20 +1263,20 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
-    report = memory_guard.terminate_watched_processes(
+    report = process_custody.terminate_watched_processes(
         100,
         samples=observed,
         watched={100, 101},
@@ -1264,11 +1297,11 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
 def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     observed = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(
             101,
             100,
             20,
@@ -1277,14 +1310,14 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
         ),
     }
     protected = {
-        100: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(
             100,
             1,
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
         ),
-        101: memory_guard.ProcessSample(
+        101: process_custody.ProcessSample(
             101,
             100,
             250_000,
@@ -1294,20 +1327,20 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
-    report = memory_guard.terminate_watched_processes(
+    report = process_custody.terminate_watched_processes(
         100,
         samples=observed,
         watched={100, 101},
@@ -1328,11 +1361,11 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
 def test_terminate_watched_processes_filters_protected_escaped_pid(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(
             101,
             100,
             500_000,
@@ -1342,103 +1375,101 @@ def test_terminate_watched_processes_filters_protected_escaped_pid(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
-        if sig == memory_guard.signal.SIGTERM:
+        if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
-    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100, 101},
         grace=0.001,
     )
 
-    assert (100, memory_guard.signal.SIGTERM) in sent_groups
+    assert (100, process_custody.signal.SIGTERM) in sent_groups
     assert all(pid != 101 for pid, _sig in sent_pids)
 
 
 def test_terminate_watched_processes_never_killpgs_shared_child_group(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=777),
+        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=777),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
-        if sig == memory_guard.signal.SIGTERM:
+        if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
-    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
+    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100, 101},
         grace=0.001,
     )
 
-    assert (100, memory_guard.signal.SIGTERM) in sent_groups
+    assert (100, process_custody.signal.SIGTERM) in sent_groups
     assert all(pgid != 777 for pgid, _sig in sent_groups)
-    assert (101, memory_guard.signal.SIGTERM) in sent_pids
-    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert (101, process_custody.signal.SIGTERM) in sent_pids
+    assert (101, process_custody.signal.SIGKILL) in sent_pids
     assert all(pid != 200 for pid, _sig in sent_pids)
 
 
 def test_terminate_watched_processes_never_kills_learned_group_peer(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
-    tracker = memory_guard.ProcessTreeTracker(100)
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
+    tracker = process_custody.ProcessTreeTracker(100)
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=777),
+        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=777),
     }
     assert tracker.update(samples) == {100, 101}
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
-        if sig == memory_guard.signal.SIGTERM:
+        if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
-    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
+    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         tracker=tracker,
@@ -1446,38 +1477,38 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
     )
 
     assert all(pgid != 777 for pgid, _sig in sent_groups)
-    assert (101, memory_guard.signal.SIGTERM) in sent_pids
-    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert (101, process_custody.signal.SIGTERM) in sent_pids
+    assert (101, process_custody.signal.SIGKILL) in sent_pids
     assert all(pid != 200 for pid, _sig in sent_pids)
 
 
 def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
-        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=100),
+        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=100),
+        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=100),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
-        if sig == memory_guard.signal.SIGTERM:
+        if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
-    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
+    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100, 101},
@@ -1485,25 +1516,25 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     )
 
     assert sent_groups == []
-    assert (100, memory_guard.signal.SIGKILL) in sent_pids
-    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert (100, process_custody.signal.SIGKILL) in sent_pids
+    assert (101, process_custody.signal.SIGKILL) in sent_pids
     assert all(pid != 200 for pid, _sig in sent_pids)
 
 
 def test_terminate_watched_processes_never_kills_host_control_plane_group(
     monkeypatch,
 ) -> None:
-    if memory_guard.os.name != "posix":
-        return
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
     samples = {
-        100: memory_guard.ProcessSample(
+        100: process_custody.ProcessSample(
             100,
             27404,
             20,
             "uv run python tests/molt_diff.py --jobs 1",
             pgid=700,
         ),
-        27404: memory_guard.ProcessSample(
+        27404: process_custody.ProcessSample(
             27404,
             27335,
             500_000,
@@ -1513,20 +1544,20 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
-    memory_guard.terminate_watched_processes(
+    process_custody.terminate_watched_processes(
         100,
         samples=samples,
         watched={100},
@@ -1814,6 +1845,7 @@ def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
         lambda resource, limits: calls.append((resource, limits)),
     )
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
+    monkeypatch.setattr(memory_guard.sys, "platform", "linux")
 
     memory_guard._apply_child_resource_limit(1024)
 
@@ -1930,9 +1962,7 @@ def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
     def interrupting_sampler():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         max_rss_kb=1_000_000,
@@ -2145,9 +2175,7 @@ def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
             raise AssertionError("a telemetry timeout must not kill the child")
 
     process = FakePopen()
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
 
     def timed_out_sampler() -> Mapping[int, memory_guard.ProcessSample]:
         raise memory_guard.WindowsProcessSnapshotTimeout("snapshot deadline")
@@ -2192,9 +2220,7 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
             return self.returncode
 
     process = FakePopen()
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     sample_calls = 0
 
     def sampler() -> Mapping[int, memory_guard.ProcessSample]:
@@ -2269,9 +2295,7 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
         process.returncode = -15
         return _guard_termination_report(reason="sampler_failure", root_pid=root)
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         memory_guard,
@@ -2348,9 +2372,7 @@ def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
             return {root_pid: root_sample}
         raise RuntimeError("persistent snapshot failure")
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(
         memory_guard,
         "terminate_watched_processes",
@@ -2463,9 +2485,7 @@ def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
             ),
         )
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     with pytest.raises(RuntimeError, match="post-loop snapshot failure"):
@@ -2557,9 +2577,7 @@ def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
             ),
         )
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     result = memory_guard.run_guarded(
@@ -2584,20 +2602,20 @@ def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
 
 
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
-    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker = process_custody.ProcessTreeTracker(100)
     assert tracker.known_pids is not None
     tracker.known_pids.update({200, 300})
     assert tracker.known_pgids is not None
     tracker.known_pgids.update({100, 300})
     samples = {
-        200: memory_guard.ProcessSample(
+        200: process_custody.ProcessSample(
             pid=200,
             ppid=1,
             pgid=100,
             rss_kb=64,
             command="worker same group",
         ),
-        300: memory_guard.ProcessSample(
+        300: process_custody.ProcessSample(
             pid=300,
             ppid=1,
             pgid=300,
@@ -2609,17 +2627,17 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
     report = _guard_termination_report(
         reason="tracked_orphan_cleanup",
         actions=(
-            memory_guard.GuardTerminationAction(
+            process_custody.GuardTerminationAction(
                 target_kind="process",
                 target_id=200,
-                signal=memory_guard.signal.SIGTERM,
+                signal=process_custody.signal.SIGTERM,
                 signal_name="SIGTERM",
                 result="completed_or_missing",
             ),
-            memory_guard.GuardTerminationAction(
+            process_custody.GuardTerminationAction(
                 target_kind="process",
                 target_id=300,
-                signal=memory_guard.signal.SIGTERM,
+                signal=process_custody.signal.SIGTERM,
                 signal_name="SIGTERM",
                 result="completed_or_missing",
             ),
@@ -2630,9 +2648,9 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
         calls.append({"root_pid": root_pid, **kwargs})
         return report
 
-    monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
+    monkeypatch.setattr(process_custody, "terminate_watched_processes", fake_terminate)
 
-    orphaned = memory_guard.cleanup_tracked_orphans(
+    orphaned = process_custody.cleanup_tracked_orphans(
         100,
         tracker=tracker,
         sampler=lambda: samples,
@@ -2650,20 +2668,20 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
 def test_cleanup_tracked_orphans_does_not_report_failed_actions_as_cleaned(
     monkeypatch,
 ) -> None:
-    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker = process_custody.ProcessTreeTracker(100)
     initial = {
-        100: memory_guard.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=1),
-        200: memory_guard.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=2),
+        100: process_custody.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=1),
+        200: process_custody.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=2),
     }
     tracker.update(initial)
     live = {200: initial[200]}
     report = _guard_termination_report(
         reason="tracked_orphan_cleanup",
         actions=(
-            memory_guard.GuardTerminationAction(
+            process_custody.GuardTerminationAction(
                 target_kind="process",
                 target_id=200,
-                signal=memory_guard.signal.SIGTERM,
+                signal=process_custody.signal.SIGTERM,
                 signal_name="SIGTERM",
                 result="failed",
                 error="access denied",
@@ -2671,12 +2689,12 @@ def test_cleanup_tracked_orphans_does_not_report_failed_actions_as_cleaned(
         ),
     )
     monkeypatch.setattr(
-        memory_guard,
+        process_custody,
         "terminate_watched_processes",
         lambda *_args, **_kwargs: report,
     )
 
-    result = memory_guard.cleanup_tracked_orphans(
+    result = process_custody.cleanup_tracked_orphans(
         100,
         tracker=tracker,
         sampler=lambda: live,
@@ -2729,7 +2747,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
     monkeypatch,
 ) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     root = memory_guard.ROOT.as_posix()
     tracker = memory_guard.ProcessTreeTracker(100)
     tracker.update(
@@ -2861,7 +2879,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
     monkeypatch,
 ) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     root = memory_guard.ROOT.as_posix()
     tracker = memory_guard.ProcessTreeTracker(100)
     tracker.update(
@@ -3015,11 +3033,11 @@ def test_terminate_verified_pid_preserves_host_control_plane(
 def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker = process_custody.ProcessTreeTracker(100)
     assert tracker.known_pids is not None
     tracker.known_pids.add(200)
     remembered_samples = {
-        200: memory_guard.ProcessSample(
+        200: process_custody.ProcessSample(
             pid=200,
             ppid=1,
             pgid=None,
@@ -3029,21 +3047,21 @@ def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
     }
     calls: list[dict[str, object]] = []
 
-    def failing_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+    def failing_sampler() -> Mapping[int, process_custody.ProcessSample]:
         raise RuntimeError("sampler unavailable")
 
     report = _guard_termination_report(reason="tracked_orphan_cleanup")
 
     def fake_terminate(
         root_pid: int, **kwargs: object
-    ) -> memory_guard.GuardTerminationReport:
+    ) -> process_custody.GuardTerminationReport:
         calls.append({"root_pid": root_pid, **kwargs})
         return report
 
-    monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
+    monkeypatch.setattr(process_custody, "terminate_watched_processes", fake_terminate)
 
     with pytest.raises(RuntimeError, match="sampler unavailable"):
-        memory_guard.cleanup_tracked_orphans(
+        process_custody.cleanup_tracked_orphans(
             100,
             tracker=tracker,
             sampler=failing_sampler,
@@ -3058,26 +3076,26 @@ def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
 def test_windows_cleanup_sampler_failure_never_signals_remembered_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tracker = memory_guard.ProcessTreeTracker(100)
-    root = memory_guard.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=100)
-    child = memory_guard.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=200)
+    tracker = process_custody.ProcessTreeTracker(100)
+    root = process_custody.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=100)
+    child = process_custody.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=200)
     remembered = {100: root, 200: child}
     tracker.update(remembered)
     sent: list[tuple[int, int]] = []
 
-    def failing_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+    def failing_sampler() -> Mapping[int, process_custody.ProcessSample]:
         raise RuntimeError("live sampler unavailable")
 
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
     monkeypatch.setattr(
-        memory_guard.os,
+        process_custody.os,
         "kill",
         lambda pid, sig: sent.append((pid, sig)),
     )
 
     with pytest.raises(RuntimeError, match="live sampler unavailable"):
-        memory_guard.cleanup_tracked_orphans(
+        process_custody.cleanup_tracked_orphans(
             100,
             tracker=tracker,
             sampler=failing_sampler,
@@ -3100,7 +3118,7 @@ def test_pid_permission_error_is_live_unknown_not_completed(
         started_at_ns=333,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
     monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
 
@@ -3125,7 +3143,7 @@ def test_pid_permission_error_is_live_unknown_not_completed(
 def test_process_group_permission_error_is_live_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
     monkeypatch.setattr(
         memory_guard.os,
         "killpg",
@@ -3139,7 +3157,7 @@ def test_process_group_permission_error_is_live_unknown(
 def test_completed_process_group_does_not_emit_redundant_member_kill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    custody = memory_guard._process_custody
+    custody = process_custody
     samples = {
         100: memory_guard.ProcessSample(
             100, 1, 10, "root", pgid=100, started_at_ns=100
@@ -3208,9 +3226,7 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     # Exercise the explicit no-Job fallback; a live Windows Job is itself the
     # exact descendant cleanup authority and intentionally bypasses PID-table
     # orphan cleanup.
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -3246,9 +3262,7 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
         "cleanup_repo_scoped_orphans_since_baseline",
         fake_cleanup,
     )
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -3412,7 +3426,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
 
 def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
     if memory_guard.os.name != "posix" or not hasattr(memory_guard.os, "wait4"):
-        return
+        pytest.skip("requires POSIX wait4 resource accounting")
     script = "import os\nbuf = bytearray(192 * 1024 * 1024)\nos._exit(0)"
 
     result = memory_guard.run_guarded(
@@ -3792,9 +3806,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         )
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     monkeypatch.setattr(
         memory_guard,
         "_quarantine_cargo_incremental_state",
@@ -3889,7 +3901,7 @@ def test_main_writes_summary_when_guard_parent_receives_sigterm(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     summary_path = tmp_path / "guard-sigterm-summary.json"
 
     rc = memory_guard.main(
@@ -3936,7 +3948,7 @@ def test_main_writes_summary_when_guard_parent_receives_sigterm(
 
 def test_run_guarded_restores_signal_handlers_after_post_launch_exception() -> None:
     if memory_guard.os.name != "posix":
-        return
+        pytest.skip("requires POSIX process custody")
     watched_signals = [
         sig
         for sig in (
@@ -3967,6 +3979,39 @@ def test_run_guarded_restores_signal_handlers_after_post_launch_exception() -> N
 
     assert sampler_calls >= 2
     assert {sig: signal.getsignal(sig) for sig in watched_signals} == previous_handlers
+
+
+@pytest.mark.parametrize("phase", ["running", "terminal"])
+@pytest.mark.parametrize("defect", ["missing", "unexpected"])
+def test_guard_report_context_rejects_missing_or_unknown_fields_before_write(
+    tmp_path: Path, phase: str, defect: str
+) -> None:
+    path = tmp_path / "invalid-summary.json"
+    context = {
+        "command": ["subject"],
+        "cwd": None,
+        "environ": {},
+        "max_rss_kb": 1024,
+        "max_total_rss_kb": None,
+        "max_global_rss_kb": None,
+        "child_rlimit_kb": None,
+        "timeout_s": None,
+        "poll_interval_s": 0.1,
+    }
+    if defect == "missing":
+        del context["max_rss_kb"]
+    else:
+        context["max_rs_kb"] = 1024
+    with pytest.raises(TypeError, match="invalid guard report context"):
+        if phase == "running":
+            memory_guard._write_running_summary_json(str(path), **context)
+        else:
+            memory_guard._write_summary_json(
+                str(path),
+                result=memory_guard.GuardResult(0, None, None, None, "", ""),
+                **context,
+            )
+    assert not path.exists()
 
 
 def test_summary_json_keeps_rss_incident_primary_when_guard_signal_is_secondary(
@@ -4489,9 +4534,15 @@ def test_repro_context_platform_detail_does_not_spawn_subprocess(
     assert repro["host"]["platform_detail"]
 
 
+@pytest.mark.parametrize(
+    ("record_pid", "matches"),
+    [(4321, True), ("4321", False), (4321.0, False), (True, False), (None, False)],
+)
 def test_repro_context_reads_xdist_worker_current_test_sidecars(
     tmp_path: Path,
     monkeypatch,
+    record_pid: object,
+    matches: bool,
 ) -> None:
     current_root = tmp_path / "pytest-memory-guard"
     aggregate_path = current_root / "pytest-current-test.json"
@@ -4502,7 +4553,7 @@ def test_repro_context_reads_xdist_worker_current_test_sidecars(
         json.dumps(
             {
                 "schema_version": 1,
-                "pid": 4321,
+                "pid": record_pid,
                 "nodeid": "tests/test_xdist.py::test_memory",
                 "phase": "call",
                 "xdist_worker": "gw0",
@@ -4545,7 +4596,7 @@ def test_repro_context_reads_xdist_worker_current_test_sidecars(
     current_test = repro["pytest"]["current_test_file"]
     assert current_test["missing"] is True
     records = current_test["worker_records"]
-    assert records[0]["incident_match"] == "pid_lineage"
+    assert records[0].get("incident_match") == ("pid_lineage" if matches else None)
     assert records[0]["payload"]["nodeid"] == "tests/test_xdist.py::test_memory"
 
 
@@ -5090,15 +5141,13 @@ def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(
     monkeypatch,
 ) -> None:
     if memory_guard.os.name != "nt":
-        return
+        pytest.skip("requires Windows process-handle accounting")
     monkeypatch.setattr(
         memory_guard,
         "windows_process_handle_rss_kb",
         lambda _handle: 12_345,
     )
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "pass"],

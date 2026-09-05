@@ -63,6 +63,11 @@ _UNRESOLVED_CONSTANT = object()
 
 
 @dataclass(frozen=True, slots=True)
+class _RawCallable:
+    method: str
+
+
+@dataclass(frozen=True, slots=True)
 class RawSubprocessCall:
     path: str
     line: int
@@ -930,11 +935,33 @@ class _SubprocessVisitor(ast.NodeVisitor):
                 if node.id in scope:
                     value = scope[node.id]
                     return None if value is _UNRESOLVED_CONSTANT else value
+            method = self.direct_imports.get(node.id)
+            if method is not None:
+                return _RawCallable(method)
+            method = self.direct_os_imports.get(node.id)
+            if method is not None:
+                return _RawCallable(f"os.{method}")
             return None
         if isinstance(node, (ast.List, ast.Tuple)):
             items = [self._constant_value(item) for item in node.elts]
             if all(isinstance(item, str) for item in items):
                 return tuple(items)
+        if isinstance(node, ast.Attribute):
+            method = self._raw_call_method(node)
+            return None if method is None else _RawCallable(method)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and not any("getattr" in scope for scope in self.constant_scopes)
+            and 2 <= len(node.args) <= 3
+            and not node.keywords
+        ):
+            attribute = self._constant_value(node.args[1])
+            if isinstance(attribute, str):
+                return self._constant_value(
+                    ast.Attribute(value=node.args[0], attr=attribute, ctx=ast.Load())
+                )
         return None
 
     def _executed_constant_command(
@@ -947,8 +974,13 @@ class _SubprocessVisitor(ast.NodeVisitor):
         value = self._constant_value(node.args[0])
         if isinstance(value, str):
             return value
-        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
-            return " ".join(value)
+        if isinstance(value, tuple):
+            words: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    return None
+                words.append(item)
+            return " ".join(words)
         return None
 
     def _is_shell_execution(self, node: ast.Call, *, method: str | None) -> bool:
@@ -963,6 +995,14 @@ class _SubprocessVisitor(ast.NodeVisitor):
         return False
 
     def _raw_call_method(self, node: ast.expr) -> str | None:
+        if isinstance(node, (ast.Name, ast.Call)):
+            value = self._constant_value(node)
+            if isinstance(value, _RawCallable):
+                return value.method
+            if isinstance(node, ast.Name) and any(
+                node.id in scope for scope in self.constant_scopes
+            ):
+                return None
         method = self._subprocess_method(node)
         if method is not None:
             return method

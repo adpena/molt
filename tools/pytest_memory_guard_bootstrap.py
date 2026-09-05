@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import os
 import shlex
@@ -143,7 +144,7 @@ def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
             os._exit(127)
         _flush_standard_streams()
         os._exit(_process_exit_code(completed.returncode))
-    os.execvpe(argv[0], argv, env)
+    os.execvpe(argv[0], list(argv), env)
 
 
 def _orig_argv_pytest_module_args(orig: Sequence[str]) -> tuple[str, ...] | None:
@@ -943,19 +944,24 @@ def install_windows_pytest_tempdir_mode_patch() -> bool:
     else:
         original = current
 
-        def make_numbered_dir_windows_readable(root, prefix, mode=0o700):
+        @functools.wraps(original)
+        def make_numbered_dir_windows_readable(
+            root: Path, prefix: str, mode: int = 0o700
+        ) -> Path:
             safe_mode = 0o755 if mode == 0o700 else mode
             return original(root, prefix, mode=safe_mode)
 
-        make_numbered_dir_windows_readable._molt_windows_tempdir_mode_patch = True
+        setattr(
+            make_numbered_dir_windows_readable, "_molt_windows_tempdir_mode_patch", True
+        )
         patched = make_numbered_dir_windows_readable
 
     changed = (
         pytest_pathlib.make_numbered_dir is not patched
         or pytest_tmpdir.make_numbered_dir is not patched
     )
-    pytest_pathlib.make_numbered_dir = patched
-    pytest_tmpdir.make_numbered_dir = patched
+    setattr(pytest_pathlib, "make_numbered_dir", patched)
+    setattr(pytest_tmpdir, "make_numbered_dir", patched)
     return changed
 
 
@@ -998,14 +1004,13 @@ def ensure_pytest_memory_guard(
 
 
 def pytest_load_initial_conftests(
-    early_config: object, parser: object, args: Sequence[str]
+    early_config: object, parser: object, args: list[str]
 ) -> None:
     del parser
     install_windows_pytest_custody_roots()
     install_windows_pytest_tempdir_mode_patch()
     install_windows_pytest_cache_dir_config(early_config, args)
-    if isinstance(args, list):
-        install_windows_pytest_cache_dir_arg(args)
+    install_windows_pytest_cache_dir_arg(args)
     ensure_pytest_memory_guard(pytest_args=tuple(args))
 
 

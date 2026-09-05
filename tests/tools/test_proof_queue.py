@@ -12834,6 +12834,97 @@ def test_proof_queue_named_spec_locked_environment_authority_is_generic(
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize(
+    ("mode", "queue_rc", "run_id", "expected_rc"),
+    [
+        ("inline", 0, "run", 7),
+        ("queue", 0, "run", 0),
+        ("detach", 0, "run", 0),
+        ("detach", 2, None, 2),
+        ("detach", 0, None, 0),
+    ],
+)
+def test_proof_queue_named_spec_dispatch_has_one_submission_path(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    queue_rc: int,
+    run_id: str | None,
+    expected_rc: int,
+) -> None:
+    spec = pact._pact_witness_oracle_spec(timeout=12.0)
+    spec["notes"] = ["canonical note"]
+    args = argparse.Namespace(
+        env=[],
+        note=["operator note"],
+        print_spec=False,
+        queue_only=mode == "queue",
+        detach=mode == "detach",
+    )
+    calls = []
+    connection = SimpleNamespace(close=lambda: calls.append(("close", {})))
+
+    def queue(_args, **kwargs):
+        calls.append(("queue", kwargs))
+        return queue_rc, run_id
+
+    def run(_args, **kwargs):
+        calls.append(("run", kwargs))
+        return 7
+
+    def dispatch(_args, conn, **kwargs):
+        assert conn is connection
+        calls.append(("dispatch", kwargs))
+        return None
+
+    monkeypatch.setattr(runner, "_queue_one", queue)
+    monkeypatch.setattr(runner, "_run_one", run)
+    monkeypatch.setattr(runner, "_dispatch_detached_runner", dispatch)
+    monkeypatch.setattr(state, "_db_path", lambda _args: Path("unused.sqlite3"))
+    monkeypatch.setattr(state, "_connect", lambda _path: connection)
+
+    assert pact._run_named_spec(args, spec) == expected_rc
+    should_dispatch = mode == "detach" and queue_rc == 0 and run_id is not None
+    assert [kind for kind, _ in calls] == (
+        ["run"]
+        if mode == "inline"
+        else ["queue", "dispatch", "close"]
+        if should_dispatch
+        else ["queue"]
+    )
+    submission = calls[0][1]
+    for name in (
+        "logical_id",
+        "command",
+        "resource_family",
+        "contention_key",
+        "scopes",
+    ):
+        assert submission[name] == spec[name]
+    assert submission["initial_notes"] == ["canonical note", "operator note"]
+    assert spec["notes"] == ["canonical note"]
+    if should_dispatch:
+        assert calls[1][1] == {"run_id": run_id, "timeout": 12.0}
+
+
+def test_proof_queue_named_spec_closes_connection_when_dispatch_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = []
+    connection = SimpleNamespace(close=lambda: closed.append(True))
+    args = argparse.Namespace(env=[], print_spec=False, detach=True)
+
+    def dispatch(*_args, **_kwargs):
+        raise RuntimeError("dispatch failed")
+
+    monkeypatch.setattr(runner, "_queue_one", lambda *_args, **_kwargs: (0, "run"))
+    monkeypatch.setattr(runner, "_dispatch_detached_runner", dispatch)
+    monkeypatch.setattr(state, "_db_path", lambda _args: Path("unused.sqlite3"))
+    monkeypatch.setattr(state, "_connect", lambda _path: connection)
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        pact._run_named_spec(args, pact._pact_witness_oracle_spec())
+    assert closed == [True]
+
+
 def test_proof_queue_named_spec_requires_launch_value_for_every_locked_name() -> None:
     spec = {
         "logical_id": "generic-missing-locked-value",

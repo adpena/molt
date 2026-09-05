@@ -24,9 +24,11 @@ from tools import pact_witness_receipt as pwr
 from tools import perf_authority as pa
 from tools import release_criterion_receipt as rcr
 from tools.git_identity import is_git_object_id
+from tools.command_execution import CommandExecutor
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_COMMANDS = CommandExecutor.for_file(__file__)
 SCHEMA_VERSION = 3
 KIND = "molt-release-exit"
 STATUS_PASS = "PASS"
@@ -111,7 +113,7 @@ def _nonnegative_int(value: object) -> bool:
 
 def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
+        return _COMMANDS.run(
             ["git", "-C", str(repo_root), *args],
             check=False,
             capture_output=True,
