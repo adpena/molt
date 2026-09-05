@@ -13,6 +13,8 @@ import tempfile
 from typing import Mapping
 import zlib
 
+from molt import file_publication
+
 
 ARTIFACT_SCHEMA = "molt.proof-custody-artifact.v1"
 REF_SCHEMA = "molt.proof-custody-artifact-ref.v1"
@@ -26,23 +28,6 @@ MAX_COMPRESSED_BYTES = MAX_UNCOMPRESSED_BYTES + 1024 * 1024
 _READ_CHUNK_BYTES = 1024 * 1024
 
 
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _is_link_like(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction is not None and is_junction())
-
-
 def _durable_makedirs(path: Path) -> None:
     """Create a directory chain and durably publish every new entry on POSIX."""
     missing: list[Path] = []
@@ -53,36 +38,27 @@ def _durable_makedirs(path: Path) -> None:
         if parent == cursor:
             break
         cursor = parent
-    if cursor.exists() and (not cursor.is_dir() or _is_link_like(cursor)):
+    if cursor.exists() and (
+        not cursor.is_dir() or file_publication.is_link_like(cursor)
+    ):
         raise ValueError(f"proof custody directory is not a real directory: {cursor}")
     for directory in reversed(missing):
         try:
             directory.mkdir()
         except FileExistsError:
             pass
-        if not directory.is_dir() or _is_link_like(directory):
+        if not directory.is_dir() or file_publication.is_link_like(directory):
             raise ValueError(
                 f"proof custody directory is not a real directory: {directory}"
             )
         # Persist both the new directory inode and its parent's directory entry.
-        _fsync_directory(directory)
-        _fsync_directory(directory.parent)
-
-
-def _reject_link_components(path: Path) -> None:
-    anchor = Path(path.anchor)
-    cursor = anchor
-    for part in path.parts[1:] if path.anchor else path.parts:
-        cursor /= part
-        if cursor.exists() and _is_link_like(cursor):
-            raise ValueError(
-                f"proof custody path traverses a link or junction: {cursor}"
-            )
+        file_publication.fsync_directory(directory)
+        file_publication.fsync_directory(directory.parent)
 
 
 def _canonical_root(root: Path, *, create: bool) -> Path:
     lexical = root.expanduser().absolute()
-    _reject_link_components(lexical)
+    file_publication.resolve_owned_path(lexical)
     if create:
         canonical = lexical.resolve()
         _durable_makedirs(canonical)
@@ -91,9 +67,9 @@ def _canonical_root(root: Path, *, create: bool) -> Path:
             canonical = lexical.resolve(strict=True)
         except FileNotFoundError as exc:
             raise ValueError("proof custody expected CAS root does not exist") from exc
-    if not canonical.is_dir() or _is_link_like(canonical):
+    if not canonical.is_dir() or file_publication.is_link_like(canonical):
         raise ValueError("proof custody CAS root is not a real directory")
-    _reject_link_components(lexical)
+    file_publication.resolve_owned_path(lexical)
     return canonical
 
 
@@ -101,7 +77,7 @@ def _cas_directory(root: Path, *parts: str) -> Path:
     directory = root
     for part in parts:
         directory /= part
-        if directory.exists() and _is_link_like(directory):
+        if file_publication.is_link_like(directory):
             raise ValueError(
                 f"proof custody CAS namespace contains a link: {directory}"
             )
@@ -130,7 +106,7 @@ def _require_canonical_path(path: str, expected: Path, root: Path) -> Path:
     cursor = root
     for part in relative.parts:
         cursor /= part
-        if _is_link_like(cursor):
+        if file_publication.is_link_like(cursor):
             raise ValueError("proof custody reference traverses a link or junction")
     resolved = supplied.resolve(strict=True)
     if resolved != expected or not resolved.is_file():
@@ -147,42 +123,10 @@ def _file_path(root: Path, sha256: str, name: str, executable: bool) -> Path:
     return root / "files" / "sha256" / mode / sha256[:2] / sha256[2:] / name
 
 
-def _durable_replace(source: Path, target: Path) -> None:
-    """Atomically publish a file and durably commit its directory entry."""
-    if os.name == "nt":
-        import ctypes
-
-        move = ctypes.windll.kernel32.MoveFileExW
-        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
-        move.restype = ctypes.c_int
-        # REPLACE_EXISTING | WRITE_THROUGH. Both paths are same-volume staging.
-        if not move(str(source), str(target), 0x1 | 0x8):
-            raise ctypes.WinError()
-        return
-    os.replace(source, target)
-    directory = os.open(target.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-
-
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Write one same-volume, fsync-sealed atomic terminal artifact."""
     _durable_makedirs(path.parent)
-    fd, temporary_raw = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_raw)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _durable_replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+    file_publication.atomic_write_bytes(path, payload)
 
 
 @dataclass(frozen=True)
@@ -259,11 +203,9 @@ def put_json(root: Path, payload: Mapping[str, object]) -> ArtifactRef:
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(compressed)
-                stream.flush()
-                os.fsync(stream.fileno())
             try:
-                _durable_replace(temporary, target)
-            except PermissionError:
+                file_publication.durable_publish_exclusive(temporary, target)
+            except FileExistsError:
                 if not target.exists():
                     raise
         finally:
@@ -318,15 +260,13 @@ def put_file(
                     output.write(chunk)
                     copied.update(chunk)
                     copied_size += len(chunk)
-                output.flush()
-                os.fsync(output.fileno())
             if copied.hexdigest() != sha256 or copied_size != size:
                 raise ValueError("proof custody source changed while being published")
             if os.name != "nt":
                 temporary.chmod(0o555 if executable else 0o444)
             try:
-                _durable_replace(temporary, target)
-            except PermissionError:
+                file_publication.durable_publish_exclusive(temporary, target)
+            except FileExistsError:
                 if not target.exists():
                     raise
         finally:
@@ -344,20 +284,12 @@ def parse_ref(raw: Mapping[str, object]) -> ArtifactRef:
         raise ValueError("proof custody artifact reference schema mismatch")
     if raw.get("media_type") != JSON_GZIP_MEDIA_TYPE:
         raise ValueError("proof custody artifact reference media type mismatch")
-    values = {
-        name: raw.get(name)
-        for name in (
-            "path",
-            "blob_sha256",
-            "semantic_sha256",
-            "compressed_bytes",
-            "uncompressed_bytes",
-        )
-    }
-    if not isinstance(values["path"], str):
+    path = raw.get("path")
+    if not isinstance(path, str):
         raise ValueError("proof custody artifact reference has no path")
+    digests: dict[str, str] = {}
     for name in ("blob_sha256", "semantic_sha256"):
-        value = values[name]
+        value = raw.get(name)
         if (
             not isinstance(value, str)
             or len(value) != 64
@@ -365,17 +297,26 @@ def parse_ref(raw: Mapping[str, object]) -> ArtifactRef:
             or any(character not in "0123456789abcdef" for character in value)
         ):
             raise ValueError(f"proof custody artifact reference has invalid {name}")
+        digests[name] = value
+    sizes: dict[str, int] = {}
     for name in ("compressed_bytes", "uncompressed_bytes"):
-        value = values[name]
+        value = raw.get(name)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"proof custody artifact reference has invalid {name}")
-    if int(values["uncompressed_bytes"]) > MAX_UNCOMPRESSED_BYTES:
+        sizes[name] = value
+    if sizes["uncompressed_bytes"] > MAX_UNCOMPRESSED_BYTES:
         raise ValueError("proof custody artifact reference exceeds the size ceiling")
-    if int(values["compressed_bytes"]) > MAX_COMPRESSED_BYTES:
+    if sizes["compressed_bytes"] > MAX_COMPRESSED_BYTES:
         raise ValueError(
             "proof custody artifact reference exceeds the compressed size ceiling"
         )
-    return ArtifactRef(**values)  # type: ignore[arg-type]
+    return ArtifactRef(
+        path=path,
+        blob_sha256=digests["blob_sha256"],
+        semantic_sha256=digests["semantic_sha256"],
+        compressed_bytes=sizes["compressed_bytes"],
+        uncompressed_bytes=sizes["uncompressed_bytes"],
+    )
 
 
 def _read_compressed_artifact(path: Path, reference: ArtifactRef) -> tuple[bytes, str]:

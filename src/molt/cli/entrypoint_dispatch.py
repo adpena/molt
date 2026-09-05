@@ -39,7 +39,13 @@ from molt.cli.output import fail as _fail
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
 from molt.cli.queue_cli import handle_queue_command
-from molt.cli.source_extension_producer import produce_source_extension_set
+from molt.cli.source_extension_candidate_promotion import (
+    publish_source_extension_set_candidate,
+)
+from molt.cli.source_extension_producer import (
+    attest_source_extension_set_candidate,
+    produce_source_extension_set,
+)
 from molt.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
@@ -513,6 +519,28 @@ def _dispatch_entrypoint_command(
                 ),
                 json_output=args.json,
             )
+        if args.extension_command == "attest-set-candidate":
+            return attest_source_extension_set_candidate(
+                package=args.package,
+                package_version=args.package_version,
+                module_set=args.module_set,
+                python_version=args.python_version,
+                source=args.source,
+                build_root=args.build_root,
+                output=args.output,
+                target=args.target,
+                abi_tier=args.abi_tier,
+                json_output=args.json,
+            )
+        if args.extension_command == "publish-set-candidate":
+            return publish_source_extension_set_candidate(
+                candidate=args.candidate,
+                expected_incumbent_seal_sha256=(args.expected_incumbent_seal_sha256),
+                expected_incumbent_identity_sha256=(
+                    args.expected_incumbent_identity_sha256
+                ),
+                json_output=args.json,
+            )
         if args.extension_command == "audit":
             require_abi = (
                 args.require_abi
@@ -598,7 +626,7 @@ def _dispatch_entrypoint_command(
             )
         return _fail(
             "Missing extension subcommand "
-            "(build|metadata|produce-set|audit|seal|scan).",
+            "(build|metadata|produce-set|attest-set-candidate|publish-set-candidate|audit|seal|scan).",
             args.json,
             command="extension",
         )

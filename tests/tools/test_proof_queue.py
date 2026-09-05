@@ -45,13 +45,11 @@ from molt.cli.source_extension_object_closure_schema import (
 )
 from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-    _source_extension_set_identity,
 )
 import molt.cli.source_extension_set_validation as set_validation
 from molt.cli.source_extension_target import source_extension_artifact_suffix
 from molt.cli.source_extension_toolchain import MOLT_PKGCONF_REQUIREMENT
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
-from molt.cli.source_package_seal import verify_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_witness_variant,
@@ -13709,17 +13707,13 @@ def _write_current_scientific_seal(
     )
     _publish_scientific_fixture_payload(root, destination, transaction_root)
     shutil.rmtree(root)
-    seal = verify_source_package_seal(destination)
     try:
-        identity = _source_extension_set_identity(
-            seal.payload_root,
-            inventory_sha256={
-                entry.relative_path: entry.sha256 for entry in seal.files
-            },
+        receipt = set_validation.validate_source_extension_set_seal_contents(
+            destination
         )
     except ValueError:
         return None
-    return str(identity["canonical_sha256"])
+    return receipt.canonical_identity.canonical_sha256
 
 
 def _patch_pact_expected_identities(

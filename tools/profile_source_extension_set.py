@@ -15,7 +15,6 @@ import platform
 import sys
 from pathlib import Path
 
-from molt.cli.extension_manifest import _host_target_triple
 from molt.cli.source_package_seal import verify_source_package_seal
 from molt.cli.source_extension_set_registry import (
     SourceExtensionVariant,
@@ -30,7 +29,7 @@ from tools.perf_calibration import run_and_measure
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+    from command_execution import CommandExecutor
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -82,7 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     target_plan = resolve_source_extension_target_plan(
         args.target,
-        host_target_triple=_host_target_triple(),
         host_platform=sys.platform,
         host_arch=platform.machine(),
     )

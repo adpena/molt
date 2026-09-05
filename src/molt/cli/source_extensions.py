@@ -1985,6 +1985,12 @@ def validate_source_extension_artifact_object_closure(
             return [
                 f"cannot read WASM linking/import closure from {artifact_path.name}"
             ]
+        if inspection.artifact_bytes is None or hashlib.sha256(
+            inspection.artifact_bytes
+        ).hexdigest() != manifest.get("extension_sha256"):
+            return [
+                f"WASM inspected bytes differ from extension_sha256: {artifact_path.name}"
+            ]
         actual_defined = set(inspection.defined_symbols)
         actual_undefined = set(inspection.undefined_symbols)
         actual_defined_functions = set(inspection.defined_function_symbols)

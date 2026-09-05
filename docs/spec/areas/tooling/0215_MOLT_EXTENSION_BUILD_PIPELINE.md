@@ -127,9 +127,59 @@ the canonical Molt custody root at
 `package-seals/<package>/<version>/variants/cpython-<version>/<abi-tier>/`
 `<target-triple>/<seal-name>`. The set manifest independently attests the same
 CPython/ABI/target coordinate, and every extension sidecar contains an explicit
-link-requirement object even when its argument/input lists are empty. Publication is a
-same-volume directory replacement with rollback of the prior complete root;
-partial sets are never visible.
+link-requirement object even when its argument/input lists are empty. Publication
+uses same-volume exclusive directory installation. Replacements require the
+expected incumbent identity; the producer also pins its observed seal digest
+under the destination lock before building. The shared publication journal binds
+both incumbent and candidate seal/identity digests. Failures after retirement
+restore the exact incumbent and preserve quarantined candidate evidence; partial
+sets are never published. A replacement can temporarily leave the canonical name
+absent between retirement and installation; this is not an atomic directory swap.
+
+### 2.4 Detached candidate attestation and registered promotion
+
+`molt extension attest-set-candidate` uses the same build arguments and build
+implementation as `produce-set`, plus `--output <path>`. Output must be under the
+canonical `package-candidates` root, disjoint from source/build roots and outside
+`package-seals`. It needs a registered package-set contract, but not a registered
+candidate identity. It never acquires canonical publication custody. Its complete
+bundle contains only `candidate-seal/` and `candidate-attestation.json`; the report
+is recomputable from the sealed bytes and records that publication was not performed.
+
+After reviewing and registering that identity, run
+`molt extension publish-set-candidate --candidate <bundle>`. This command has no
+source/build/toolchain arguments and never rebuilds or reexecutes the producer.
+It verifies the report and exact candidate against the current registry before
+acquiring the destination lock. Replacing an incumbent requires both
+`--expected-incumbent-seal-sha256` and `--expected-incumbent-identity-sha256`.
+Only identical seal **and** canonical identity are a no-op; a changed seal with
+the same semantic identity still installs the exact admitted candidate.
+
+`source_extension_set_validation` owns one pipeline: recorded structural facts,
+immutable receipt, then current-registry admission. Historical incumbents use the
+same structural checks with explicitly pinned hashes, not today's package build
+contract. Identity computation consumes typed snapshots and performs no filesystem
+discovery. Relocation rebinds receipts only after verifying the identical seal
+hash and inventory; an immutable receipt does not make its backing filesystem immutable.
+Sealed support entries contain only destination paths and checksums bound to that
+inventory; producer-side source remapping is not admitted. Execution metadata is
+parsed once for both content identity and direct-function export checks. Artifact
+inspection is enclosed by stable file/change-time custody, and WASM symbol facts
+are bound to the exact inspected bytes, including when content is restored after
+a transient mutation.
+
+Candidate journals survive bundle installation and are completed or recovered
+under the candidate-name lock. Shared publication recovery handles both producer
+and promotion transactions. Terminal aborted records are historical evidence, not
+perpetual authority over future canonical contents. Unjournaled transaction roots
+are preserved with an explicit review diagnostic, never deleted by name alone.
+The `molt.file_publication` owner supplies cross-platform file/directory barriers,
+exclusive installation and quarantine moves for CLI, package-seal and proof-CAS
+consumers. Post-commit durability/cleanup failures are reported without claiming
+that a successful namespace commit rolled back.
+
+These artifact/custody checks do not establish compiled native/WASM conformance:
+execution claims still require replayable target/version/OS/architecture receipts.
 
 These compilers, generators, and source-producer environments are maintainer and
 source-build tooling. End users running shipped Molt binaries do not need uv,

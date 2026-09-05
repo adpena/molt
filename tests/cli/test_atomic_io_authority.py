@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import atomic_io
+from molt import file_publication
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
 from molt.wasm_artifact import (
@@ -117,7 +118,7 @@ def test_windows_namespace_commit_requests_replace_and_write_through(
         calls.append((src, dst, flags))
         return 1
 
-    atomic_io._move_file_ex_write_through(
+    file_publication.move_file_ex_write_through(
         staged,
         destination,
         move_file_ex=fake_move_file_ex,
@@ -127,7 +128,8 @@ def test_windows_namespace_commit_requests_replace_and_write_through(
         (
             str(staged),
             str(destination),
-            atomic_io._MOVEFILE_REPLACE_EXISTING | atomic_io._MOVEFILE_WRITE_THROUGH,
+            file_publication.MOVEFILE_REPLACE_EXISTING
+            | file_publication.MOVEFILE_WRITE_THROUGH,
         )
     ]
 
@@ -145,9 +147,9 @@ def test_windows_write_through_replace_retries_only_sharing_violations(
             error.winerror = 32  # type: ignore[attr-defined]
             raise error
 
-    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(file_publication.time, "sleep", lambda _seconds: None)
 
-    atomic_io._windows_replace_write_through(
+    file_publication.windows_replace_write_through(
         tmp_path / "stage",
         tmp_path / "destination",
         replace_once=transient,
@@ -163,14 +165,14 @@ def test_readonly_copy_applies_final_mode_after_durability(
     destination = tmp_path / "destination"
     source.write_bytes(b"immutable")
     source.chmod(stat.S_IREAD)
-    original = atomic_io._durable_replace
+    original = file_publication.durable_replace
     staged_modes: list[int] = []
 
     def observe(staged: Path, target: Path) -> None:
         staged_modes.append(staged.stat().st_mode)
         original(staged, target)
 
-    monkeypatch.setattr(atomic_io, "_durable_replace", observe)
+    monkeypatch.setattr(file_publication, "durable_replace", observe)
     atomic_io._atomic_copy_file(source, destination)
 
     assert staged_modes[0] & stat.S_IWRITE
