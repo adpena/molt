@@ -256,7 +256,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-leaf` | 2 | 1 | no |
 | `stringprep-tables` | 3 | 2 | no |
 | `llvm-runtime-abi` | 8 | 2 | no |
-| `source-extension-package-sets` | 29 | 2 | no |
+| `source-extension-package-sets` | 35 | 2 | no |
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |

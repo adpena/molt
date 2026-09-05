@@ -554,7 +554,7 @@ def test_write_importer_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     importer_path = tmp_path / f"{cli_module_import_scanner.IMPORTER_MODULE_NAME}.py"
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -563,7 +563,7 @@ def test_write_importer_module_avoids_rewriting_identical_content(
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     cli._write_importer_module(tmp_path)
     cli._write_importer_module(tmp_path)
@@ -3901,7 +3901,7 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expected_path = tmp_path / "namespace_demo_pkg.py"
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -3910,7 +3910,7 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
@@ -4531,7 +4531,13 @@ def _libmolt_source_manifest_fields(
                     "object_sha256": digest,
                     "defined_symbols": defined_symbols,
                     "undefined_symbols": undefined_symbols,
-                    "compile_command": ["fixture-compiler", "-x", "c", "-c", artifact_name],
+                    "compile_command": [
+                        "fixture-compiler",
+                        "-x",
+                        "c",
+                        "-c",
+                        artifact_name,
+                    ],
                     "symbol_authority": symbol_authority,
                     **(
                         {"symbol_command": ["fixture-nm"]}
@@ -4972,6 +4978,32 @@ def test_wasm_data_symbol_cannot_satisfy_init_function_custody(
     assert any(
         "root_symbol 'PyInit__native' is not a defined function" in error
         for error in errors
+    )
+
+
+def test_wasm_closure_binds_symbol_inspection_to_manifest_bytes(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "_native.molt.wasm"
+    artifact_bytes = _wasm_extension_artifact("nativepkg._native")
+    artifact_path.write_bytes(artifact_bytes)
+    inspection = cli_source_extensions._inspect_source_extension_artifact_symbols(
+        artifact_path, target_triple="wasm32-wasip1", aggregate_linker_closure=True
+    )
+    assert inspection is not None
+    # An empty custom section changes content identity without changing symbols.
+    replacement = artifact_bytes + b"\x00\x01\x00"
+    artifact_path.write_bytes(replacement)
+    manifest = _libmolt_source_manifest_fields(
+        module="nativepkg._native",
+        artifact_name=artifact_path.name,
+        artifact_bytes=replacement,
+        target_triple="wasm32-wasip1",
+        artifact_kind="wasm_relocatable_object",
+    )
+    errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
+        artifact_path=artifact_path, manifest=manifest, inspection=inspection
+    )
+    assert any(
+        "inspected bytes differ from extension_sha256" in error for error in errors
     )
 
 
@@ -12868,7 +12900,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = LOCKFILES._lock_check_cache_path(tmp_path, "uv")
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_sources: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -12876,7 +12908,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     inputs = {"uv.lock": {"size": 1, "mtime_ns": 2}}
     LOCKFILES._write_lock_check_cache(tmp_path, "uv", inputs)
@@ -12885,7 +12917,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
     assert len(replaced_sources) == 2
     assert replaced_sources[0] != replaced_sources[1]
     assert all(
-        source.name.startswith(".uv.json.") and source.name.endswith(".tmp")
+        source.parent == path.parent and source.name.endswith(".tmp")
         for source in replaced_sources
     )
     assert LOCKFILES._is_lock_check_cache_valid(tmp_path, "uv", inputs)
@@ -27849,7 +27881,7 @@ def test_atomic_write_text_failure_preserves_existing_destination(
         del src, dst
         raise OSError("simulated atomic replace failure")
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", fail_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated atomic replace failure"):
         cli._atomic_write_text(cache_path, '{"version":1}\n')
@@ -27869,7 +27901,7 @@ def test_atomic_write_bytes_failure_preserves_existing_destination(
         del src, dst
         raise OSError("simulated atomic replace failure")
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", fail_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated atomic replace failure"):
         cli._atomic_write_bytes(artifact_path, b"new")
@@ -27881,7 +27913,7 @@ def test_atomic_write_bytes_failure_preserves_existing_destination(
 def test_publication_sidecar_writers_use_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_paths: list[tuple[Path, Path]] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -27890,7 +27922,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
         replaced_paths.append((src_path, dst_path))
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     wasm_path = tmp_path / "wasm" / "app.wasm"
     wasm_path.parent.mkdir(parents=True)
@@ -27940,7 +27972,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     assert {dst for _src, dst in replaced_paths} == expected_dests
     assert all(
         src.parent == dst.parent
-        and src.name.startswith(f".{dst.name}.")
+        and src.name.startswith(".molt-write-")
         and src.name.endswith(".tmp")
         for src, dst in replaced_paths
     )
@@ -27956,7 +27988,7 @@ def test_persisted_json_and_sync_writers_use_atomic_temp_siblings(
     artifact_path = tmp_path / "cache" / "artifact.o"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_bytes(b"artifact")
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_paths: list[tuple[Path, Path]] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -27967,7 +27999,7 @@ def test_persisted_json_and_sync_writers_use_atomic_temp_siblings(
         replaced_paths.append((src_path, dst_path))
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     cli._write_cached_json_object(cache_path, {"version": 1, "hash": "abc"})
     cli._write_artifact_sync_payload(sync_path, {"version": 1, "source_key": "abc"})
@@ -27990,7 +28022,7 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache_path = tmp_path / "cache" / "source.json"
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_sources: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -27998,7 +28030,7 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "a"})
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "b"})
@@ -28007,7 +28039,7 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
     assert len(replaced_sources) == 2
     assert replaced_sources[0] != replaced_sources[1]
     assert all(
-        path.name.startswith(".source.json.") and path.name.endswith(".tmp")
+        path.parent == cache_path.parent and path.name.endswith(".tmp")
         for path in replaced_sources
     )
     assert not (cache_path.parent / "source.json.tmp").exists()
@@ -28057,14 +28089,14 @@ def test_write_cached_artifact_uses_unique_atomic_temp_sibling(
 ) -> None:
     cache_path = tmp_path / "vendor" / "artifact.whl"
     replaced_sources: list[Path] = []
-    original_replace = ATOMIC_IO._durable_replace
+    original_replace = ATOMIC_IO.file_publication.durable_replace
 
     def record_replace(src: object, dst: object) -> None:
         assert Path(dst) == cache_path
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
     cli._write_cached_artifact(cache_path, b"first")
     cli._write_cached_artifact(cache_path, b"second")
@@ -28073,7 +28105,7 @@ def test_write_cached_artifact_uses_unique_atomic_temp_sibling(
     assert len(replaced_sources) == 2
     assert replaced_sources[0] != replaced_sources[1]
     assert all(
-        path.name.startswith(".artifact.whl.") and path.name.endswith(".tmp")
+        path.parent == cache_path.parent and path.name.endswith(".tmp")
         for path in replaced_sources
     )
     assert not (cache_path.parent / "artifact.whl.tmp").exists()

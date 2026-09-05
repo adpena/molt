@@ -52,14 +52,28 @@ from molt.cli.source_extension_object_closure_schema import (
 from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
     _source_extension_reproduction_comparison,
-    _source_extension_set_identity,
 )
 from molt.cli.source_extension_publication import (
     _source_extension_publication_custody,
     publish_source_extension_candidate,
     recover_source_extension_publication,
 )
-from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
+from molt.cli.source_package_seal import (
+    SourcePackageInput,
+    stage_source_package_seal,
+    verify_source_package_seal,
+)
+from molt.cli.source_extension_set_validation import (
+    ValidatedSourceExtensionSetSeal,
+    validate_source_extension_set_seal_contents,
+    rebind_source_extension_set_receipt,
+    require_source_extension_set_receipt_identity,
+)
+from molt.cli.source_extension_set_registry import (
+    SourceExtensionSet,
+    SourceExtensionSource,
+    SourceExtensionSpec,
+)
 from molt.cli.source_package_seal import SourcePackageSealVerificationError
 
 
@@ -701,16 +715,44 @@ def _write_identity_fixture(
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n", encoding="utf-8")
     artifact_path = root / "pkg/_native.molt.wasm"
-    artifact_path.write_bytes(artifact.encode("ascii"))
+    from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
+    from tests.cli.test_source_extension_producer import (
+        _build_environment_manifest,
+        _write_meson_metadata,
+        _write_target_metadata,
+    )
+
+    # A valid WASM custom section varies bytes without inventing symbol evidence.
+    custom = b"\x07fixture" + artifact.encode("ascii")
+    assert len(custom) < 128
+    artifact_path.write_bytes(
+        _wasm_exporting_i64_unary_symbol("PyInit__native")
+        + b"\x00"
+        + bytes([len(custom)])
+        + custom
+    )
     artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    source_bytes = b"int native(void) { return 0; }\n"
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    retained = root / source_extension_input_custody_path(source_sha256)
+    retained.parent.mkdir(parents=True, exist_ok=True)
+    retained.write_bytes(source_bytes)
+    source_reference = os.path.relpath(retained, sidecar.parent).replace(os.sep, "/")
+    wheel = root / "provenance/wheels/native.whl"
+    wheel.parent.mkdir(parents=True, exist_ok=True)
+    wheel.write_bytes(b"wheel:pkg._native")
+    wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
     payload = {
         "schema_version": 1,
+        "name": "pkg",
         "version": "1.0.0",
         "module": "pkg._native",
         "init_symbol": "PyInit__native",
         "extension_sha256": artifact_sha256,
-        "wheel_sha256": "b" * 64,
+        "wheel_sha256": wheel_sha256,
+        "wheel": "../provenance/wheels/native.whl",
+        "deterministic": True,
         "python_tag": "py3",
         "target_python": "py312",
         "abi_tier": "cpython-abi",
@@ -725,7 +767,9 @@ def _write_identity_fixture(
             "retained_symbols": [],
         },
         "source_plan": {"target_selector": "_native"},
-        "build": {"producer_root": producer_root},
+        "build": {
+            "producer_host_sha256": hashlib.sha256(producer_root.encode()).hexdigest()
+        },
         "object_closure": {
             "schema_version": SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
             "root_symbol": "PyInit__native",
@@ -739,15 +783,15 @@ def _write_identity_fixture(
             "wasm_imports": [],
             "objects": [
                 {
-                    "source": "../inputs/native.c",
+                    "source": source_reference,
                     "object": "0.o",
                     "language": "c",
-                    "source_sha256": "c" * 64,
-                    "object_sha256": "d" * 64,
+                    "source_sha256": source_sha256,
+                    "object_sha256": artifact_sha256,
                     "defined_symbols": ["PyInit__native"],
                     "undefined_symbols": [],
                     "dependencies": [],
-                    "compile_command": ["clang", "-x", "c", "-c", "../inputs/native.c"],
+                    "compile_command": ["clang", "-x", "c", "-c", source_reference],
                     "symbol_authority": SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
                     "required_c_api_symbols": [],
                     "required_capsules": [],
@@ -759,6 +803,29 @@ def _write_identity_fixture(
     finalize_source_extension_object_closure(payload)
     payload = _compact_source_extension_manifest(payload)
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    extension_set = SourceExtensionSet(
+        package="pkg",
+        package_version="1.0.0",
+        name="test",
+        seal_name="pkg-test",
+        source=SourceExtensionSource("git", "e" * 40),
+        variants=(),
+        build_dependency_group="source-build-scipy",
+        meson_setup_args=(),
+        use_pkg_config=True,
+        required_config_tools=("pkg-config",),
+        required_installed_files=("pkg/__init__.py",),
+        extensions=(
+            SourceExtensionSpec(
+                module="pkg._native",
+                target="_native",
+                python_exports=("pkg",),
+                capabilities=("module.extension.exec",),
+                provided_capsules=(),
+                exclude_linked_static_libraries=(),
+            ),
+        ),
+    )
     set_manifest = {
         "schema_version": SOURCE_EXTENSION_SET_SCHEMA_VERSION,
         "kind": "molt-source-extension-set",
@@ -769,17 +836,12 @@ def _write_identity_fixture(
         "cpython": "3.12",
         "source_head": "e" * 40,
         "submodules": [],
-        "target": "wasm",
         "target_triple": "wasm32-wasip1",
         "abi_tier": "cpython-abi",
         "installed_package_files": ["pkg/__init__.py"],
-        "target_metadata": {
-            "abi": {
-                "tier": "cpython-abi",
-                "python_header_sha256": "f" * 64,
-                "include_surface": {"sha256": "1" * 64},
-            }
-        },
+        "target_metadata": _write_target_metadata(root),
+        "meson": _write_meson_metadata(root, extension_set),
+        "build_environment": _build_environment_manifest(),
         "extensions": [
             {
                 "module": "pkg._native",
@@ -788,6 +850,9 @@ def _write_identity_fixture(
                 "capabilities": ["module.extension.exec"],
                 "provided_capsules": [],
                 "exclude_linked_static_libraries": [],
+                "artifact_sha256": artifact_sha256,
+                "wheel_sha256": wheel_sha256,
+                "object_closure_sha256": payload["object_closure"]["closure_sha256"],
             }
         ],
     }
@@ -795,11 +860,9 @@ def _write_identity_fixture(
         json.dumps(set_manifest), encoding="utf-8"
     )
     return {
-        "pkg/__init__.py": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "pkg/_native.molt.wasm": artifact_sha256,
-        "pkg/_native.molt.wasm.extension_manifest.json": hashlib.sha256(
-            sidecar.read_bytes()
-        ).hexdigest(),
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in root.rglob("*")
+        if path.is_file()
     }
 
 
@@ -808,31 +871,26 @@ def test_extension_identity_rejects_extra_raw_artifact(
     tmp_path: Path, suffix: str
 ) -> None:
     root = tmp_path / suffix.removeprefix(".")
-    inventory = _write_identity_fixture(
-        root, producer_root="/producer/host", artifact="a" * 64
-    )
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
     extra = root / f"pkg/extra{suffix}"
     extra.write_bytes(b"unregistered")
-    inventory[extra.relative_to(root).as_posix()] = hashlib.sha256(
-        extra.read_bytes()
-    ).hexdigest()
 
-    with pytest.raises(ValueError, match="artifact inventory differs from typed set"):
-        _source_extension_set_identity(root, inventory_sha256=inventory)
+    with pytest.raises(
+        ValueError, match="artifacts differ from configured complete set"
+    ):
+        _identity_from_root(root)
 
 
 def test_extension_identity_rejects_artifact_sidecar_digest_drift(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "digest-drift"
-    inventory = _write_identity_fixture(
-        root, producer_root="/producer/host", artifact="a" * 64
-    )
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
     artifact = root / "pkg/_native.molt.wasm"
     artifact.write_bytes(b"tampered")
 
-    with pytest.raises(ValueError, match="artifact bytes differ from sidecar"):
-        _source_extension_set_identity(root, inventory_sha256=inventory)
+    with pytest.raises(ValueError, match="artifact checksum differs from bytes"):
+        _identity_from_root(root)
 
 
 @pytest.mark.parametrize(
@@ -849,19 +907,14 @@ def test_extension_identity_rejects_sidecar_variant_drift(
     tmp_path: Path, field: str, value: str
 ) -> None:
     root = tmp_path / field
-    inventory = _write_identity_fixture(
-        root, producer_root="/producer/host", artifact="a" * 64
-    )
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
     sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
     payload = json.loads(sidecar.read_text(encoding="utf-8"))
     payload[field] = value
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
-    inventory[sidecar.relative_to(root).as_posix()] = hashlib.sha256(
-        sidecar.read_bytes()
-    ).hexdigest()
 
     with pytest.raises(ValueError, match="extension sidecar"):
-        _source_extension_set_identity(root, inventory_sha256=inventory)
+        _identity_from_root(root)
 
 
 def test_canonical_identity_is_cross_platform_while_attestation_remains_exact(
@@ -869,18 +922,12 @@ def test_canonical_identity_is_cross_platform_while_attestation_remains_exact(
 ) -> None:
     windows = tmp_path / "windows"
     linux = tmp_path / "linux"
-    windows_inventory = _write_identity_fixture(
-        windows, producer_root="C:/build/worker", artifact="a" * 64
-    )
-    linux_inventory = _write_identity_fixture(
+    _write_identity_fixture(windows, producer_root="C:/build/worker", artifact="a" * 64)
+    _write_identity_fixture(
         linux, producer_root="/home/worker/build", artifact="a" * 64
     )
-    windows_identity = _source_extension_set_identity(
-        windows, inventory_sha256=windows_inventory
-    )
-    linux_identity = _source_extension_set_identity(
-        linux, inventory_sha256=linux_inventory
-    )
+    windows_identity = _identity_from_root(windows)
+    linux_identity = _identity_from_root(linux)
     assert windows_identity["canonical_sha256"] == linux_identity["canonical_sha256"]
     assert (
         windows_identity["producer_attestation_sha256"]
@@ -888,12 +935,10 @@ def test_canonical_identity_is_cross_platform_while_attestation_remains_exact(
     )
 
     divergent = tmp_path / "divergent"
-    divergent_inventory = _write_identity_fixture(
+    _write_identity_fixture(
         divergent, producer_root="/Users/worker/build", artifact="9" * 64
     )
-    divergent_identity = _source_extension_set_identity(
-        divergent, inventory_sha256=divergent_inventory
-    )
+    divergent_identity = _identity_from_root(divergent)
     comparison = _source_extension_reproduction_comparison(
         expected_incumbent_sha256=windows_identity["canonical_sha256"],
         expected_candidate_sha256=windows_identity["canonical_sha256"],
@@ -909,7 +954,7 @@ def test_extension_callable_abi_is_canonical_content_identity(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "callable-abi"
-    inventory = _write_identity_fixture(
+    _write_identity_fixture(
         root,
         producer_root="/producer/host",
         artifact="a" * 64,
@@ -926,20 +971,11 @@ def test_extension_callable_abi_is_canonical_content_identity(
     }
     payload["callable_exports"] = [export]
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
-    relative = sidecar.relative_to(root).as_posix()
-    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    object_call_identity = _source_extension_set_identity(
-        root,
-        inventory_sha256=inventory,
-    )
+    object_call_identity = _identity_from_root(root)
 
     export["abi"] = "molt.object_callargs_v1"
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
-    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    callargs_identity = _source_extension_set_identity(
-        root,
-        inventory_sha256=inventory,
-    )
+    callargs_identity = _identity_from_root(root)
 
     assert (
         object_call_identity["canonical_sha256"]
@@ -951,7 +987,7 @@ def test_extension_support_destination_is_canonical_content_identity(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "support-destination"
-    inventory = _write_identity_fixture(
+    _write_identity_fixture(
         root,
         producer_root="/producer/host",
         artifact="a" * 64,
@@ -961,25 +997,19 @@ def test_extension_support_destination_is_canonical_content_identity(
     for name in ("a.py", "b.py"):
         support = root / "pkg" / name
         support.write_bytes(b"VALUE = 1\n")
-        inventory[support.relative_to(root).as_posix()] = support_sha256
     payload = json.loads(sidecar.read_text(encoding="utf-8"))
     support_entry = {"path": "pkg/a.py", "sha256": support_sha256}
     payload["support_files"] = [support_entry]
-    relative = sidecar.relative_to(root).as_posix()
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
-    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    first_identity = _source_extension_set_identity(
-        root,
-        inventory_sha256=inventory,
-    )
+    manifest_path = root / "extension_set_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["installed_package_files"] = ["pkg/__init__.py", "pkg/a.py", "pkg/b.py"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    first_identity = _identity_from_root(root)
 
     support_entry["path"] = "pkg/b.py"
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
-    inventory[relative] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    second_identity = _source_extension_set_identity(
-        root,
-        inventory_sha256=inventory,
-    )
+    second_identity = _identity_from_root(root)
 
     assert first_identity["canonical_sha256"] != second_identity["canonical_sha256"]
 
@@ -988,13 +1018,12 @@ def test_producer_attestation_covers_complete_verified_inventory(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "inventory"
-    inventory = _write_identity_fixture(
-        root, producer_root="/producer/host", artifact="a" * 64
-    )
-    baseline = _source_extension_set_identity(root, inventory_sha256=inventory)
-    extended_inventory = dict(inventory)
-    extended_inventory["provenance/logs/full-command.json"] = "7" * 64
-    extended = _source_extension_set_identity(root, inventory_sha256=extended_inventory)
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    baseline = _identity_from_root(root)
+    log = root / "provenance/logs/full-command.json"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text('{"command":["clang"]}', encoding="utf-8")
+    extended = _identity_from_root(root)
     assert extended["canonical_sha256"] == baseline["canonical_sha256"]
     assert (
         extended["producer_attestation_sha256"]
@@ -1024,42 +1053,40 @@ def test_extension_identity_rejects_sidecar_path_escape(
     tmp_path: Path, field: str, value: str
 ) -> None:
     root = tmp_path / f"escape-{field}-{len(value)}"
-    inventory = _write_identity_fixture(
-        root, producer_root="/producer/host", artifact="a" * 64
-    )
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
     manifest_path = root / "extension_set_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["extensions"][0][field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="module is not import syntax|safe filename"):
-        _source_extension_set_identity(root, inventory_sha256=inventory)
+        _identity_from_root(root)
+
+
+def _receipt_from_root(root: Path) -> ValidatedSourceExtensionSetSeal:
+    seal = stage_source_package_seal(
+        root.parent / f"{root.name}-identity-store",
+        [
+            SourcePackageInput(path, path.relative_to(root).as_posix(), "fixture")
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        ],
+    )
+    return validate_source_extension_set_seal_contents(seal.root)
+
+
+def _identity_from_root(root: Path) -> dict[str, Any]:
+    return _receipt_from_root(root).identity_payload()
 
 
 def _stage_identity_fixture(
     tmp_path: Path, *, label: str, artifact: str
-) -> tuple[object, dict[str, object]]:
+) -> tuple[ValidatedSourceExtensionSetSeal, dict[str, Any]]:
     payload = tmp_path / f"payload-{label}"
     _write_identity_fixture(
         payload, producer_root=f"/producer/{label}", artifact=artifact
     )
-    store = tmp_path / f"store-{label}"
-    seal = stage_source_package_seal(
-        store,
-        [
-            SourcePackageInput(
-                path,
-                path.relative_to(payload).as_posix(),
-                "fixture",
-            )
-            for path in sorted(payload.rglob("*"))
-            if path.is_file()
-        ],
-    )
-    identity = _source_extension_set_identity(
-        seal.payload_root,
-        inventory_sha256={entry.relative_path: entry.sha256 for entry in seal.files},
-    )
-    return seal, identity
+    receipt = _receipt_from_root(payload)
+    return receipt, receipt.identity_payload()
 
 
 def test_publication_preserves_incumbent_on_divergent_candidate_expectation(
@@ -1072,25 +1099,30 @@ def test_publication_preserves_incumbent_on_divergent_candidate_expectation(
         tmp_path, label="candidate", artifact="9" * 64
     )
     destination = tmp_path / "canonical"
-    shutil.copytree(incumbent.root, destination)
+    shutil.copytree(incumbent.seal.root, destination)
 
     with pytest.raises(ValueError, match="canonical identity mismatch"):
         _publish_candidate(
             destination=destination,
-            candidate_seal=candidate,
+            candidate_receipt=candidate,
             transaction_root=tmp_path / "transaction",
+            expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
             expected_incumbent_identity_sha256=incumbent_identity["canonical_sha256"],
             expected_candidate_identity_sha256="0" * 64,
         )
 
     assert (destination / "source-package-seal.json").read_bytes() == (
-        incumbent.root / "source-package-seal.json"
+        incumbent.seal.root / "source-package-seal.json"
     ).read_bytes()
 
 
-def test_publication_performs_declared_identity_upgrade_and_recovers_crash(
+@pytest.mark.parametrize(
+    "boundary", ["before-candidate-rename", "after-candidate-rename"]
+)
+def test_publication_aborted_journal_remains_terminal_after_later_upgrade(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
 ) -> None:
     from molt.cli import source_extension_publication as publication
 
@@ -1098,66 +1130,118 @@ def test_publication_performs_declared_identity_upgrade_and_recovers_crash(
         tmp_path, label="old", artifact="a" * 64
     )
     candidate, candidate_identity = _stage_identity_fixture(
-        tmp_path, label="new", artifact="9" * 64
+        tmp_path, label="failed", artifact="9" * 64
     )
     destination = tmp_path / "canonical"
-    shutil.copytree(incumbent.root, destination)
-    transaction = tmp_path / "transaction"
-    real_replace = publication.os.replace
+    shutil.copytree(incumbent.seal.root, destination)
+    transaction = tmp_path / "failed-transaction"
+    real_publish = publication.durable_publish_directory_exclusive
 
-    def crash_after_retire(source: Path, target: Path) -> None:
+    def fail_candidate_publication(source: Path, target: Path) -> None:
         if Path(source).name == "candidate" and Path(target) == destination:
-            raise OSError("simulated crash after incumbent retirement")
-        real_replace(source, target)
+            if boundary == "after-candidate-rename":
+                real_publish(source, target)
+            raise OSError(f"simulated failure {boundary}")
+        real_publish(source, target)
 
-    monkeypatch.setattr(publication.os, "replace", crash_after_retire)
-    with pytest.raises(OSError, match="simulated crash"):
-        _publish_candidate(
-            destination=destination,
-            candidate_seal=candidate,
-            transaction_root=transaction,
-            expected_incumbent_identity_sha256=incumbent_identity["canonical_sha256"],
-            expected_candidate_identity_sha256=candidate_identity["canonical_sha256"],
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            publication,
+            "durable_publish_directory_exclusive",
+            fail_candidate_publication,
         )
-    assert not destination.exists()
+        with pytest.raises(OSError, match="simulated failure"):
+            _publish_candidate(
+                destination=destination,
+                candidate_receipt=candidate,
+                transaction_root=transaction,
+                expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
+                expected_incumbent_identity_sha256=incumbent_identity[
+                    "canonical_sha256"
+                ],
+                expected_candidate_identity_sha256=candidate_identity[
+                    "canonical_sha256"
+                ],
+            )
 
-    monkeypatch.setattr(publication.os, "replace", real_replace)
+    verify_source_package_seal(destination, expected_sha256=incumbent.seal.seal_sha256)
     recovered = _recover_publication(destination, transaction)
-    assert recovered is not None and recovered["state"] == "committed"
-    assert (destination / "source-package-seal.json").read_bytes() == (
-        candidate.root / "source-package-seal.json"
-    ).read_bytes()
+    assert recovered is not None and recovered["state"] == "aborted-restored"
+    quarantine_key = (
+        "quarantined_destination"
+        if boundary == "after-candidate-rename"
+        else "quarantined_candidate"
+    )
+    quarantine = Path(recovered[quarantine_key])
+    verify_source_package_seal(quarantine, expected_sha256=candidate.seal.seal_sha256)
+    record_path = transaction / "identity-publication.json"
+    aborted_record = record_path.read_bytes()
+    preserved_quarantine = {
+        path.relative_to(quarantine).as_posix(): path.read_bytes()
+        for path in quarantine.rglob("*")
+        if path.is_file()
+    }
+
+    successor, successor_identity = _stage_identity_fixture(
+        tmp_path, label="successor", artifact="8" * 64
+    )
+    result = _publish_candidate(
+        destination=destination,
+        candidate_receipt=successor,
+        transaction_root=tmp_path / "successor-transaction",
+        expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
+        expected_incumbent_identity_sha256=incumbent_identity["canonical_sha256"],
+        expected_candidate_identity_sha256=successor_identity["canonical_sha256"],
+    )
+    assert result["state"] == "committed"
+    verify_source_package_seal(destination, expected_sha256=successor.seal.seal_sha256)
+
+    # A terminal failure is historical evidence, not authority to demand A again.
+    assert _recover_publication(destination, transaction) == recovered
+    verify_source_package_seal(destination, expected_sha256=successor.seal.seal_sha256)
+    assert record_path.read_bytes() == aborted_record
+    assert {
+        path.relative_to(quarantine).as_posix(): path.read_bytes()
+        for path in quarantine.rglob("*")
+        if path.is_file()
+    } == preserved_quarantine
 
 
-def test_publication_exact_identity_is_noop_despite_attestation_drift(
+@pytest.mark.parametrize("attestation_drift", [False, True])
+def test_publication_noop_requires_both_exact_seal_and_identity(
     tmp_path: Path,
+    attestation_drift: bool,
 ) -> None:
     incumbent, incumbent_identity = _stage_identity_fixture(
         tmp_path, label="host-a", artifact="a" * 64
     )
-    candidate, candidate_identity = _stage_identity_fixture(
-        tmp_path, label="host-b", artifact="a" * 64
-    )
+    if attestation_drift:
+        candidate, candidate_identity = _stage_identity_fixture(
+            tmp_path, label="host-b", artifact="a" * 64
+        )
+    else:
+        candidate, candidate_identity = incumbent, incumbent_identity
     assert (
         incumbent_identity["canonical_sha256"] == candidate_identity["canonical_sha256"]
     )
     assert (
         incumbent_identity["producer_attestation_sha256"]
         != candidate_identity["producer_attestation_sha256"]
-    )
+    ) is attestation_drift
     destination = tmp_path / "canonical"
-    shutil.copytree(incumbent.root, destination)
+    shutil.copytree(incumbent.seal.root, destination)
 
     result = _publish_candidate(
         destination=destination,
-        candidate_seal=candidate,
+        candidate_receipt=candidate,
         transaction_root=tmp_path / "transaction",
+        expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
         expected_incumbent_identity_sha256=incumbent_identity["canonical_sha256"],
         expected_candidate_identity_sha256=candidate_identity["canonical_sha256"],
     )
-    assert result["no_op"] is True
+    assert result["no_op"] is (not attestation_drift)
     assert (destination / "source-package-seal.json").read_bytes() == (
-        incumbent.root / "source-package-seal.json"
+        candidate.seal.root / "source-package-seal.json"
     ).read_bytes()
 
 
@@ -1178,26 +1262,56 @@ def test_publication_detects_stale_incumbent_race_before_retirement(
         tmp_path, label="race-stale", artifact="8" * 64
     )
     destination = tmp_path / "canonical"
-    shutil.copytree(incumbent.root, destination)
+    shutil.copytree(incumbent.seal.root, destination)
     real_resume = publication._resume_source_extension_publication
 
-    def race(record_path: Path, custody: object) -> dict[str, object]:
+    def race(
+        record_path: Path, custody: Any, *, verifier: Any = None
+    ) -> dict[str, Any]:
         shutil.rmtree(destination)
-        shutil.copytree(stale.root, destination)
-        return real_resume(record_path, custody)
+        shutil.copytree(stale.seal.root, destination)
+        return real_resume(record_path, custody, verifier=verifier)
 
     monkeypatch.setattr(publication, "_resume_source_extension_publication", race)
     with pytest.raises(SourcePackageSealVerificationError):
         _publish_candidate(
             destination=destination,
-            candidate_seal=candidate,
+            candidate_receipt=candidate,
             transaction_root=tmp_path / "transaction",
+            expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
             expected_incumbent_identity_sha256=incumbent_identity["canonical_sha256"],
             expected_candidate_identity_sha256=candidate_identity["canonical_sha256"],
         )
     assert (destination / "source-package-seal.json").read_bytes() == (
-        stale.root / "source-package-seal.json"
+        stale.seal.root / "source-package-seal.json"
     ).read_bytes()
+
+
+@pytest.mark.parametrize("forge_lock_path", [False, True])
+def test_publication_rejects_forged_destination_lock_custody(
+    tmp_path: Path,
+    forge_lock_path: bool,
+) -> None:
+    from dataclasses import replace
+
+    owned = (tmp_path / "owned").resolve()
+    foreign = (tmp_path / "foreign").resolve()
+    with _held_publication_custody(owned) as custody:
+        forged = replace(
+            custody,
+            destination=foreign,
+            lock_path=(
+                foreign.parent / f".{foreign.name}.producer.lock"
+                if forge_lock_path
+                else custody.lock_path
+            ),
+        )
+        with pytest.raises(SourcePackageSealVerificationError, match="custody"):
+            recover_source_extension_publication(
+                tmp_path / "transaction", custody=forged
+            )
+    assert not foreign.exists()
+    assert not (tmp_path / "transaction").exists()
 
 
 def test_publication_rejects_released_producer_lock_custody(tmp_path: Path) -> None:
@@ -1220,6 +1334,8 @@ def test_publication_rejects_released_producer_lock_custody(tmp_path: Path) -> N
         "missing-field",
         "unknown-kind",
         "unknown-state",
+        "list-state",
+        "dict-state",
         "bad-hash",
         "extra-authority",
         "relative-path",
@@ -1238,12 +1354,14 @@ def test_publication_recovery_rejects_malformed_record_without_mutation(
     transaction.mkdir()
     publication_root = transaction / "identity-publication"
     record: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "source-extension-seal-compare-and-swap",
         "state": "prepared",
         "destination": str(destination),
         "candidate": str(publication_root / "candidate"),
         "retired": str(publication_root / "retired"),
+        "quarantined_candidate": str(publication_root / "quarantined-candidate"),
+        "quarantined_destination": str(publication_root / "quarantined-destination"),
         "incumbent_seal_sha256": "1" * 64,
         "candidate_seal_sha256": "2" * 64,
         "incumbent_identity_sha256": "3" * 64,
@@ -1255,6 +1373,10 @@ def test_publication_recovery_rejects_malformed_record_without_mutation(
         record["kind"] = "legacy-publication"
     elif mutation == "unknown-state":
         record["state"] = "mystery"
+    elif mutation == "list-state":
+        record["state"] = ["prepared"]
+    elif mutation == "dict-state":
+        record["state"] = {"state": "prepared"}
     elif mutation == "bad-hash":
         record["candidate_seal_sha256"] = "NOT-A-HASH"
     elif mutation == "extra-authority":
@@ -1290,7 +1412,7 @@ def test_destination_scoped_custody_serializes_competing_cas_publishers(
         for label, artifact in (("race-a", "8" * 64), ("race-b", "9" * 64))
     ]
     destination = tmp_path / "canonical"
-    shutil.copytree(incumbent.root, destination)
+    shutil.copytree(incumbent.seal.root, destination)
     barrier = threading.Barrier(2)
     results: list[tuple[int, dict[str, Any]]] = []
     failures: list[tuple[int, BaseException]] = []
@@ -1303,8 +1425,9 @@ def test_destination_scoped_custody_serializes_competing_cas_publishers(
                 result = publish_source_extension_candidate(
                     custody=custody,
                     destination=destination,
-                    candidate_seal=candidate,
+                    candidate_receipt=candidate,
                     transaction_root=tmp_path / f"transaction-{index}",
+                    expected_incumbent_seal_sha256=incumbent.seal.seal_sha256,
                     expected_incumbent_identity_sha256=(
                         incumbent_identity["canonical_sha256"]
                     ),
@@ -1325,9 +1448,311 @@ def test_destination_scoped_custody_serializes_competing_cas_publishers(
 
     assert len(results) == 1
     assert len(failures) == 1
-    assert "canonical identity mismatch" in str(failures[0][1])
+    assert "mismatch" in str(failures[0][1])
     winner, result = results[0]
     assert result["upgraded"] is True
     assert (destination / "source-package-seal.json").read_bytes() == (
-        candidates[winner][0].root / "source-package-seal.json"
+        candidates[winner][0].seal.root / "source-package-seal.json"
     ).read_bytes()
+
+
+def test_validated_receipt_is_deeply_immutable_and_projection_has_no_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import FrozenInstanceError
+
+    receipt, identity = _stage_identity_fixture(
+        tmp_path, label="immutable", artifact="a" * 64
+    )
+    mutated = receipt.manifest_payload()
+    mutated["extensions"][0]["capabilities"].append("filesystem.write")
+    assert receipt.manifest_payload()["extensions"][0]["capabilities"] == [
+        "module.extension.exec"
+    ]
+    with pytest.raises(FrozenInstanceError):
+        setattr(receipt.canonical_identity, "canonical_sha256", "0" * 64)
+
+    def forbid_io(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("receipt consumer performed filesystem IO")
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_io)
+    monkeypatch.setattr(Path, "read_text", forbid_io)
+    assert receipt.identity_payload() == identity
+    assert (
+        require_source_extension_set_receipt_identity(
+            receipt,
+            identity["canonical_sha256"],
+        )
+        is receipt
+    )
+
+
+def test_receipt_rebinding_requires_exact_verified_seal(tmp_path: Path) -> None:
+    receipt, _identity = _stage_identity_fixture(
+        tmp_path, label="rebind", artifact="a" * 64
+    )
+    copied = tmp_path / "copied"
+    shutil.copytree(receipt.seal.root, copied)
+    rebound = rebind_source_extension_set_receipt(
+        receipt,
+        verify_source_package_seal(copied, expected_sha256=receipt.seal.seal_sha256),
+    )
+    assert rebound.seal.root == copied.resolve()
+    assert rebound.validation is receipt.validation
+    assert rebound.canonical_identity is receipt.canonical_identity
+    other, _ = _stage_identity_fixture(tmp_path, label="other", artifact="9" * 64)
+    with pytest.raises(ValueError, match="different seal bytes"):
+        rebind_source_extension_set_receipt(receipt, other.seal)
+
+
+def test_receipt_issuance_detects_installed_byte_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import source_extension_set_validation as validation
+
+    receipt, _ = _stage_identity_fixture(tmp_path, label="mutate", artifact="a" * 64)
+    original = validation._validate_source_extension_set_payload
+
+    def mutate_after_validation(root: Path, manifest: Any, **kwargs: Any) -> Any:
+        facts = original(root, manifest, **kwargs)
+        (root / "pkg/__init__.py").write_bytes(b"tampered")
+        return facts
+
+    monkeypatch.setattr(
+        validation, "_validate_source_extension_set_payload", mutate_after_validation
+    )
+    with pytest.raises(SourcePackageSealVerificationError):
+        validation.validate_source_extension_set_seal_contents(receipt.seal.root)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "error"),
+    [
+        (("schema_version",), True, "manifest schema is invalid"),
+        (("schema_version",), 5.0, "manifest schema is invalid"),
+        (("target",), "wasm", "keys differ from schema"),
+        (("target_metadata", "schema_version"), True, "metadata contract differs"),
+        (("target_metadata", "schema_version"), 3.0, "metadata contract differs"),
+        (
+            ("target_metadata", "target", "requested"),
+            True,
+            "requested-target authority",
+        ),
+        (("target_metadata", "toolchain", "commands", "c"), True, "non-empty list"),
+        (
+            ("target_metadata", "toolchain", "commands", "c"),
+            ["clang", True],
+            "must be strings",
+        ),
+        (
+            ("target_metadata", "toolchain", "commands", "c"),
+            [""],
+            "requires an executable",
+        ),
+        (
+            ("target_metadata", "toolchain", "tools", "cc", "command"),
+            ["clang", False],
+            "must be strings",
+        ),
+    ],
+)
+def test_structural_receipt_rejects_inexact_schema_and_command_types(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value: object,
+    error: str,
+) -> None:
+    root = tmp_path / "invalid-contract"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    manifest_path = root / "extension_set_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    owner = manifest
+    for key in path[:-1]:
+        owner = owner[key]
+    owner[path[-1]] = value
+
+    # Keep all byte/digest custody valid so the actual type gate is exercised.
+    target_metadata = manifest["target_metadata"]
+    target_identity = dict(target_metadata)
+    target_identity.pop("digest")
+    target_metadata["digest"] = hashlib.sha256(
+        json.dumps(target_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    target_sidecar = (
+        root / "provenance/metadata/target/source-extension-target-metadata.json"
+    )
+    target_sidecar.write_text(json.dumps(target_metadata), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        _identity_from_root(root)
+
+
+def test_recovery_reuses_observed_receipt_across_expected_identity_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import source_extension_publication as publication
+
+    receipt, identity = _stage_identity_fixture(
+        tmp_path, label="incumbent", artifact="1" * 64
+    )
+    calls: list[Path] = []
+    validate = publication.validate_source_extension_set_seal_contents
+
+    def observed(root: Path) -> ValidatedSourceExtensionSetSeal:
+        calls.append(root)
+        return validate(root)
+
+    monkeypatch.setattr(
+        publication, "validate_source_extension_set_seal_contents", observed
+    )
+    verifier = publication._PublicationVerifier()
+    assert not verifier.matches(receipt.seal.root, "f" * 64, "e" * 64)
+    result = verifier.verified_at(
+        receipt.seal.root, receipt.seal.seal_sha256, identity["canonical_sha256"]
+    )
+    assert result == receipt.seal
+    assert calls == [receipt.seal.root]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("outside-source", "producer source remapping"),
+        ("missing-destination", "producer source remapping"),
+        ("unsealed-destination", "sealed inventory"),
+        ("wrong-digest", "sealed inventory"),
+        ("uppercase-digest", "canonical lowercase"),
+        ("duplicate", "duplicates support file"),
+        ("unknown-field", "exactly path and sha256"),
+        ("string-entry", "exactly path and sha256"),
+        ("null", "must be a list"),
+        ("parent-path", "canonical portable"),
+    ],
+)
+def test_sealed_support_receipt_requires_exact_inventory_members(
+    tmp_path: Path,
+    mutation: str,
+    error: str,
+) -> None:
+    root = tmp_path / "support-custody"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    support_bytes = (root / "pkg/__init__.py").read_bytes()
+    support_sha256 = hashlib.sha256(support_bytes).hexdigest()
+    (tmp_path / "outside.py").write_bytes(support_bytes)
+    entry: dict[str, Any] = {"path": "pkg/__init__.py", "sha256": support_sha256}
+    entries: Any = [entry]
+    if mutation == "outside-source":
+        entry.update(path="pkg/alias.py", source="../../../../../../outside.py")
+    elif mutation == "missing-destination":
+        entry.update(path="pkg/alias.py", source="pkg/__init__.py")
+    elif mutation == "unsealed-destination":
+        entry["path"] = "pkg/alias.py"
+    elif mutation == "wrong-digest":
+        entry["sha256"] = "0" * 64
+    elif mutation == "uppercase-digest":
+        entry["sha256"] = support_sha256.upper()
+    elif mutation == "duplicate":
+        entries.append(dict(entry))
+    elif mutation == "unknown-field":
+        entry["extra"] = "ignored"
+    elif mutation == "string-entry":
+        entries = ["pkg/__init__.py"]
+    elif mutation == "null":
+        entries = None
+    elif mutation == "parent-path":
+        entry["path"] = "../outside.py"
+    sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    manifest["support_files"] = entries
+    sidecar.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        _identity_from_root(root)
+
+
+def test_sealed_execution_metadata_is_inventory_only_and_immutable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import FrozenInstanceError
+    from molt.cli.source_extension_set_identity import (
+        validate_source_extension_execution_metadata,
+    )
+
+    expected = hashlib.sha256(b"sealed support").hexdigest()
+    manifest = {
+        "module": "pkg._native",
+        "support_files": [{"path": "pkg/support.py", "sha256": expected}],
+    }
+    inventory = {"pkg/support.py": expected}
+
+    def forbid_io(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("sealed support metadata performed filesystem IO")
+
+    with monkeypatch.context() as isolated:
+        isolated.setattr(Path, "open", forbid_io)
+        facts = validate_source_extension_execution_metadata(
+            manifest, inventory_sha256=inventory
+        )
+    assert facts.support_files[0].digest_payload() == {
+        "path": "pkg/support.py",
+        "sha256": expected,
+    }
+    inventory["pkg/support.py"] = "0" * 64
+    manifest["support_files"][0]["sha256"] = "0" * 64
+    assert facts.support_files[0].sha256 == expected
+    with pytest.raises(FrozenInstanceError):
+        setattr(facts.support_files[0], "sha256", "0" * 64)
+
+
+def test_structural_receipt_rejects_missing_direct_callable_symbol(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "missing-callable"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    manifest["callable_exports"] = [
+        {
+            "module": "pkg._native",
+            "name": "invoke",
+            "binding": "direct_symbol",
+            "symbol": "molt_missing_direct_callable",
+            "abi": "molt.object_call_v1",
+            "effects": [],
+            "deterministic": True,
+        }
+    ]
+    sidecar.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="direct_symbol callable export.*absent"):
+        _identity_from_root(root)
+
+
+def test_structural_receipt_rejects_artifact_aba_during_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import source_extension_set_validation_sidecars as sidecars
+
+    root = tmp_path / "artifact-aba"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    inspect = sidecars.validate_source_extension_artifact_object_closure
+
+    def mutate_and_restore(**kwargs: Any) -> list[str]:
+        errors = inspect(**kwargs)
+        path = kwargs["artifact_path"]
+        before = path.read_bytes()
+        try:
+            path.write_bytes(before + b"temporary mutation")
+        finally:
+            path.write_bytes(before)
+        return errors
+
+    monkeypatch.setattr(
+        sidecars,
+        "validate_source_extension_artifact_object_closure",
+        mutate_and_restore,
+    )
+    with pytest.raises(ValueError, match="changed|stable|modified"):
+        _identity_from_root(root)

@@ -18,6 +18,7 @@ from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
+from molt.cli import source_extension_publication as publication
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.extension_seal import (
@@ -201,6 +202,10 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
             "target_triple": "wasm32-wasip1",
             "artifact_kind": "wasm_relocatable_object",
             "deterministic": True,
+            "source_plan": {"target_selector": module.rsplit(".", 1)[-1]},
+            "python_exports": [module],
+            "capabilities": [],
+            "provided_capsules": [],
             "wheel": os.path.relpath(wheel_path, path.parent).replace(os.sep, "/"),
             "link_requirements": {
                 "target_triple": "wasm32-wasip1",
@@ -2097,7 +2102,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
     set_manifest["extensions"][0]["target"] = "wrong-target"
     with pytest.raises(
         set_validation.SourceExtensionSetValidationError,
-        match="typed extension contracts",
+        match="published extension artifacts differ",
     ):
         set_validation.validate_source_extension_set_publish_root(
             publish_root=publish,
@@ -2518,7 +2523,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     assert "stale" not in json.dumps(canonical)
 
 
-def test_recover_and_prune_producer_transactions_removes_whole_abandoned_family(
+def test_recover_and_prune_preserves_unjournaled_transaction_family(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2533,18 +2538,21 @@ def test_recover_and_prune_producer_transactions_removes_whole_abandoned_family(
         (root / "evidence.txt").write_text("fixture\n", encoding="utf-8")
     recovered: list[Path] = []
     monkeypatch.setattr(
-        producer,
+        publication,
         "recover_source_package_seal_commits",
-        lambda root: recovered.append(root) or (),
+        lambda root, **kwargs: recovered.append(root) or (),
     )
 
-    with _held_publication_custody(destination) as custody:
-        producer._recover_and_prune_producer_transactions(
-            destination, publication_custody=custody
+    with (
+        _held_publication_custody(destination) as custody,
+        pytest.warns(RuntimeWarning, match="without a completed publication receipt"),
+    ):
+        publication.recover_and_prune_source_extension_transactions(
+            destination, custody=custody
         )
 
     assert recovered == [root / "package-store" for root in abandoned]
-    assert not any(root.exists() for root in abandoned)
+    assert all(root.exists() for root in abandoned)
     assert unrelated.is_dir()
 
 
@@ -2558,12 +2566,12 @@ def test_recover_and_prune_fails_closed_on_legacy_retired_destination(
     (retired / "legacy.txt").write_text("preserved\n", encoding="utf-8")
 
     with pytest.raises(
-        producer.SourceExtensionProducerError,
-        match="legacy producer transaction contains a retired canonical destination",
+        publication.SourcePackageSealVerificationError,
+        match="legacy source-extension transaction contains a retired canonical destination",
     ):
         with _held_publication_custody(destination) as custody:
-            producer._recover_and_prune_producer_transactions(
-                destination, publication_custody=custody
+            publication.recover_and_prune_source_extension_transactions(
+                destination, custody=custody
             )
     assert (retired / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
     assert not destination.exists()

@@ -99,6 +99,54 @@ def test_toolchain_capture_cas_rejects_corruption(tmp_path: Path) -> None:
         custody_cas.verify_ref(reference.as_dict(), expected_root=tmp_path / "cas")
 
 
+@pytest.mark.parametrize("kind", ["json", "file"])
+@pytest.mark.parametrize("corrupt_competitor", [False, True])
+def test_custody_cas_publication_collision_preserves_and_verifies_winner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    corrupt_competitor: bool,
+) -> None:
+    root = tmp_path / "cas"
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"immutable payload")
+    competitors: dict[Path, bytes] = {}
+    real_publish = custody_cas.file_publication.durable_publish_exclusive
+
+    def compete(staged: Path, target: Path) -> None:
+        content = bytearray(staged.read_bytes())
+        if corrupt_competitor:
+            # Alter gzip's timestamp without changing decompression behavior:
+            # the transport digest itself must reject an otherwise-valid blob.
+            content[4 if kind == "json" else len(content) // 2] ^= 0xFF
+        target.write_bytes(content)
+        competitors[target] = bytes(content)
+        real_publish(staged, target)
+
+    def publish() -> dict[str, object]:
+        if kind == "json":
+            return custody_cas.put_json(
+                root, {"schema": custody_cas.ARTIFACT_SCHEMA, "kind": "collision"}
+            ).as_dict()
+        return custody_cas.put_file(root, source).as_dict()
+
+    monkeypatch.setattr(
+        custody_cas.file_publication, "durable_publish_exclusive", compete
+    )
+    if corrupt_competitor:
+        with pytest.raises(ValueError, match="digest changed"):
+            publish()
+    else:
+        reference = publish()
+        verify = (
+            custody_cas.verify_ref if kind == "json" else custody_cas.verify_file_ref
+        )
+        verify(reference, expected_root=root)
+    assert len(competitors) == 1
+    assert all(path.read_bytes() == content for path, content in competitors.items())
+    assert not list(root.rglob(".custody-*"))
+
+
 def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
     tmp_path: Path,
 ) -> None:
@@ -111,9 +159,12 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
     # Ordinary installed inventories live only in CAS; only editable source
     # custody remains in the compact receipt summary.
     assert summaries["python"]["distributions"] == []  # type: ignore[index]
-    assert toolchain_capture.verify_capture(
-        reference, workers=2, cas_root=tmp_path / "cas"
-    )["stable"] is True
+    assert (
+        toolchain_capture.verify_capture(
+            reference, workers=2, cas_root=tmp_path / "cas"
+        )["stable"]
+        is True
+    )
     owned.write_text("after\n", encoding="utf-8")
     verification = toolchain_capture.verify_capture(
         reference, workers=2, cas_root=tmp_path / "cas"
@@ -494,9 +545,7 @@ def test_platform_auxiliary_images_are_absent_off_windows_or_for_leaf_custody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(process_image_capture.sys, "platform", "linux")
-    assert (
-        process_image_capture.platform_auxiliary_images("declared-toolchains") == []
-    )
+    assert process_image_capture.platform_auxiliary_images("declared-toolchains") == []
 
     monkeypatch.setattr(process_image_capture.sys, "platform", "win32")
     assert process_image_capture.platform_auxiliary_images("forbidden") == []

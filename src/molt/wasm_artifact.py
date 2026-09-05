@@ -1967,7 +1967,7 @@ def transform_wasm_publication_file(
 ) -> WasmPublicationTransformMetrics:
     """Rewrite exports/custom sections with bounded memory and one output pass."""
 
-    from molt.cli.atomic_io import _durable_replace
+    from molt.file_publication import durable_replace
 
     staged = path.with_name(f".{path.name}.{uuid.uuid4().hex}.publication")
     try:
@@ -2068,7 +2068,7 @@ def transform_wasm_publication_file(
                 or staged_stat.st_size != output_size
             ):
                 raise ValueError("runtime wasm mutated during publication transform")
-        _durable_replace(staged, path)
+        durable_replace(staged, path)
         return WasmPublicationTransformMetrics(
             changed=True,
             input_bytes=before.st_size,
