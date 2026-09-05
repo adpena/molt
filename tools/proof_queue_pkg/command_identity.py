@@ -9,8 +9,17 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
+from molt.dx import _reject_onedrive
+from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
+from molt.python_environment_identity import (
+    PYTHON_CAPTURE_SCHEMA,
+    PythonEnvironmentIdentityError,
+    python_environment_executable_files,
+    validate_python_capture,
+    validate_python_environment_location,
+)
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
@@ -265,19 +274,26 @@ def _python_auxiliary_command(
     *,
     authority: Path,
     arguments: Sequence[str],
+    isolated: bool = False,
+    no_site: bool = False,
 ) -> list[str] | None:
     python = envelope.get("python")
     if not isinstance(python, Mapping):
         return None
     kind = python.get("kind")
+    if no_site and not isolated:
+        raise ValueError("Python no-site probe execution requires isolation")
+    isolation = ["-I"] if isolated else []
+    if no_site:
+        isolation.append("-S")
     if kind == "direct":
-        return [exact[0], str(authority), *arguments]
+        return [exact[0], *isolation, str(authority), *arguments]
     if kind == "py-launcher":
         command = [exact[0]]
         selector = python.get("selector")
         if isinstance(selector, str) and selector:
             command.append(selector)
-        return [*command, str(authority), *arguments]
+        return [*command, *isolation, str(authority), *arguments]
     if kind in {"uv", "uv-console-script"}:
         prefix = python.get("prefix")
         if not isinstance(prefix, list) or len(prefix) < 2:
@@ -285,6 +301,7 @@ def _python_auxiliary_command(
         return [
             *exact[: len(prefix)],
             "python",
+            *isolation,
             str(authority),
             *arguments,
         ]
@@ -296,13 +313,30 @@ def _python_probe_command(
     exact: Sequence[str],
     *,
     source_root: Path,
+    external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str] | None:
+    admitted_roots = sorted(
+        {Path(root).resolve(strict=True) for root in (source_root, *external_roots)},
+        key=lambda path: (os.path.normcase(str(path)), str(path)),
+    )
     return _python_auxiliary_command(
         envelope,
         exact,
         authority=admission._PYTHON_IDENTITY_PROBE,
-        arguments=(str(source_root), str(hash_workers)),
+        arguments=(
+            "--capture-active-environment",
+            "--with-custody",
+            "--hash-workers",
+            str(hash_workers),
+            "--admit-virtualenv-bootstrap",
+            *(
+                value
+                for root in admitted_roots
+                for value in ("--admit-external-root", str(root))
+            ),
+        ),
+        isolated=True,
     )
 
 
@@ -315,8 +349,8 @@ def _parse_json_output(
             f"{purpose} failed with exit code {completed.returncode}: {detail}"
         )
     try:
-        payload = json.loads(completed.stdout.strip())
-    except json.JSONDecodeError as exc:
+        payload = loads_exact(completed.stdout.strip())
+    except (json.JSONDecodeError, ExactJsonError) as exc:
         raise ValueError(f"{purpose} returned invalid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{purpose} returned a non-object identity")
@@ -330,12 +364,41 @@ def _python_identity(
     cwd: Path,
     env: Mapping[str, str],
     source_root: Path,
+    selection: Mapping[str, object],
     hash_workers: int,
 ) -> dict[str, object] | None:
+    if envelope.get("python") is None:
+        return None
+    location_raw = selection.get("location")
+    try:
+        location = validate_python_environment_location(location_raw)
+    except PythonEnvironmentIdentityError as exc:
+        raise ValueError(f"proof Python location identity is invalid: {exc}") from exc
+    if set(selection) != {
+        "base_executable",
+        "base_executable_sha256",
+        "executable",
+        "executable_sha256",
+        "external_roots",
+        "location",
+        "prefix",
+    }:
+        raise ValueError("proof Python selection identity shape is invalid")
+    _reject_python_location_onedrive(location)
+    selected_external_roots = selection.get("external_roots")
+    if not isinstance(selected_external_roots, list) or not all(
+        isinstance(value, str) and value for value in selected_external_roots
+    ):
+        raise ValueError("proof Python selection has no external-root authority")
+    if selected_external_roots != location.get("external_roots"):
+        raise ValueError("proof Python selection external roots differ from location")
     command = _python_probe_command(
         envelope,
         exact,
         source_root=source_root,
+        external_roots=[
+            Path(value) for value in cast(list[str], selected_external_roots)
+        ],
         hash_workers=hash_workers,
     )
     if command is None:
@@ -344,35 +407,153 @@ def _python_identity(
         _run_captured(command, cwd=cwd, env=env, timeout=120.0),
         purpose="proof Python identity probe",
     )
-    required = (
-        "executable",
-        "implementation",
-        "version",
-        "executable_sha256",
-        "runtime_closure_sha256",
-        "distribution_inventory_sha256",
-    )
+    try:
+        capture = validate_python_capture(payload)
+        environment = cast(Mapping[str, object], capture["identity"])
+    except PythonEnvironmentIdentityError as exc:
+        raise ValueError(f"proof Python identity is invalid: {exc}") from exc
+    prefix_raw = selection.get("prefix")
+    executable_raw = selection.get("executable")
+    base_executable_raw = selection.get("base_executable")
     if not all(
-        isinstance(payload.get(name), str) and payload[name] for name in required
+        isinstance(value, str) and value
+        for value in (prefix_raw, executable_raw, base_executable_raw)
     ):
-        raise ValueError("proof Python identity probe returned incomplete identity")
-    distributions = payload.get("distributions")
-    if not isinstance(distributions, list):
-        raise ValueError("proof Python identity has no distribution inventory")
-    runtime = payload.get("runtime")
-    if not isinstance(runtime, dict):
-        raise ValueError("proof Python identity has no CPython runtime closure")
-    identity: dict[str, object] = {name: str(payload[name]) for name in required}
-    identity["runtime"] = runtime
-    identity["distributions"] = distributions
-    inventory_profile = payload.get("inventory_profile")
-    if not isinstance(inventory_profile, dict):
-        raise ValueError("proof Python identity has no inventory profile")
-    identity["identity_sha256"] = hashlib.sha256(
-        json.dumps(identity, sort_keys=True).encode()
-    ).hexdigest()
-    identity["inventory_profile"] = inventory_profile
-    return identity
+        raise ValueError("proof Python selection identity is incomplete")
+    assert isinstance(prefix_raw, str)
+    assert isinstance(executable_raw, str)
+    assert isinstance(base_executable_raw, str)
+    if (
+        prefix_raw != location.get("prefix")
+        or executable_raw != location.get("selected_executable")
+        or base_executable_raw != location.get("base_executable")
+        or selection.get("executable_sha256") != _hash_file(Path(executable_raw))
+        or selection.get("base_executable_sha256")
+        != _hash_file(Path(base_executable_raw))
+    ):
+        raise ValueError("proof Python selection differs from its location receipt")
+    source_root = source_root.resolve(strict=True)
+    try:
+        process_images = _python_process_images(
+            environment, location, source_root=source_root
+        )
+    except PythonEnvironmentIdentityError as exc:
+        raise ValueError(f"proof Python launcher closure is invalid: {exc}") from exc
+    material: dict[str, object] = {
+        "schema": "molt.proof-python-toolchain.v3",
+        "identity_kind": "executable",
+        "location": location,
+        "source_root": str(source_root),
+        "environment": environment,
+        "file_custody": capture["file_custody"],
+        "node_custody": capture["node_custody"],
+        "process_images": process_images,
+    }
+    return {
+        **material,
+        "identity_sha256": canonical_json_sha256(material),
+        "inventory_profile": capture["inventory_profile"],
+    }
+
+
+def _python_process_images(
+    environment: Mapping[str, object],
+    location: Mapping[str, object],
+    *,
+    source_root: Path,
+) -> list[dict[str, object]]:
+    prefix = Path(str(location["prefix"]))
+    selected = str(location["selected_executable"])
+    base = str(location["base_executable"])
+    launchers = python_environment_executable_files(
+        environment,
+        prefix,
+        base_executable=Path(base),
+    )
+    process_images = process_image_capture.canonical_images(
+        [
+            {
+                "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+                "role": str(launcher["role"]),
+                "path": str(launcher["path"]),
+                "sha256": launcher["sha256"],
+                "size_bytes": launcher["size"],
+                "path_kind": "selection",
+            }
+            for launcher in launchers
+        ]
+    )
+    selected_images = [
+        row for row in process_images if row["role"] == "selected-interpreter"
+    ]
+    base_images = [row for row in process_images if row["role"] == "base-interpreter"]
+
+    def lexical(value: object) -> str:
+        return os.path.normcase(str(Path(os.path.abspath(str(value)))))
+
+    if len(selected_images) != 1 or lexical(selected_images[0]["path"]) != lexical(
+        selected
+    ):
+        raise ValueError("proof Python selection is absent from launcher closure")
+    if len(base_images) != 1 or os.path.normcase(
+        str(Path(str(base_images[0]["path"])).resolve(strict=True))
+    ) != os.path.normcase(str(Path(base).resolve(strict=True))):
+        raise ValueError("proof Python base executable differs from launcher closure")
+    external_rows = environment.get("external_roots")
+    if not isinstance(external_rows, list) or not all(
+        isinstance(row, Mapping) and isinstance(row.get("path"), str)
+        for row in external_rows
+    ):
+        raise PythonEnvironmentIdentityError(
+            "Python environment external-root closure is invalid"
+        )
+    from molt.python_environment_custody import _canonical_external_roots
+
+    expected_external = [
+        {"id": root_id, "path": str(path)}
+        for root_id, path in _canonical_external_roots(
+            [
+                source_root,
+                *(
+                    Path(value)
+                    for value in cast(Sequence[str], location["external_roots"])
+                ),
+            ],
+            prefix,
+        )
+    ]
+    typed_external_rows = cast(list[Mapping[str, object]], external_rows)
+    if typed_external_rows != expected_external:
+        raise ValueError(
+            "proof Python environment external roots differ from pre-arm location"
+        )
+    return process_image_capture.revalidate_images(process_images)
+
+
+def _reject_python_location_onedrive(
+    location: Mapping[str, object], *, source_root: Path | None = None
+) -> None:
+    roles: list[tuple[str, Path]] = [
+        ("environment prefix", Path(str(location["prefix"]))),
+        ("selected executable", Path(str(location["selected_executable"]))),
+        ("base executable", Path(str(location["base_executable"]))),
+    ]
+    roles.extend(
+        ("custody root", Path(value))
+        for value in cast(Sequence[str], location["roots"])
+    )
+    roles.extend(
+        ("external editable root", Path(str(value)))
+        for value in cast(Sequence[str], location["external_roots"])
+    )
+    roles.extend(
+        ("native dependency", Path(value))
+        for value in cast(Sequence[str], location["file_paths"])
+    )
+    if source_root is not None:
+        roles.append(("proof source root", source_root))
+    for role, path in roles:
+        _reject_onedrive(path, f"proof Python {role}")
 
 
 def _file_identity(path: Path) -> dict[str, object]:
@@ -759,9 +940,75 @@ def _validate_toolchain_identity(
         policy = policies[name]
     except KeyError as exc:
         raise ValueError(f"proof plan has no {name!r} toolchain policy") from exc
+    if name == "python":
+        environment = identity.get("environment")
+        location = identity.get("location")
+        source_root_raw = identity.get("source_root")
+        if (
+            set(identity)
+            != {
+                "environment",
+                "file_custody",
+                "node_custody",
+                "inventory_profile",
+                "identity_kind",
+                "identity_sha256",
+                "location",
+                "process_images",
+                "schema",
+                "source_root",
+            }
+            or identity.get("schema") != "molt.proof-python-toolchain.v3"
+            or identity.get("identity_kind") != "executable"
+            or not isinstance(environment, Mapping)
+            or not isinstance(location, Mapping)
+            or not isinstance(source_root_raw, str)
+        ):
+            raise ValueError("python identity has no complete environment closure")
+        material = dict(identity)
+        digest = material.pop("identity_sha256", None)
+        material.pop("inventory_profile", None)
+        if digest != canonical_json_sha256(material):
+            raise ValueError("python toolchain identity digest is invalid")
+        try:
+            capture = validate_python_capture(
+                {
+                    "schema": PYTHON_CAPTURE_SCHEMA,
+                    "identity": environment,
+                    "file_custody": identity.get("file_custody"),
+                    "node_custody": identity.get("node_custody"),
+                    "inventory_profile": identity.get("inventory_profile"),
+                }
+            )
+            environment = cast(Mapping[str, object], capture["identity"])
+            location = validate_python_environment_location(dict(location))
+        except PythonEnvironmentIdentityError as exc:
+            raise ValueError(f"python environment closure is invalid: {exc}") from exc
+        source_root = Path(source_root_raw)
+        if (
+            not source_root.is_absolute()
+            or not source_root.is_dir()
+            or str(source_root.resolve(strict=True)) != source_root_raw
+        ):
+            raise ValueError("python identity source root is invalid")
+        _reject_python_location_onedrive(location, source_root=source_root)
+        expected_images = _python_process_images(
+            environment, location, source_root=source_root
+        )
+        if identity.get("process_images") != expected_images:
+            raise ValueError("python process images differ from environment closure")
+        version = environment.get("version")
+        pattern = str(policy.data["version_pattern"])
+        if (
+            not isinstance(version, str)
+            or re.search(pattern, f"Python {version}") is None
+        ):
+            raise ValueError(
+                f"python identity version {version!r} violates canonical policy {pattern!r}"
+            )
+        process_image_capture.toolchain_images(name, identity)
+        return
     version = identity.get("version")
-    if name == "python" and isinstance(version, str):
-        version = f"Python {version}"
     pattern = str(policy.data["version_pattern"])
     if not isinstance(version, str) or re.search(pattern, version) is None:
         raise ValueError(
@@ -802,17 +1049,6 @@ def _validate_toolchain_identity(
             )
         ):
             raise ValueError(f"{name} process-image inventory receipt is malformed")
-    if name == "python":
-        runtime_digest = identity.get("runtime_closure_sha256")
-        runtime = identity.get("runtime")
-        if (
-            not isinstance(runtime_digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", runtime_digest) is None
-            or not isinstance(runtime, Mapping)
-            or not isinstance(runtime.get("runtime_file_count"), int)
-            or int(runtime["runtime_file_count"]) <= 0
-        ):
-            raise ValueError("python identity has no complete CPython runtime closure")
     if name == "node":
         runtime_digest = identity.get("runtime_sha256")
         if (

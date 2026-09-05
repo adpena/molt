@@ -14,7 +14,7 @@ import secrets
 import subprocess
 import sys
 import time
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 
 # This file is launched by absolute path from an arbitrary proof cwd.  Establish
@@ -31,6 +31,7 @@ if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
         _loaded_molt.__path__.insert(0, _local_molt_root)
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
+from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
@@ -217,7 +218,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 supervisor_binary=supervisor_binary,
             )
         )
-        child_policy = execution_custody.child_policy(envelope, policy_identities)
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
             admission.parse_python_invocation(
@@ -236,28 +236,12 @@ def execute_guarded_request(request_path: Path) -> int:
                 else None
             )
         )
-        child_event_server = execution_custody.ChildCustodyEventServer(
-            expected_child_runtime, child_policy
-        )
-        execution_env[execution_custody.CHILD_POLICY_ENV] = json.dumps(
-            child_policy, sort_keys=True, separators=(",", ":")
-        )
-        execution_env.update(child_event_server.environment())
         passed_names = environment_contract["passed_names"]
         override_names_contract = environment_contract["override_names"]
         assert isinstance(passed_names, list)
         assert isinstance(override_names_contract, list)
-        for name in (
-            execution_custody.CHILD_POLICY_ENV,
-            execution_custody.CHILD_ENDPOINT_ENV,
-            execution_custody.CHILD_TOKEN_ENV,
-        ):
-            if name not in passed_names:
-                passed_names.append(name)
-            if name not in override_names_contract:
-                override_names_contract.append(name)
-        passed_names.sort(key=str.casefold)
-        override_names_contract.sort(key=str.casefold)
+        passed_names = cast(list[str], passed_names)
+        override_names_contract = cast(list[str], override_names_contract)
         execution_command, python_launcher_environment = (
             admission._supervised_execution_command(envelope, exact, policy_identities)
         )
@@ -284,6 +268,8 @@ def execute_guarded_request(request_path: Path) -> int:
             Path(execution_custody.__file__).resolve(strict=True),
             supervisor_binary,
         ]
+        if "python" in envelope.get("toolchains", []):
+            custody_authority_paths.extend(python_capture_authority_paths())
         supervisor_source = admission._REPO_ROOT / "tools" / "proof_supervisor"
         custody_authority_paths.extend(
             path.resolve(strict=True)
@@ -295,8 +281,13 @@ def execute_guarded_request(request_path: Path) -> int:
             )
         )
         if python_has_payload:
-            custody_authority_paths.append(
-                admission._PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
+            custody_authority_paths.extend(
+                (
+                    admission._PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True),
+                    Path(execution_custody.__file__)
+                    .with_name("python_child_custody.py")
+                    .resolve(strict=True),
+                )
             )
         if "node" in envelope.get("toolchains", []):
             custody_authority_paths.extend(
@@ -348,7 +339,6 @@ def execute_guarded_request(request_path: Path) -> int:
         monitor = execution_custody.LiveCustodyMonitor(live_watch_specs)
         custody_session = execution_custody.ExecutionCustodySession(
             monitor=monitor,
-            child_server=child_event_server,
         )
         custody_session.__enter__()
 
@@ -392,8 +382,6 @@ def execute_guarded_request(request_path: Path) -> int:
         for name, identity in toolchains_full.items():
             assert isinstance(identity, Mapping)
             command_identity._validate_toolchain_identity(plan, name, identity)
-        if execution_custody.child_policy(envelope, toolchains_full) != child_policy:
-            raise ValueError("toolchain closure changed while live custody armed")
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full
         )
@@ -408,6 +396,26 @@ def execute_guarded_request(request_path: Path) -> int:
                 "toolchain capture contains paths outside armed custody: "
                 + ", ".join(uncovered[:3])
             )
+        child_policy = execution_custody.child_policy(envelope, toolchains_full)
+        child_event_server = execution_custody.ChildCustodyEventServer(
+            expected_child_runtime, child_policy
+        )
+        execution_env[execution_custody.CHILD_POLICY_ENV] = json.dumps(
+            child_policy, sort_keys=True, separators=(",", ":")
+        )
+        execution_env.update(child_event_server.environment())
+        for name in (
+            execution_custody.CHILD_POLICY_ENV,
+            execution_custody.CHILD_ENDPOINT_ENV,
+            execution_custody.CHILD_TOKEN_ENV,
+        ):
+            if name not in passed_names:
+                passed_names.append(name)
+            if name not in override_names_contract:
+                override_names_contract.append(name)
+        passed_names.sort(key=str.casefold)
+        override_names_contract.sort(key=str.casefold)
+        custody_session.bind_child_server(child_event_server)
         proof_python = toolchains.get("python")
         if proof_python is not None and not isinstance(proof_python, dict):
             raise ValueError("compact Python toolchain summary is malformed")

@@ -11,9 +11,13 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from molt import python_environment_identity
+from molt.python_file_node_custody import _semantic_access
+from molt.exact_json import canonical_json_sha256
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
@@ -54,6 +58,12 @@ from molt.cli.source_extension_set_registry import (
 )
 from molt.target_python import TargetPythonVersion
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
+from tests.python_environment_test_support import (
+    build_environment_manifest as _build_environment_manifest,
+    lock_closure_manifest as _lock_closure_manifest,
+    realized_environment_manifest as _realized_environment_manifest,
+    runtime_identity_manifest as _runtime_identity_manifest,
+)
 
 
 _MODULES = (
@@ -102,21 +112,6 @@ def _write_test_extension_wheel(
             (f"{dist_info}/METADATA", b"Metadata-Version: 2.1\n"),
         ),
         record_path=f"{dist_info}/RECORD",
-    )
-
-
-class _Distribution:
-    def __init__(self, name: str, version: str) -> None:
-        self.version = version
-        self.metadata = {"Name": name}
-
-
-def _write_distribution_metadata(root: Path, name: str, version: str) -> None:
-    metadata = root / f"{name.replace('-', '_')}-{version}.dist-info" / "METADATA"
-    metadata.parent.mkdir(parents=True)
-    metadata.write_text(
-        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
-        encoding="utf-8",
     )
 
 
@@ -339,58 +334,83 @@ def _write_meson_metadata(
     }
 
 
-def _build_environment_manifest() -> dict[str, object]:
-    marker_environment = build_environment.canonical_source_marker_environment()
-    requirements = ["meson==1.9.0", "ninja==1.13.0"]
-    custody_python = {
-        "implementation": marker_environment["implementation_name"],
-        "version": marker_environment["python_full_version"],
-        "platform": "test-platform",
-        "base_executable": Path(sys.executable).name,
-        "base_executable_sha256": "c" * 64,
-    }
-    custody_uv = {
-        "executable": "uv.exe",
-        "version": "uv 0.11.24",
-        "sha256": "d" * 64,
-    }
-    custody_address = {
-        "schema_version": 2,
-        "dependency_group": "source-build-scipy",
-        "dependency_group_requirements": requirements,
-        "uv_lock_sha256": "e" * 64,
-        "python": custody_python,
-        "uv": custody_uv,
-    }
-    custody = {
-        "environment_id": hashlib.sha256(
-            json.dumps(custody_address, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-        **custody_address,
-    }
-    return {
-        "python": {
-            "implementation": marker_environment["implementation_name"],
-            "version": marker_environment["python_full_version"],
-            "executable": Path(sys.executable).name,
-        },
-        "requirements": requirements,
-        "marker_environment": marker_environment,
-        "active_requirements": requirements,
-        "resolved": [
-            {
-                "requirement": "meson==1.9.0",
-                "distribution": "meson",
-                "version": "1.9.0",
-            },
-            {
-                "requirement": "ninja==1.13.0",
-                "distribution": "ninja",
-                "version": "1.13.0",
-            },
-        ],
-        "custody": custody,
-    }
+def _source_environment(
+    payload: dict[str, Any] | None = None,
+) -> producer._SourceBuildEnvironment:
+    payload = _build_environment_manifest() if payload is None else payload
+    return producer._SourceBuildEnvironment(
+        python_executable=sys.executable,
+        requirements=tuple(payload["requirements"]),
+        marker_environment=payload["marker_environment"],
+        active_requirements=tuple(payload["active_requirements"]),
+        resolved=tuple(
+            producer._ResolvedBuildRequirement(**row) for row in payload["resolved"]
+        ),
+        custody=payload["custody"],
+        inventory=producer.SourceBuildInventory(payload["custody"], Path(sys.prefix)),
+    )
+
+
+def _install_realized_console_script(
+    payload: dict[str, Any], root: Path, name: str, *, distribution: str
+) -> Path:
+    """Add actual tool bytes and ownership to the shared synthetic environment."""
+    realized = payload["custody"]["realized_environment"]
+    filename = name + ".exe" if realized["operating_system"] == "windows" else name
+    relative = f"{realized['scripts_root']}/{filename}"
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = b"realized-tool-fixture"
+    path.write_bytes(data)
+    tree = realized["tree"]
+    for entry in tree["entries"]:
+        directory = root / entry["path"]
+        if entry["kind"] == "directory" and path.is_relative_to(directory):
+            entry["access"] = _semantic_access(directory.lstat())
+    node = f"file-node-{len(tree['file_nodes'])}"
+    tree["file_nodes"].append(
+        {"id": node, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    )
+    tree["node_ids"].append(node)
+    tree["file_count"] += 1
+    tree["entries"].append(
+        {
+            "path": relative,
+            "kind": "file",
+            "node": node,
+            "access": _semantic_access(path.lstat()),
+        }
+    )
+    tree["entries"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
+    tree["manifest_sha256"] = canonical_json_sha256(tree["entries"])
+    owner = next(
+        row for row in realized["distributions"] if row["name"] == distribution
+    )
+    owner["installed_files"].append({"path": relative, "node": node, "declared": None})
+    owner["installed_files"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
+    owner["installed_file_count"] += 1
+    owner["file_manifest_sha256"] = canonical_json_sha256(owner["installed_files"])
+    owner["entry_points"].append(
+        {"group": "console_scripts", "name": name, "value": f"{distribution}:main"}
+    )
+    owner["entry_points"].sort(
+        key=lambda row: (row["group"], row["name"], row["value"])
+    )
+    owner["entry_points_sha256"] = canonical_json_sha256(owner["entry_points"])
+    owner["console_scripts"][name] = [relative]
+    realized["console_scripts"][name] = [relative]
+    realized["distribution_inventory_sha256"] = canonical_json_sha256(
+        realized["distributions"]
+    )
+    realized["environment_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in realized.items()
+            if key != "environment_closure_sha256"
+        }
+    )
+    python_environment_identity.validate_python_environment_identity(realized)
+    return path.resolve()
 
 
 def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
@@ -826,21 +846,22 @@ def test_producer_audit_enforces_exact_consumer_contract() -> None:
 def test_source_build_environment_noop_records_exact_resolutions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requirements = (
-        "meson>=1.5",
-        "Cython>=3.0",
-        'ninja; python_version < "3"',
-    )
+    requirements = ("meson>=1.5", "Cython>=3.0", 'ninja; python_version < "3"')
     _write_build_pyproject(tmp_path, requirements)
-    installed = {
-        "meson": _Distribution("meson", "1.8.0"),
-        "Cython": _Distribution("Cython", "3.1.2"),
-    }
-    monkeypatch.setattr(
-        producer.importlib_metadata,
-        "distribution",
-        lambda name: installed[name],
-    )
+    custody = _build_environment_manifest(["cython==3.1.2", "meson==1.8.0"])["custody"]
+    poison = tmp_path / "ambient"
+    _write_legacy_distribution_metadata(poison, "meson", "0.1")
+    monkeypatch.syspath_prepend(str(poison))
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+    inventories = []
+    inventory_type = producer.SourceBuildInventory
+
+    def capture_inventory(*args, **kwargs):
+        inventory = inventory_type(*args, **kwargs)
+        inventories.append(inventory)
+        return inventory
+
+    monkeypatch.setattr(producer, "SourceBuildInventory", capture_inventory)
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -849,35 +870,30 @@ def test_source_build_environment_noop_records_exact_resolutions(
         ),
     )
 
-    environment = producer._ensure_source_build_environment(
-        tmp_path, custody={"environment_id": "test"}
-    )
+    environment = producer._ensure_source_build_environment(tmp_path, custody=custody)
+    assert len(inventories) == 1
+    assert environment.inventory is inventories[0]
+    producer._source_build_config_tools(environment)
+    assert len(inventories) == 1
 
     assert environment.manifest_payload() == {
         "python": {
             "implementation": producer.sys.implementation.name,
-            "version": (
-                f"{producer.sys.version_info.major}.{producer.sys.version_info.minor}."
-                f"{producer.sys.version_info.micro}"
-            ),
-            "executable": Path(producer.sys.executable).name,
+            "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "executable": Path(sys.executable).name,
         },
         "requirements": list(requirements),
         "marker_environment": producer.canonical_source_marker_environment(),
         "active_requirements": ["meson>=1.5", "Cython>=3.0"],
         "resolved": [
-            {
-                "requirement": "meson>=1.5",
-                "distribution": "meson",
-                "version": "1.8.0",
-            },
+            {"requirement": "meson>=1.5", "distribution": "meson", "version": "1.8.0"},
             {
                 "requirement": "Cython>=3.0",
-                "distribution": "Cython",
+                "distribution": "cython",
                 "version": "3.1.2",
             },
         ],
-        "custody": {"environment_id": "test"},
+        "custody": custody,
     }
 
 
@@ -885,12 +901,7 @@ def test_source_build_environment_rejects_incomplete_locked_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_build_pyproject(tmp_path, ("meson>=1.5", "Cython>=3.0"))
-    versions = {"meson": "1.0", "Cython": "3.1.2"}
-
-    def distribution(name: str) -> _Distribution:
-        return _Distribution(name, versions[name])
-
-    monkeypatch.setattr(producer.importlib_metadata, "distribution", distribution)
+    custody = _build_environment_manifest(["cython==3.1.2", "meson==1.0"])["custody"]
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -901,20 +912,19 @@ def test_source_build_environment_rejects_incomplete_locked_group(
         producer.SourceExtensionProducerError,
         match="configured dependency group or frozen lock is incomplete.*meson>=1.5",
     ):
-        producer._ensure_source_build_environment(
-            tmp_path, custody={"environment_id": "test"}
-        )
+        producer._ensure_source_build_environment(tmp_path, custody=custody)
 
 
 def test_source_build_environment_missing_distribution_is_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_build_pyproject(tmp_path, ("meson>=1.5",))
-
-    def missing(_name: str):
-        raise producer.importlib_metadata.PackageNotFoundError
-
-    monkeypatch.setattr(producer.importlib_metadata, "distribution", missing)
+    custody = _build_environment_manifest(["ninja==1.13.0"])["custody"]
+    # An ambient matching distribution cannot fill a gap in the realized closure.
+    poison = tmp_path / "ambient"
+    _write_legacy_distribution_metadata(poison, "meson", "99")
+    monkeypatch.syspath_prepend(str(poison))
+    monkeypatch.setenv("PYTHONPATH", str(poison))
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -925,34 +935,25 @@ def test_source_build_environment_missing_distribution_is_fail_closed(
         producer.SourceExtensionProducerError,
         match="configured dependency group or frozen lock is incomplete.*meson>=1.5",
     ):
-        producer._ensure_source_build_environment(
-            tmp_path, custody={"environment_id": "test"}
-        )
+        producer._ensure_source_build_environment(tmp_path, custody=custody)
 
 
 def _locked_environment_spec(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, Path, dict[str, object], Path]:
     root = tmp_path / "custody/environment"
+    monkeypatch.setattr(
+        build_environment, "_source_build_custody_root", lambda _repo: root.parent
+    )
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    custody: dict[str, object] = {
-        "schema_version": 2,
-        "environment_id": "a" * 64,
-        "dependency_group": "source-build-numpy",
-        "dependency_group_requirements": ["ninja==1.13.0"],
-        "uv_lock_sha256": "b" * 64,
-        "python": {
-            "implementation": "cpython",
-            "version": "3.12.13",
-            "platform": "win-amd64",
-            "base_executable": "python.exe",
-            "base_executable_sha256": "c" * 64,
-        },
-        "uv": {
-            "executable": "uv.exe",
-            "version": "uv 0.11.24",
-            "sha256": "d" * 64,
-        },
+    payload = _build_environment_manifest(
+        ["ninja==1.13.0"], dependency_group="source-build-numpy"
+    )
+    custody = {
+        key: value
+        for key, value in payload["custody"].items()
+        if key != "realized_environment"
     }
     return (
         root,
@@ -961,6 +962,22 @@ def _locked_environment_spec(
         custody,
         tmp_path / "uv.exe",
     )
+
+
+def test_source_build_environment_rejects_resealed_float_schema_version() -> None:
+    payload = _build_environment_manifest(["ninja==1.13.0"])
+    custody = payload["custody"]
+    custody["schema_version"] = 5.0
+    custody["environment_id"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in custody.items()
+            if key not in {"environment_id", "realized_environment"}
+        }
+    )
+    assert build_environment.source_build_environment_problems(payload) == [
+        "extension-set manifest build-environment address digest is invalid"
+    ]
 
 
 def test_source_build_environment_address_is_worktree_neutral(
@@ -983,13 +1000,17 @@ def test_source_build_environment_address_is_worktree_neutral(
     monkeypatch.setattr(
         build_environment,
         "_python_identity",
-        lambda: {
-            "implementation": "cpython",
-            "version": "3.12.13",
-            "platform": "win-amd64",
-            "base_executable": "python.exe",
-            "base_executable_sha256": "c" * 64,
-        },
+        _runtime_identity_manifest,
+    )
+    lock_closure = _lock_closure_manifest(
+        ["ninja==1.13.0"],
+        [("ninja", "1.13.0")],
+        dependency_group="source-build-numpy",
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "selected_uv_lock_group_closure",
+        lambda *_args, **_kwargs: lock_closure,
     )
     monkeypatch.setattr(
         build_environment,
@@ -1010,31 +1031,21 @@ def test_source_build_environment_address_is_worktree_neutral(
     assert first_spec[:4] == second_spec[:4]
     assert "worktrees" not in str(first_spec[0])
     custody = first_spec[3]
-    assert custody["schema_version"] == 2
+    assert custody["schema_version"] == 5
     address_payload = {key: custody[key] for key in custody if key != "environment_id"}
-    assert (
-        custody["environment_id"]
-        == hashlib.sha256(
-            json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
+    assert custody["environment_id"] == canonical_json_sha256(address_payload)
     old_address_payload = dict(address_payload)
-    old_address_payload["schema_version"] = 1
-    assert (
-        custody["environment_id"]
-        != hashlib.sha256(
-            json.dumps(
-                old_address_payload, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest()
-    )
+    old_address_payload["schema_version"] = 3
+    assert custody["environment_id"] != canonical_json_sha256(old_address_payload)
 
 
 def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
     monkeypatch.setattr(
         build_environment,
         "_run_uv_sync",
@@ -1045,8 +1056,8 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
         build_environment.SourceBuildEnvironmentError,
         match="provisioning failed.*returned 7",
     ):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
 
     assert not spec[2].exists()
@@ -1059,14 +1070,18 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
 def test_source_build_environment_recovers_exact_provisional_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     calls = 0
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
-    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
+    realized = _realized_environment_manifest(
+        spec[3]["python_runtime"], [("ninja", "1.13.0")]
+    )
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_probe_environment_identity",
+        lambda _python, _root: realized,
     )
 
     def run(argv, **kwargs):
@@ -1086,18 +1101,18 @@ def test_source_build_environment_recovers_exact_provisional_record(
     monkeypatch.setattr(build_environment, "_run_uv_sync", run)
 
     with pytest.raises(build_environment.SourceBuildEnvironmentError):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
-    result = build_environment.provision_source_build_environment(
-        tmp_path, "source-build-numpy"
+    result = build_environment.source_build_environment(
+        tmp_path, "source-build-numpy", provision=True
     )
 
     assert calls == 2
     assert result.root == spec[0]
     assert json.loads(spec[2].read_text(encoding="utf-8")) == {
         **spec[3],
-        "installed_distributions": distributions,
+        "realized_environment": realized,
     }
     assert not build_environment._provisioning_record_path(spec[0]).exists()
 
@@ -1111,11 +1126,13 @@ def test_source_build_environment_rejects_foreign_unattested_root(
     monkeypatch: pytest.MonkeyPatch,
     foreign_payload: object,
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     spec[0].mkdir(parents=True)
     if foreign_payload is not None:
         spec[2].write_text(json.dumps(foreign_payload), encoding="utf-8")
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
     monkeypatch.setattr(
         build_environment,
         "_run_uv_sync",
@@ -1126,8 +1143,8 @@ def test_source_build_environment_rejects_foreign_unattested_root(
         build_environment.SourceBuildEnvironmentError,
         match="exact attestation or sibling provisioning record",
     ):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
 
 
@@ -1140,60 +1157,41 @@ def test_source_build_environment_rejects_foreign_sibling_record(
     monkeypatch: pytest.MonkeyPatch,
     foreign_payload: object,
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     provisioning_path = build_environment._provisioning_record_path(spec[0])
     provisioning_path.parent.mkdir(parents=True)
     provisioning_path.write_text(json.dumps(foreign_payload), encoding="utf-8")
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
 
     with pytest.raises(
         build_environment.SourceBuildEnvironmentError,
         match="foreign source-build provisioning record",
     ):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
 
 
 def test_source_build_environment_rejects_malformed_sibling_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     provisioning_path = build_environment._provisioning_record_path(spec[0])
     provisioning_path.parent.mkdir(parents=True)
     provisioning_path.write_text("{not-json", encoding="utf-8")
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
 
     with pytest.raises(
         build_environment.SourceBuildEnvironmentError,
         match="malformed source-build provisioning record",
     ):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
-
-
-def test_installed_distributions_use_only_canonical_sysconfig_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    purelib = tmp_path / "environment" / "purelib"
-    platlib = tmp_path / "environment" / "platlib"
-    poison = tmp_path / "external"
-    _write_distribution_metadata(purelib, "canonical-pure", "1.2.3")
-    _write_distribution_metadata(platlib, "canonical-plat", "4.5.6")
-    _write_legacy_distribution_metadata(poison, "ambient-poison", "99")
-    monkeypatch.syspath_prepend(str(poison))
-    monkeypatch.setenv("PYTHONPATH", str(poison))
-
-    def get_path(scheme: str, *_args, **_kwargs) -> str:
-        return str({"purelib": purelib, "platlib": platlib}[scheme])
-
-    monkeypatch.setattr(build_environment.sysconfig, "get_path", get_path)
-
-    assert build_environment._installed_distributions() == [
-        {"name": "canonical-plat", "version": "4.5.6"},
-        {"name": "canonical-pure", "version": "1.2.3"},
-    ]
 
 
 def test_distribution_probe_sanitizes_python_import_authority(
@@ -1202,11 +1200,16 @@ def test_distribution_probe_sanitizes_python_import_authority(
     observed: dict[str, object] = {}
     monkeypatch.setenv("PYTHONHOME", "poison-home")
     monkeypatch.setenv("PYTHONPATH", "poison-path")
+    realized = _realized_environment_manifest(
+        _runtime_identity_manifest(), [("ninja", "1.13.0")]
+    )
 
     def run(argv, **kwargs):
         observed["argv"] = argv
         observed["env"] = kwargs["env"]
-        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(realized), stderr=""
+        )
 
     monkeypatch.setattr(
         build_environment.process_guard,
@@ -1215,37 +1218,39 @@ def test_distribution_probe_sanitizes_python_import_authority(
     )
 
     assert (
-        build_environment._probe_environment_distributions(Path(sys.executable)) == []
+        build_environment._probe_environment_identity(
+            Path(sys.executable), Path(sys.prefix)
+        )
+        == realized
     )
-    assert observed["argv"][:3] == [str(Path(sys.executable)), "-P", "-c"]
+    expected_argv = [
+        str(Path(sys.executable)),
+        "-I",
+        str(Path(python_environment_identity.__file__).resolve()),
+        "--capture-environment",
+        str(Path(sys.prefix).resolve()),
+        "--admit-virtualenv-bootstrap",
+    ]
+    assert observed["argv"] == expected_argv
     environment = observed["env"]
     assert isinstance(environment, dict)
     assert "PYTHONHOME" not in environment
     assert "PYTHONPATH" not in environment
     assert environment["PYTHONNOUSERSITE"] == "1"
-
-
-def test_distribution_probe_excludes_external_pythonpath_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    poison = tmp_path / "external"
-    _write_legacy_distribution_metadata(poison, "ambient-probe-poison", "99")
-    monkeypatch.setenv("PYTHONPATH", str(poison))
-
-    rows = build_environment._probe_environment_distributions(Path(sys.executable))
-
-    assert not any(row["name"] == "ambient-probe-poison" for row in rows)
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_complete_environment_cleans_exact_stale_sibling_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
-    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    realized = _realized_environment_manifest(
+        spec[3]["python_runtime"], [("ninja", "1.13.0")]
+    )
     spec[1].parent.mkdir(parents=True)
     spec[1].write_bytes(b"python")
     spec[2].write_text(
-        json.dumps({**spec[3], "installed_distributions": distributions}),
+        json.dumps({**spec[3], "realized_environment": realized}),
         encoding="utf-8",
     )
     provisioning_path = build_environment._provisioning_record_path(spec[0])
@@ -1254,11 +1259,13 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
         json.dumps(build_environment._provisioning_record(spec[3])),
         encoding="utf-8",
     )
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_probe_environment_identity",
+        lambda _python, _root: realized,
     )
     monkeypatch.setattr(
         build_environment,
@@ -1266,8 +1273,8 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
         lambda *_args, **_kwargs: pytest.fail("complete root must not reprovision"),
     )
 
-    result = build_environment.provision_source_build_environment(
-        tmp_path, "source-build-numpy"
+    result = build_environment.source_build_environment(
+        tmp_path, "source-build-numpy", provision=True
     )
 
     assert result.root == spec[0]
@@ -1277,15 +1284,19 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
 def test_concurrent_source_build_provision_runs_one_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     calls: list[tuple[str, ...]] = []
     calls_lock = threading.Lock()
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
-    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
+    realized = _realized_environment_manifest(
+        spec[3]["python_runtime"], [("ninja", "1.13.0")]
+    )
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_probe_environment_identity",
+        lambda _python, _root: realized,
     )
 
     def run(argv, **kwargs):
@@ -1309,8 +1320,8 @@ def test_concurrent_source_build_provision_runs_one_sync(
 
     def provision() -> None:
         try:
-            build_environment.provision_source_build_environment(
-                tmp_path, "source-build-numpy"
+            build_environment.source_build_environment(
+                tmp_path, "source-build-numpy", provision=True
             )
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
@@ -1332,13 +1343,15 @@ def test_concurrent_source_build_provision_runs_one_sync(
         str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()),
         "--frozen",
         "--no-default-groups",
+        "--no-dev",
         "--group",
         "source-build-numpy",
         "--no-install-project",
+        "--compile-bytecode",
     )
     assert json.loads(spec[2].read_text(encoding="utf-8")) == {
         **spec[3],
-        "installed_distributions": distributions,
+        "realized_environment": realized,
     }
     launcher = spec[1].parent / ("cython.exe" if os.name == "nt" else "cython")
     assert launcher.read_text(encoding="utf-8") == f"#!{spec[1]}\n"
@@ -1348,12 +1361,16 @@ def test_concurrent_source_build_provision_runs_one_sync(
 def test_source_build_provision_rejects_group_resolution_before_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: [{"name": "packaging", "version": "26.2"}],
+        "_probe_environment_identity",
+        lambda _python, _root: _realized_environment_manifest(
+            spec[3]["python_runtime"], [("packaging", "26.2")]
+        ),
     )
 
     def run(argv, **kwargs):
@@ -1369,10 +1386,10 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
 
     with pytest.raises(
         build_environment.SourceBuildEnvironmentError,
-        match="does not satisfy.*ninja==1.13.0",
+        match="differs from its selected lock",
     ):
-        build_environment.provision_source_build_environment(
-            tmp_path, "source-build-numpy"
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
         )
 
     assert not spec[2].exists()
@@ -1384,16 +1401,24 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
 def test_active_source_build_environment_rejects_mutated_ambient_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     spec[0].mkdir(parents=True)
-    manifest = {**spec[3], "installed_distributions": []}
+    realized = _realized_environment_manifest(
+        spec[3]["python_runtime"], [("ninja", "1.13.0")]
+    )
+    manifest = {**spec[3], "realized_environment": realized}
     spec[2].write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
     monkeypatch.setattr(build_environment.sys, "prefix", str(spec[0]))
     monkeypatch.setattr(
         build_environment,
-        "_installed_distributions",
-        lambda: [{"name": "ambient-drift", "version": "1"}],
+        "_probe_environment_identity",
+        lambda _python, _root: {
+            **realized,
+            "environment_closure_sha256": "9" * 64,
+        },
     )
 
     with pytest.raises(
@@ -1403,10 +1428,158 @@ def test_active_source_build_environment_rejects_mutated_ambient_content(
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
 
 
+@pytest.fixture
+def active_source_namespace_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], Path, list[tuple[Path, Path]]]:
+    """Exercise real address selection with only external identity probes mocked."""
+    payload = _build_environment_manifest(
+        ["ninja==1.13.0"], dependency_group="source-build-numpy"
+    )
+    custody = payload["custody"]
+    realized = custody["realized_environment"]
+    namespace = tmp_path / "build-environments/source-extension"
+    active_root = namespace / custody["environment_id"]
+    active_root.mkdir(parents=True)
+    executable = active_root / realized["selected_executable"]["path"]
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(b"synthetic-python")
+    (active_root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+        json.dumps(custody), encoding="utf-8"
+    )
+    probes: list[tuple[Path, Path]] = []
+
+    def capture(python: Path, root: Path) -> dict[str, object]:
+        probes.append((python, root))
+        return realized
+
+    monkeypatch.setattr(build_environment.sys, "prefix", str(active_root))
+    monkeypatch.setattr(build_environment.sys, "executable", str(executable))
+    monkeypatch.setattr(
+        build_environment, "_source_build_custody_root", lambda _repo: namespace
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_declared_dependency_group",
+        lambda *_args: tuple(custody["dependency_group_requirements"]),
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "selected_uv_lock_group_closure",
+        lambda *_args, **_kwargs: custody["lock_closure"],
+    )
+    monkeypatch.setattr(
+        build_environment, "_uv_identity", lambda: (tmp_path / "uv.exe", custody["uv"])
+    )
+    monkeypatch.setattr(build_environment, "_probe_environment_identity", capture)
+    monkeypatch.setattr(
+        build_environment,
+        "_python_identity",
+        lambda: pytest.fail(
+            "active realized capture must be the sole runtime identity source"
+        ),
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("active lookup must not provision"),
+    )
+    return payload, active_root, probes
+
+
+@pytest.mark.parametrize("provision", [False, True])
+def test_active_namespace_lookup_captures_once_and_derives_one_recipe(
+    tmp_path: Path,
+    active_source_namespace_case: tuple[dict[str, Any], Path, list[tuple[Path, Path]]],
+    provision: bool,
+) -> None:
+    payload, active_root, probes = active_source_namespace_case
+    result = build_environment.source_build_environment(
+        tmp_path, "source-build-numpy", provision=provision
+    )
+    assert result.active is True
+    assert result.root == active_root
+    assert result.custody == payload["custody"]
+    assert probes == [(Path(sys.executable), active_root)]
+
+
+@pytest.mark.parametrize("corruption", ["missing", "recipe", "realized"])
+def test_active_namespace_single_capture_rejects_manifest_drift(
+    tmp_path: Path,
+    active_source_namespace_case: tuple[dict[str, Any], Path, list[tuple[Path, Path]]],
+    corruption: str,
+) -> None:
+    payload, active_root, probes = active_source_namespace_case
+    path = active_root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    if corruption == "missing":
+        path.unlink()
+    else:
+        persisted = json.loads(json.dumps(payload["custody"]))
+        if corruption == "recipe":
+            persisted["environment_id"] = "0" * 64
+        else:
+            persisted["realized_environment"]["environment_closure_sha256"] = "0" * 64
+        path.write_text(json.dumps(persisted), encoding="utf-8")
+    with pytest.raises(build_environment.SourceBuildEnvironmentError):
+        build_environment.source_build_environment(tmp_path, "source-build-numpy")
+    assert probes == (
+        [] if corruption == "missing" else [(Path(sys.executable), active_root)]
+    )
+
+
+@pytest.mark.parametrize("drift", ["recipe", "path"])
+def test_active_namespace_rejects_same_group_recipe_or_path_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    active_source_namespace_case: tuple[dict[str, Any], Path, list[tuple[Path, Path]]],
+    drift: str,
+) -> None:
+    payload, active_root, probes = active_source_namespace_case
+    if drift == "recipe":
+        changed_uv = {**payload["custody"]["uv"], "sha256": "f" * 64}
+        monkeypatch.setattr(
+            build_environment, "_uv_identity", lambda: (tmp_path / "uv.exe", changed_uv)
+        )
+    else:
+        wrong_root = active_root.parent / ("0" * 64)
+        wrong_root.mkdir()
+        (wrong_root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+            json.dumps(payload["custody"]), encoding="utf-8"
+        )
+        monkeypatch.setattr(build_environment.sys, "prefix", str(wrong_root))
+        active_root = wrong_root
+    with pytest.raises(build_environment.SourceBuildEnvironmentError):
+        build_environment.source_build_environment(tmp_path, "source-build-numpy")
+    assert probes == [(Path(sys.executable), active_root)]
+
+
+def test_active_namespace_different_group_remains_a_distinct_inactive_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    active_source_namespace_case: tuple[dict[str, Any], Path, list[tuple[Path, Path]]],
+) -> None:
+    payload, active_root, probes = active_source_namespace_case
+    other_lock = json.loads(json.dumps(payload["custody"]["lock_closure"]))
+    other_lock["dependency_group"] = "source-build-scipy"
+    other_lock["closure_sha256"] = canonical_json_sha256(
+        {key: value for key, value in other_lock.items() if key != "closure_sha256"}
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "selected_uv_lock_group_closure",
+        lambda *_args, **_kwargs: other_lock,
+    )
+    result = build_environment.source_build_environment(tmp_path, "source-build-scipy")
+    assert result.active is False
+    assert result.root != active_root
+    assert result.custody["dependency_group"] == "source-build-scipy"
+    assert probes == [(Path(sys.executable), active_root)]
+
+
 def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     environment = build_environment.LockedSourceBuildEnvironment(
         root=spec[0],
         python_executable=spec[1],
@@ -1536,7 +1709,7 @@ def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    spec = _locked_environment_spec(tmp_path)
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
     inactive = build_environment.LockedSourceBuildEnvironment(
         root=spec[0],
         python_executable=spec[1],
@@ -1544,10 +1717,13 @@ def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
         custody=spec[3],
         active=False,
     )
-    monkeypatch.setattr(producer, "source_build_environment", lambda *_args: inactive)
-    monkeypatch.setattr(
-        producer, "provision_source_build_environment", lambda *_args: inactive
-    )
+    provision_calls: list[bool] = []
+
+    def source_environment(*_args, provision: bool = False):
+        provision_calls.append(provision)
+        return inactive
+
+    monkeypatch.setattr(producer, "source_build_environment", source_environment)
     monkeypatch.setattr(
         producer,
         "_run_locked_source_extension_producer",
@@ -1572,6 +1748,7 @@ def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
         )
         == 23
     )
+    assert provision_calls == [True]
 
 
 def test_meson_setup_uses_typed_driver(
@@ -1629,7 +1806,7 @@ def test_upstream_vendored_meson_is_the_driver_authority(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    resolved = producer._source_meson_driver(source)
+    resolved = producer._source_meson_driver(source, _source_environment())
 
     assert resolved.command == (sys.executable, str(driver.resolve()))
     assert resolved.manifest_payload() == {
@@ -1791,18 +1968,11 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
 def test_meson_pkg_config_is_pinned_and_attested(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tool = tmp_path / "Scripts/pkg-config.exe"
-    tool.parent.mkdir()
-    tool.write_bytes(b"real-tool-placeholder")
-    resolved = producer._ResolvedBuildRequirement(
-        requirement=producer.MOLT_PKGCONF_REQUIREMENT,
-        distribution="pkgconf",
-        version="3.0.1.post0",
+    payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
+    tool = _install_realized_console_script(
+        payload, tmp_path, "pkg-config", distribution="pkgconf"
     )
-    monkeypatch.setattr(
-        producer, "_installed_build_requirement", lambda *_args: resolved
-    )
-    monkeypatch.setattr(producer, "_active_console_script", lambda _name: tool)
+    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -1810,32 +1980,110 @@ def test_meson_pkg_config_is_pinned_and_attested(
             args=list(argv), returncode=0, stdout="3.0.1\n", stderr=""
         ),
     )
+    environment = _source_environment(payload)
 
-    config_tool = producer._ensure_meson_pkg_config(tmp_path)
+    config_tool = producer._ensure_meson_pkg_config(tmp_path, environment)
 
     assert config_tool == producer._SourceBuildConfigTool(
-        name="pkg-config",
-        path=tool,
-        distribution="pkgconf",
-        version="3.0.1.post0",
+        name="pkg-config", path=tool, distribution="pkgconf", version="3.0.1.post0"
+    )
+    assert producer._source_build_config_tools(environment) == (config_tool,)
+
+
+def test_meson_pkg_config_rejects_mutated_realized_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
+    tool = _install_realized_console_script(
+        payload, tmp_path, "pkg-config", distribution="pkgconf"
+    )
+    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
+    tool.write_bytes(b"mutated-unattested-tool")
+    monkeypatch.setattr(
+        producer,
+        "_run_process",
+        lambda *_args, **_kwargs: pytest.fail("mutated tool must not execute"),
+    )
+    with pytest.raises(ValueError, match="content differs"):
+        producer._ensure_meson_pkg_config(tmp_path, _source_environment(payload))
+
+
+def test_realized_inventory_public_projections_are_immutable(tmp_path: Path) -> None:
+    payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
+    _install_realized_console_script(
+        payload, tmp_path, "pkg-config", distribution="pkgconf"
+    )
+    inventory = producer.SourceBuildInventory(payload["custody"], tmp_path)
+    owner = inventory.distribution("PkgConf")
+    assert owner is not None
+    with pytest.raises(TypeError):
+        inventory.identity["scripts_root"] = "mutable-poison"
+    with pytest.raises(TypeError):
+        inventory.distributions["pkgconf"] = {}
+    with pytest.raises(TypeError):
+        owner["version"] = "99"
+    with pytest.raises(TypeError):
+        owner["entry_points"][0]["value"] = "poison:main"
+    with pytest.raises(TypeError):
+        owner["installed_files"][0]["path"] = "poison"
+    with pytest.raises(TypeError):
+        owner["console_scripts"]["pkg-config"][0] = "poison"
+
+
+def test_realized_inventory_detaches_caller_owned_receipt_before_tool_checks(
+    tmp_path: Path,
+) -> None:
+    payload = _build_environment_manifest([producer.MOLT_PKGCONF_REQUIREMENT])
+    tool = _install_realized_console_script(
+        payload, tmp_path, "pkg-config", distribution="pkgconf"
+    )
+    realized = payload["custody"]["realized_environment"]
+    inventory = producer.SourceBuildInventory(payload["custody"], tmp_path)
+    relative = tool.relative_to(tmp_path).as_posix()
+    entry = next(row for row in realized["tree"]["entries"] if row["path"] == relative)
+    node = next(
+        row for row in realized["tree"]["file_nodes"] if row["id"] == entry["node"]
+    )
+    realized["scripts_root"] = "poison"
+    realized["distributions"][0]["console_scripts"]["pkg-config"].clear()
+    realized["distributions"][0]["installed_files"].clear()
+    entry["access"]["writable"] = not entry["access"]["writable"]
+    assert inventory.console_script("pkg-config", distribution="pkgconf") == tool
+    changed = b"replaced-tool-with-rewritten-unsealed-expectations"
+    tool.write_bytes(changed)
+    node["size"] = len(changed)
+    node["sha256"] = hashlib.sha256(changed).hexdigest()
+    with pytest.raises(ValueError, match="content differs"):
+        inventory.console_script("pkg-config", distribution="pkgconf")
+
+
+@pytest.mark.parametrize("version", ["3.15.0a1", "3.15.0b2", "3.15.0rc1"])
+def test_producer_manifest_preserves_prerelease_marker_version(version: str) -> None:
+    payload = _build_environment_manifest()
+    payload["marker_environment"]["python_full_version"] = version
+    payload["marker_environment"]["implementation_version"] = version
+    payload["marker_environment"]["python_version"] = "3.15"
+    environment = _source_environment(payload)
+    assert environment.manifest_payload()["python"]["version"] == version
+    assert (
+        environment.manifest_payload()["marker_environment"]
+        == payload["marker_environment"]
     )
 
 
 def test_meson_pkg_config_missing_does_not_install_into_active_interpreter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(producer, "_installed_build_requirement", lambda *_args: None)
     monkeypatch.setattr(
         producer,
         "_run_process",
         lambda *_args, **_kwargs: pytest.fail("producer must not invoke an installer"),
     )
-
     with pytest.raises(
         producer.SourceExtensionProducerError,
         match="never installs into its active interpreter",
     ):
-        producer._ensure_meson_pkg_config(tmp_path)
+        producer._ensure_meson_pkg_config(tmp_path, _source_environment())
 
 
 def test_meson_config_tool_cross_is_generic_and_deterministic(tmp_path: Path) -> None:

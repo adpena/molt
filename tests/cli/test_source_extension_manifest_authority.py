@@ -717,10 +717,10 @@ def _write_identity_fixture(
     artifact_path = root / "pkg/_native.molt.wasm"
     from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
     from tests.cli.test_source_extension_producer import (
-        _build_environment_manifest,
         _write_meson_metadata,
         _write_target_metadata,
     )
+    from tests.python_environment_test_support import build_environment_manifest
 
     # A valid WASM custom section varies bytes without inventing symbol evidence.
     custom = b"\x07fixture" + artifact.encode("ascii")
@@ -841,7 +841,7 @@ def _write_identity_fixture(
         "installed_package_files": ["pkg/__init__.py"],
         "target_metadata": _write_target_metadata(root),
         "meson": _write_meson_metadata(root, extension_set),
-        "build_environment": _build_environment_manifest(),
+        "build_environment": build_environment_manifest(),
         "extensions": [
             {
                 "module": "pkg._native",

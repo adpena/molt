@@ -6,13 +6,13 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+from io import BufferedReader
 import os
 from pathlib import Path
 import re
 import shutil
 import stat
 import subprocess
-from typing import BinaryIO
 
 from molt.file_hashing import content_change_time_ns, content_change_time_ns_from_fd
 
@@ -212,35 +212,10 @@ def _stable_file_content(
 ) -> tuple[Path, Path, int, str, bytes]:
     """Snapshot a regular file while proving pathname and handle stability."""
 
-    lexical = path.expanduser().absolute()
-    lexical, resolved = _executable_paths(lexical, label=label)
-    try:
-        before_path = lexical.lstat()
-        before_content = resolved.stat()
-        with resolved.open("rb") as stream:
-            before_handle = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before_handle.st_mode):
-                raise ValueError(f"{label} is not a regular file: {resolved}")
-            header = stream.read(4)
-            stream.seek(0)
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            after_handle = os.fstat(stream.fileno())
-        after_path = lexical.lstat()
-        after_content = resolved.stat()
-        final_lexical, final_resolved = _executable_paths(lexical, label=label)
-    except OSError as exc:
-        raise ValueError(f"{label} could not be hashed: {resolved}") from exc
-    if (
-        _stat_identity(before_path) != _stat_identity(after_path)
-        or _stat_identity(before_content) != _stat_identity(after_content)
-        or _stat_identity(before_handle) != _stat_identity(after_handle)
-        or before_content.st_dev != before_handle.st_dev
-        or before_content.st_ino != before_handle.st_ino
-        or final_lexical != lexical
-        or final_resolved != resolved
-    ):
-        raise ValueError(f"{label} changed while hashing: {resolved}")
-    return lexical, resolved, before_handle.st_size, digest, header
+    with stable_executable_probe(path, label=label) as (lexical, identity):
+        with _open_stable_regular_file(identity.path, label=label) as opened:
+            header = opened.stream.read(4)
+        return lexical, identity.path, identity.size, identity.sha256, header
 
 
 def stable_file_sha256(path: Path, *, label: str) -> str:
@@ -279,7 +254,7 @@ def stable_file_content_identity(path: Path, *, label: str) -> dict[str, str | i
 @dataclass(frozen=True, slots=True)
 class _StableRegularFileHandle:
     path: Path
-    stream: BinaryIO
+    stream: BufferedReader
     stat: os.stat_result
     content_change_time_ns: int
 
@@ -551,6 +526,50 @@ def verify_stable_regular_file_identity(
         raise ValueError(f"{label} changed since identity capture: {identity.path}")
 
 
+def read_stable_regular_file(
+    identity: StableRegularFileIdentity, *, label: str
+) -> bytes:
+    """Read attested bytes without rehashing or retaining a second content cache."""
+
+    with _open_stable_regular_file(identity.path, label=label) as opened:
+        if (
+            _stat_identity(opened.stat) != identity._stat_identity
+            or opened.content_change_time_ns != identity._content_change_time_ns
+        ):
+            raise StableRegularFileChangedError(
+                f"{label} changed since identity capture: {identity.path}"
+            )
+        data = opened.stream.read()
+        if len(data) != identity.size:
+            raise StableRegularFileChangedError(
+                f"{label} ended before its captured size: {identity.path}"
+            )
+    return data
+
+
+@contextmanager
+def stable_executable_probe(
+    path: Path, *, label: str
+) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
+    """Bind a probe's lexical entrypoint and content generation across execution."""
+    entrypoint, resolved = _executable_paths(path, label=label)
+    before_entry = _stat_identity(entrypoint.lstat())
+    identity = stable_regular_file_identity(resolved, label=label)
+    try:
+        yield entrypoint, identity
+    finally:
+        final_entrypoint, final_resolved = _executable_paths(entrypoint, label=label)
+        if (
+            final_entrypoint != entrypoint
+            or final_resolved != resolved
+            or _stat_identity(entrypoint.lstat()) != before_entry
+        ):
+            raise StableRegularFileChangedError(
+                f"{label} entrypoint changed during probe: {entrypoint}"
+            )
+        verify_stable_regular_file_identity(identity, label=label)
+
+
 def stable_regular_file_content_identity(
     path: Path,
     *,
@@ -617,74 +636,58 @@ def probe_executable(
 
     if version_pattern is not None and version_patterns is not None:
         raise ValueError(f"{label} version identity has conflicting patterns")
-    entrypoint, resolved, before_size, before_sha256, header = _stable_file_content(
-        path,
-        label=label,
-    )
-    if not _native_executable_header(header):
-        raise ValueError(
-            f"{label} must be a native executable, not a script or delegating wrapper: "
-            f"{resolved}"
-        )
-    version = ""
-    for raw_arguments in version_arguments:
-        arguments = tuple(raw_arguments)
-        try:
-            completed = subprocess.run(
-                [str(entrypoint), *arguments],
-                env=dict(environment),
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
+    with stable_executable_probe(path, label=label) as (entrypoint, identity):
+        resolved = identity.path
+        with _open_stable_regular_file(resolved, label=label) as opened:
+            header = opened.stream.read(4)
+        if not _native_executable_header(header):
+            raise ValueError(
+                f"{label} must be a native executable, not a script or delegating wrapper: {resolved}"
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValueError(f"{label} version probe failed: {resolved}") from exc
-        if completed.returncode not in accepted_returncodes:
-            continue
-        observed = "\n".join(
-            part.strip().replace("\r\n", "\n")
-            for part in (completed.stdout, completed.stderr)
-            if part.strip()
+        version = ""
+        for raw_arguments in version_arguments:
+            arguments = tuple(raw_arguments)
+            try:
+                completed = subprocess.run(
+                    [str(entrypoint), *arguments],
+                    env=dict(environment),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ValueError(f"{label} version probe failed: {resolved}") from exc
+            if completed.returncode not in accepted_returncodes:
+                continue
+            observed = "\n".join(
+                part.strip().replace("\r\n", "\n")
+                for part in (completed.stdout, completed.stderr)
+                if part.strip()
+            )
+            if version_patterns is not None:
+                matched_lines: list[str] = []
+                for pattern in version_patterns:
+                    match = pattern.search(observed)
+                    if match is None:
+                        matched_lines.clear()
+                        break
+                    matched_lines.append(match.group(0))
+                observed = "\n".join(matched_lines)
+            elif version_pattern is not None:
+                match = version_pattern.search(observed)
+                observed = match.group(0) if match is not None else ""
+            if observed:
+                version = observed
+                break
+        if not version:
+            raise ValueError(f"{label} has no accepted version identity: {resolved}")
+        return ExecutableIdentity(
+            path=entrypoint,
+            content_path=resolved,
+            size=identity.size,
+            sha256=identity.sha256,
+            version=version,
         )
-        if version_patterns is not None:
-            matched_lines: list[str] = []
-            for pattern in version_patterns:
-                match = pattern.search(observed)
-                if match is None:
-                    matched_lines.clear()
-                    break
-                matched_lines.append(match.group(0))
-            observed = "\n".join(matched_lines)
-        elif version_pattern is not None:
-            match = version_pattern.search(observed)
-            observed = match.group(0) if match is not None else ""
-        if observed:
-            version = observed
-            break
-    if not version:
-        raise ValueError(f"{label} has no accepted version identity: {resolved}")
-    (
-        final_entrypoint,
-        final_resolved,
-        final_size,
-        final_sha256,
-        final_header,
-    ) = _stable_file_content(entrypoint, label=label)
-    if (
-        final_entrypoint != entrypoint
-        or final_resolved != resolved
-        or final_size != before_size
-        or final_sha256 != before_sha256
-        or final_header != header
-    ):
-        raise ValueError(f"{label} changed during its version probe: {resolved}")
-    return ExecutableIdentity(
-        path=entrypoint,
-        content_path=resolved,
-        size=before_size,
-        sha256=before_sha256,
-        version=version,
-    )

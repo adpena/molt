@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import venv
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,8 +31,10 @@ import pytest
 from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
+from molt import python_environment_identity
+from molt.exact_json import canonical_json_sha256
+from tests.python_environment_test_support import build_environment_manifest
 from molt.cli.extension_manifest import _default_molt_c_api_version
-from molt.cli.source_build_environment import canonical_source_marker_environment
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
 )
@@ -947,6 +950,212 @@ def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
     assert envelope["proof_plan_command_ids"] == []
 
 
+def test_execution_custody_session_arms_monitor_before_child_policy() -> None:
+    lifecycle: list[str] = []
+
+    class Monitor:
+        def __enter__(self):
+            lifecycle.append("monitor-armed")
+            return self
+
+        def drain(self) -> None:
+            lifecycle.append("monitor-drained")
+
+        def receipt(self) -> dict[str, object]:
+            return {"stable": True}
+
+    class ChildServer:
+        def __enter__(self):
+            lifecycle.append("child-armed")
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            lifecycle.append("child-drained")
+
+        def receipt(self) -> dict[str, object]:
+            return {"broker_complete": True}
+
+    monitor = Monitor()
+    child = ChildServer()
+    session = execution_custody.ExecutionCustodySession(monitor=monitor)  # type: ignore[arg-type]
+    session.__enter__()
+    session.bind_child_server(child)  # type: ignore[arg-type]
+    session.mark_captured()
+    session.mark_running()
+    session.mark_quiescent()
+    session.mark_verifying()
+    session.drain()
+
+    assert lifecycle == [
+        "monitor-armed",
+        "child-armed",
+        "monitor-drained",
+        "child-drained",
+    ]
+    assert session.receipt()["lifecycle"] == [
+        "CREATED",
+        "ARMED",
+        "CAPTURED",
+        "RUNNING",
+        "QUIESCENT",
+        "VERIFYING",
+        "DRAINING",
+        "DRAINED",
+    ]
+
+
+def test_execution_custody_session_binds_child_policy_exactly_once() -> None:
+    class Monitor:
+        def __enter__(self):
+            return self
+
+        def drain(self) -> None:
+            return None
+
+    class ChildServer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monitor = Monitor()
+    child = ChildServer()
+    session = execution_custody.ExecutionCustodySession(monitor=monitor)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="bind exactly once after live custody arms"):
+        session.bind_child_server(child)  # type: ignore[arg-type]
+    session.__enter__()
+    with pytest.raises(RuntimeError, match="bind before capture closes"):
+        session.mark_captured()
+    session.bind_child_server(child)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="bind exactly once after live custody arms"):
+        session.bind_child_server(child)  # type: ignore[arg-type]
+    session.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("bind_child", [False, True])
+def test_execution_custody_failed_capture_drains_without_claiming_payload_ran(
+    bind_child: bool,
+) -> None:
+    lifecycle: list[str] = []
+
+    class Monitor:
+        def __enter__(self):
+            lifecycle.append("monitor-armed")
+            return self
+
+        def drain(self) -> None:
+            lifecycle.append("monitor-drained")
+
+        def receipt(self) -> dict[str, object]:
+            return {"stable": True}
+
+    class ChildServer:
+        def __enter__(self):
+            lifecycle.append("child-armed")
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            lifecycle.append("child-drained")
+
+        def receipt(self) -> dict[str, object]:
+            return {"broker_complete": True}
+
+    session = execution_custody.ExecutionCustodySession(monitor=Monitor())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="capture failed"):
+        with session:
+            if bind_child:
+                session.bind_child_server(ChildServer())  # type: ignore[arg-type]
+                session.mark_captured()
+            raise ValueError("capture failed")
+    assert session.state == "DRAINED"
+    assert "RUNNING" not in session.lifecycle
+    assert "QUIESCENT" not in session.lifecycle
+    assert lifecycle == (
+        ["monitor-armed", "child-armed", "monitor-drained", "child-drained"]
+        if bind_child
+        else ["monitor-armed", "monitor-drained"]
+    )
+    if bind_child:
+        assert session.receipt()["state"] == "DRAINED"
+    else:
+        with pytest.raises(RuntimeError, match="never bound"):
+            session.receipt()
+
+
+def test_python_probe_uses_shared_environment_authority() -> None:
+    assert (
+        command_admission._PYTHON_IDENTITY_PROBE
+        == Path(python_environment_identity.__file__).resolve()
+    )
+    for legacy_name in ("python_identity_probe.py", "python_toolchain_locator.py"):
+        assert not (state.ROOT / "tools" / "proof_queue_pkg" / legacy_name).exists()
+    exact = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(exact)
+    assert command_identity._python_auxiliary_command(
+        envelope,
+        exact,
+        authority=command_admission._PYTHON_IDENTITY_PROBE,
+        arguments=("--locate-active-environment",),
+        isolated=True,
+        no_site=True,
+    ) == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(command_admission._PYTHON_IDENTITY_PROBE),
+        "--locate-active-environment",
+    ]
+
+
+def test_python_process_images_use_canonical_external_root_forest(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    editable = source / "package"
+    editable.mkdir(parents=True)
+    prefix = tmp_path / "environment"
+    prefix.mkdir()
+    executable = Path(sys.executable).resolve(strict=True)
+    content = executable.read_bytes()
+    launchers = [
+        {
+            "role": role,
+            "path": str(executable),
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        for role in ("selected-interpreter", "base-interpreter")
+    ]
+    monkeypatch.setattr(
+        command_identity,
+        "python_environment_executable_files",
+        lambda *_args, **_kwargs: launchers,
+    )
+    location = {
+        "prefix": str(prefix),
+        "selected_executable": str(executable),
+        "base_executable": str(executable),
+        "external_roots": [str(source), str(editable)],
+    }
+    environment = {"external_roots": [{"id": "external-root-0", "path": str(source)}]}
+    assert (
+        len(
+            command_identity._python_process_images(
+                environment, location, source_root=source
+            )
+        )
+        == 2
+    )
+    environment["external_roots"].append(
+        {"id": "external-root-1", "path": str(editable)}
+    )
+    with pytest.raises(ValueError, match="external roots differ"):
+        command_identity._python_process_images(
+            environment, location, source_root=source
+        )
+
+
 def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     tmp_path: Path,
 ) -> None:
@@ -982,8 +1191,18 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     assert probe is not None
     assert overlays == [requirements.resolve()]
     assert probe[: len(prefix)] == exact[: len(prefix)]
-    assert probe[-4] == "python"
-    assert probe[-3] == str(command_admission._PYTHON_IDENTITY_PROBE)
+    assert probe[len(prefix) :] == [
+        "python",
+        "-I",
+        str(command_admission._PYTHON_IDENTITY_PROBE),
+        "--capture-active-environment",
+        "--with-custody",
+        "--hash-workers",
+        "1",
+        "--admit-virtualenv-bootstrap",
+        "--admit-external-root",
+        str(effective.resolve()),
+    ]
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -1469,6 +1688,21 @@ def test_secret_input_is_rejected_before_database_log_or_evidence_projection(
     assert "do-not-persist" not in output.out + output.err
 
 
+def _capture_probe_command(
+    executable: Path, source_root: Path, *, hash_workers: int = 1
+) -> list[str]:
+    exact = [str(executable), "-c", "pass"]
+    command = command_identity._python_probe_command(
+        command_admission.envelope_for_command(exact),
+        exact,
+        source_root=source_root,
+        hash_workers=hash_workers,
+    )
+    assert command is not None
+    return command
+
+
+@pytest.mark.slow
 def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     tmp_path: Path,
 ) -> None:
@@ -1512,12 +1746,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     identities = []
     for workers in (1, 4):
         clean = run_custody_subject_process(
-            [
-                str(executable),
-                str(command_admission._PYTHON_IDENTITY_PROBE),
-                str(tmp_path),
-                str(workers),
-            ],
+            _capture_probe_command(executable, tmp_path, hash_workers=workers),
             check=False,
             env=probe_env,
             stdout=subprocess.PIPE,
@@ -1525,36 +1754,35 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
             text=True,
         )
         assert clean.returncode == 0, clean.stderr
-        payload = json.loads(clean.stdout)
-        identities.append(payload["distribution_inventory_sha256"])
+        payload = python_environment_identity.validate_python_capture(
+            json.loads(clean.stdout)
+        )
+        identity = payload["identity"]
+        identities.append(identity["environment_closure_sha256"])
         assert payload["inventory_profile"]["hash_workers"] == workers
-        runtime = payload["runtime"]
-        assert runtime["runtime_file_count"] > 0
-        assert runtime["runtime_unique_file_count"] > 0
-        authorities = {row["authority"] for row in runtime["explicit_authority_files"]}
-        assert {"venv-executable", "base-executable", "pyvenv-config"} <= authorities
-        assert runtime["native_extension_files"]
+        runtime = identity["runtime"]
+        assert runtime["file_nodes"]
+        authorities = {row["role"] for row in runtime["explicit_files"]}
+        assert "base-executable" in authorities
+        assert identity["selected_executable"]["node"]
+        assert identity["pyvenv_config"]["node"]
+        assert runtime["native_dependency_closure"]["status"] == "closed"
         distribution = next(
-            row for row in payload["distributions"] if row["name"] == "custody-demo"
+            row for row in identity["distributions"] if row["name"] == "custody-demo"
         )
         assert distribution["installed_files"]
         assert all(
-            row["escape_classification"] == "install-prefix-contained"
+            row["node"] and not Path(row["path"]).is_absolute()
             for row in distribution["installed_files"]
         )
-        assert all(row["resolved_path"] for row in distribution["installed_files"])
+        assert payload["file_custody"]
     assert len(set(identities)) == 1
 
     pyvenv_config = environment / "pyvenv.cfg"
     original_config = pyvenv_config.read_bytes()
     pyvenv_config.write_bytes(original_config + b"\n# custody mutation\n")
     changed_runtime = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1562,9 +1790,16 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         text=True,
     )
     assert changed_runtime.returncode == 0, changed_runtime.stderr
+    changed_identity = python_environment_identity.validate_python_capture(
+        json.loads(changed_runtime.stdout)
+    )["identity"]
     assert (
-        json.loads(changed_runtime.stdout)["runtime_closure_sha256"]
-        != payload["runtime_closure_sha256"]
+        changed_identity["environment_closure_sha256"]
+        != identity["environment_closure_sha256"]
+    )
+    assert (
+        changed_identity["runtime"]["runtime_closure_sha256"]
+        == runtime["runtime_closure_sha256"]
     )
     pyvenv_config.write_bytes(original_config)
 
@@ -1578,12 +1813,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         encoding="utf-8",
     )
     escaped = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1591,8 +1821,8 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         text=True,
     )
     assert escaped.returncode != 0
-    assert "RECORD path has no admitted owner" in escaped.stderr
-    assert str(outside.resolve()) in escaped.stderr
+    assert "RECORD path escapes environment custody" in escaped.stderr
+    assert escaped_relative in escaped.stderr
 
     (dist_info / "RECORD").write_text(
         f"custody_demo.py,sha256={declared},{module.stat().st_size}\n"
@@ -1602,12 +1832,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     )
     module.write_bytes(b"tampered\n")
     completed = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1615,17 +1840,12 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         text=True,
     )
     assert completed.returncode != 0
-    assert "installed distribution RECORD hash mismatch" in completed.stderr
+    assert "installed distribution RECORD mismatch" in completed.stderr
 
     module.write_bytes(b"original\n")
     (dist_info / "RECORD").unlink()
     missing_inventory = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1633,9 +1853,12 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         text=True,
     )
     assert missing_inventory.returncode != 0
-    assert "has no installed file inventory" in missing_inventory.stderr
+    assert (
+        "distribution RECORD is absent from the stable tree" in missing_inventory.stderr
+    )
 
 
+@pytest.mark.slow
 def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_escape(
     tmp_path: Path,
 ) -> None:
@@ -1674,6 +1897,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     )
     (dist_info / "RECORD").write_text(
         f"custody_symlink.py,sha256={declared},{target.stat().st_size}\n"
+        f"custody_symlink_target.py,sha256={declared},{target.stat().st_size}\n"
         "custody_symlink-1.0.dist-info/METADATA,,\n"
         "custody_symlink-1.0.dist-info/RECORD,,\n",
         encoding="utf-8",
@@ -1682,12 +1906,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
         name: value for name, value in os.environ.items() if name != "PYTHONPATH"
     }
     owned = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1695,32 +1914,26 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
         text=True,
     )
     assert owned.returncode == 0, owned.stderr
+    identity = python_environment_identity.validate_python_capture(
+        json.loads(owned.stdout)
+    )["identity"]
     distribution = next(
-        row
-        for row in json.loads(owned.stdout)["distributions"]
-        if row["name"] == "custody-symlink"
+        row for row in identity["distributions"] if row["name"] == "custody-symlink"
     )
-    assert distribution["symlink_files"] == [
-        next(
-            row
-            for row in distribution["installed_files"]
-            if row["relative"] == "custody_symlink.py"
-        )
-    ]
-    assert distribution["symlink_files"][0]["owner"] == "install-prefix"
-    assert distribution["symlink_files"][0]["resolved_path"] == str(target.resolve())
+    installed = {Path(row["path"]).name: row for row in distribution["installed_files"]}
+    entries = {Path(row["path"]).name: row for row in identity["tree"]["entries"]}
+    assert entries["custody_symlink.py"]["kind"] == "symlink"
+    assert (
+        installed["custody_symlink.py"]["node"]
+        == installed["custody_symlink_target.py"]["node"]
+    )
 
     linked.unlink()
     outside = tmp_path.parent / f"{tmp_path.name}-outside-symlink.py"
     outside.write_bytes(target.read_bytes())
     os.symlink(outside, linked)
     escaped = run_custody_subject_process(
-        [
-            str(executable),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(tmp_path),
-            "1",
-        ],
+        _capture_probe_command(executable, tmp_path, hash_workers=1),
         check=False,
         env=probe_env,
         stdout=subprocess.PIPE,
@@ -1728,11 +1941,11 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
         text=True,
     )
     assert escaped.returncode != 0
-    assert "RECORD path has no admitted owner" in escaped.stderr
-    assert f"resolved={outside.resolve()}" in escaped.stderr
+    assert "file symlink escapes custody" in escaped.stderr
 
 
-def test_python_probe_rejects_ambiguous_source_distribution_ownership(
+@pytest.mark.slow
+def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
     tmp_path: Path,
 ) -> None:
     environment_root = tmp_path / "venv"
@@ -1762,20 +1975,18 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
     )
     environment = {**os.environ, "PYTHONPATH": str(source)}
     completed = run_custody_subject_process(
-        [
-            str(custody_python),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(project),
-            "1",
-        ],
+        _capture_probe_command(custody_python, project, hash_workers=1),
         env=environment,
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert completed.returncode != 0
-    assert "has 2 top-level owners for 'custody_ambiguous'" in completed.stderr
+    assert completed.returncode == 0, completed.stderr
+    isolated = python_environment_identity.validate_python_capture(
+        json.loads(completed.stdout)
+    )["identity"]
+    assert all(row["name"] != "custody-ambiguous" for row in isolated["distributions"])
 
     shutil.rmtree(metadata_root)
     purelib = Path(
@@ -1814,25 +2025,27 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
         encoding="utf-8",
     )
     direct = run_custody_subject_process(
-        [
-            str(custody_python),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(project),
-            "1",
-        ],
+        _capture_probe_command(custody_python, project, hash_workers=1),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert direct.returncode != 0
-    assert (
-        "editable distribution custody-ambiguous has 2 top-level owners "
-        "for 'custody_ambiguous'"
-    ) in direct.stderr
+    assert direct.returncode == 0, direct.stderr
+    identity = python_environment_identity.validate_python_capture(
+        json.loads(direct.stdout)
+    )["identity"]
+    distribution = next(
+        row for row in identity["distributions"] if row["name"] == "custody-ambiguous"
+    )
+    roots = {row["id"]: row["path"] for row in identity["external_roots"]}
+    reference = distribution["external_source"]
+    assert roots[reference["root"]] == str(project.resolve())
+    assert reference["path"] == "."
 
 
-def test_python_probe_rejects_source_metadata_symlink_escape(
+@pytest.mark.slow
+def test_python_probe_does_not_follow_ambient_source_metadata_symlinks(
     tmp_path: Path, custody_python: Path
 ) -> None:
     project = tmp_path / "source-project"
@@ -1855,20 +2068,22 @@ def test_python_probe_rejects_source_metadata_symlink_escape(
         pytest.skip(f"symlink creation unavailable: {exc}")
     environment = {**os.environ, "PYTHONPATH": str(source)}
     completed = run_custody_subject_process(
-        [
-            str(custody_python),
-            str(command_admission._PYTHON_IDENTITY_PROBE),
-            str(project),
-            "1",
-        ],
+        _capture_probe_command(custody_python, project, hash_workers=1),
         env=environment,
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert completed.returncode != 0
-    assert "source-owned distribution metadata file escapes" in completed.stderr
+    assert completed.returncode == 0, completed.stderr
+    identity = python_environment_identity.validate_python_capture(
+        json.loads(completed.stdout)
+    )["identity"]
+    assert all(row["name"] != "custody-symlink" for row in identity["distributions"])
+    assert all(
+        row["path"] != str(external.resolve())
+        for row in json.loads(completed.stdout)["file_custody"]
+    )
 
 
 def _initialize_clean_git_repo(path: Path) -> str:
@@ -1911,12 +2126,25 @@ def guarded_execution_authorities(
     source_root = tmp_path_factory.mktemp("guarded-execution-source")
     command = [sys.executable, "-c", "pass"]
     envelope = command_admission.envelope_for_command(command)
+    # A Python-only locator does not invoke the supervisor. Reuse the production
+    # selection contract so the cached capture cannot invent launcher authority.
+    assert envelope["toolchains"] == ["python"]
+    _roots, selections, _telemetry = (
+        execution_environment._locate_toolchain_watch_roots(
+            envelope,
+            command,
+            cwd=state.ROOT,
+            env=os.environ,
+            supervisor_binary=Path(sys.executable),
+        )
+    )
     identity = command_identity._python_identity(
         envelope,
         command,
         cwd=state.ROOT,
         env=os.environ,
         source_root=source_root,
+        selection=selections["python"],
         hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
     )
     assert identity is not None
@@ -1924,6 +2152,78 @@ def guarded_execution_authorities(
         python_identity=identity,
         supervisor_target=tmp_path_factory.mktemp("proof-supervisor-target"),
     )
+
+
+def _rebind_cached_python_identity(
+    captured: dict[str, object], *, source_root: Path, selection: Mapping[str, object]
+) -> dict[str, object]:
+    """Reuse immutable captured bytes; reproject only the admitted source root."""
+    identity = copy.deepcopy(captured)
+    location = identity["location"]
+    assert selection["location"] == location, "cached Python selection changed"
+    assert isinstance(location, dict)
+    environment = identity["environment"]
+    assert isinstance(environment, dict)
+    from molt.python_environment_custody import (
+        _canonical_external_roots,
+        _external_reference,
+    )
+
+    prior_roots = {row["id"]: row["path"] for row in environment["external_roots"]}
+    roots = _canonical_external_roots(
+        [source_root, *(Path(path) for path in location["external_roots"])],
+        Path(location["prefix"]),
+    )
+    references = [
+        row for row in environment["active_import_roots"] if row["owner"] == "external"
+    ]
+    references.extend(
+        row["external_source"]
+        for row in environment["distributions"]
+        if row["external_source"] is not None
+    )
+    for reference in references:
+        path = Path(prior_roots[reference["root"]]) / reference["path"]
+        reference.update(_external_reference(path, roots, label="cached source"))
+    for tree in environment["external_import_custody"]["trees"]:
+        path = Path(prior_roots[tree["source_root"]]) / tree["source_path"]
+        reference = _external_reference(path, roots, label="cached import tree")
+        tree["source_root"] = reference["root"]
+        tree["source_path"] = reference["path"]
+    environment["external_roots"] = [
+        {"id": root_id, "path": str(path)} for root_id, path in roots
+    ]
+    environment["distribution_inventory_sha256"] = canonical_json_sha256(
+        environment["distributions"]
+    )
+    environment["environment_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in environment.items()
+            if key != "environment_closure_sha256"
+        }
+    )
+    python_environment_identity.validate_python_capture(
+        {
+            "schema": python_environment_identity.PYTHON_CAPTURE_SCHEMA,
+            "identity": environment,
+            "file_custody": identity["file_custody"],
+            "node_custody": identity["node_custody"],
+            "inventory_profile": identity["inventory_profile"],
+        }
+    )
+    identity["source_root"] = str(source_root.resolve(strict=True))
+    identity["process_images"] = command_identity._python_process_images(
+        environment, location, source_root=source_root
+    )
+    identity["identity_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in identity.items()
+            if key not in {"identity_sha256", "inventory_profile"}
+        }
+    )
+    return identity
 
 
 def _execute_request(
@@ -1965,6 +2265,7 @@ def _execute_request(
             cwd: Path,
             env: dict[str, str],
             source_root: Path,
+            selection: Mapping[str, object],
             hash_workers: int,
         ) -> dict[str, object] | None:
             del cwd, env, hash_workers
@@ -1977,7 +2278,11 @@ def _execute_request(
                 is None
             ):
                 return None
-            return copy.deepcopy(authorities.python_identity)
+            return _rebind_cached_python_identity(
+                authorities.python_identity,
+                source_root=source_root,
+                selection=selection,
+            )
 
         def provision_shared_supervisor(
             *, cwd: Path, env: dict[str, str]
@@ -2298,6 +2603,7 @@ def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -
     assert identity["sha256"] == hashlib.sha256(transcript.read_bytes()).hexdigest()
 
 
+@pytest.mark.slow
 def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2319,27 +2625,25 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
         reason.startswith("python-editable-source-outside:")
         for reason in context["source_custody"]["ineligible_reasons"]
     )
-    assert any(
-        reason.startswith("python-source-metadata-outside:")
-        for reason in context["source_custody"]["ineligible_reasons"]
-    )
     executable = context["command_executable"]
     assert executable["identical"] is True
     assert executable["prelaunch"]["path"] == str(Path(sys.executable).resolve())
     assert executable["prelaunch"]["size_bytes"] > 0
     assert len(executable["prelaunch"]["sha256"]) == 64
     python_identity = context["toolchains"]["python"]
-    assert len(python_identity["distribution_inventory_sha256"]) == 64
-    assert python_identity["distributions"]
+    environment_identity = python_identity["environment"]
+    assert len(environment_identity["distribution_inventory_sha256"]) == 64
+    assert environment_identity["distributions"]
     assert {
         "record_sha256",
         "file_manifest_sha256",
         "direct_url_sha256",
         "name",
         "version",
-    } <= python_identity["distributions"][0].keys()
+    } <= environment_identity["distributions"][0].keys()
 
 
+@pytest.mark.slow
 def test_guarded_receipt_rejects_stable_dirty_source(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2361,6 +2665,7 @@ def test_guarded_receipt_rejects_stable_dirty_source(
     assert "source-dirty-postcompletion" in custody_payload["ineligible_reasons"]
 
 
+@pytest.mark.slow
 def test_guarded_receipt_rejects_source_mutation_during_command(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2399,6 +2704,7 @@ def test_guarded_receipt_rejects_source_mutation_during_command(
     assert "source-snapshot-changed" in custody_payload["ineligible_reasons"]
 
 
+@pytest.mark.slow
 def test_live_custody_detects_mutate_execute_restore_transient(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2451,6 +2757,7 @@ def test_live_custody_detects_mutate_execute_restore_transient(
     assert "transient-input-mutation" in context["source_custody"]["ineligible_reasons"]
 
 
+@pytest.mark.slow
 def test_live_custody_detects_tracked_directory_rename_restore(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2491,6 +2798,7 @@ def test_live_custody_detects_tracked_directory_rename_restore(
     assert "transient-input-mutation" in context["source_custody"]["ineligible_reasons"]
 
 
+@pytest.mark.slow
 def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2717,6 +3025,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
     assert already_disabled.count("no:cacheprovider") == 1
 
 
+@pytest.mark.slow
 def test_python_bootstrap_installs_custody_under_isolated_startup(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -2779,6 +3088,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     )
 
 
+@pytest.mark.slow
 def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2899,6 +3209,7 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     assert elapsed < 120.0
 
 
+@pytest.mark.slow
 def test_python_leaf_blocks_exec_replacement_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -6663,6 +6974,7 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
     assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
+@pytest.mark.slow
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6703,6 +7015,7 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     assert record["command_started"] is True
 
 
+@pytest.mark.slow
 def test_proof_queue_wasm_preflight_fails_before_command(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -13533,36 +13846,31 @@ def _write_current_scientific_seal(
     config_tool_cross = meson_metadata_root / "build-config-tools.cross"
     if extension_set.use_pkg_config:
         config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
-    build_custody_python = {
-        "implementation": sys.implementation.name,
-        "version": (
-            f"{sys.version_info.major}.{sys.version_info.minor}."
-            f"{sys.version_info.micro}"
-        ),
-        "platform": "test-platform",
-        "base_executable": Path(sys.executable).name,
-        "base_executable_sha256": "b" * 64,
-    }
-    build_custody_address = {
-        "schema_version": 2,
-        "dependency_group": extension_set.build_dependency_group,
-        "dependency_group_requirements": ["ninja==1.13.0"],
-        "uv_lock_sha256": "c" * 64,
-        "python": build_custody_python,
-        "uv": {
-            "executable": "uv.exe",
-            "version": "uv 0.11.24",
-            "sha256": "d" * 64,
-        },
-    }
-    build_custody = {
-        "environment_id": hashlib.sha256(
-            json.dumps(
-                build_custody_address, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest(),
-        **build_custody_address,
-    }
+    build_environment = build_environment_manifest(
+        [
+            "meson>=1.5",
+            "Cython>=3.0",
+            "pybind11>=2.13.2",
+            "pythran>=0.14.0",
+            "numpy>=2.0.0",
+            "ninja==1.13.0",
+            MOLT_PKGCONF_REQUIREMENT,
+        ],
+        [
+            ("meson", "1.9.0"),
+            ("cython", "3.2.8"),
+            ("pybind11", "3.0.4"),
+            ("pythran", "0.18.1"),
+            ("numpy", "2.5.1"),
+            ("ninja", "1.13.0"),
+            ("pkgconf", "3.0.1.post0"),
+        ],
+        dependency_group=extension_set.build_dependency_group,
+    )
+    build_environment["requirements"] = [
+        *build_environment["requirements"],
+        'ninja; python_version < "3"',
+    ]
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
@@ -13581,60 +13889,7 @@ def _write_current_scientific_seal(
                 "target_triple": "wasm32-wasip1",
                 "abi_tier": "cpython-abi",
                 "target_metadata": target_metadata,
-                "build_environment": {
-                    "python": {
-                        "implementation": sys.implementation.name,
-                        "version": (
-                            f"{sys.version_info.major}.{sys.version_info.minor}."
-                            f"{sys.version_info.micro}"
-                        ),
-                        "executable": Path(sys.executable).name,
-                    },
-                    "requirements": [
-                        "meson>=1.5",
-                        "Cython>=3.0",
-                        "pybind11>=2.13.2",
-                        "pythran>=0.14.0",
-                        "numpy>=2.0.0",
-                        'ninja; python_version < "3"',
-                    ],
-                    "marker_environment": canonical_source_marker_environment(),
-                    "active_requirements": [
-                        "meson>=1.5",
-                        "Cython>=3.0",
-                        "pybind11>=2.13.2",
-                        "pythran>=0.14.0",
-                        "numpy>=2.0.0",
-                    ],
-                    "resolved": [
-                        {
-                            "requirement": "meson>=1.5",
-                            "distribution": "meson",
-                            "version": "1.9.0",
-                        },
-                        {
-                            "requirement": "Cython>=3.0",
-                            "distribution": "Cython",
-                            "version": "3.2.8",
-                        },
-                        {
-                            "requirement": "pybind11>=2.13.2",
-                            "distribution": "pybind11",
-                            "version": "3.0.4",
-                        },
-                        {
-                            "requirement": "pythran>=0.14.0",
-                            "distribution": "pythran",
-                            "version": "0.18.1",
-                        },
-                        {
-                            "requirement": "numpy>=2.0.0",
-                            "distribution": "numpy",
-                            "version": "2.5.1",
-                        },
-                    ],
-                    "custody": build_custody,
-                },
+                "build_environment": build_environment,
                 "meson": {
                     "driver": {
                         "kind": "build-environment",
@@ -14268,10 +14523,9 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         manifest["build_environment"]["custody"]["environment_id"] = "0" * 64
         expected = "build-environment address digest is invalid"
     elif mutation == "build_custody_python_sha256":
-        manifest["build_environment"]["custody"]["python"]["base_executable_sha256"] = (
-            "z" * 64
-        )
-        expected = "build Python custody is invalid"
+        runtime = manifest["build_environment"]["custody"]["python_runtime"]
+        runtime["file_nodes"][0]["sha256"] = "z" * 64
+        expected = "build-environment content custody is invalid"
     elif mutation == "build_custody_uv_sha256":
         manifest["build_environment"]["custody"]["uv"]["sha256"] = "z" * 64
         expected = "uv custody is invalid"
