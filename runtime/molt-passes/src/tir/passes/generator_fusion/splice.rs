@@ -225,8 +225,19 @@ fn apply_fusion_staged(
     }
 
     // --- Clone + rewrite the poll body into the caller. ---
-    let obsolete_consumer_latch_polls =
-        super::super::async_work_poll::standalone_latch_poll_sites(caller);
+    let obsolete_consumer_latch_polls = super::super::async_work_poll::loop_only_poll_sites(
+        caller,
+        candidate.loop_header.unwrap_or(candidate.cond_block),
+    );
+    // Retire roles while the read-only plan's coordinates still name the
+    // original staged body. Cloning/wiring may insert ops into caller blocks.
+    // A later bailout discards this stage, including these marker changes.
+    for (block, index) in obsolete_consumer_latch_polls {
+        assert!(
+            caller.blocks.get_mut(&block).unwrap().ops[index].clear_async_work_poll(),
+            "generator fusion obsolete-latch plan drifted before rewrite"
+        );
+    }
     let Some(clone) = clone_and_rewrite_poll(poll, caller, &slot_infos) else {
         // The clone bailed (e.g. an unpromotable slot store pattern). The caller
         // visible to the pass remains untouched because this stage is discarded.
@@ -234,14 +245,7 @@ fn apply_fusion_staged(
     };
 
     // --- Wire the fused loop. ---
-    if !wire_fused_loop(
-        caller,
-        candidate,
-        &clone,
-        &slot_infos,
-        preheader_init_ops,
-        &obsolete_consumer_latch_polls,
-    ) {
+    if !wire_fused_loop(caller, candidate, &clone, &slot_infos, preheader_init_ops) {
         return false;
     }
 
