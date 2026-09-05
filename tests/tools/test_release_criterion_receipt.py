@@ -399,6 +399,7 @@ def test_criterion_inputs_reject_portable_casefold_collisions(
 @pytest.mark.parametrize(
     ("field", "malformed"),
     (
+        ("schema_version", True),
         ("kind", []),
         ("status", {}),
         ("producer", {"argv": [], "tool": []}),
@@ -439,6 +440,33 @@ def test_metric_receipt_rejects_non_numeric_metrics_without_raising(
     )
 
     assert any("finite non-negative numbers" in problem for problem in problems)
+
+
+def test_metric_validation_preserves_arbitrary_precision_integers() -> None:
+    assert receipt._metric(10**1000)
+    assert not receipt._metric(-(10**1000))
+    assert not receipt._metric(True)
+    assert not receipt._metric(float("inf"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("raw_status", []),
+        ("resolved_status", {}),
+        ("backend_status", []),
+        ("reason_tag", {}),
+        ("cpython_returncode", False),
+        ("backend_returncode", True),
+    ],
+)
+def test_verified_outcome_malformed_scalars_are_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object
+) -> None:
+    payload, _ = _verified_receipt(monkeypatch)
+    payload["facts"]["outcomes"][0][field] = value
+    problems = _validate_verified(payload)
+    assert any(field in problem and "invalid" in problem for problem in problems)
 
 
 def test_verified_subset_pass_requires_full_outcomes_not_green_counts(
