@@ -3,8 +3,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
+from tests.runtime_build_identity_helper import runtime_cargo_plan
 from typing import cast
 
 import pytest
@@ -17,17 +20,37 @@ from molt.cli import runtime_paths as RUNTIME_PATHS
 from molt.cli import runtime_wasm_build as RUNTIME_WASM_BUILD
 from molt.cli import runtime_wasm_build_support as RUNTIME_WASM_BUILD_SUPPORT
 from molt.cli import runtime_wasm_build_spec as RUNTIME_WASM_BUILD_SPEC
-from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from molt.cli.native_link_manifest import (
+    native_link_flags_from_manifest,
+    read_native_link_dependency_manifest,
+    write_native_link_dependency_manifest,
+)
 from molt.cli.runtime_artifact_selection import RuntimeCrateType
+from molt.cli.runtime_build_identity import runtime_build_fingerprint
 from molt.cli.static_archive_identity import artifact_content_identity
 from tests.cli.native_link_test_support import static_archive_bytes
+from tests.runtime_build_identity_helper import (
+    native_runtime_staticlib_identity,
+)
 
 _FAKE_STATICLIB = static_archive_bytes(b"fake-staticlib")
+_NATIVE_RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
+    cargo_profile="dev-fast",
+    target_triple=None,
+    family_seed="native-artifact-hydration",
+)
 
 # Fixture metadata digest used by runtime fingerprint hydration tests.
 _TEST_RUNTIME_META_DIGEST = "ab" * 32
 _TEST_RUNTIME_HASH_DIGEST = "cd" * 32
 _TEST_RUNTIME_INPUTS_DIGEST = "ef" * 32
+
+
+@pytest.fixture(autouse=True)
+def _native_cargo_plan_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+    )
 
 
 def _valid_wasm_bytes(label: bytes = b"") -> bytes:
@@ -124,21 +147,26 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     )
 
     build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
-        cmd=[
-            "cargo",
-            "rustc",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            "dev-fast",
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-            "--crate-type",
-            "cdylib",
-        ],
-        root=tmp_path,
-        env={},
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            env={"CARGO_TARGET_DIR": str(target_root)},
+            requested_target="wasm32-wasip1",
+            cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
+                [
+                    "cargo",
+                    "rustc",
+                    "--package",
+                    "molt-runtime",
+                    "--profile",
+                    "dev-fast",
+                    "--target",
+                    "wasm32-wasip1",
+                    "--lib",
+                    "--crate-type",
+                    "cdylib",
+                ]
+            ),
+        ),
         cargo_timeout=1.0,
         profile_dir=profile_dir,
         target_root_override=target_root,
@@ -186,21 +214,26 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
     )
 
     build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
-        cmd=[
-            "cargo",
-            "rustc",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            "dev-fast",
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-            "--crate-type",
-            "cdylib",
-        ],
-        root=tmp_path,
-        env={},
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            env={"CARGO_TARGET_DIR": str(target_root)},
+            requested_target="wasm32-wasip1",
+            cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
+                [
+                    "cargo",
+                    "rustc",
+                    "--package",
+                    "molt-runtime",
+                    "--profile",
+                    "dev-fast",
+                    "--target",
+                    "wasm32-wasip1",
+                    "--lib",
+                    "--crate-type",
+                    "cdylib",
+                ]
+            ),
+        ),
         cargo_timeout=1.0,
         profile_dir=profile_dir,
         target_root_override=target_root,
@@ -246,21 +279,26 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
     )
 
     _build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
-        cmd=[
-            "cargo",
-            "rustc",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            "dev-fast",
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-            "--crate-type",
-            "cdylib",
-        ],
-        root=tmp_path,
-        env={},
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            env={"CARGO_TARGET_DIR": str(target_root)},
+            requested_target="wasm32-wasip1",
+            cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
+                [
+                    "cargo",
+                    "rustc",
+                    "--package",
+                    "molt-runtime",
+                    "--profile",
+                    "dev-fast",
+                    "--target",
+                    "wasm32-wasip1",
+                    "--lib",
+                    "--crate-type",
+                    "cdylib",
+                ]
+            ),
+        ),
         cargo_timeout=1.0,
         profile_dir=profile_dir,
         target_root_override=target_root,
@@ -309,21 +347,26 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     )
 
     _build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
-        cmd=[
-            "cargo",
-            "rustc",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            "release-fast",
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-            "--crate-type",
-            "staticlib",
-        ],
-        root=tmp_path,
-        env={},
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            env={"CARGO_TARGET_DIR": str(target_root)},
+            requested_target="wasm32-wasip1",
+            cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
+                [
+                    "cargo",
+                    "rustc",
+                    "--package",
+                    "molt-runtime",
+                    "--profile",
+                    "release-fast",
+                    "--target",
+                    "wasm32-wasip1",
+                    "--lib",
+                    "--crate-type",
+                    "staticlib",
+                ]
+            ),
+        ),
         cargo_timeout=1.0,
         profile_dir=profile_dir,
         target_root_override=target_root,
@@ -369,18 +412,35 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         )
         return subprocess.CompletedProcess(cmd, 0, stdout, b"")
 
-    fingerprint = {
-        "hash": "ab" * 32,
-        "rustc": "rustc",
-        "inputs_digest": "cd" * 32,
-        "meta_digest": "ef" * 32,
-    }
+    identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast", target_triple="wasm32-wasip1"
+    )
     state_root = target_root / ".molt_state"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT,
-        "_runtime_fingerprint",
-        lambda *a, **k: dict(fingerprint),
+        "resolve_wasm_cpython_abi_build_identity",
+        lambda *a, **k: identity,
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT, "resolve_runtime_cargo_plan", runtime_cargo_plan
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT, "runtime_build_tooling_authority", lambda _root: {}
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT,
+        "_cargo_build_env",
+        lambda: {
+            "CARGO_TARGET_DIR": str(target_root),
+            "MOLT_WASI_SYSROOT": str(tmp_path / "sysroot"),
+        },
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT, "_configure_wasm_cc_env", lambda _env: None
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT, "_configure_wasi_sysroot_env", lambda _env: None
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT, "_build_slot", lambda: contextlib.nullcontext(None)
@@ -415,10 +475,200 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         # The canonical requested-output sidecar may be named for the primary,
         # but its artifact identity must attest the exact Cargo-reported path.
         stored = cli._read_runtime_fingerprint(primary_fp)
-        assert stored["artifact_identity"]["path"] == str(reported)
+        assert stored["build_identity"] == identity.to_dict()
         assert stored["artifact_content_identity"] == artifact_content_identity(
             reported
         )
+
+
+@pytest.mark.parametrize("with_state", [True, False])
+@pytest.mark.parametrize(
+    "failure, expected_stage",
+    [
+        ("no_sysroot", "effective-configuration"),
+        ("cargo_plan", "cargo-plan"),
+        ("pre_identity", "pre-build-identity"),
+        ("metadata_read", "metadata-admission"),
+        ("target_identity", "target-admission"),
+        ("artifact_identity", "artifact-admission"),
+        ("metadata_refresh", "metadata-refresh"),
+        ("rebuild_disabled", "rebuild-policy"),
+        ("execute_os", "cargo-execution"),
+        ("execute_drift", "cargo-execution"),
+        ("execute_timeout", "cargo-execution"),
+        ("build_failure", "cargo-execution"),
+        ("missing_artifact", "cargo-artifact"),
+        ("post_identity", "post-build-identity"),
+        ("metadata_publish", "metadata-publication"),
+    ],
+)
+def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+    expected_stage: str,
+    with_state: bool,
+) -> None:
+    from molt.cli import runtime_wasm_failure
+    from molt.cli.cargo_execution import CargoExecutionResult, CargoPlanExecutionError
+    from molt.cli.models import _RuntimeArtifactState
+
+    support = RUNTIME_WASM_BUILD_SUPPORT
+    target_root = tmp_path / "target"
+    evidence_root = tmp_path / "state"
+    provider = target_root / "wasm32-wasip1" / "dev-fast" / "libmolt_cpython_abi.a"
+    provider.parent.mkdir(parents=True)
+    provider.write_bytes(_FAKE_STATICLIB)
+    state = _RuntimeArtifactState() if with_state else None
+    identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast", target_triple="wasm32-wasip1"
+    )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
+    monkeypatch.setattr(
+        runtime_wasm_failure, "_build_state_root", lambda _root: evidence_root
+    )
+    monkeypatch.setattr(support, "_cargo_target_root", lambda _root: target_root)
+    monkeypatch.setattr(support, "_build_state_root", lambda _root: evidence_root)
+    monkeypatch.setattr(support, "_build_lock", lambda *_a: contextlib.nullcontext())
+    monkeypatch.setattr(support, "_build_slot", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(support, "_configure_wasm_cc_env", lambda _env: None)
+    monkeypatch.setattr(support, "_configure_wasi_sysroot_env", lambda _env: None)
+    monkeypatch.setattr(
+        support,
+        "_cargo_build_env",
+        lambda: (
+            {}
+            if failure == "no_sysroot"
+            else {"MOLT_WASI_SYSROOT": str(tmp_path / "sysroot")}
+        ),
+    )
+    monkeypatch.setattr(support, "resolve_runtime_cargo_plan", runtime_cargo_plan)
+    monkeypatch.setattr(support, "runtime_build_tooling_authority", lambda _root: {})
+    monkeypatch.setattr(support, "_read_runtime_fingerprint", lambda _path: None)
+    monkeypatch.setattr(
+        support, "_current_runtime_target_artifact", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        support, "_runtime_artifact_fingerprint_matches", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        support, "_runtime_fingerprint_metadata_needs_refresh", lambda *_a: False
+    )
+    identity_calls = 0
+
+    def resolve_identity(*_args, **_kwargs):
+        nonlocal identity_calls
+        identity_calls += 1
+        if failure == "pre_identity" or (
+            failure in {"target_identity", "artifact_identity", "post_identity"}
+            and identity_calls > 1
+        ):
+            raise ValueError("injected identity rejection")
+        return identity
+
+    monkeypatch.setattr(
+        support, "resolve_wasm_cpython_abi_build_identity", resolve_identity
+    )
+
+    def reject(*_args, **_kwargs):
+        raise OSError("injected filesystem rejection")
+
+    if failure == "cargo_plan":
+        monkeypatch.setattr(support, "resolve_runtime_cargo_plan", reject)
+    if failure == "metadata_read":
+        monkeypatch.setattr(support, "_read_runtime_fingerprint", reject)
+    if failure == "target_identity":
+        monkeypatch.setattr(
+            support,
+            "_current_runtime_target_artifact",
+            lambda *_a, **_k: (provider, {}),
+        )
+    if failure in {"artifact_identity", "metadata_refresh"}:
+        monkeypatch.setattr(
+            support, "_runtime_artifact_fingerprint_matches", lambda *_a, **_k: True
+        )
+    if failure == "metadata_refresh":
+        monkeypatch.setattr(
+            support, "_runtime_fingerprint_metadata_needs_refresh", lambda *_a: True
+        )
+        monkeypatch.setattr(support, "_refresh_runtime_fingerprint_metadata", reject)
+    if failure == "rebuild_disabled":
+        monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    if failure == "metadata_publish":
+        monkeypatch.setattr(support, "_write_runtime_fingerprint", reject)
+    commands: list[list[str]] = []
+
+    def execute(plan, **_kwargs):
+        commands.append(list(plan.command))
+        if failure == "execute_os":
+            raise OSError("injected process launch rejection")
+        if failure == "execute_timeout":
+            raise subprocess.TimeoutExpired(
+                plan.command, 1.0, output=b"timeout stdout", stderr=b"timeout stderr"
+            )
+        stdout = (
+            "unreported stdout"
+            if failure == "missing_artifact"
+            else _cargo_cpython_abi_artifact_stdout(provider).decode("utf-8")
+        )
+        result = CargoExecutionResult(
+            subprocess.CompletedProcess(
+                plan.command,
+                7 if failure == "build_failure" else 0,
+                stdout,
+                "retained cargo stderr",
+            ),
+            attempts=(),
+            retry_reason=None,
+        )
+        if failure == "execute_drift":
+            raise CargoPlanExecutionError("injected configuration drift", result)
+        return result
+
+    monkeypatch.setattr(support, "_run_resolved_cargo_plan", execute)
+    assert (
+        support._ensure_wasm_cpython_abi_staticlib(
+            project_root=tmp_path,
+            json_output=True,
+            cargo_profile="dev-fast",
+            cargo_timeout=1.0,
+            runtime_state=state,
+        )
+        is None
+    )
+    paths = list((evidence_root / "build_failures").glob("runtime-wasm-*.json"))
+    assert len(paths) == 1
+    evidence = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert evidence["stage"] == f"cpython-abi-{expected_stage}"
+    assert evidence["cwd"] == str(tmp_path)
+    if state is not None:
+        assert state.runtime_wasm_build_failure is not None
+        assert state.runtime_wasm_build_failure.evidence_path == paths[0]
+    if commands:
+        assert evidence["command"] == commands[0]
+    if failure == "execute_timeout":
+        assert evidence["timed_out"] is True
+        assert evidence["stdout"] == "timeout stdout"
+        assert evidence["stderr"] == "timeout stderr"
+    if failure in {
+        "execute_drift",
+        "build_failure",
+        "missing_artifact",
+        "post_identity",
+        "metadata_publish",
+    }:
+        assert evidence["stderr"] == "retained cargo stderr"
+        assert evidence["stdout"]
+        assert (
+            evidence["details"]["cargo_execution"]["schema"]
+            == "molt.cargo-execution.v1"
+        )
+        assert evidence["returncode"] == (7 if failure == "build_failure" else 0)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert str(paths[0]) in output.err
 
 
 def test_ensure_backend_binary_hydrates_from_canonical_target(
@@ -459,7 +709,9 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(canonical_fp, fingerprint)
+    cli._write_runtime_fingerprint(
+        canonical_fp, fingerprint, artifact=canonical_backend
+    )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
@@ -504,12 +756,7 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
     canonical_runtime.write_bytes(_FAKE_STATICLIB)
 
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
+    fingerprint = runtime_build_fingerprint(_NATIVE_RUNTIME_BUILD_IDENTITY)
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         cli._canonical_build_state_root(project_root),
         canonical_runtime,
@@ -534,19 +781,18 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
         runtime_lib=canonical_runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=project_root,
-        source_fingerprint=fingerprint,
+        runtime_build_identity=_NATIVE_RUNTIME_BUILD_IDENTITY,
     )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
+        "_runtime_build_identity_for_plan",
+        lambda *args, **kwargs: _NATIVE_RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_run_cargo_with_sccache_retry",
+        "_run_resolved_cargo_plan",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("cargo should not run")
         ),
@@ -563,6 +809,110 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
 
 
+def test_native_runtime_hydration_carries_portable_dependency_custody(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    project_root = tmp_path
+    canonical_target = project_root / "target"
+    isolated_target = project_root / "isolated-target"
+    canonical_runtime = (
+        canonical_target / target_triple / "dev-fast" / "libmolt_runtime.a"
+    )
+    isolated_runtime = (
+        isolated_target / target_triple / "dev-fast" / "libmolt_runtime.a"
+    )
+    canonical_runtime.parent.mkdir(parents=True)
+    canonical_runtime.write_bytes(_FAKE_STATICLIB)
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="portable-native-hydration",
+    )
+    fingerprint = runtime_build_fingerprint(build_identity)
+    canonical_fp = cli._artifact_state_path_for_build_state_root(
+        cli._canonical_build_state_root(project_root),
+        canonical_runtime,
+        subdir="runtime_fingerprints",
+        stem_suffix=f"dev-fast.{target_triple}",
+        extension="fingerprint",
+    )
+    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_runtime_fingerprint(
+        canonical_fp,
+        fingerprint,
+        artifact=canonical_runtime,
+    )
+
+    producer = tmp_path / "producer"
+    out_dir = producer / "out"
+    library_dir = producer / "lib"
+    out_dir.mkdir(parents=True)
+    library_dir.mkdir()
+    (library_dir / "libportable.a").write_bytes(b"portable dependency")
+    cargo_stdout = json.dumps(
+        {
+            "reason": "build-script-executed",
+            "package_id": "registry+https://example.invalid#portable-sys@1.0.0",
+            "linked_libs": ["static=portable"],
+            "linked_paths": [f"native={library_dir}"],
+            "cfgs": [],
+            "env": [],
+            "out_dir": str(out_dir),
+        }
+    )
+    write_native_link_dependency_manifest(
+        cargo_stdout,
+        cargo_stderr="note: native-static-libs: -lportable\n",
+        runtime_lib=canonical_runtime,
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
+    )
+    shutil.rmtree(producer)
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD,
+        "_runtime_build_identity_for_plan",
+        lambda *args, **kwargs: build_identity,
+    )
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD,
+        "_run_resolved_cargo_plan",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cargo should not run")
+        ),
+    )
+
+    assert RUNTIME_NATIVE_BUILD._ensure_runtime_lib(
+        isolated_runtime,
+        target_triple,
+        True,
+        "dev-fast",
+        project_root,
+        1.0,
+    )
+    manifest = read_native_link_dependency_manifest(
+        isolated_runtime,
+        target_triple=target_triple,
+        cargo_profile="dev-fast",
+        runtime_build_identity=build_identity,
+    )
+    flags = native_link_flags_from_manifest(
+        manifest,
+        object_format="elf",
+        runtime_lib=isolated_runtime,
+    )
+    assert flags[-1] == "-lportable"
+    custody_directory = Path(flags[-2][2:])
+    assert custody_directory != library_dir
+    assert (custody_directory / "libportable.a").read_bytes() == (
+        b"portable dependency"
+    )
+
+
 def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     monkeypatch,
     tmp_path: Path,
@@ -575,12 +925,7 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
     canonical_runtime.write_bytes(static_archive_bytes(b"stale"))
 
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
+    fingerprint = runtime_build_fingerprint(_NATIVE_RUNTIME_BUILD_IDENTITY)
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         cli._canonical_build_state_root(project_root),
         canonical_runtime,
@@ -598,20 +943,19 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
+        "_runtime_build_identity_for_plan",
+        lambda *args, **kwargs: _NATIVE_RUNTIME_BUILD_IDENTITY,
     )
 
     def fake_run_cargo(
-        cmd: list[str],
+        plan: RuntimeCargoPlan,
         *,
-        cwd: Path,
-        env: dict[str, str],
         timeout: float | None,
         json_output: bool,
         label: str,
     ) -> subprocess.CompletedProcess[str]:
-        del cwd, env, timeout, json_output, label
+        del timeout, json_output, label
+        cmd = list(plan.command)
         cargo_runs.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(
             isolated_runtime, None
@@ -630,7 +974,7 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
         return subprocess.CompletedProcess(cmd, 0, cargo_note + "\n", "")
 
     monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo
+        RUNTIME_NATIVE_BUILD, "_run_resolved_cargo_plan", fake_run_cargo
     )
 
     assert RUNTIME_NATIVE_BUILD._ensure_runtime_lib(
@@ -645,504 +989,155 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
 
 
-def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
-    monkeypatch,
+@pytest.mark.parametrize("reloc", (False, True), ids=("shared", "reloc"))
+@pytest.mark.parametrize("placement", ("primary", "deps", "hashed", "reported"))
+def test_runtime_member_hydration_selects_attested_target_and_replays_without_cargo(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    reloc: bool,
+    placement: str,
 ) -> None:
-    project_root = tmp_path
-    target_root = project_root / "shared-target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
-    canonical_runtime = (
-        target_root / "wasm32-wasip1" / profile_dir / "deps" / "molt_runtime.wasm"
-    )
-    isolated_runtime = project_root / "wasm" / "molt_runtime.wasm"
-    canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_bytes(_valid_wasm_bytes(b"runtime"))
-
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
-    canonical_fp = cli._artifact_state_path_for_build_state_root(
-        target_root / ".molt_state",
-        canonical_runtime,
-        subdir="runtime_fingerprints",
-        stem_suffix="dev-fast.wasm32-wasip1",
-        extension="fingerprint",
-    )
-    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        canonical_fp, fingerprint, artifact=canonical_runtime
+    from molt.cli import runtime_wasm_pair_build as pair_build
+    from molt.cli.models import _RuntimeArtifactState
+    from tests.runtime_build_identity_helper import (
+        bind_runtime_wasm_specs,
+        runtime_wasm_link_inputs,
     )
 
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
+    target = tmp_path / "target"
+    state = target / ".molt_state"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
+        "_cargo_build_env",
+        lambda: {"CARGO_TARGET_DIR": str(target)},
+    )
+    for name in (
+        "_configure_wasm_cc_env",
+        "_configure_wasi_sysroot_env",
+        "_configure_wasm_long_double_env",
+    ):
+        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SPEC, "resolve_runtime_cargo_plan", runtime_cargo_plan
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_inspect_wasm_binary", lambda _path: "valid"
+        RUNTIME_WASM_BUILD_SPEC,
+        "resolve_runtime_wasm_link_inputs",
+        lambda **kwargs: runtime_wasm_link_inputs(tmp_path, env=kwargs["env"]),
     )
+    monkeypatch.setattr(RUNTIME_WASM_BUILD, "_build_state_root", lambda _root: state)
+    monkeypatch.setattr(pair_build, "_build_state_root", lambda _root: state)
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_runtime_wasm_exports_satisfy",
-        lambda *_args, **_kwargs: True,
-    )
-    # Shared-mode (reloc=False) export validation routes through the
-    # split-runtime authority.
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_split_runtime_wasm_exports_satisfy",
-        lambda *_args, **_kwargs: True,
+        pair_build, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
+        RUNTIME_WASM_BUILD, "_runtime_missing_exports_for_mode", lambda *_a, **_k: set()
     )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        isolated_runtime,
-        reloc=False,
-        json_output=True,
+    common = dict(
         cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_exports=None,
+        required_link_features=frozenset(),
     )
-    assert isolated_runtime.read_bytes() == canonical_runtime.read_bytes()
-
-
-def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    target_root = project_root / "shared-target"
-    profile_dir = cli._cargo_profile_dir("release-fast")
-    current_staticlib = (
-        target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
+    shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
+        tmp_path, tmp_path / "out/molt_runtime.wasm", reloc=False, **common
     )
-    runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
-    current_staticlib.parent.mkdir(parents=True, exist_ok=True)
-    current_staticlib.write_bytes(_FAKE_STATICLIB)
-
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
-    current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
-        target_root / ".molt_state",
-        current_staticlib,
-        subdir="runtime_fingerprints",
-        stem_suffix="release-fast.wasm32-wasip1",
-        extension="fingerprint",
+    relative = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
+        tmp_path, tmp_path / "out/molt_runtime_reloc.wasm", reloc=True, **common
     )
-    current_staticlib_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        current_staticlib_fp,
-        fingerprint,
-        artifact=current_staticlib,
+    shared, relative = bind_runtime_wasm_specs(shared, relative, root=tmp_path)
+    spec = relative if reloc else shared
+    primary_shared = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
+        target, spec.profile_dir
     )
-
-    linked: dict[str, Path] = {}
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
+    primary_reloc = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_staticlib_path(
+        target, spec.profile_dir
     )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
-
-    def fake_link_runtime_staticlib_to_reloc_wasm(
-        *,
-        staticlib_path: Path,
-        output_path: Path,
-        json_output: bool,
-        link_timeout: float | None,
-        export_link_args: str = "",
-        long_double_required: bool = False,
-    ) -> bool:
-        del json_output, link_timeout, export_link_args, long_double_required
-        linked["staticlib_path"] = staticlib_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(_valid_wasm_bytes(b"reloc"))
-        return True
-
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_link_runtime_staticlib_to_reloc_wasm",
-        fake_link_runtime_staticlib_to_reloc_wasm,
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_reloc,
-        reloc=True,
-        json_output=True,
-        cargo_profile="release-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert linked["staticlib_path"] == current_staticlib
-    assert runtime_reloc.read_bytes() == _valid_wasm_bytes(b"reloc")
-
-
-def test_ensure_runtime_wasm_reloc_relinks_from_hashed_current_target_staticlib(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    target_root = project_root / "shared-target"
-    profile_dir = cli._cargo_profile_dir("release-fast")
-    current_staticlib = (
-        target_root
-        / "wasm32-wasip1"
-        / profile_dir
-        / "deps"
-        / "libmolt_runtime-deadbeefdeadbeef.a"
-    )
-    runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
-    current_staticlib.parent.mkdir(parents=True, exist_ok=True)
-    current_staticlib.write_bytes(_FAKE_STATICLIB)
-
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
-    current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
-        target_root / ".molt_state",
-        current_staticlib,
-        subdir="runtime_fingerprints",
-        stem_suffix="release-fast.wasm32-wasip1",
-        extension="fingerprint",
-    )
-    current_staticlib_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
-        current_staticlib_fp,
-        fingerprint,
-        artifact=current_staticlib,
-    )
-
-    linked: dict[str, Path] = {}
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
-
-    def fake_link_runtime_staticlib_to_reloc_wasm(
-        *,
-        staticlib_path: Path,
-        output_path: Path,
-        json_output: bool,
-        link_timeout: float | None,
-        export_link_args: str = "",
-        long_double_required: bool = False,
-    ) -> bool:
-        del json_output, link_timeout, export_link_args, long_double_required
-        linked["staticlib_path"] = staticlib_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(_valid_wasm_bytes(b"reloc"))
-        return True
-
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_link_runtime_staticlib_to_reloc_wasm",
-        fake_link_runtime_staticlib_to_reloc_wasm,
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_reloc,
-        reloc=True,
-        json_output=True,
-        cargo_profile="release-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert linked["staticlib_path"] == current_staticlib
-    assert runtime_reloc.read_bytes() == _valid_wasm_bytes(b"reloc")
-
-
-def test_ensure_runtime_wasm_uses_reported_hashed_artifact_not_stale_primary(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    target_root = project_root / "shared-target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
-    primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
-        target_root, profile_dir
-    )
-    reported = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "molt_runtime-feedface.wasm"
-    )
-    runtime_wasm = project_root / "wasm" / "molt_runtime.wasm"
+    primary = primary_reloc if reloc else primary_shared
+    selected = primary
+    if placement != "primary":
+        selected = primary.parent / "deps" / primary.name
+    if placement in {"hashed", "reported"}:
+        selected = selected.with_name(
+            "libmolt_runtime-feedface.a" if reloc else "molt_runtime-feedface.wasm"
+        )
     primary.parent.mkdir(parents=True, exist_ok=True)
-    reported.parent.mkdir(parents=True, exist_ok=True)
-    primary.write_bytes(_valid_wasm_bytes(b"stale-primary"))
-    reported.write_bytes(_valid_wasm_bytes(b"reported-hashed"))
-
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
-    primary_fp = cli._runtime_target_fingerprint_path(
-        target_root / ".molt_state",
-        primary,
-        cargo_profile="dev-fast",
-        target_label="wasm32-wasip1",
+    selected.parent.mkdir(parents=True, exist_ok=True)
+    old_bytes = static_archive_bytes(b"stale") if reloc else _valid_wasm_bytes(b"stale")
+    new_bytes = (
+        static_archive_bytes(b"selected") if reloc else _valid_wasm_bytes(b"selected")
     )
-    primary_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(primary_fp, fingerprint)
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
+    primary.write_bytes(old_bytes)
+    selected.write_bytes(new_bytes)
+    fingerprint = spec.staticlib_fingerprint if reloc else spec.fingerprint
+    assert fingerprint is not None
+    selected_fp = cli._runtime_target_fingerprint_path(
+        state, selected, cargo_profile=spec.cargo_profile, target_label="wasm32-wasip1"
     )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_inspect_wasm_binary", lambda _path: "valid"
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_runtime_wasm_exports_satisfy",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_runtime_wasm_missing_exports",
-        lambda *_args, **_kwargs: set(),
-    )
-    # Shared-mode (reloc=False) export validation routes through the
-    # split-runtime authorities.
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_split_runtime_wasm_exports_satisfy",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_split_runtime_wasm_missing_exports",
-        lambda *_args, **_kwargs: set(),
-    )
-
-    cargo_calls: list[tuple[object, object]] = []
-
-    def fake_run_runtime_wasm_cargo_build(*args: object, **kwargs: object):
-        cargo_calls.append((args, kwargs))
-        return subprocess.CompletedProcess(["cargo"], 0, "", ""), reported
-
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        fake_run_runtime_wasm_cargo_build,
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
-        reloc=False,
-        json_output=True,
-        cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert cargo_calls
-    assert runtime_wasm.read_bytes() == reported.read_bytes()
-    assert primary.read_bytes() == _valid_wasm_bytes(b"stale-primary")
-
-    reported_fp = cli._runtime_target_fingerprint_path(
-        target_root / ".molt_state",
-        reported,
-        cargo_profile="dev-fast",
-        target_label="wasm32-wasip1",
-    )
-    assert cli._read_runtime_fingerprint(reported_fp)[
-        "artifact_content_identity"
-    ] == artifact_content_identity(reported)
-    assert (
-        cli._read_runtime_fingerprint(primary_fp).get("artifact_content_identity")
-        is None
-    )
-
-    runtime_wasm.unlink()
-    cargo_calls.clear()
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
-        reloc=False,
-        json_output=True,
-        cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert not cargo_calls
-    assert runtime_wasm.read_bytes() == reported.read_bytes()
-
-
-def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path
-    target_root = project_root / "shared-target"
-    profile_dir = cli._cargo_profile_dir("release-fast")
-    primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_staticlib_path(
-        target_root, profile_dir
-    )
-    reported = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "libmolt_runtime-feedface.a"
-    )
-    runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
-    primary.parent.mkdir(parents=True, exist_ok=True)
-    reported.parent.mkdir(parents=True, exist_ok=True)
-    primary.write_bytes(static_archive_bytes(b"stale-primary"))
-    reported.write_bytes(static_archive_bytes(b"reported-hashed"))
-
-    fingerprint = {
-        "hash": _TEST_RUNTIME_HASH_DIGEST,
-        "rustc": "rustc",
-        "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-    }
-    primary_fp = cli._runtime_target_fingerprint_path(
-        target_root / ".molt_state",
-        primary,
-        cargo_profile="release-fast",
-        target_label="wasm32-wasip1",
-    )
-    primary_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(primary_fp, fingerprint)
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: dict(fingerprint),
-    )
-
-    cargo_calls: list[tuple[object, object]] = []
+    if placement == "reported":
+        other = primary_shared if reloc else primary_reloc
+        other.write_bytes(_valid_wasm_bytes() if reloc else _FAKE_STATICLIB)
+        # The combined producer, not mtime/candidate ordering, chooses both files.
+        stdout = (
+            _cargo_runtime_artifact_stdout(selected)
+            + _cargo_runtime_artifact_stdout(other)
+        ).decode()
+        ctx = pair_build._CombinedRuntimeWasmBuild(
+            _RuntimeArtifactState(), shared, relative, True, 1.0, tmp_path, True, False
+        )
+        assert pair_build._publish_combined_runtime_wasm_target(
+            ctx,
+            subprocess.CompletedProcess(["cargo"], 0, stdout, ""),
+            other if reloc else selected,
+        )
+    else:
+        selected_fp.parent.mkdir(parents=True, exist_ok=True)
+        cli._write_runtime_fingerprint(selected_fp, fingerprint, artifact=selected)
     linked: list[Path] = []
 
-    def fake_run_runtime_wasm_cargo_build(*args: object, **kwargs: object):
-        cargo_calls.append((args, kwargs))
-        return subprocess.CompletedProcess(["cargo"], 0, "", ""), reported
-
-    def fake_link_runtime_staticlib_to_reloc_wasm(
-        *,
-        staticlib_path: Path,
-        output_path: Path,
-        json_output: bool,
-        link_timeout: float | None,
-        export_link_args: str = "",
-        long_double_required: bool = False,
-    ) -> bool:
-        del json_output, link_timeout, export_link_args, long_double_required
+    def relink(*, staticlib_path: Path, output_path: Path, **_kwargs: object) -> bool:
         linked.append(staticlib_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(_valid_wasm_bytes(staticlib_path.name.encode()))
+        output_path.write_bytes(_valid_wasm_bytes(b"relinked"))
         return True
 
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        fake_run_runtime_wasm_cargo_build,
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_link_runtime_staticlib_to_reloc_wasm",
-        fake_link_runtime_staticlib_to_reloc_wasm,
+        RUNTIME_WASM_BUILD, "_link_runtime_staticlib_to_reloc_wasm", relink
     )
 
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_reloc,
-        reloc=True,
-        json_output=True,
-        cargo_profile="release-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert cargo_calls
-    assert linked == [reported]
+    def forbidden_cargo(**_kwargs: object):
+        raise AssertionError("attested target hydration must not invoke Cargo")
 
-    reported_fp = cli._runtime_target_fingerprint_path(
-        target_root / ".molt_state",
-        reported,
-        cargo_profile="release-fast",
-        target_label="wasm32-wasip1",
+    monkeypatch.setattr(pair_build, "_run_runtime_wasm_cargo_build", forbidden_cargo)
+    destination = (
+        tmp_path
+        / "hydrated"
+        / ("molt_runtime_reloc.wasm" if reloc else "molt_runtime.wasm")
     )
-    assert cli._read_runtime_fingerprint(reported_fp)[
+    for _ in range(2):
+        assert RUNTIME_WASM_BUILD._materialize_runtime_wasm_member_from_target(
+            destination,
+            reloc=reloc,
+            json_output=True,
+            cargo_timeout=1.0,
+            project_root=tmp_path,
+            required_exports=None,
+            resolved_modules=None,
+            spec=spec,
+        )
+        assert wasm_artifact.inspect_wasm_binary(destination) == "valid"
+        destination.unlink()
+    assert linked == ([selected, selected] if reloc else [])
+    assert selected.read_bytes() == new_bytes
+    if selected != primary:
+        assert primary.read_bytes() == old_bytes
+    assert cli._read_runtime_fingerprint(selected_fp)[
         "artifact_content_identity"
-    ] == artifact_content_identity(reported)
-    assert (
-        cli._read_runtime_fingerprint(primary_fp).get("artifact_content_identity")
-        is None
-    )
-
-    runtime_reloc.unlink()
-    cargo_calls.clear()
-    linked.clear()
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_reloc,
-        reloc=True,
-        json_output=True,
-        cargo_profile="release-fast",
-        cargo_timeout=1.0,
-        project_root=project_root,
-    )
-    assert not cargo_calls
-    assert linked == [reported]
+    ] == artifact_content_identity(selected)

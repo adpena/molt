@@ -11,6 +11,7 @@ import pytest
 
 from molt.cli.models import _RuntimeArtifactState
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
+from tests.runtime_build_identity_helper import runtime_cargo_plan
 
 
 CARGO = importlib.import_module("molt.cli.cargo_execution")
@@ -411,6 +412,66 @@ def test_native_failure_receipt_carries_attempts_signal_timing_and_rss(
     assert failure.json_payload()["attempt_count"] == 2
 
 
+def test_resolved_runtime_plan_never_changes_environment_or_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = runtime_cargo_plan(
+        tmp_path,
+        env={"RUSTC_WRAPPER": "sccache", "CARGO_INCREMENTAL": "0"},
+        cargo_command=("cargo", "rustc"),
+    )
+    calls: list[dict[str, object]] = []
+
+    def run(command: list[str], **kwargs: object):
+        calls.append(kwargs)
+        assert command == list(plan.command)
+        assert kwargs["env"] == dict(plan.environment)
+        return _completed(
+            command, 2, stderr="sccache: error: failed to execute compile"
+        )
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    monkeypatch.setattr(
+        CARGO,
+        "normalize_cargo_environment",
+        lambda _env: pytest.fail("captured plan must not be renormalized"),
+    )
+    result = CARGO._run_resolved_cargo_plan(
+        plan, timeout=1.0, json_output=True, label="Exact runtime build"
+    )
+    assert len(calls) == 1
+    assert result.returncode == 2
+    assert result.retry_reason is None
+    assert len(result.attempts) == 1
+    assert result.attempts[0].failure_kind == "explicit-sccache-error"
+
+
+def test_resolved_plan_drift_preserves_guarded_execution_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo", "rustc"))
+
+    def run(command: list[str], **_kwargs: object):
+        config = tmp_path / ".cargo" / "config.toml"
+        config.parent.mkdir()
+        config.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        return _completed(
+            command, 0, stdout="captured build diagnostics", peak_tree_kb=123
+        )
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    with pytest.raises(
+        CARGO.CargoPlanExecutionError, match="changed during execution"
+    ) as caught:
+        CARGO._run_resolved_cargo_plan(
+            plan, timeout=1.0, json_output=True, label="Exact runtime build"
+        )
+    evidence = CARGO.cargo_execution_evidence(caught.value.cargo_result)
+    assert evidence["attempt_count"] == 1
+    assert evidence["peak_tree_rss_bytes"] == 123 * 1024
+    assert evidence["attempts"][0]["stdout"] == "captured build diagnostics"
+
+
 def test_runtime_builds_have_no_private_sccache_retry_lane() -> None:
     source = "\n".join(
         inspect.getsource(module) for module in (RUNTIME, RUNTIME_WASM_SUPPORT)
@@ -418,4 +479,5 @@ def test_runtime_builds_have_no_private_sccache_retry_lane() -> None:
     assert "retry_env = env.copy()" not in source
     assert "retry_env = build_env.copy()" not in source
     assert 'Path(wrapper).name == "sccache"' not in source
-    assert source.count("_run_cargo_with_sccache_retry(") == 4
+    assert "_run_cargo_with_sccache_retry(" not in source
+    assert "_run_resolved_cargo_plan(" in source

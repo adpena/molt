@@ -132,8 +132,10 @@ def _run_sample(
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     hydrated_shared = dest_shared if mode == "before" else generation.shared
     hydrated_reloc = dest_reloc if mode == "before" else generation.reloc
-    if not ok or hydrated_shared.read_bytes() != source_shared.read_bytes() or (
-        hydrated_reloc.read_bytes() != source_reloc.read_bytes()
+    if (
+        not ok
+        or hydrated_shared.read_bytes() != source_shared.read_bytes()
+        or (hydrated_reloc.read_bytes() != source_reloc.read_bytes())
     ):
         raise RuntimeError(f"{mode} pair hydrate contract failed")
     return elapsed_ms, _peak_rss_bytes()
@@ -200,7 +202,7 @@ def main() -> int:
             "before": "2 * O(pair_bytes) validation plus O(pair_bytes) copy",
             "after": "O(pair_bytes) generation validation plus O(pair_bytes) atomic deployment",
         },
-        "pair_digest": shared_identity.pair_digest,
+        "family_digest": shared_identity.family_digest,
         "artifact_sha256": source_digest,
         "artifact_bytes": source_shared.stat().st_size + source_reloc.stat().st_size,
         "before": {"runs": samples["before"], "median_ms": before_median},

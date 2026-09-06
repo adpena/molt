@@ -16,14 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.cli import wasm_toolchain
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
-    _provision_runtime_wasm_toolchain_manifest,
-    _resolved_runtime_wasm_pair_identities,
+    _resolved_runtime_wasm_family_identities,
+    _resolve_runtime_wasm_cargo_specs,
     _runtime_wasm_toolchain_manifest_path,
 )
 from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path
@@ -575,12 +574,6 @@ def _planned_pair(
             raise ValueError(error)
         shared = runtime_dir / "molt_runtime.wasm"
         reloc = runtime_dir / "molt_runtime_reloc.wasm"
-        try:
-            linker_identity = wasm_toolchain.resolve_wasm_linker()
-        except wasm_toolchain.WasmLinkerContractError as exc:
-            raise ValueError(f"runtime WASM linker identity failed: {exc}") from exc
-        if linker_identity is None:
-            raise ValueError("runtime WASM linker identity failed: wasm-ld not found")
         common = {
             "cargo_profile": cargo_profile,
             "simd_enabled": True,
@@ -589,7 +582,6 @@ def _planned_pair(
             "resolved_modules": None,
             "required_link_features": frozenset(),
             "required_exports": None,
-            "wasm_linker_identity": linker_identity,
         }
         shared_spec = _compute_runtime_wasm_build_spec(
             project_root, shared, reloc=False, **common
@@ -602,30 +594,36 @@ def _planned_pair(
             or reloc_spec.target_root != target_root
         ):
             raise ValueError("resolved runtime target root differs from preflight root")
-        toolchain_manifest = _provision_runtime_wasm_toolchain_manifest(shared_spec)
-        manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
-        toolchain_manifest.write(manifest_path)
-        shared_identity, reloc_identity = _resolved_runtime_wasm_pair_identities(
+        shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
             project_root,
             shared_spec,
             reloc_spec,
-            toolchain_manifest=toolchain_manifest,
+            simd_enabled=True,
+            freestanding=False,
         )
-    if shared_identity.pair_digest != reloc_identity.pair_digest:
+        shared_identity, reloc_identity = _resolved_runtime_wasm_family_identities(
+            project_root,
+            shared_spec,
+            reloc_spec,
+        )
+        toolchain_manifest = shared_identity.toolchain_manifest
+        manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
+        toolchain_manifest.write(manifest_path)
+    if shared_identity.family_digest != reloc_identity.family_digest:
         raise ValueError("planned runtime identities do not form one pair")
     return {
         "required_env": required_env,
         "cargo_profile": cargo_profile,
         "toolchain_manifest": os.fspath(manifest_path),
         "toolchain_digest": toolchain_manifest.digest,
-        "pair_digest": shared_identity.pair_digest,
+        "family_digest": shared_identity.family_digest,
         "shared": {"path": os.fspath(shared), "digest": shared_identity.digest},
         "reloc": {"path": os.fspath(reloc), "digest": reloc_identity.digest},
         "generation": os.fspath(runtime_wasm_generation_path(shared)),
         "expected_identity": os.fspath(
             target_root
             / ".molt_state/runtime_wasm_generations"
-            / f"{shared_identity.pair_digest}.expected.json"
+            / f"{shared_identity.family_digest}.expected.json"
         ),
     }
 

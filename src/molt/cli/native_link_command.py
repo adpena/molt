@@ -5,7 +5,7 @@ from pathlib import Path
 import platform
 import shlex
 import sys
-from typing import Mapping, Sequence
+from typing import Sequence
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
@@ -23,6 +23,7 @@ from molt.llvm_linker_roles import (
     llvm_linker_role_for_object_format,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeObjectFormat,
@@ -281,8 +282,7 @@ def _build_native_link_plan(
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: str,
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
     stdlib_obj_path: Path | None = None,
     external_static_archives: Sequence[Path] = (),
     external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
@@ -471,8 +471,7 @@ def _build_native_link_plan(
         runtime_lib,
         target_triple=target_triple,
         object_format=target.object_format.value,
-        source_root=source_root,
-        source_fingerprint=source_fingerprint,
+        runtime_build_identity=runtime_build_identity,
     )
     link_cmd.extend(cargo_native_link_flags)
     return NativeLinkPlan(

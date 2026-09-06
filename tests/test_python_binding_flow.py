@@ -33,6 +33,131 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+@pytest.mark.parametrize(
+    ("source", "name", "expected"),
+    [
+        ("result = len\n", "len", [False]),
+        ("from ext import *\nlen\n", "len", [True]),
+        ("before = len\nfrom ext import *\nafter = len\n", "len", [False, True]),
+        ("array = 1\nfrom ext import *\nresult = array\n", "array", [True]),
+        ("from ext import *\narray = 1\nresult = array\n", "array", [False]),
+        ("array = 1\ncallback()\nresult = array\n", "array", [True]),
+        (
+            "array = 1\nif flag:\n    from ext import *\nresult = array\n",
+            "array",
+            [True],
+        ),
+        ("from ext import *\ndef f(array):\n    return array\n", "array", [False]),
+        (
+            "from ext import *\ndef f(array):\n    def g():\n        return array\n    return g\n",
+            "array",
+            [False],
+        ),
+        (
+            "from ext import *\ndef f():\n    global array\n    return array\n",
+            "array",
+            [True],
+        ),
+        ("from ext import *\nresult = [array for array in (1, 2)]\n", "array", [False]),
+    ],
+)
+def test_name_binding_invalidation_is_source_ordered_and_scope_aware(
+    source: str, name: str, expected: list[bool]
+) -> None:
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    reads = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == name
+        ),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    facts = [index.expression_fact(node) for node in reads]
+    assert all(fact is not None for fact in facts)
+    assert [fact.binding_invalidated for fact in facts if fact is not None] == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "bound"),
+    [
+        ("abs(-1)\n", False),
+        ("def f(abs):\n    return abs(-1)\n", True),
+        ("def f():\n    abs(-1)\n    abs = replacement\n", True),
+        ("abs = replacement\nabs(-1)\n", True),
+        ("abs = replacement\ndel abs\nabs(-1)\n", False),
+    ],
+)
+def test_builtin_shadowing_uses_binding_authority(source: str, bound: bool) -> None:
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    fact = index.expression_fact(call.func)
+    assert fact is not None
+    assert fact.binding_is_bound is bound
+
+
+@pytest.mark.parametrize("branch_count", [2, 3, 4])
+def test_conditional_binding_join_preserves_clean_bound_and_pristine_unbound_paths(
+    branch_count: int,
+) -> None:
+    pool = python_binding_flow._StatePool()
+    pool.set_taint_domain(1)
+    branches = [0]
+    for _ in range(branch_count - 1):
+        tainted = pool.taint_module_bindings(branches[-1])
+        branches.append(pool.set_binding(tainted, 0, int(PythonIdentity.USER_FUNCTION)))
+    joined = pool.join(*branches)
+    assert pool.binding(joined, 0) == int(
+        PythonIdentity.USER_FUNCTION | PythonIdentity.UNBOUND
+    )
+    assert pool._binding_resolution(joined, 0).clean
+    tainted_unbound = pool.taint_module_bindings(0)
+    unsafe_join = pool.join(*branches[1:], tainted_unbound)
+    assert not pool._binding_resolution(unsafe_join, 0).clean
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("array = 0\nif flag:\n    result = array\n", [True]),
+        ("array = 0\nif flag is not None:\n    result = array\n", [False]),
+        ("array = 0\nresult = array if flag else 1\n", [True]),
+        ("array = 0\nresult = flag and array\n", [True]),
+        ("array = 0\nresult = flag or array\n", [True]),
+        ("array = 0\nwhile flag:\n    result = array\n    break\n", [True]),
+        ("array = 0\nassert flag, array\n", [True]),
+        ("array = 0\nresult = [array for item in (1,) if flag]\n", [True]),
+        (
+            "array = 0\nmatch subject:\n    case _ if flag:\n        result = array\n",
+            [True],
+        ),
+        ("if flag:\n    array = 1\nelse:\n    array = 2\nresult = array\n", [False]),
+        ("result = (array := 1) if flag else (array := 2)\nresult = array\n", [False]),
+    ],
+)
+def test_truth_callbacks_precede_branch_consumers_and_not_clean_rebindings(
+    source: str, expected: list[bool]
+) -> None:
+    index = analyze_python_source_bindings(source)
+    reads = sorted(
+        (
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "array"
+        ),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    facts = [index.expression_fact(node) for node in reads]
+    assert all(fact is not None for fact in facts)
+    assert [fact.binding_invalidated for fact in facts if fact is not None] == expected
+
+
 def test_synthetic_node_key_cache_retains_identity_against_id_reuse() -> None:
     analyzer = python_binding_flow._Analyzer(PythonBindingPolicy(), "synthetic")
     first = ast.Name(id="first", lineno=1, col_offset=0)

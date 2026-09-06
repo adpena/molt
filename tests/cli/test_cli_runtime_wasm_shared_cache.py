@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -12,28 +11,11 @@ import molt.dx as DX
 from molt.cli import cargo_execution as CARGO_EXEC
 from molt.cli import runtime_wasm_cache as cache
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from tests.runtime_build_identity_helper import runtime_build_identity
 
 
 def _identity(kind: str, pair_seed: str = "pair") -> RuntimeBuildIdentity:
-    pair = {
-        "schema": "molt.runtime-build-pair.v2",
-        "sources": {"digest": pair_seed},
-        "toolchain": {},
-        "config": {},
-    }
-    payload = {
-        "pair": pair,
-        "resolved_config": {"artifact_kind": kind},
-        "publication": {"transform": kind},
-    }
-    canonical = lambda value: json.dumps(  # noqa: E731
-        value, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return RuntimeBuildIdentity(
-        digest=hashlib.sha256(canonical(payload)).hexdigest(),
-        pair_digest=hashlib.sha256(canonical(pair)).hexdigest(),
-        payload=payload,
-    )
+    return runtime_build_identity(kind, pair_seed)
 
 
 @pytest.fixture(autouse=True)

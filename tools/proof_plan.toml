@@ -1832,7 +1832,31 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_runtime_identity.py", "tests/cli/test_runtime_build_identity.py", "tests/tools/test_toolchain_capture.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "python.unit.binding-authority"
+family = "python_unit"
+cell = "linux-x86_64-py312-unit"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_python_binding_flow.py", "tests/test_frontend_ir_alias_ops.py", "tests/test_frontend_package_composition.py", "tests/cli/test_cli_python_import_authority.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "python.unit.runtime-artifacts"
+family = "python_unit"
+cell = "linux-x86_64-py312-unit"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 300
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py"]
 toolchains = ["python", "uv"]
 
 [[command]]

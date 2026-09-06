@@ -162,7 +162,7 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         runtime_callable_symbols,
         runtime_native_build,
         runtime_paths,
-        runtime_wasm_build,
+        runtime_wasm_pair_build,
     )
 
     # Closure reader A: module_stdlib_policy core-module selection.
@@ -192,7 +192,7 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         runtime_native_build._ensure_runtime_lib_ready,
         runtime_native_build._ensure_native_runtime_lib_ready_before_link,
         runtime_native_build._ensure_runtime_lib,
-        runtime_wasm_build._ensure_runtime_wasm,
+        runtime_wasm_pair_build._ensure_runtime_wasm_both,
         runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen,
     ]
     for func in lower_artifact_functions:
@@ -227,7 +227,9 @@ def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
             captured["env"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
             return None, 0  # (no inputs, sentinel error) -> build() returns early
 
-        monkeypatch.setattr(cli._build_inputs, "_prepare_build_inputs", fake_prepare)
+        from molt.cli import build_inputs
+
+        monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare)
         cli.build("examples/hello.py", stdlib_profile=None)
 
         assert captured.get("env") == expected

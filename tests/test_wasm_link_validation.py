@@ -11,6 +11,7 @@ import pytest
 from molt import wasm_artifact
 from molt.cli.app_export_contract import app_export_call_abi, build_app_export_contract
 from molt.frontend import SimpleTIRGenerator
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 
@@ -27,6 +28,114 @@ def _load_wasm_link():
 
 wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
+
+
+def test_loaded_linker_facades_retain_typed_dependency_custody() -> None:
+    other = _load_wasm_link()
+    for facade in (wasm_link, other):
+        for context_type, helper_names in (
+            (
+                facade.WasmValidationContext,
+                ("_validate_linked", "_validate_freestanding"),
+            ),
+            (facade.WasmExportContext, ("_restore_public_output_exports",)),
+            (facade.WasmOptimizerContext, ("_tree_shake_runtime",)),
+        ):
+            assert context_type.__required_keys__ <= facade.__dict__.keys()
+            for name in helper_names:
+                assert getattr(facade, name).args[0] is facade.__dict__
+        for helper in (
+            facade._link_validation,
+            facade._link_export_contract,
+            facade._optimizer_policy,
+        ):
+            assert not hasattr(helper, "configure_api")
+            assert not hasattr(helper, "_API")
+
+
+def test_loaded_linker_facades_isolate_validation_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = _load_wasm_link()
+    data = wasm_link._build_sections([])
+    seen: list[tuple[str, str]] = []
+    parser = wasm_link.parse_wasm_module_facts
+
+    def bind(facade, label: str, valid: bool) -> None:
+        def parse(payload: bytes):
+            seen.append((label, "parse"))
+            return parser(payload)
+
+        def validate(payload: bytes, *, description: str) -> bool:
+            assert payload == data
+            assert description == "Freestanding wasm"
+            seen.append((label, "validate"))
+            return valid
+
+        monkeypatch.setattr(facade, "parse_wasm_module_facts", parse)
+        monkeypatch.setattr(facade, "_validate_wasm_structural", validate)
+
+    bind(wasm_link, "first", False)
+    bind(other, "second", True)
+    assert not wasm_link._validate_freestanding(data)
+    assert other._validate_freestanding(data)
+    assert not wasm_link._validate_freestanding(data)
+    assert seen == [
+        (label, operation)
+        for label in ("first", "second", "first")
+        for operation in ("parse", "validate")
+    ]
+
+
+def test_loaded_linker_facades_isolate_export_restoration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = _load_wasm_link()
+
+    def bind(facade, token: bytes) -> None:
+        monkeypatch.setattr(
+            facade,
+            "_ensure_function_exports_by_symbol_names",
+            lambda data, _symbols: data + token,
+        )
+        monkeypatch.setattr(facade, "_rename_export_names", lambda *_args: None)
+        monkeypatch.setattr(
+            facade, "_restore_output_export_aliases", lambda _data: None
+        )
+
+    bind(wasm_link, b"first")
+    bind(other, b"second")
+    for facade, expected in (
+        (wasm_link, b"firstfirst"),
+        (other, b"secondsecond"),
+        (wasm_link, b"firstfirst"),
+    ):
+        assert facade._restore_public_output_exports(b"", {}) == expected
+
+
+def test_loaded_linker_facades_isolate_optimizer_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = _load_wasm_link()
+    artifact = tmp_path / "facade.wasm"
+    artifact.write_bytes(wasm_link._build_sections([]))
+    seen: list[str] = []
+
+    def bind(facade, label: str, ok: bool) -> None:
+        def optimize(path: Path, **_kwargs):
+            assert path == artifact
+            seen.append(label)
+            return {"ok": ok, "output_bytes": artifact.stat().st_size}
+
+        monkeypatch.setattr(facade, "optimize_wasm", optimize)
+
+    bind(wasm_link, "first", False)
+    bind(other, "second", True)
+    assert not wasm_link._run_wasm_opt_via_optimize(artifact, required_exports=set())
+    assert other._run_wasm_opt_via_optimize(artifact, required_exports=set())
+    assert not wasm_link._run_wasm_opt_via_optimize(artifact, required_exports=set())
+    assert seen == ["first", "second", "first"]
 
 
 def test_split_link_pipeline_projects_typed_source_extension_requirements() -> None:
@@ -298,32 +407,34 @@ def test_snapshot_link_input_retries_until_source_is_stable(
     source = tmp_path / "output.wasm"
     source.write_bytes(b"partial")
     reads = 0
-    original_read_bytes = Path.read_bytes
+    original_snapshot = wasm_link.snapshot_stable_regular_file
 
-    def racing_read_bytes(path: Path) -> bytes:
+    def racing_snapshot(path: Path, snapshot: Path, **kwargs):
         nonlocal reads
-        data = original_read_bytes(path)
         if path == source:
             reads += 1
             if reads == 1:
                 source.write_bytes(b"complete-molt-main")
-        return data
+                raise wasm_link.StableRegularFileChangedError(
+                    "source changed during snapshot"
+                )
+        return original_snapshot(path, snapshot, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    monkeypatch.setattr(wasm_link, "snapshot_stable_regular_file", racing_snapshot)
 
     snapshot = wasm_link._snapshot_link_input(
         source,
         tmp_path / "snapshots",
         label="app",
         retry_delay_seconds=0,
-        accept=lambda data: b"molt-main" in data,
+        required_prefix=b"complete-molt-main",
     )
 
-    assert original_read_bytes(snapshot) == b"complete-molt-main"
+    assert snapshot.read_bytes() == b"complete-molt-main"
     assert snapshot != source
 
 
-def test_snapshot_link_input_retries_failed_path_attestation(
+def test_snapshot_link_input_rejects_failed_path_attestation_without_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "runtime_reloc.wasm"
@@ -338,16 +449,18 @@ def test_snapshot_link_input_retries_failed_path_attestation(
             return False
         return snapshot.read_bytes() == b"good-generation"
 
-    snapshot = wasm_link._snapshot_link_input(
-        source,
-        tmp_path / "snapshots",
-        label="runtime",
-        retry_delay_seconds=0,
-        accept_path=accept_path,
-    )
-
-    assert snapshot.read_bytes() == b"good-generation"
-    assert attempts == 2
+    with pytest.raises(
+        OSError, match="stable snapshot failed linker metadata preflight"
+    ):
+        wasm_link._snapshot_link_input(
+            source,
+            tmp_path / "snapshots",
+            label="runtime",
+            retry_delay_seconds=0,
+            accept_path=accept_path,
+        )
+    assert attempts == 1
+    assert not (tmp_path / "snapshots/runtime/runtime_reloc.wasm").exists()
 
 
 def test_snapshot_link_input_rejects_stable_stripped_restoration_source(
@@ -356,14 +469,14 @@ def test_snapshot_link_input_rejects_stable_stripped_restoration_source(
     source = tmp_path / "output.wasm"
     source.write_bytes(b"stable-but-stripped")
 
-    with pytest.raises(OSError, match="stable bytes failed linker input contract"):
+    with pytest.raises(OSError, match="stable prefix failed linker input contract"):
         wasm_link._snapshot_link_input(
             source,
             tmp_path / "snapshots",
             label="app",
             attempts=2,
             retry_delay_seconds=0,
-            accept=lambda data: b"molt-main" in data,
+            required_prefix=b"molt-main",
         )
 
 
@@ -3756,6 +3869,9 @@ def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
         output,
         linked,
         runtime_role="reloc",
+        runtime_identity=stable_regular_file_identity(
+            runtime, label="trusted runtime generation"
+        ),
     )
 
     assert rc == 0

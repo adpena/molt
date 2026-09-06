@@ -7,7 +7,6 @@ from molt.cli import backend_binary
 from molt.cli import build_pipeline
 
 _BACKEND_BINARY_NAMES = (
-    "_artifact_newer_than_sources",
     "_backend_fingerprint",
     "_backend_fingerprint_path",
     "_ensure_backend_binary",

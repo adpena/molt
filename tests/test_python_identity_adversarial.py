@@ -336,6 +336,8 @@ def test_external_admission_path_grammar_is_independent_of_validation_host(
         ["C:\\Workspace\\NUL"],
         ["C:\\NUL\\nested"],
         ["C:\\Workspace\\CON .txt"],
+        ["C:\\Workspace\\CONIN$"],
+        ["C:\\Workspace\\conout$.log"],
         ["C:\\Workspace\\COM¹.log"],
         ["C:\\Workspace\\wild*card"],
         ["\\\\?\\C:\\Workspace"],

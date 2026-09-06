@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -180,7 +179,7 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         WASM_RUNTIME_IMPORT_EXPORT_NAMES,
     )
     from molt.cli.artifact_state import _build_state_root
-    from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+    from molt.cli.runtime_wasm_generation import RuntimeWasmExpectedPair
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
     from molt.cli.runtime_wasm_generation import (
         read_runtime_wasm_generation,
@@ -217,20 +216,13 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
     selected_runtime = None
     for expected_path in expected_paths:
         try:
-            expected = json.loads(expected_path.read_text(encoding="utf-8"))
-            if (
-                not isinstance(expected, dict)
-                or expected.get("schema") != "molt.runtime-wasm-expected-pair.v1"
-            ):
-                continue
-            shared_identity = RuntimeBuildIdentity.from_dict(expected.get("shared"))
-            reloc_identity = RuntimeBuildIdentity.from_dict(expected.get("reloc"))
-        except (OSError, json.JSONDecodeError, ValueError):
+            expected = RuntimeWasmExpectedPair.read(expected_path)
+        except ValueError:
             continue
         generation = read_runtime_wasm_generation(
             generation_manifest,
-            expected_shared_identity=shared_identity,
-            expected_reloc_identity=reloc_identity,
+            expected_shared_identity=expected.shared,
+            expected_reloc_identity=expected.reloc,
         )
         if generation is not None:
             matching_expected.append(expected_path)

@@ -114,10 +114,12 @@ def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
     )
     linker.parent.mkdir()
     linker.write_bytes(b"linker")
-    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+    )
     monkeypatch.setattr(cli_wasm_toolchain.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.7"
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.7"
     )
 
     identity = cli_wasm_toolchain.resolve_wasm_linker()
@@ -137,9 +139,11 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     linker = tmp_path / "wasm-ld.exe"
     linker.write_bytes(b"linker")
     monkeypatch.setenv("MOLT_WASM_LD", str(linker))
-    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
     monkeypatch.setattr(
-        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "21.1.8"
+        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+    )
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "21.1.8"
     )
 
     with pytest.raises(
@@ -162,9 +166,11 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
     except OSError:
         os.link(driver, alias)
     monkeypatch.setenv("MOLT_WASM_LD", str(alias))
-    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: None)
     monkeypatch.setattr(
-        cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.8"
+        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.8"
     )
 
     identity = cli_wasm_toolchain.resolve_wasm_linker()
@@ -181,7 +187,9 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
     driver = tmp_path / "lld"
     driver.write_bytes(b"generic lld")
     monkeypatch.setenv("MOLT_WASM_LD", str(driver))
-    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: None)
+    monkeypatch.setattr(
+        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: None
+    )
 
     with pytest.raises(
         cli_wasm_toolchain.WasmLinkerContractError,
@@ -3496,9 +3504,9 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
     monkeypatch.setenv("MOLT_WASM_CC", "clang")
     monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
     monkeypatch.setattr(
-        cli_llvm_wasi_tools.shutil,
-        "which",
-        lambda tool: {
+        cli_llvm_wasi_tools,
+        "find_executable",
+        lambda tool, **_kwargs: {
             "clang": "/tools/clang",
             "clang++": "/tools/clang++",
             "wasm-ld": "/tools/wasm-ld",
@@ -3563,9 +3571,9 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
     for path in tool_paths.values():
         path.write_bytes(b"tool")
     monkeypatch.setattr(
-        cli_llvm_wasi_tools.shutil,
-        "which",
-        lambda tool: str(tool_paths[tool]) if tool in tool_paths else None,
+        cli_llvm_wasi_tools,
+        "find_executable",
+        lambda tool, **_kwargs: str(tool_paths[tool]) if tool in tool_paths else None,
     )
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -3630,9 +3638,9 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     for path in tool_paths.values():
         path.write_bytes(b"tool")
     monkeypatch.setattr(
-        cli_llvm_wasi_tools.shutil,
-        "which",
-        lambda tool: str(tool_paths[tool]) if tool in tool_paths else None,
+        cli_llvm_wasi_tools,
+        "find_executable",
+        lambda tool, **_kwargs: str(tool_paths[tool]) if tool in tool_paths else None,
     )
     seen_commands: list[list[str]] = []
 

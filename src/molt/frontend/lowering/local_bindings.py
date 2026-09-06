@@ -33,6 +33,29 @@ else:
 
 
 class LocalBindingMixin(_MixinBase):
+    def _expression_has_invalidated_binding(self, node: ast.expr) -> bool:
+        """Query source-order authority before cached-name/call specialization."""
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        if not isinstance(node, ast.Name) or self.python_binding_index is None:
+            return False
+        if node.id in self.comp_shadow_locals:
+            return False
+        fact = self.python_binding_index.expression_fact(node)
+        return fact is not None and fact.binding_invalidated
+
+    def _call_has_bound_builtin_name(self, node: ast.expr) -> bool:
+        if not isinstance(node, ast.Name) or not self._name_resolves_to_builtin(
+            node.id
+        ):
+            return False
+        if node.id in self.comp_shadow_locals:
+            return True
+        if self.python_binding_index is None:
+            return False
+        fact = self.python_binding_index.expression_fact(node)
+        return fact is not None and fact.binding_is_bound
+
     def _function_transport_params(
         self,
         params: list[str],
@@ -647,9 +670,7 @@ class LocalBindingMixin(_MixinBase):
             name in self.async_locals or name in self.async_internal_bindings
         ):
             offset = self._async_binding_slot(name).offset
-            res = MoltValue(
-                self.next_var(), type_hint=self._async_binding_hint(name)
-            )
+            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)

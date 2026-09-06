@@ -11,19 +11,19 @@ Part A (durable provisioning): both link archives
 a machine with NO usable WASI sysroot, from the committed ``vendor/wasm-builtins``
 copy, so a fresh/wiped/CI/other-machine session cannot silently miss them.
 
-Part B (fail loud): a reloc runtime that links numpy/scipy long double
-(CPython-ABI tier) HARD-ERRORS with an actionable message when an archive is
-unresolvable — it does not warn-but-proceed. A non-numpy / micro build still
-degrades gracefully.
+Part B (fail loud): every runtime family requires its complete captured archive
+closure. Missing or mutated archives fail before the linker executes; package
+names do not select a weaker identity policy.
 
-Also: the reloc fingerprint token changes when archive presence flips (so a
-degraded cached runtime cannot be served once the archives arrive), and the
-vendored copies match their pinned provenance.
+Also: missing mandatory archives reject runtime identity capture; changed archive
+bytes invalidate both members of the exact runtime family. Vendored copies match
+their pinned provenance.
 """
 
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -85,115 +85,284 @@ def test_archives_resolve_in_fresh_session_without_sysroot(
     assert builtins.parent == vendor_dir
 
 
-def test_requires_long_double_gate() -> None:
-    req = rb._reloc_runtime_requires_long_double
-    # CPython-ABI tier via resolved numpy/scipy modules.
-    assert req(resolved_modules={"numpy.core.multiarray"}, required_exports=None)
-    assert req(resolved_modules={"scipy.ndimage"}, required_exports=None)
-    # Micro / stdlib-only build does not hit %L.
-    assert not req(resolved_modules={"os", "sys", "json"}, required_exports=None)
-    assert not req(resolved_modules=None, required_exports=None)
+@pytest.fixture
+def frozen_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
 
-
-def test_witness_tier_fails_loud_when_archive_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Part B: required + missing => hard error (no degrade) + MISSING attestation."""
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
-    )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
-    timings._reset_runtime_wasm_build_timings()
-    result = rb._resolve_reloc_long_double_archives(long_double_required=True)
-    assert result.error is not None, "numpy tier must fail loud, not degrade"
-    # Actionable: names the trap, the archives, and how to provision.
-    assert "long_double_not_supported" in result.error
-    assert "libc-printscan-long-double.a" in result.error
-    assert "libclang_rt.builtins-wasm32.a" in result.error
-    assert "vendor/wasm-builtins" in result.error
-    snapshot = timings._runtime_wasm_build_timings_snapshot()
-    assert snapshot is not None
-    assert snapshot["longdouble_archives"] == "MISSING"
-
-
-def test_micro_build_degrades_when_archive_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A build that provably does not link long double keeps the graceful degrade."""
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
-    )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
-    timings._reset_runtime_wasm_build_timings()
-    result = rb._resolve_reloc_long_double_archives(long_double_required=False)
-    assert result.error is None, "micro build must not hard-error"
-    assert result.warnings, "micro build with absent archive should warn"
-    snapshot = timings._runtime_wasm_build_timings_snapshot()
-    assert snapshot is not None
-    assert snapshot["longdouble_archives"] == "not_required"
-
-
-def test_link_hard_errors_before_invoking_wasm_ld(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The reloc link chokepoint refuses the numpy tier build with archives absent.
-
-    Proves the hard error fires (returns False) BEFORE ever spawning wasm-ld, so
-    a trapping runtime is never produced. wasm-ld / libc are stubbed present so
-    the archive check — not a missing toolchain — is what stops the link.
-    """
-    fake_wasm_ld = tmp_path / "wasm-ld"
-    fake_wasm_ld.write_text("", encoding="utf-8")
-    fake_libc = tmp_path / "libc.a"
-    fake_libc.write_bytes(b"")
-    staticlib = tmp_path / "libmolt_runtime.a"
-    staticlib.write_bytes(b"")
-
+    inputs = runtime_wasm_link_inputs(tmp_path)
     monkeypatch.setattr(
         wasm_toolchain,
         "resolve_wasm_linker",
-        lambda: wasm_toolchain.WasmLinkerIdentity(
-            fake_wasm_ld, "22.1.8", None, "a" * 64
+        lambda **_kwargs: wasm_toolchain.WasmLinkerIdentity(
+            inputs.linker.entrypoint, "22.1.8", None, inputs.linker.identity.sha256
         ),
     )
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_libc_archive", lambda *a, **k: fake_libc
+        wasm_toolchain, "wasm_wasi_libc_archive", lambda **_kwargs: inputs.libc.path
     )
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+        wasm_toolchain,
+        "wasm_compiler_builtins_archive",
+        lambda **_kwargs: inputs.rust_builtins.path,
     )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
-
-    def _boom(*_a, **_k):  # pragma: no cover - must never run
-        raise AssertionError("wasm-ld was invoked despite a required archive absent")
-
-    monkeypatch.setattr(rb, "_run_completed_command", _boom)
-
-    ok = rb._link_runtime_staticlib_to_reloc_wasm(
-        staticlib_path=staticlib,
-        output_path=tmp_path / "molt_runtime.wasm",
-        json_output=True,
-        link_timeout=None,
-        long_double_required=True,
+    monkeypatch.setattr(
+        wasm_toolchain,
+        "wasm_wasi_printscan_long_double_archive",
+        lambda **_kwargs: inputs.long_double.path,
     )
-    assert ok is False
+    monkeypatch.setattr(
+        wasm_toolchain,
+        "wasm_clang_rt_builtins_archive",
+        lambda **_kwargs: inputs.clang_builtins.path,
+    )
+    return inputs
 
 
-def test_fingerprint_token_flips_when_presence_flips(
+@pytest.mark.parametrize(
+    "missing",
+    ("wasm_wasi_printscan_long_double_archive", "wasm_clang_rt_builtins_archive"),
+)
+def test_every_runtime_family_requires_complete_archive_custody(
+    frozen_inputs,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+) -> None:
+    monkeypatch.setattr(wasm_toolchain, missing, lambda **_kwargs: None)
+    timings._reset_runtime_wasm_build_timings()
+    with pytest.raises(ValueError, match="long_double_not_supported") as caught:
+        rb.resolve_runtime_wasm_link_inputs(
+            env={"WASI_SYSROOT": str(frozen_inputs.wasi_sysroot)},
+            target_libdir=frozen_inputs.wasi_sysroot,
+            project_root=frozen_inputs.wasi_sysroot,
+        )
+    message = str(caught.value)
+    assert "libc-printscan-long-double.a" in message
+    assert "libclang_rt.builtins-wasm32.a" in message
+    assert "vendor/wasm-builtins" in message
+    assert (
+        timings._runtime_wasm_build_timings_snapshot()["longdouble_archives"]
+        == "MISSING"
+    )
+
+
+def test_runtime_link_inputs_capture_complete_archive_set(frozen_inputs) -> None:
+    assert (
+        rb.resolve_runtime_wasm_link_inputs(
+            env={"WASI_SYSROOT": str(frozen_inputs.wasi_sysroot)},
+            target_libdir=frozen_inputs.wasi_sysroot,
+            project_root=frozen_inputs.wasi_sysroot,
+        )
+        == frozen_inputs
+    )
+
+
+def test_runtime_link_capture_uses_effective_environment_and_selected_rust_root(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A degraded (archives-absent) reloc runtime is keyed apart from a good one.
+    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
 
-    So once the archives arrive, the folded fingerprint changes and the cached
-    degraded runtime is not served (forces a rebuild).
-    """
-    token_present = rb._reloc_link_archive_fingerprint_token()
+    inputs = runtime_wasm_link_inputs(tmp_path)
+    selected = tmp_path / "selected-rust-root"
+    (selected / "self-contained").mkdir(parents=True)
+    libc = selected / "self-contained" / "libc.a"
+    libc.write_bytes(b"!<arch>\nselected-libc")
+    builtins = selected / "libcompiler_builtins-selected.rlib"
+    builtins.write_bytes(b"!<arch>\nselected-builtins")
+    environment = {
+        "MOLT_WASI_SYSROOT": str(inputs.wasi_sysroot),
+        "MOLT_WASM_LONGDOUBLE_ARCHIVE": str(inputs.long_double.path),
+        "MOLT_WASM_BUILTINS_ARCHIVE": str(inputs.clang_builtins.path),
+    }
+
+    def linker(*, env, cwd):
+        assert env == environment
+        assert cwd == tmp_path
+        return wasm_toolchain.WasmLinkerIdentity(
+            inputs.linker.entrypoint, "22.1.8", None, inputs.linker.identity.sha256
+        )
+
+    monkeypatch.setattr(wasm_toolchain, "resolve_wasm_linker", linker)
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+        wasm_toolchain,
+        "rust_target_libdir",
+        lambda *_a, **_k: pytest.fail("captured target must not query ambient rustc"),
     )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
-    token_absent = rb._reloc_link_archive_fingerprint_token()
-    assert token_present != token_absent
+    monkeypatch.setenv("MOLT_WASM_LONGDOUBLE_ARCHIVE", str(tmp_path / "ambient-poison"))
+    result = rb.resolve_runtime_wasm_link_inputs(
+        env=environment, target_libdir=selected, project_root=tmp_path
+    )
+    assert result.libc.path == libc
+    assert result.rust_builtins.path == builtins
+    assert result.long_double == inputs.long_double
+    result.verify()
+
+
+def test_runtime_link_custody_preserves_symlink_entrypoint(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+    from molt.cli.runtime_cargo_plan import CargoExecutableCustody
+    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
+
+    inputs = runtime_wasm_link_inputs(tmp_path)
+    alias = tmp_path / "wasm-ld"
+    try:
+        alias.symlink_to(inputs.linker.entrypoint)
+    except OSError:
+        pytest.skip("host cannot create executable symlinks")
+    result = replace(
+        inputs, linker=CargoExecutableCustody.capture("runtime WASM linker", alias)
+    )
+    result.verify()
+    assert result.linker.entrypoint == alias
+    assert result.linker.identity.path == inputs.linker.identity.path
+    alias.unlink()
+    alias.write_bytes(b"different-entrypoint")
+    with pytest.raises(ValueError, match="changed"):
+        result.verify()
+
+
+def test_link_hard_errors_before_invoking_wasm_ld(
+    frozen_inputs,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
+
+    frozen_inputs.long_double.path.unlink()
+    staticlib = tmp_path / "libmolt_runtime.a"
+    staticlib.write_bytes(b"!<arch>\n")
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("wasm-ld must not run after archive custody is lost")
+
+    monkeypatch.setattr(rb, "_run_completed_command", forbidden)
+    with pytest.raises(ValueError, match="unavailable|changed"):
+        rb._link_runtime_staticlib_to_reloc_wasm(
+            staticlib_path=staticlib,
+            output_path=tmp_path / "runtime.wasm",
+            json_output=True,
+            link_timeout=1.0,
+            link_inputs=frozen_inputs,
+            cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+        )
+
+
+def test_runtime_archive_capture_rejects_missing_mandatory_content(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.runtime_build_identity import _archive_identity
+
+    archive = tmp_path / "libc-printscan-long-double.a"
+    archive.write_bytes(b"!<arch>\n")
+    assert _archive_identity("wasi-long-double", archive)["sha256"]
+    archive.unlink()
+    with pytest.raises((ValueError, OSError)):
+        _archive_identity("wasi-long-double", archive)
+    with pytest.raises(ValueError, match="unresolved"):
+        _archive_identity("wasi-long-double", None)
+
+
+@pytest.mark.parametrize(
+    "resource",
+    (
+        "linker",
+        "libc",
+        "rust_builtins",
+        "long_double",
+        "clang_builtins",
+        "staticlib",
+        "response",
+    ),
+)
+def test_reloc_link_rejects_changed_inputs_without_replacing_output(
+    frozen_inputs,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resource: str,
+) -> None:
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
+
+    staticlib = tmp_path / "libmolt_runtime.a"
+    staticlib.write_bytes(b"!<arch>\n")
+    output = tmp_path / "runtime.wasm"
+    output.write_bytes(b"old-publication")
+
+    def mutate(command, **kwargs):
+        assert kwargs["env"]["CAPTURED_LINK_ENV"] == "original"
+        Path(command[-1]).write_bytes(b"\0asm\x01\0\0\0")
+        if resource == "response":
+            selected = Path(next(arg[1:] for arg in command if arg.startswith("@")))
+        elif resource == "staticlib":
+            selected = staticlib
+        else:
+            selected = (
+                frozen_inputs.linker.entrypoint
+                if resource == "linker"
+                else getattr(frozen_inputs, resource).path
+            )
+        selected.write_bytes(selected.read_bytes() + b"changed")
+        return subprocess.CompletedProcess(command, 0, "link-stdout", "link-stderr")
+
+    monkeypatch.setattr(rb, "_run_completed_command", mutate)
+    with pytest.raises(rb.RuntimeWasmLinkError, match="changed") as caught:
+        rb._link_runtime_staticlib_to_reloc_wasm(
+            staticlib_path=staticlib,
+            output_path=output,
+            json_output=True,
+            link_timeout=1.0,
+            link_inputs=frozen_inputs,
+            cargo_plan=runtime_cargo_plan(
+                tmp_path,
+                env={"CAPTURED_LINK_ENV": "original"},
+                cargo_command=("cargo",),
+            ),
+            export_link_args="-C link-arg=--export=entry",
+        )
+    assert caught.value.stdout == "link-stdout"
+    assert caught.value.stderr == "link-stderr"
+    assert output.read_bytes() == b"old-publication"
+    assert not list(tmp_path.glob(".runtime.wasm.*.tmp"))
+
+
+@pytest.mark.parametrize("timeout", (False, True))
+def test_reloc_link_failure_retains_child_evidence(
+    frozen_inputs,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    timeout: bool,
+) -> None:
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
+
+    staticlib = tmp_path / "libmolt_runtime.a"
+    staticlib.write_bytes(b"!<arch>\n")
+    output = tmp_path / "runtime.wasm"
+
+    def fail(command, **_kwargs):
+        if timeout:
+            raise subprocess.TimeoutExpired(
+                command, 1.0, output=b"partial stdout", stderr=b"precise cause"
+            )
+        return subprocess.CompletedProcess(
+            command, 2, "partial stdout", "precise cause"
+        )
+
+    monkeypatch.setattr(rb, "_run_completed_command", fail)
+    with pytest.raises(rb.RuntimeWasmLinkError) as caught:
+        rb._link_runtime_staticlib_to_reloc_wasm(
+            staticlib_path=staticlib,
+            output_path=output,
+            json_output=True,
+            link_timeout=1.0,
+            link_inputs=frozen_inputs,
+            cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+        )
+    assert caught.value.command[0] == str(frozen_inputs.linker.entrypoint)
+    assert caught.value.stdout == "partial stdout"
+    assert caught.value.stderr == "precise cause"
+    assert caught.value.timed_out is timeout
+    assert not output.exists()
 
 
 # --- Split app.wasm link: numpy (no reloc runtime here) needs its own formatters ---
@@ -220,7 +389,9 @@ def test_split_app_fails_loud_when_longdouble_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+        wasm_toolchain,
+        "wasm_wasi_printscan_long_double_archive",
+        lambda **_kwargs: None,
     )
     with pytest.raises(ValueError, match="long-double|unreachable"):
         wasm_link._split_app_native_link_args([Path("numpy.o"), Path("libc.a")])
@@ -244,9 +415,11 @@ def _fake_archives(
     bi = tmp_path / "libclang_rt.builtins-wasm32.a"
     bi.write_bytes(b"!<arch>\n")
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: ld
+        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda **_kwargs: ld
     )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: bi)
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda **_kwargs: bi
+    )
     return ld, bi
 
 
@@ -256,8 +429,8 @@ def test_all_three_link_paths_share_the_one_authority(
     ld, bi = _fake_archives(monkeypatch, tmp_path)
 
     # (1) reloc arm — resolver delegates to the authority.
-    reloc = rb._resolve_reloc_long_double_archives(long_double_required=True)
-    assert reloc.longdouble == ld
+    reloc = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    assert reloc.printscan == ld
     assert reloc.builtins == bi
     assert reloc.error is None
 
@@ -305,25 +478,53 @@ def test_deploy_cdylib_env_absent_when_archive_unresolved(
     gate (plus the reloc/split-app numpy-tier fail-loud) is the effect backstop.
     """
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+        wasm_toolchain,
+        "wasm_wasi_printscan_long_double_archive",
+        lambda **_kwargs: None,
     )
-    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda **_kwargs: None
+    )
     env: dict[str, str] = {}
     rb._configure_wasm_long_double_env(env)
     assert "MOLT_WASM_LONGDOUBLE_ARCHIVE" not in env
     assert "MOLT_WASM_BUILTINS_ARCHIVE" not in env
 
 
-def test_shared_and_reloc_fingerprints_fold_archive_identity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Both runtime fingerprints re-key when the archive set changes, so a stale
-    long-double-stubbed cached runtime (reloc OR shared cdylib) is never served.
-    """
-    _fake_archives(monkeypatch, tmp_path)
-    token_present = rb._reloc_link_archive_fingerprint_token()
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+def test_shared_and_reloc_families_attest_exact_archive_content(tmp_path: Path) -> None:
+    from molt.cli.runtime_build_identity import (
+        RuntimeBuildIdentity,
+        _archive_identity,
+        _digest,
     )
-    token_absent = rb._reloc_link_archive_fingerprint_token()
-    assert token_present != token_absent
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    archive = tmp_path / "libc-printscan-long-double.a"
+    archive.write_bytes(b"!<arch>\nfirst")
+    before = runtime_build_identity("shared").to_dict()
+
+    def with_archive(value):
+        family = value["payload"]["family"]
+        archives = family["compile"]["toolchain"]["archives"]
+        archives[2] = _archive_identity("wasi-long-double", archive)
+        compile_digest = _digest(family["compile"])
+        family["compile_digest"] = compile_digest
+        return tuple(
+            RuntimeBuildIdentity(
+                _digest({"family": family, "member_kind": kind}),
+                compile_digest,
+                _digest(family),
+                {"family": family, "member_kind": kind},
+            )
+            for kind in ("shared", "reloc")
+        )
+
+    first = with_archive(before)
+    archive.write_bytes(b"!<arch>\nother")
+    second = with_archive(before)
+    assert first[0].family_digest == first[1].family_digest
+    assert second[0].family_digest == second[1].family_digest
+    assert all(
+        old.compile_digest != new.compile_digest and old.digest != new.digest
+        for old, new in zip(first, second, strict=True)
+    )

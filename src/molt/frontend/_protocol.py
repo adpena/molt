@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
     from molt.compiler_analysis.python_imports import ModuleImportFlow
+    from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
     from molt.compiler_analysis.static_truth import SysPlatformStaticTruthKwargs
@@ -147,6 +148,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]
     parse_codec: Any
+    python_binding_index: PythonBindingIndex | None
     qualname_stack: list[tuple[str, bool]]
     range_loop_stack: list[tuple[MoltValue, MoltValue]]
     reserved_external_func_symbols: set[str]
@@ -347,6 +349,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _call_allowlist_suggestion(
         self, func_id: str, imported_from: str | None
     ) -> str | None: ...
+
+    def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
 
     @staticmethod
     def _call_needs_bind(node: ast.Call) -> bool: ...
@@ -1535,6 +1539,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _expr_may_yield(self, node: ast.AST) -> bool: ...
 
     def _expr_needs_async(self, node: ast.AST) -> bool: ...
+
+    def _expression_has_invalidated_binding(self, node: ast.expr) -> bool: ...
 
     def _extract_inline_init_assigns(
         self, item: "ast.FunctionDef", params: list[str]

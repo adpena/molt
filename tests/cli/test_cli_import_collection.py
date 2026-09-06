@@ -92,8 +92,13 @@ from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.native_link_test_support import (
-    SOURCE_FINGERPRINT,
+    RUNTIME_BUILD_IDENTITY,
     write_test_native_link_manifest,
+)
+from molt.cli.runtime_build_identity import runtime_build_fingerprint
+from tests.runtime_build_identity_helper import (
+    runtime_cargo_plan,
+    native_runtime_staticlib_identity,
 )
 from tests.cli.process_guard import (
     cli_test_popen_kwargs,
@@ -207,7 +212,7 @@ def _set_stale_mtime(path: Path, *, ns_offset: int = 0) -> None:
 
 def _fake_backend_ensure_success(*args: object, **kwargs: object):
     del args, kwargs
-    return cli_backend_binary._backend_ensure_success()
+    return cli_backend_binary._BackendBinaryEnsureResult(ok=True)
 
 
 def _clear_molt_home_caches() -> None:
@@ -10151,7 +10156,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
+    runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
@@ -10184,7 +10189,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=runtime_build_identity,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10219,7 +10224,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
+    runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib-v1")
@@ -10246,7 +10251,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=runtime_build_identity,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10274,7 +10279,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=runtime_build_identity,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10301,7 +10306,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
+    runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
@@ -10338,7 +10343,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=runtime_build_identity,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10420,7 +10425,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
+    runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -10467,7 +10472,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=runtime_build_identity,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10576,7 +10581,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
         json_output=False,
         output_binary=tmp_path / "app",
         runtime_lib=runtime_lib,
-        runtime_source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -10695,8 +10700,7 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
         target_triple=None,
         sysroot_path=None,
         profile="dev",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
     )
 
@@ -10734,8 +10738,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         host_platform="linux",
     )
@@ -10774,8 +10777,7 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         external_static_archives=(extension_archive,),
         external_link_requirements=(
@@ -10844,8 +10846,7 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         external_static_archives=extension_archives,
         external_link_requirements=external_link_requirements,
@@ -10904,8 +10905,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         host_platform="linux",
     )
@@ -10941,8 +10941,7 @@ def test_windows_link_omits_icf_for_fn_identity(
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         host_platform="win32",
     )
@@ -10979,8 +10978,7 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         target_triple=None,
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
         external_static_archives=(extension_archive,),
         external_link_requirements=(
@@ -11031,8 +11029,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
         target_triple="x86_64-pc-windows-gnu",
         sysroot_path=None,
         profile="release",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         stdlib_obj_path=None,
     )
 
@@ -19242,7 +19239,7 @@ def _stub_backend_binary_ensure(
             order.append("backend_binary")
         backend_bin.parent.mkdir(parents=True, exist_ok=True)
         backend_bin.write_text("backend", encoding="utf-8")
-        return cli_backend_binary._backend_ensure_success()
+        return cli_backend_binary._BackendBinaryEnsureResult(ok=True)
 
     monkeypatch.setattr(
         cli_backend_binary,
@@ -19824,7 +19821,7 @@ def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
     runtime_state = cli._RuntimeArtifactState(
         runtime_lib=tmp_path / "libmolt_runtime.a",
         runtime_lib_ready_future=fake_future,
-        native_link_source_fingerprint={},
+        native_runtime_build_identity=RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
@@ -19861,7 +19858,7 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
 
     def fake_ensure_runtime_lib_ready(runtime_state, **kwargs) -> bool:
         captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
-        runtime_state.native_link_source_fingerprint = {}
+        runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         return True
 
     monkeypatch.setattr(
@@ -20337,113 +20334,55 @@ def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layou
     assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "4321"
 
 
-def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
+def test_runtime_compile_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
-    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-    stored_fingerprint = {
-        "artifact_content_identity": RUNTIME_FINGERPRINTS.artifact_content_identity(
-            runtime_wasm
-        )
-    }
-    verification_calls: list[tuple[frozenset[str], str]] = []
-
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda project_root, **kwargs: {
-            "runtime_features": tuple(
-                cast(tuple[str, ...], kwargs["runtime_features"])
-            ),
-            "rustflags": cast(str, kwargs["rustflags"]),
-            "meta_digest": _TEST_RUNTIME_META_DIGEST,
-        },
+        "_cargo_build_env",
+        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
     )
-    # The reuse decision authority is _runtime_artifact_fingerprint_matches
-    # (runtime_fingerprints), which reads the stored fingerprint and consults
-    # _artifact_needs_rebuild through its own module namespace.
-    monkeypatch.setattr(
-        RUNTIME_FINGERPRINTS,
-        "_artifact_needs_rebuild",
-        lambda artifact, fingerprint, stored_fingerprint: (
-            verification_calls.append(
-                (
-                    frozenset(cast(tuple[str, ...], fingerprint["runtime_features"])),
-                    cast(str, fingerprint["rustflags"]),
-                )
-            )
-            or False
-        ),
-    )
-    monkeypatch.setattr(
-        RUNTIME_FINGERPRINTS,
-        "_read_runtime_fingerprint",
-        lambda path: stored_fingerprint,
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_read_runtime_fingerprint",
-        lambda path: stored_fingerprint,
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
-    )
-    # Shared-mode (reloc=False) export validation routes through the
-    # split-runtime authority.
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_split_runtime_wasm_exports_satisfy",
-        lambda path, req: True,
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
+    for name in (
+        "_configure_wasm_cc_env",
+        "_configure_wasi_sysroot_env",
+        "_configure_wasm_long_double_env",
+    ):
+        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    common = dict(
         reloc=False,
-        json_output=True,
         cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=tmp_path,
         simd_enabled=True,
         freestanding=False,
         stdlib_profile="micro",
+        required_link_features=frozenset(),
+    )
+    first = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "runtime.wasm",
         resolved_modules={"json"},
         required_exports={"runtime_init"},
+        **common,
     )
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
-        reloc=False,
-        json_output=True,
-        cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=tmp_path,
-        simd_enabled=True,
-        freestanding=False,
-        stdlib_profile="micro",
+    second = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "runtime.wasm",
         resolved_modules={"ssl"},
         required_exports={"fast_list_append"},
+        **common,
     )
-
-    assert len(verification_calls) >= 2
-    assert all(call == verification_calls[0] for call in verification_calls)
-    verified_features = verification_calls[0][0]
-    assert {"stdlib_micro", "no-default-features"} <= verified_features
-    # The micro fingerprint carries exactly the Cargo-ladder-derived micro
-    # surface; user imports (json/ssl) must not leak profile features in.
+    assert first.cargo_rustflags == second.cargo_rustflags
+    assert first.fingerprint_features == second.fingerprint_features
+    features = frozenset(first.fingerprint_features)
+    assert {"stdlib_micro", "no-default-features"} <= features
     assert (
         cli_runtime_features.profile_link_features(
             "micro", target_triple="wasm32-wasip1"
         )
-        <= verified_features
+        <= features
     )
-    assert "stdlib_serial" not in verified_features
-    assert "stdlib_net" not in verified_features
+    assert "stdlib_serial" not in features
+    assert "stdlib_net" not in features
 
 
 def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerprint(
@@ -20491,93 +20430,33 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_wasm = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
-    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    built_src = (
-        tmp_path
-        / "target"
-        / "wasm32-wasip1"
-        / "dev-fast"
-        / "deps"
-        / "molt_runtime-test.wasm"
-    )
-    built_src.parent.mkdir(parents=True, exist_ok=True)
-    built_src.write_bytes(b"\0asm\x01\0\0\0")
-    captured_env: dict[str, str] = {}
-
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: {
-            "hash": "new",
-            "meta_digest": _TEST_RUNTIME_META_DIGEST,
-        },
+        "_cargo_build_env",
+        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
     )
-    monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_inspect_wasm_binary", lambda path: "valid"
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD.wasm_toolchain,
-        "rust_target_libdir",
-        lambda _target: tmp_path / "rust-target-libdir",
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD.wasm_toolchain,
-        "resolve_wasm_linker",
-        lambda: cli_wasm_toolchain.WasmLinkerIdentity(
-            path=tmp_path / "wasm-ld.exe",
-            version="22.1.0",
-            wasi_sdk_llvm_version="22.1.0",
-            sha256="ab" * 32,
-        ),
-    )
-
-    def fake_runtime_build(**kwargs):
-        captured_env.update(kwargs["env"])
-        return subprocess.CompletedProcess(kwargs["cmd"], 0, "", ""), built_src
-
-    captured_link: dict[str, str] = {}
-
-    def fake_reloc_link(staticlib_path, output_path, **kwargs):
-        captured_link.update(kwargs)
-        output_path.write_bytes(staticlib_path.read_bytes())
-        return True
-
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_run_runtime_wasm_cargo_build", fake_runtime_build
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_link_runtime_staticlib_to_reloc_wasm", fake_reloc_link
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None
-    )
-
-    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
+    for name in (
+        "_configure_wasm_cc_env",
+        "_configure_wasi_sysroot_env",
+        "_configure_wasm_long_double_env",
+    ):
+        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    spec = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "runtime_reloc.wasm",
         reloc=True,
-        json_output=True,
         cargo_profile="dev-fast",
-        cargo_timeout=1.0,
-        project_root=tmp_path,
         simd_enabled=True,
         freestanding=False,
         stdlib_profile="micro",
         resolved_modules={"molt.gpu.tensor"},
         required_exports=None,
+        required_link_features=frozenset(),
     )
-
-    rustflags = _expand_rustflags_response_files(captured_env["RUSTFLAGS"])
-    assert "--import-memory" not in rustflags
-    assert "--import-table" not in rustflags
-    assert "--export-if-defined=molt_gpu_matmul_contiguous" not in rustflags
-    assert (
-        "--export-if-defined=molt_gpu_matmul_contiguous"
-        in captured_link["export_link_args"]
-    )
+    assert "--import-memory" not in spec.cargo_rustflags
+    assert "--import-table" not in spec.cargo_rustflags
+    assert "--export-if-defined=molt_gpu_matmul_contiguous" not in spec.cargo_rustflags
+    assert "--export-if-defined=molt_gpu_matmul_contiguous" in spec.runtime_exports
 
 
 def _install_fake_wasm_link_runner(
@@ -22106,15 +21985,14 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
 ) -> None:
     runtime_lib = tmp_path / cli._runtime_lib_archive_name("micro", None)
     runtime_lib.write_bytes(b"archive")
-    fingerprint = {
-        "hash": "ok",
-        "meta_digest": _TEST_RUNTIME_META_DIGEST,
-        "rustc": "rustc-test",
-    }
+    fingerprint = runtime_build_fingerprint(RUNTIME_BUILD_IDENTITY)
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+    )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: fingerprint,
+        "_runtime_build_identity_for_plan",
+        lambda *args, **kwargs: RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
@@ -22159,7 +22037,7 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_run_cargo_with_sccache_retry",
+        "_run_resolved_cargo_plan",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected runtime rebuild")
         ),
@@ -22186,16 +22064,21 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     verification_calls: list[frozenset[str]] = []
 
     monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+    )
+
+    def build_identity(project_root: Path, **kwargs: Any):
+        del project_root
+        features = frozenset(kwargs["runtime_features"])
+        verification_calls.append(features)
+        return native_runtime_staticlib_identity(
+            cargo_profile="release-fast", family_seed=",".join(sorted(features))
+        )
+
+    monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
-        "_runtime_fingerprint",
-        lambda project_root, **kwargs: {
-            "hash": "runtime-test",
-            "meta_digest": _TEST_RUNTIME_META_DIGEST,
-            "rustc": "rustc-test",
-            "runtime_features": tuple(
-                cast(tuple[str, ...], kwargs["runtime_features"])
-            ),
-        },
+        "_runtime_build_identity_for_plan",
+        build_identity,
     )
 
     def fake_runtime_artifact_fingerprint_matches(
@@ -22208,9 +22091,6 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
         del artifact, fingerprint_path
         assert require_artifact_digest is True
         assert fingerprint is not None
-        verification_calls.append(
-            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
-        )
         return True
 
     monkeypatch.setattr(
@@ -22249,8 +22129,8 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     finally:
         RUNTIME_NATIVE_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
-    assert len(verification_calls) == 2
-    assert verification_calls[0] == verification_calls[1]
+    assert len(verification_calls) == 4
+    assert all(features == verification_calls[0] for features in verification_calls)
     assert {"builtin_set", "stdlib_micro", "no-default-features"} <= verification_calls[
         0
     ]
@@ -22656,7 +22536,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
 ) -> None:
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
 
@@ -22729,7 +22609,7 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         backend_bin=backend_bin,
     )
     cli._write_backend_daemon_identity(identity_path, identity)
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
 
     def fake_run_cargo(
         cmd: list[str], **kwargs: object
@@ -22780,7 +22660,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     backend_bin = (
         tmp_path / "target" / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
     )
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
 
@@ -22839,11 +22719,12 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     ]
 
 
-def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebuild(
+def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebuild(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_dir = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = target_dir / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
     cargo_output = target_dir / "dev-fast" / f"molt-backend{exe_suffix}"
@@ -22865,10 +22746,16 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
         encoding="utf-8",
     )
     cargo_output.chmod(0o755)
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    cli._write_runtime_fingerprint(
+        cli_backend_binary._backend_fingerprint_path(
+            tmp_path, cargo_output, "dev-fast"
+        ),
+        fingerprint,
+        artifact=cargo_output,
+    )
     build_cmds: list[list[str]] = []
 
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
     monkeypatch.setattr(
         cli_backend_binary,
         "_backend_source_paths",
@@ -22910,7 +22797,7 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
                 tmp_path, backend_bin, "dev-fast"
             )
         )["hash"]
-        == "abc"
+        == fingerprint["hash"]
     )
 
 

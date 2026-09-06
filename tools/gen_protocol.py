@@ -113,6 +113,7 @@ _TYPE_CHECKING_IMPORTS = {
     "ModuleExecutionKind": "molt.compiler_analysis.python_imports",
     "ModuleImportContext": "molt.compiler_analysis.python_imports",
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
+    "PythonBindingIndex": "molt.compiler_analysis.python_binding_facts",
     "SemaResult": "molt.frontend.sema",
     "SerializationContext": "molt.frontend.lowering.serialization_context",
     "SysPlatformStaticTruthKwargs": "molt.compiler_analysis.static_truth",

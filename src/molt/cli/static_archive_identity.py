@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import functools
 import hashlib
-import os
 from pathlib import Path
 import re
-from typing import BinaryIO
+from typing import BinaryIO, Mapping, cast
+
+from molt.toolchain_identity import open_stable_regular_file
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
 
 _ARCHIVE_MAGIC = b"!<arch>\n"
@@ -41,14 +42,34 @@ class StaticArchiveIdentityError(ValueError):
     """The archive is malformed or changed while its semantic identity was read."""
 
 
-def _stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        stat_result.st_size,
-        stat_result.st_mtime_ns,
-        stat_result.st_ctime_ns,
-        stat_result.st_dev,
-        stat_result.st_ino,
-    )
+def validate_artifact_content_identity(value: object) -> Mapping[str, object]:
+    """Admit one exact artifact receipt without Python numeric coercion."""
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        raise StaticArchiveIdentityError("artifact content identity must be an object")
+    receipt = cast(Mapping[str, object], value)
+    schema = receipt.get("schema")
+    if schema == _BYTE_IDENTITY_SCHEMA:
+        digest_key = "sha256"
+        count_keys = ("size_bytes",)
+    elif schema == _IDENTITY_SCHEMA:
+        digest_key = "semantic_sha256"
+        count_keys = ("member_count", "content_size_bytes")
+    else:
+        raise StaticArchiveIdentityError(
+            "artifact content identity schema is unsupported"
+        )
+    if set(receipt) != {"schema", digest_key, *count_keys}:
+        raise StaticArchiveIdentityError("artifact content identity shape is invalid")
+    digest = receipt.get(digest_key)
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise StaticArchiveIdentityError("artifact content identity digest is invalid")
+    for key in count_keys:
+        count = receipt.get(key)
+        if type(count) is not int or count < 0:
+            raise StaticArchiveIdentityError(
+                f"artifact content identity {key} must be a nonnegative integer"
+            )
+    return dict(receipt)
 
 
 def _decimal_field(raw: bytes, *, field: str) -> int:
@@ -75,6 +96,10 @@ def _hash_exact(stream: BinaryIO, size: int) -> str:
 
 
 def _read_exact(stream: BinaryIO, size: int) -> bytes:
+    if size > RUNTIME_ARTIFACT_METADATA_MAX_BYTES:
+        raise StaticArchiveIdentityError(
+            "archive name metadata exceeds bounded input limit"
+        )
     value = stream.read(size)
     if len(value) != size:
         raise StaticArchiveIdentityError("truncated archive member payload")
@@ -119,65 +144,59 @@ def _canonical_member_name(name: str) -> str:
     return name
 
 
-@functools.lru_cache(maxsize=256)
-def _static_archive_identity_cached(
-    resolved_path: str,
-    stat_identity: tuple[int, int, int, int, int],
-) -> dict[str, object]:
-    path = Path(resolved_path)
+def _static_archive_stream_identity(stream: BinaryIO) -> dict[str, object]:
     entries: list[tuple[str, int, str, bool]] = []
     long_names: bytes | None = None
-    with path.open("rb") as stream:
-        magic = stream.read(len(_ARCHIVE_MAGIC))
-        if magic == _THIN_ARCHIVE_MAGIC:
-            raise StaticArchiveIdentityError("thin archives are not self-contained")
-        if magic != _ARCHIVE_MAGIC:
-            raise StaticArchiveIdentityError("static archive magic is invalid")
-        while True:
-            header = stream.read(_HEADER_SIZE)
-            if not header:
-                break
-            if len(header) != _HEADER_SIZE or header[58:60] != b"`\n":
-                raise StaticArchiveIdentityError("static archive header is invalid")
+    magic = stream.read(len(_ARCHIVE_MAGIC))
+    if magic == _THIN_ARCHIVE_MAGIC:
+        raise StaticArchiveIdentityError("thin archives are not self-contained")
+    if magic != _ARCHIVE_MAGIC:
+        raise StaticArchiveIdentityError("static archive magic is invalid")
+    while True:
+        header = stream.read(_HEADER_SIZE)
+        if not header:
+            break
+        if len(header) != _HEADER_SIZE or header[58:60] != b"`\n":
+            raise StaticArchiveIdentityError("static archive header is invalid")
+        try:
+            raw_name = header[:16].decode("ascii", "strict").strip()
+        except UnicodeDecodeError as exc:
+            raise StaticArchiveIdentityError(
+                "archive member header name is not ASCII"
+            ) from exc
+        stored_size = _decimal_field(header[48:58], field="size")
+        content_size = stored_size
+        if raw_name == "//":
+            long_names = _read_exact(stream, stored_size)
+            content_digest = ""
+        elif raw_name.startswith("#1/"):
+            name_size = _decimal_field(raw_name[3:].encode("ascii"), field="name")
+            if name_size > stored_size:
+                raise StaticArchiveIdentityError(
+                    "BSD archive member name exceeds member size"
+                )
+            name_bytes = _read_exact(stream, name_size).rstrip(b"\0")
             try:
-                raw_name = header[:16].decode("ascii", "strict").strip()
+                name = name_bytes.decode("utf-8", "strict")
             except UnicodeDecodeError as exc:
                 raise StaticArchiveIdentityError(
-                    "archive member header name is not ASCII"
+                    "archive member name is not UTF-8"
                 ) from exc
-            stored_size = _decimal_field(header[48:58], field="size")
-            content_size = stored_size
-            if raw_name == "//":
-                long_names = _read_exact(stream, stored_size)
-                content_digest = ""
-            elif raw_name.startswith("#1/"):
-                name_size = _decimal_field(raw_name[3:].encode("ascii"), field="name")
-                if name_size > stored_size:
-                    raise StaticArchiveIdentityError(
-                        "BSD archive member name exceeds member size"
-                    )
-                name_bytes = _read_exact(stream, name_size).rstrip(b"\0")
-                try:
-                    name = name_bytes.decode("utf-8", "strict")
-                except UnicodeDecodeError as exc:
-                    raise StaticArchiveIdentityError(
-                        "archive member name is not UTF-8"
-                    ) from exc
-                content_size -= name_size
-                content_digest = _hash_exact(stream, content_size)
-                if name not in _DERIVED_MEMBER_NAMES:
-                    entries.append((name, content_size, content_digest, True))
-            else:
-                content_digest = _hash_exact(stream, stored_size)
-                short_name = raw_name.removesuffix("/")
-                if (
-                    raw_name not in _DERIVED_MEMBER_NAMES
-                    and short_name not in _DERIVED_MEMBER_NAMES
-                ):
-                    entries.append((raw_name, content_size, content_digest, False))
-            if stored_size & 1:
-                if stream.read(1) != b"\n":
-                    raise StaticArchiveIdentityError("archive padding byte is invalid")
+            content_size -= name_size
+            content_digest = _hash_exact(stream, content_size)
+            if name not in _DERIVED_MEMBER_NAMES:
+                entries.append((name, content_size, content_digest, True))
+        else:
+            content_digest = _hash_exact(stream, stored_size)
+            short_name = raw_name.removesuffix("/")
+            if (
+                raw_name not in _DERIVED_MEMBER_NAMES
+                and short_name not in _DERIVED_MEMBER_NAMES
+            ):
+                entries.append((raw_name, content_size, content_digest, False))
+        if stored_size & 1:
+            if stream.read(1) != b"\n":
+                raise StaticArchiveIdentityError("archive padding byte is invalid")
     if long_names is None and any(
         name.startswith("/") and not resolved for name, _, _, resolved in entries
     ):
@@ -200,10 +219,6 @@ def _static_archive_identity_cached(
         if not name:
             raise StaticArchiveIdentityError("archive member name is empty")
         records.append((name, content_size, content_digest))
-    if _stat_identity(path.stat()) != stat_identity:
-        raise StaticArchiveIdentityError(
-            f"static archive changed while hashing: {path}"
-        )
     digest = hashlib.sha256()
     digest.update((_IDENTITY_SCHEMA + "\n").encode("ascii"))
     for ordinal, (name, size, content_digest) in enumerate(records):
@@ -222,52 +237,43 @@ def _static_archive_identity_cached(
 
 
 def static_archive_identity(path: Path) -> dict[str, object]:
-    """Hash ordered archive members while excluding derived container metadata."""
-
+    """Hash ordered archive members through one stable direct-file handle."""
     try:
-        resolved = path.resolve(strict=True)
-        before = _stat_identity(resolved.stat())
-        identity = _static_archive_identity_cached(os.fspath(resolved), before)
-        if _stat_identity(resolved.stat()) != before:
-            raise StaticArchiveIdentityError(
-                f"static archive changed while hashing: {resolved}"
-            )
-        return dict(identity)
-    except OSError as exc:
+        with open_stable_regular_file(path, label="static archive") as opened:
+            return _static_archive_stream_identity(opened.stream)
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, StaticArchiveIdentityError):
+            raise
         raise StaticArchiveIdentityError(
             f"cannot identify static archive {path}: {exc}"
         ) from exc
 
 
 def artifact_content_identity(path: Path) -> dict[str, object]:
-    """Return the sole content identity for a runtime artifact."""
-
-    if path.suffix.lower() in {".a", ".lib"}:
-        try:
-            with path.open("rb") as stream:
-                magic = stream.read(len(_ARCHIVE_MAGIC))
-        except OSError as exc:
-            raise StaticArchiveIdentityError(
-                f"cannot identify artifact {path}: {exc}"
-            ) from exc
-        if magic in {_ARCHIVE_MAGIC, _THIN_ARCHIVE_MAGIC}:
-            return static_archive_identity(path)
-    digest = hashlib.sha256()
-    size = 0
+    """Read current artifact bytes once; metadata never authorizes cached content."""
     try:
-        before = _stat_identity(path.stat())
-        with path.open("rb") as stream:
+        with open_stable_regular_file(path, label="runtime artifact") as opened:
+            stream = opened.stream
+            prefix = stream.read(len(_ARCHIVE_MAGIC))
+            if path.suffix.lower() in {".a", ".lib"} and prefix in {
+                _ARCHIVE_MAGIC,
+                _THIN_ARCHIVE_MAGIC,
+            }:
+                stream.seek(0)
+                return _static_archive_stream_identity(stream)
+            digest = hashlib.sha256(prefix)
+            size = len(prefix)
             while block := stream.read(8 * 1024 * 1024):
                 digest.update(block)
                 size += len(block)
-        if _stat_identity(path.stat()) != before or size != before[0]:
-            raise StaticArchiveIdentityError(f"artifact changed while hashing: {path}")
-    except OSError as exc:
+            return {
+                "schema": _BYTE_IDENTITY_SCHEMA,
+                "sha256": digest.hexdigest(),
+                "size_bytes": size,
+            }
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, StaticArchiveIdentityError):
+            raise
         raise StaticArchiveIdentityError(
             f"cannot identify artifact {path}: {exc}"
         ) from exc
-    return {
-        "schema": _BYTE_IDENTITY_SCHEMA,
-        "sha256": digest.hexdigest(),
-        "size_bytes": size,
-    }

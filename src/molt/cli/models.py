@@ -26,6 +26,7 @@ from molt.type_facts import TypeFacts
 
 if TYPE_CHECKING:
     from molt.capability_manifest import ResolvedRuntimePolicy
+    from molt.cli.runtime_build_identity import RuntimeBuildIdentity
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog
@@ -666,7 +667,7 @@ class _RuntimeArtifactState:
     runtime_reloc_wasm_selected: Path | None = None
     runtime_wasm_expected_identity: Path | None = None
     extra_runtime_features: tuple[str, ...] = ()
-    native_link_source_fingerprint: dict[str, object] | None = None
+    native_runtime_build_identity: RuntimeBuildIdentity | None = None
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
     runtime_lib_ready_future: Future[bool] | None = None

@@ -60,6 +60,13 @@ Outputs:
   shared-stdlib objects.
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
 - Cache keys are computed from the IR payload plus backend/runtime/tooling source fingerprints, rustc/RUSTFLAGS metadata, and source-tree metadata (path, size, mtime, ctime). Source metadata changes intentionally invalidate object caches so long-lived CLI/batch processes cannot reuse stale compiler outputs after local source edits.
+- Backend executable bytes additionally bind probe receipts, object-cache keys,
+  daemon selection and the compile-local fingerprint supplied to the Rust TIR
+  cache. A same-size rewrite with a restored timestamp is not the same compiler.
+- A manually built backend without a matching source-and-artifact receipt goes
+  through Cargo provenance establishment before reuse; a newer timestamp is not
+  sufficient. Feature aliases and canonical hydration follow the same rule.
+
 Environment defaults:
 - `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.
 - `MOLT_BIN` (default `$MOLT_HOME/bin`): default directory for compiled native binaries.

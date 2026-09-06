@@ -67,8 +67,12 @@ def record_runtime_wasm_failure(
             indent=2,
             sort_keys=True,
         )
-    except OSError:
+    except OSError as exc:
         evidence_path = None
+        details = {**(details or {}), "evidence_write_error": str(exc)}
+        compact = (
+            f"{compact}\nRuntime WASM failure evidence could not be written: {exc}"
+        )
     runtime_state.runtime_wasm_build_failure = _RuntimeWasmBuildFailure(
         stage=stage,
         summary=compact,

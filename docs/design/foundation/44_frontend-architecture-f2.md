@@ -20,6 +20,36 @@
 
 ## 0. Scope, non-goals, and what F1 already proved
 
+### Current source-ordered name authority (2026-09-05)
+
+`compiler_analysis/python_binding_flow.py` owns source-point name identity,
+binding status, invalidation, and truth-callback ordering. Its immutable
+`PythonBindingIndex` is retained for a module's frontend lowering; import flow
+is a projection of that same index, not a separately recomputed classifier.
+The schema/digest/semantic-policy single-flight cache owns reuse. Target Python,
+platform, package/spec identity, and execution kind remain part of the policy.
+
+`PythonExpressionFact.binding_invalidated` gates cached module-name values,
+direct calls, and imported-module attribute provenance through shared queries
+in `frontend/lowering/local_bindings.py`. `binding_is_bound` prevents builtin
+spelling from overriding lexical cells, parameters, or source module bindings.
+`OTHER` alone proves neither invalidation nor builtin identity. Clean rebinding
+restores source facts; clean conditional joins retain guarded native-call
+specialization only where the binding authority permits it.
+
+Truth conversion runs before either successor, including short-circuit,
+conditional-expression, loop/filter, assertion-message and match-guard paths.
+An arbitrary `__bool__` can replace a callable and return false: a subsequent
+global-existence check alone does not authorize a native direct call. Identity
+comparisons have primitive boolean results; genuinely invalidated builtins use
+the existing dynamic call emitter until stronger facts prove their identity.
+
+Focused authority/IR proofs live in `tests/test_python_binding_flow.py` and
+`tests/test_frontend_ir_alias_ops.py`. Replay capsules are
+`tests/differential/basic/branch_truth_bindings.py` and `import_star.py`.
+Native/WASM execution of these capsules is pending; local fact/IR checks do not
+establish CPython-version, OS, architecture, or backend matrix closure.
+
 **In scope.** The decomposition of `SimpleTIRGenerator` into named phases with explicit data contracts; the rule that makes scope-divergent lowering structurally impossible; the extension of the *already-landed* op-kind registry (`tools/gen_op_kinds.py`, doc 25) to absorb hand-kept frontend tables/effect oracles; the phasing that lands move-only structure before any semantic change and dissolves the mixin shims by the end.
 
 **Out of scope (covered elsewhere, cross-referenced only).** The per-construct *semantic* gaps (metaclass `__prepare__`, `__slots__` layout, `__index__` coercion, match-as-CFG) are doc 30's portfolio and its commissioned docs (#40–#42); F2 makes those fixes *land in one place* but does not re-specify them. The op_kinds.toml *schema* is doc 25; F2 extends its **output**, not its design. Generator/coroutine lowering is doc 26.

@@ -10,6 +10,44 @@ import pytest
 from molt import exact_json, file_publication
 
 
+def test_exact_file_read_admits_byte_limit_and_rejects_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "receipt.json"
+    path.write_bytes(b'{"value":1}')
+    assert exact_json.read_exact(path, max_bytes=11, label="test receipt") == {
+        "value": 1
+    }
+    monkeypatch.setattr(
+        exact_json,
+        "loads_exact",
+        lambda _raw: pytest.fail("oversized bytes reached JSON parser"),
+    )
+    with pytest.raises(
+        exact_json.ExactJsonError, match="test receipt exceeds size limit"
+    ):
+        exact_json.read_exact(path, max_bytes=10, label="test receipt")
+
+
+@pytest.mark.parametrize("raw", (b'{"v":1,"v":2}', b'{"v":NaN}', b'"\xff"'))
+def test_exact_file_read_preserves_strict_codec(tmp_path: Path, raw: bytes) -> None:
+    path = tmp_path / "receipt.json"
+    path.write_bytes(raw)
+    with pytest.raises((ValueError, UnicodeError)):
+        exact_json.read_exact(path, max_bytes=100, label="test receipt")
+
+
+@pytest.mark.parametrize("limit", (0, -1, True, 1.5))
+def test_exact_file_read_rejects_invalid_budget_before_open(
+    tmp_path: Path, limit
+) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        exact_json.read_exact(
+            tmp_path / "missing", max_bytes=limit, label="test receipt"
+        )
+
+
 @pytest.mark.parametrize(
     "payload",
     (

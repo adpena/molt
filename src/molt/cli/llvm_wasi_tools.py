@@ -6,12 +6,18 @@ import functools
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 from typing import Literal
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.file_hashing import _sha256_file
+from molt.toolchain_identity import (
+    executable_environment_value,
+    executable_name_candidates,
+    executable_search_directories,
+    find_executable,
+    resolve_executable,
+)
 from molt.llvm_linker_roles import (
     LlvmLinkerRole,
     executable_selects_linker_role,
@@ -87,10 +93,13 @@ def _path_like_command(command: str) -> bool:
     )
 
 
-def resolve_explicit_tool_command(raw_command: str, *, label: str) -> tuple[str, ...]:
+def resolve_explicit_tool_command(
+    raw_command: str, *, label: str, environment: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
     """Parse and resolve one explicitly configured executable command."""
+    environment = dict(os.environ if environment is None else environment)
     direct_path = Path(raw_command).expanduser()
-    if direct_path.is_file():
+    if _path_like_command(raw_command) and direct_path.is_file():
         return (str(_absolute_tool_path(direct_path)),)
     try:
         argv = shlex.split(raw_command, posix=os.name != "nt")
@@ -111,7 +120,7 @@ def resolve_explicit_tool_command(raw_command: str, *, label: str) -> tuple[str,
         if not path.exists() or not path.is_file():
             raise ValueError(f"{label} executable not found: {executable}")
         return (str(_absolute_tool_path(path)), *argv[1:])
-    resolved = shutil.which(executable)
+    resolved = find_executable(executable, environment=environment)
     if resolved is None:
         raise ValueError(f"{label} executable not found on PATH: {executable}")
     return (str(_absolute_tool_path(Path(resolved))), *argv[1:])
@@ -232,11 +241,15 @@ def _cached_managed_llvm_bin_directories(
     return _dedupe_paths(candidates)
 
 
-def _managed_llvm_bin_directories(target_root: Path | None) -> tuple[Path, ...]:
+def _managed_llvm_bin_directories(
+    target_root: Path | None, *, environment: Mapping[str, str]
+) -> tuple[Path, ...]:
     roots: list[Path] = []
     if target_root is not None:
         roots.append(target_root)
-    raw_target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
+    raw_target_root = executable_environment_value(
+        environment, "MOLT_TARGET_ROOT"
+    ).strip()
     if raw_target_root:
         roots.append(Path(raw_target_root))
     roots.extend(checkout / "target" for checkout in _source_checkout_roots())
@@ -248,18 +261,28 @@ def _managed_llvm_bin_directories(target_root: Path | None) -> tuple[Path, ...]:
     return _cached_managed_llvm_bin_directories(normalized_roots, identities)
 
 
-def _rust_llvm_bin_directories() -> tuple[Path, ...]:
+def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path, ...]:
     """Return rustc-matched LLVM tool directories for LTO object readers."""
     try:
         result = _run_completed_command(
-            ["rustc", "--print", "sysroot"],
+            [
+                str(
+                    resolve_executable(
+                        executable_environment_value(environment, "RUSTC", "rustc"),
+                        environment=environment,
+                        label="Rust LLVM toolchain",
+                    )
+                ),
+                "--print",
+                "sysroot",
+            ],
             capture_output=True,
             timeout=10,
-            env=None,
+            env=dict(environment),
             cwd=None,
             memory_guard_prefix=None,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return ()
     if result.returncode != 0 or not result.stdout.strip():
         return ()
@@ -269,21 +292,13 @@ def _rust_llvm_bin_directories() -> tuple[Path, ...]:
     )
 
 
-def _executable_names(name: str) -> tuple[str, ...]:
-    if os.name != "nt":
-        return (name,)
-    raw_extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    extensions = tuple(
-        extension.lower() for extension in raw_extensions.split(";") if extension
-    )
-    if name.lower().endswith(extensions):
-        return (name,)
-    return (name, *(name + extension for extension in extensions))
-
-
-def _directory_candidates(directory: Path, names: Sequence[str]) -> Iterable[Path]:
+def _directory_candidates(
+    directory: Path, names: Sequence[str], *, environment: Mapping[str, str]
+) -> Iterable[Path]:
     for name in names:
-        for executable_name in _executable_names(name):
+        for executable_name in executable_name_candidates(
+            name, environment=environment
+        ):
             candidate = directory / executable_name
             if candidate.is_file():
                 yield candidate
@@ -308,25 +323,19 @@ def _dedupe_search_directories(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-@functools.lru_cache(maxsize=32)
-def _path_search_directories(path_value: str, cwd: str) -> tuple[Path, ...]:
-    """Return directories whose identity governs ``shutil.which`` results."""
-    directories: list[Path] = [Path(cwd)]
-    for raw in path_value.split(os.pathsep):
-        value = raw.strip().strip('"')
-        directories.append(Path(value) if value else Path(cwd))
-    return _dedupe_search_directories(directories)
-
-
 @functools.lru_cache(maxsize=256)
 def _observed_search_directories(
-    search_directories: tuple[str, ...], path_value: str, cwd: str
+    search_directories: tuple[str, ...],
+    environment: tuple[tuple[str, str], ...],
+    cwd: str,
 ) -> tuple[Path, ...]:
     """Reuse normalized directory objects while their configuration is stable."""
     return _dedupe_search_directories(
         (
             *map(Path, search_directories),
-            *_path_search_directories(path_value, cwd),
+            *executable_search_directories(
+                environment=dict(environment), cwd=Path(cwd)
+            ),
         )
     )
 
@@ -337,15 +346,10 @@ def _cached_llvm_named_tool_candidates(
     explicit_commands: tuple[tuple[str, ...], ...],
     search_directories: tuple[str, ...],
     directory_identities: tuple[tuple[int, int, int, int, int], ...],
-    target_root: str | None,
-    include_rust_toolchain: bool,
-    environment_target_root: str,
-    path_value: str,
-    path_extensions: str,
-    rust_environment: tuple[str, str, str],
+    environment_items: tuple[tuple[str, str], ...],
     cwd: str,
     module_file: str,
-    which_identity: int,
+    finder_identity: int,
 ) -> tuple[Path, ...]:
     """Resolve one immutable, filesystem-identified tool-search snapshot.
 
@@ -355,15 +359,10 @@ def _cached_llvm_named_tool_candidates(
     """
     del (
         directory_identities,
-        environment_target_root,
-        path_value,
-        path_extensions,
-        rust_environment,
-        cwd,
         module_file,
-        which_identity,
+        finder_identity,
     )
-    del target_root, include_rust_toolchain
+    environment = dict(environment_items)
     explicit_paths = (
         path
         for command in explicit_commands
@@ -371,11 +370,9 @@ def _cached_llvm_named_tool_candidates(
     )
     paths = list(explicit_paths)
     for directory in map(Path, search_directories):
-        paths.extend(_directory_candidates(directory, names))
+        paths.extend(_directory_candidates(directory, names, environment=environment))
     for name in names:
-        # PATH is in the cache key.  Calling with the ambient default preserves
-        # Python's exact platform-specific current-directory/PATHEXT semantics.
-        resolved = shutil.which(name)
+        resolved = find_executable(name, environment=environment, cwd=Path(cwd))
         if resolved is not None:
             paths.append(Path(resolved))
     return _dedupe_tool_paths(paths)
@@ -385,7 +382,6 @@ def clear_llvm_tool_candidate_cache() -> None:
     """Invalidate process-local tool selection after an explicit tool mutation."""
     _cached_source_checkout_roots.cache_clear()
     _cached_managed_llvm_bin_directories.cache_clear()
-    _path_search_directories.cache_clear()
     _observed_search_directories.cache_clear()
     _cached_llvm_named_tool_candidates.cache_clear()
 
@@ -408,6 +404,7 @@ def llvm_tool_candidates(
     sibling_directories: Sequence[Path] = (),
     target_root: Path | None = None,
     include_rust_toolchain: bool = False,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
     if role == "wasm_ld":
@@ -417,6 +414,7 @@ def llvm_tool_candidates(
             sibling_directories=sibling_directories,
             target_root=target_root,
             include_rust_toolchain=include_rust_toolchain,
+            environment=environment,
         )
     return llvm_named_tool_candidates(
         *_LLVM_TOOL_NAMES[role],
@@ -424,6 +422,7 @@ def llvm_tool_candidates(
         sibling_directories=sibling_directories,
         target_root=target_root,
         include_rust_toolchain=include_rust_toolchain,
+        environment=environment,
     )
 
 
@@ -434,6 +433,7 @@ def llvm_linker_candidates(
     sibling_directories: Sequence[Path] = (),
     target_root: Path | None = None,
     include_rust_toolchain: bool = False,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[Path, ...]:
     """Return only entrypoints that select one exact LLVM linker role."""
 
@@ -443,6 +443,7 @@ def llvm_linker_candidates(
         sibling_directories=sibling_directories,
         target_root=target_root,
         include_rust_toolchain=include_rust_toolchain,
+        environment=environment,
     )
     return tuple(
         path for path in candidates if executable_selects_linker_role(path, role)
@@ -474,6 +475,7 @@ def llvm_named_tool_candidates(
     sibling_directories: Sequence[Path] = (),
     target_root: Path | None = None,
     include_rust_toolchain: bool = False,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[Path, ...]:
     """Resolve an LLVM utility through the canonical managed-tool ladder.
 
@@ -483,26 +485,34 @@ def llvm_named_tool_candidates(
     """
     if not names or any(not name for name in names):
         raise ValueError("at least one non-empty LLVM tool name is required")
+    effective_environment = dict(os.environ if environment is None else environment)
     normalized_explicit_commands = tuple(
         tuple(command) for command in explicit_commands
     )
     search_directories: list[Path] = list(sibling_directories)
     if include_rust_toolchain:
-        search_directories.extend(_rust_llvm_bin_directories())
-    search_directories.extend(_managed_llvm_bin_directories(target_root))
+        search_directories.extend(
+            _rust_llvm_bin_directories(environment=effective_environment)
+        )
+    search_directories.extend(
+        _managed_llvm_bin_directories(target_root, environment=effective_environment)
+    )
     normalized_search_directories = tuple(
         map(os.fspath, _dedupe_search_directories(search_directories))
     )
-    normalized_target_root = (
-        os.fspath(Path(os.path.abspath(os.fspath(target_root.expanduser()))))
-        if target_root is not None
-        else None
-    )
-    path_value = os.environ.get("PATH", os.defpath)
-    path_extensions = os.environ.get("PATHEXT", "")
+    environment_items = tuple(sorted(effective_environment.items()))
     cwd = os.path.normcase(os.path.abspath(os.curdir))
     observed_directories = _observed_search_directories(
-        normalized_search_directories, path_value, cwd
+        (
+            *normalized_search_directories,
+            *(
+                os.fspath(Path(command[0]).absolute().parent)
+                for command in normalized_explicit_commands
+                if command
+            ),
+        ),
+        environment_items,
+        cwd,
     )
     directory_identities = tuple(
         _directory_identity(path) for path in observed_directories
@@ -512,19 +522,10 @@ def llvm_named_tool_candidates(
         normalized_explicit_commands,
         normalized_search_directories,
         directory_identities,
-        normalized_target_root,
-        include_rust_toolchain,
-        os.environ.get("MOLT_TARGET_ROOT", "").strip(),
-        path_value,
-        path_extensions,
-        (
-            os.environ.get("RUSTUP_TOOLCHAIN", ""),
-            os.environ.get("RUSTUP_HOME", ""),
-            os.environ.get("CARGO_HOME", ""),
-        ),
+        environment_items,
         cwd,
         os.path.abspath(__file__),
-        id(shutil.which),
+        id(find_executable),
     )
     result = _cached_llvm_named_tool_candidates(*key)
     if all(path.is_file() for path in result):
@@ -536,13 +537,15 @@ def llvm_named_tool_candidates(
     return _cached_llvm_named_tool_candidates(*key)
 
 
-def _tool_version(path: Path) -> str | None:
+def _tool_version(
+    path: Path, *, environment: Mapping[str, str] | None = None
+) -> str | None:
     try:
         result = _run_completed_command(
             [str(path), "--version"],
             capture_output=True,
             timeout=10,
-            env=None,
+            env=None if environment is None else dict(environment),
             cwd=path.parent,
             memory_guard_prefix=None,
         )
@@ -559,9 +562,11 @@ def resolve_llvm_wasi_tool_family(
     explicit_commands: Mapping[LlvmToolRole, tuple[str, ...]] | None = None,
     sibling_directories: Sequence[Path] = (),
     target_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> LlvmWasiToolFamily:
     """Resolve and attest the complete LLVM/WASI binary family exactly once."""
     explicit = dict(explicit_commands or {})
+    effective_environment = dict(os.environ if environment is None else environment)
     resolved: dict[LlvmToolRole, ResolvedLlvmTool | None] = {}
     search_directories = list(sibling_directories)
     identity_by_path: dict[str, tuple[str | None, str]] = {}
@@ -572,6 +577,7 @@ def resolve_llvm_wasi_tool_family(
             explicit_commands=(command,) if command is not None else (),
             sibling_directories=search_directories,
             target_root=target_root,
+            environment=effective_environment,
         )
         if not candidates:
             resolved[role] = None
@@ -580,7 +586,10 @@ def resolve_llvm_wasi_tool_family(
         search_directories.append(path.parent)
         key = os.path.normcase(os.path.realpath(path))
         if key not in identity_by_path:
-            identity_by_path[key] = (_tool_version(path), _sha256_file(path))
+            identity_by_path[key] = (
+                _tool_version(path, environment=effective_environment),
+                _sha256_file(path),
+            )
         version, sha256 = identity_by_path[key]
         selected_command = (str(path),)
         if command is not None and _command_selects_path(command, path):

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import runtime_fingerprints
 from molt.cli import runtime_native_build as runtime_build
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_CDYLIB_ARTIFACTS,
@@ -61,40 +60,6 @@ def test_native_runtime_producer_selects_only_staticlib_before_rustc_args() -> N
     assert command[separator:] == ["--", "--print", "native-static-libs"]
     assert "rlib" not in command
     assert "cdylib" not in command
-
-
-def test_artifact_selection_is_part_of_runtime_cache_source_identity(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(runtime_fingerprints, "_rustc_version", lambda: "rustc-test")
-    monkeypatch.setattr(
-        runtime_fingerprints,
-        "_compiler_clean_pathspec_source_state",
-        lambda _root, _paths: None,
-    )
-    monkeypatch.setattr(
-        runtime_fingerprints,
-        "runtime_source_paths",
-        lambda _root, runtime_features=(): [],
-    )
-    staticlib = runtime_fingerprints._runtime_fingerprint(
-        tmp_path,
-        cargo_profile="release-output",
-        target_triple=None,
-        rustflags="",
-        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
-    )
-    cdylib = runtime_fingerprints._runtime_fingerprint(
-        tmp_path,
-        cargo_profile="release-output",
-        target_triple=None,
-        rustflags="",
-        artifact_selection=RUNTIME_CDYLIB_ARTIFACTS,
-    )
-    assert staticlib is not None and cdylib is not None
-    assert staticlib["meta_digest"] != cdylib["meta_digest"]
-    assert staticlib["hash"] != cdylib["hash"]
 
 
 def test_user_facing_artifact_guidance_cannot_return_to_cargo_build() -> None:

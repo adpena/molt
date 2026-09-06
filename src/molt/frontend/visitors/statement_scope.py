@@ -11,11 +11,12 @@ import ast
 from typing import TYPE_CHECKING
 
 from molt.compiler_analysis import native_support_slice as _native_support_slice
-from molt.compiler_analysis.python_imports import (
-    ModuleImportContext,
-    analyze_module_import_flow,
-    resolve_relative_import,
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingPolicy,
+    analyze_python_bindings,
+    python_ast_digest,
 )
+from molt.compiler_analysis.python_imports import resolve_relative_import
 from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
     MoltOp,
@@ -299,29 +300,36 @@ class StatementScopeVisitorMixin(_MixinBase):
                 identifiers.add(item.id)
             elif isinstance(item, ast.arg):
                 identifiers.add(item.arg)
-            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            elif isinstance(
+                item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 identifiers.add(item.name)
             elif isinstance(item, ast.alias):
                 identifiers.add(item.asname or item.name.partition(".")[0])
             elif isinstance(item, ast.ExceptHandler) and item.name is not None:
                 identifiers.add(item.name)
-            elif isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None:
+            elif (
+                isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None
+            ):
                 identifiers.add(item.name)
             elif isinstance(item, ast.MatchMapping) and item.rest is not None:
                 identifiers.add(item.rest)
         self.reserved_python_identifiers.update(identifiers)
+        prev_python_binding_index = self.python_binding_index
         prev_module_import_flow = self.module_import_flow
-        self.module_import_flow = analyze_module_import_flow(
+        self.python_binding_index = analyze_python_bindings(
             node,
-            ModuleImportContext(
-                self.module_name,
-                self.module_is_package,
-                state=self.module_import_state,
-                spec_name=self.module_spec_name,
+            source_digest=python_ast_digest(node),
+            policy=PythonBindingPolicy(
                 target_python=self.target_python,
-                execution_kind=self.module_execution_kind,
+                target_sys_platform=self.target_sys_platform,
+                module_name=self.module_name,
+                module_spec_name=self.module_spec_name,
+                module_is_package=self.module_is_package,
+                module_execution_kind=self.module_execution_kind,
             ),
         )
+        self.module_import_flow = self.python_binding_index.module_import_flow
         defer = self._module_can_defer_attrs(node)
         if self.module_chunking:
             defer = False
@@ -577,6 +585,7 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.reserved_external_func_symbols = prev_reserved_external
         self.module_chunk_globals = prev_module_chunk_globals
         self.module_elided_deleted_funcs = prev_elided_deleted_funcs
+        self.python_binding_index = prev_python_binding_index
         self.module_import_flow = prev_module_import_flow
         return None
 

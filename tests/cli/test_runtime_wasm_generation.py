@@ -8,36 +8,55 @@ import pytest
 
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmExpectedPair,
     _generation_receipts,
     hydrate_runtime_wasm_generation,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_path,
 )
+from tests.runtime_build_identity_helper import (
+    runtime_build_identity,
+)
 
 
-def _identity(kind: str, pair_seed: str = "pair") -> RuntimeBuildIdentity:
-    import hashlib
+def _identity(
+    kind: str,
+    pair_seed: str = "pair",
+) -> RuntimeBuildIdentity:
+    return runtime_build_identity(kind, pair_seed)
 
-    pair = {
-        "schema": "molt.runtime-build-pair.v2",
-        "sources": {"digest": pair_seed},
-        "toolchain": {},
-        "config": {},
-    }
-    payload = {
-        "pair": pair,
-        "resolved_config": {"artifact_kind": kind},
-        "publication": {"transform": kind},
-    }
-    canonical = lambda value: json.dumps(  # noqa: E731
-        value, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return RuntimeBuildIdentity(
-        digest=hashlib.sha256(canonical(payload)).hexdigest(),
-        pair_digest=hashlib.sha256(canonical(pair)).hexdigest(),
-        payload=payload,
-    )
+
+def test_expected_pair_is_one_exact_shared_reloc_pair(tmp_path: Path) -> None:
+    shared = _identity("shared")
+    reloc = _identity("reloc")
+    pair = RuntimeWasmExpectedPair(shared, reloc)
+    path = tmp_path / "expected.json"
+
+    pair.write(path)
+
+    assert RuntimeWasmExpectedPair.read(path) == pair
+    with pytest.raises(ValueError, match="schema is invalid"):
+        RuntimeWasmExpectedPair.from_dict({**pair.to_dict(), "legacy": {}})
+    with pytest.raises(ValueError, match="one shared/reloc build pair"):
+        RuntimeWasmExpectedPair(shared, _identity("reloc", "other-pair"))
+    with pytest.raises(ValueError, match="one shared/reloc build pair"):
+        RuntimeWasmExpectedPair(_identity("reloc"), reloc)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        '{"schema":"molt.runtime-wasm-expected-pair.v2","schema":"duplicate"}',
+        '{"schema":"molt.runtime-wasm-expected-pair.v2","shared":NaN,"reloc":{}}',
+    ),
+)
+def test_expected_pair_reader_rejects_inexact_json(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "expected.json"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected pair is unreadable"):
+        RuntimeWasmExpectedPair.read(path)
 
 
 def _source_pair(root: Path, shared: bytes, reloc: bytes) -> tuple[Path, Path]:
@@ -164,7 +183,7 @@ def test_reader_and_existing_member_race_reject_symlink_indirection(
     source_shared, source_reloc = _source_pair(
         tmp_path / "second-source", b"shared", b"reloc"
     )
-    with pytest.raises(ValueError, match="not a regular file"):
+    with pytest.raises(ValueError, match="not one stable regular file"):
         publish_runtime_wasm_generation(
             tmp_path / "molt_runtime.wasm",
             tmp_path / "molt_runtime_reloc.wasm",
