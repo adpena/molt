@@ -15,7 +15,7 @@ def test_native_link_has_one_attempt_and_no_post_failure_fallback() -> None:
     assert "Linker fallback:" not in source
 
 
-def test_runtime_source_provenance_is_verified_before_every_production_link() -> None:
+def test_runtime_build_identity_is_verified_before_every_production_link() -> None:
     pipeline = inspect.getsource(backend_output_pipeline._emit_backend_pipeline_outputs)
     ensure = pipeline.index("_ensure_native_runtime_lib_ready_before_link(")
     failure = pipeline.index("return_after_build_diagnostics(", ensure)
@@ -23,8 +23,7 @@ def test_runtime_source_provenance_is_verified_before_every_production_link() ->
     assert ensure < failure < prepare
 
     link = inspect.getsource(link_pipeline._prepare_native_link)
-    assert "source_root=molt_root" in link
-    assert "source_fingerprint=runtime_source_fingerprint" in link
+    assert "runtime_build_identity=runtime_build_identity" in link
 
 
 def test_darwin_validation_reports_invalid_selected_linker_output() -> None:

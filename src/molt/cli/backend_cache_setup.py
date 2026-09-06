@@ -246,8 +246,8 @@ def _build_cache_variant(
     versa - a stale cache hit that yields the wrong runtime surface or a
     duplicate/missing-symbol link.
 
-    ``backend_binary_identity`` MUST be part of the variant: it is the stat-based
-    identity (path + mtime + size) of the backend binary that will compile these
+    ``backend_binary_identity`` MUST be part of the variant: it is the stable
+    content identity of the backend binary that will compile these
     objects (see ``_backend_binary_identity``). The variant flows into every
     ``.o`` cache key (stdlib-shared, module, per-function), so binding it here
     makes the cache key change whenever the backend binary changes — closing the

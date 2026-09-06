@@ -45,6 +45,8 @@ class ExpressionVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="missing")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
                 return res
+            if self._expression_has_invalidated_binding(node):
+                return self._emit_global_get(node.id)
             if node.id == "__name__":
                 if self.entry_module and self.module_name == self.entry_module:
                     return self._emit_module_attr_get("__name__")
@@ -823,7 +825,9 @@ class ExpressionVisitorMixin(_MixinBase):
             obj = MoltValue("unknown_obj", type_hint="Unknown")
         obj_name = None
         exact_class = None
-        if isinstance(node.value, ast.Name):
+        if isinstance(
+            node.value, ast.Name
+        ) and not self._expression_has_invalidated_binding(node.value):
             obj_name = node.value.id
             exact_class = self.exact_locals.get(obj_name)
         elif isinstance(node.value, ast.NamedExpr) and isinstance(

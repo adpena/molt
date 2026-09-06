@@ -4,18 +4,26 @@ import contextlib
 import inspect
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TypedDict, cast
 
 import pytest
 
-from molt.cli import cargo_execution, native_link_deps, runtime_callable_symbols
+from molt.cli import (
+    cargo_execution,
+    native_link_deps,
+    native_link_manifest,
+    runtime_callable_symbols,
+)
 from molt.cli import runtime_native_build as runtime_build
 from molt.cli import static_archive_identity as archive_identity
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.native_link_custody import copy_native_link_custody_archive
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
     manifest_from_cargo_json,
@@ -25,22 +33,58 @@ from molt.cli.native_link_manifest import (
     read_native_link_flags,
     write_native_link_dependency_manifest,
 )
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.cli.process_guard import run_cli_test_process
+from tests.runtime_build_identity_helper import (
+    native_runtime_staticlib_identity,
+    runtime_cargo_plan,
+)
 
-_SOURCE_FINGERPRINT = {
-    "hash": "1" * 64,
-    "inputs_digest": "2" * 64,
-    "meta_digest": "3" * 64,
-    "rustc": "rustc 1.91.0",
-}
+_RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
+    cargo_profile="dev-fast",
+    target_triple=None,
+    family_seed="native-link-family",
+)
 
 
-def _source_args(root: Path) -> dict[str, object]:
+@pytest.fixture(autouse=True)
+def _cargo_plan_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime_build, "resolve_runtime_cargo_plan", runtime_cargo_plan)
+
+
+class _RuntimeBuildArgs(TypedDict):
+    runtime_build_identity: RuntimeBuildIdentity
+
+
+def _runtime_build_args(
+    *,
+    cargo_profile: str = "dev-fast",
+    target_triple: str | None = None,
+    family_seed: str = "native-link-family",
+) -> _RuntimeBuildArgs:
     return {
-        "source_root": root,
-        "source_fingerprint": _SOURCE_FINGERPRINT,
+        "runtime_build_identity": native_runtime_staticlib_identity(
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            family_seed=family_seed,
+        )
     }
+
+
+def _mapping_field(
+    value: Mapping[str, object],
+    field: str,
+) -> Mapping[str, object]:
+    return cast(Mapping[str, object], value[field])
+
+
+def _link_plan_items(
+    manifest: Mapping[str, object],
+) -> list[Mapping[str, object]]:
+    return cast(
+        list[Mapping[str, object]], _mapping_field(manifest, "link_plan")["items"]
+    )
 
 
 def _cargo_message(
@@ -80,20 +124,17 @@ def _cargo_output(cargo_stdout: str, native_arguments: str = "") -> str:
     return f"{cargo_stdout}\n{native_note}" if cargo_stdout else native_note
 
 
-def test_manifest_keeps_exact_package_versions_and_canonical_windows_forms(
+def test_manifest_is_path_neutral_and_custodies_non_system_static_libraries(
     tmp_path: Path,
 ) -> None:
-    runtime = tmp_path / "target" / "dev-fast" / "molt_runtime.lib"
+    runtime = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime.parent.mkdir(parents=True)
     runtime.write_bytes(b"runtime-v1")
     libs_v2 = tmp_path / "libs-v2"
     libs_v1 = tmp_path / "libs-v1"
     raw_libs = tmp_path / "raw-libs"
-    frameworks = tmp_path / "Frameworks"
-    for directory in (libs_v2, libs_v1, raw_libs, frameworks):
+    for directory in (libs_v2, libs_v1, raw_libs):
         directory.mkdir()
-    (frameworks / "Metal.framework").mkdir()
-    (frameworks / "QuartzCore.framework").mkdir()
     out_v2 = tmp_path / "out-v2"
     out_v1 = tmp_path / "out-v1"
     out_v2.mkdir()
@@ -118,11 +159,12 @@ def test_manifest_keeps_exact_package_versions_and_canonical_windows_forms(
             _cargo_message(
                 "registry+https://example.invalid#index-sys@1.0.0",
                 str(out_v1),
-                linked_paths=[f"framework={frameworks}", f"native={libs_v1}"],
+                linked_paths=[f"native={libs_v1}"],
                 linked_libs=["framework=Metal", "weak_framework=QuartzCore"],
             ),
         ]
     )
+    build_args = _runtime_build_args(target_triple="x86_64-apple-darwin")
     path = write_native_link_dependency_manifest(
         _cargo_output(
             messages,
@@ -131,24 +173,34 @@ def test_manifest_keeps_exact_package_versions_and_canonical_windows_forms(
         ),
         runtime_lib=runtime,
         cargo_profile="dev-fast",
-        target_triple=None,
-        **_source_args(tmp_path),
+        target_triple="x86_64-apple-darwin",
+        **build_args,
     )
-    manifest = read_native_link_dependency_manifest(runtime, target_triple=None)
+    manifest = read_native_link_dependency_manifest(
+        runtime,
+        target_triple="x86_64-apple-darwin",
+    )
     assert path == native_link_dependency_manifest_path(runtime)
-    assert [item["package_id"] for item in manifest["build_scripts"]] == [
-        "registry+https://example.invalid#index-sys@1.0.0",
-        "registry+https://example.invalid#index-sys@2.0.0",
-    ]
-    assert native_link_flags_from_manifest(manifest, object_format="macho") == [
+    assert manifest["schema_version"] == 5
+    build_identity = build_args["runtime_build_identity"]
+    assert manifest["runtime_build_identity"] == build_identity.to_dict()
+    assert "build_scripts" not in manifest
+    assert os.fspath(tmp_path) not in json.dumps(manifest, sort_keys=True)
+    assert len(cast(list[object], _mapping_field(manifest, "custody")["entries"])) == 1
+    flags = native_link_flags_from_manifest(
+        manifest,
+        object_format="macho",
+        runtime_lib=runtime,
+    )
+    assert flags[:2] == [
         "-lpsapi",
         "-lkernel32",
-        f"-L{libs_v2}",
+    ]
+    assert flags[2].startswith(f"-L{runtime.parent / '.molt-native-link-custody-'}")
+    assert flags[3:] == [
         "-lexternal_static",
-        f"-F{frameworks}",
         "-framework",
         "Metal",
-        f"-F{frameworks}",
         "-weak_framework",
         "QuartzCore",
     ]
@@ -183,25 +235,486 @@ def test_manifest_is_deterministic_without_reordering_semantic_messages(
         runtime_lib=runtime,
         cargo_profile="release-output",
         target_triple="aarch64-unknown-linux-gnu",
-        **_source_args(tmp_path),
+        **_runtime_build_args(
+            cargo_profile="release-output",
+            target_triple="aarch64-unknown-linux-gnu",
+        ),
     )
     second = manifest_from_cargo_json(
         _cargo_output(f"{other}\n{message}", "-lz -lz -lother"),
         runtime_lib=runtime,
         cargo_profile="release-output",
         target_triple="aarch64-unknown-linux-gnu",
-        **_source_args(tmp_path),
+        **_runtime_build_args(
+            cargo_profile="release-output",
+            target_triple="aarch64-unknown-linux-gnu",
+        ),
     )
     assert first == second
-    assert first["native_static_libs"]["arguments"] == ["-lz", "-lz", "-lother"]
+    assert [item["argument"] for item in _link_plan_items(first)] == [
+        "-lz",
+        "-lz",
+        "-lother",
+    ]
     deduped = manifest_from_cargo_json(
         _cargo_output(f"{message}\n{message}", "-lz -lz"),
         runtime_lib=runtime,
         cargo_profile="release-output",
         target_triple="aarch64-unknown-linux-gnu",
-        **_source_args(tmp_path),
+        **_runtime_build_args(
+            cargo_profile="release-output",
+            target_triple="aarch64-unknown-linux-gnu",
+        ),
     )
-    assert len(deduped["build_scripts"]) == 1
+    assert len(_link_plan_items(deduped)) == 2
+
+
+def test_direct_static_link_input_is_custodied_and_replayed_after_pruning(
+    tmp_path: Path,
+) -> None:
+    target_triple = "aarch64-unknown-linux-gnu"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    direct = tmp_path / "producer" / "libdirect.a"
+    runtime.parent.mkdir(parents=True)
+    direct.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    direct.write_bytes(b"direct archive")
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="direct-static-input-family",
+    )
+    write_native_link_dependency_manifest(
+        _cargo_output("", shlex.quote(os.fspath(direct))),
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
+    )
+    direct.unlink()
+
+    flags = read_native_link_flags(
+        runtime,
+        target_triple=target_triple,
+        object_format="elf",
+        runtime_build_identity=build_identity,
+    )
+    assert len(flags) == 1
+    replayed = Path(flags[0])
+    assert replayed != direct
+    assert replayed.read_bytes() == b"direct archive"
+    assert runtime.parent in replayed.parents
+
+
+@pytest.mark.parametrize("suffix", [".so", ".so.3", ".dylib", ".dll", ".dll.a", ".tbd"])
+def test_direct_dynamic_link_input_requires_runtime_distribution_contract(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    direct = tmp_path / "producer" / f"libdynamic{suffix}"
+    runtime.parent.mkdir(parents=True)
+    direct.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    direct.write_bytes(b"dynamic library")
+
+    with pytest.raises(
+        NativeLinkDependencyManifestError,
+        match="explicit runtime distribution contract",
+    ):
+        manifest_from_cargo_json(
+            _cargo_output("", shlex.quote(os.fspath(direct))),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            **_runtime_build_args(target_triple=target_triple),
+        )
+
+
+def test_search_resolved_dynamic_library_is_not_misclassified_as_system(
+    tmp_path: Path,
+) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    out_dir = tmp_path / "out"
+    lib_dir = tmp_path / "lib"
+    for directory in (runtime.parent, out_dir, lib_dir):
+        directory.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    (lib_dir / "libowned.so").write_bytes(b"dynamic library")
+
+    with pytest.raises(
+        NativeLinkDependencyManifestError,
+        match="explicit runtime distribution contract",
+    ):
+        manifest_from_cargo_json(
+            _cargo_output(
+                _cargo_message(
+                    "registry#owned-sys@1.0.0",
+                    os.fspath(out_dir),
+                    linked_paths=[f"native={lib_dir}"],
+                    linked_libs=["dylib=owned"],
+                ),
+                "-lowned",
+            ),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            **_runtime_build_args(target_triple=target_triple),
+        )
+
+
+@pytest.mark.parametrize(
+    ("linked_kind", "error"),
+    [
+        ("static=owned", None),
+        ("dylib=owned", "explicit runtime distribution contract"),
+        (None, "ambiguous between a static archive and a dynamic import library"),
+    ],
+)
+def test_local_coff_library_requires_explicit_static_or_runtime_custody(
+    tmp_path: Path,
+    linked_kind: str | None,
+    error: str | None,
+) -> None:
+    target_triple = "aarch64-pc-windows-msvc"
+    runtime = tmp_path / "dev-fast" / "molt_runtime.lib"
+    out_dir = tmp_path / "out"
+    lib_dir = tmp_path / "lib"
+    for directory in (runtime.parent, out_dir, lib_dir):
+        directory.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    owned = lib_dir / "owned.lib"
+    owned.write_bytes(b"coff library")
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed=f"coff-library-{linked_kind}",
+    )
+
+    def write() -> None:
+        write_native_link_dependency_manifest(
+            _cargo_output(
+                _cargo_message(
+                    "registry#owned-sys@1.0.0",
+                    os.fspath(out_dir),
+                    linked_paths=[f"native={lib_dir}"],
+                    linked_libs=[] if linked_kind is None else [linked_kind],
+                ),
+                "owned.lib",
+            ),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            runtime_build_identity=build_identity,
+        )
+
+    if error is not None:
+        with pytest.raises(NativeLinkDependencyManifestError, match=error):
+            write()
+        return
+    write()
+    owned.unlink()
+    flags = read_native_link_flags(
+        runtime,
+        target_triple=target_triple,
+        object_format="coff",
+        runtime_build_identity=build_identity,
+    )
+    assert len(flags) == 1
+    replayed = Path(flags[0])
+    assert replayed.read_bytes() == b"coff library"
+    assert replayed != owned
+
+
+def test_direct_linker_script_requires_a_typed_relocation_contract(
+    tmp_path: Path,
+) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    script = tmp_path / "producer" / "symbols.ld"
+    runtime.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    script.write_text("SECTIONS {}", encoding="utf-8")
+
+    with pytest.raises(NativeLinkDependencyManifestError, match="no supported.*role"):
+        manifest_from_cargo_json(
+            _cargo_output("", shlex.quote(os.fspath(script))),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            **_runtime_build_args(target_triple=target_triple),
+        )
+
+
+def test_non_system_framework_requires_runtime_distribution_contract(
+    tmp_path: Path,
+) -> None:
+    target_triple = "aarch64-apple-darwin"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    out_dir = tmp_path / "out"
+    frameworks = tmp_path / "Frameworks"
+    framework = frameworks / "Owned.framework"
+    for directory in (runtime.parent, out_dir, framework):
+        directory.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+
+    with pytest.raises(
+        NativeLinkDependencyManifestError,
+        match="non-system frameworks are not relocatable",
+    ):
+        manifest_from_cargo_json(
+            _cargo_output(
+                _cargo_message(
+                    "registry#owned-framework@1.0.0",
+                    os.fspath(out_dir),
+                    linked_paths=[f"framework={frameworks}"],
+                    linked_libs=["framework=Owned"],
+                ),
+                "-framework Owned",
+            ),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            **_runtime_build_args(target_triple=target_triple),
+        )
+
+
+def test_system_framework_remains_an_explicit_path_neutral_link_plan_item(
+    tmp_path: Path,
+) -> None:
+    target_triple = "x86_64-apple-darwin"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    manifest = manifest_from_cargo_json(
+        _cargo_output("", "-framework Metal -weak_framework QuartzCore"),
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        **_runtime_build_args(target_triple=target_triple),
+    )
+
+    assert _mapping_field(manifest, "custody")["archive"] is None
+    assert _link_plan_items(manifest) == [
+        {"kind": "system-framework", "name": "Metal", "weak": False},
+        {"kind": "system-framework", "name": "QuartzCore", "weak": True},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "argument"),
+    [
+        ("x86_64-unknown-linux-gnu", "-Lrelative"),
+        ("x86_64-unknown-linux-gnu", "-Wl,-rpath,$ORIGIN"),
+        ("x86_64-unknown-linux-gnu", "-Wl,-force_load,relative.a"),
+        ("x86_64-apple-darwin", "-Wl,-framework,Metal"),
+        ("x86_64-unknown-linux-gnu", "--sysroot=relative"),
+        ("x86_64-unknown-linux-gnu", "@response.rsp"),
+        ("x86_64-pc-windows-msvc", "/LIBPATH:C:\\sdk\\lib"),
+        ("x86_64-pc-windows-msvc", "/WHOLEARCHIVE:local.lib"),
+        ("x86_64-pc-windows-msvc", "/tmp/local.lib"),
+    ],
+)
+def test_path_bearing_linker_arguments_cannot_bypass_custody(
+    tmp_path: Path,
+    target_triple: str,
+    argument: str,
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+
+    with pytest.raises(
+        NativeLinkDependencyManifestError,
+        match="path-bearing|relocatable custody",
+    ):
+        manifest_from_cargo_json(
+            _cargo_output("", argument),
+            runtime_lib=runtime,
+            cargo_profile="dev-fast",
+            target_triple=target_triple,
+            **_runtime_build_args(target_triple=target_triple),
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "note", "object_format", "flags"),
+    [
+        ("x86_64-unknown-linux-gnu", "-lc -lm", "elf", ["-lc", "-lm"]),
+        (
+            "aarch64-apple-darwin",
+            "-framework CoreFoundation",
+            "macho",
+            ["-framework", "CoreFoundation"],
+        ),
+        ("x86_64-pc-windows-msvc", '"kernel32.lib"', "coff", ["-Wl,kernel32.lib"]),
+    ],
+)
+def test_implicit_native_link_protocol_uses_captured_target_not_reader_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    note: str,
+    object_format: str,
+    flags: list[str],
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"runtime")
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast", host_target=target
+    )
+    resolve = native_link_manifest.resolve_native_target_spec
+
+    def require_captured_target(actual: str):
+        assert actual == target
+        return resolve(actual)
+
+    monkeypatch.setattr(
+        native_link_manifest, "resolve_native_target_spec", require_captured_target
+    )
+    write_native_link_dependency_manifest(
+        "",
+        cargo_stderr=f"note: native-static-libs: {note}\n",
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        runtime_build_identity=build_identity,
+    )
+    manifest = read_native_link_dependency_manifest(
+        runtime,
+        target_triple=None,
+        runtime_build_identity=build_identity,
+    )
+    assert (
+        native_link_flags_from_manifest(
+            manifest, object_format=object_format, runtime_lib=runtime
+        )
+        == flags
+    )
+    assert (
+        read_native_link_flags(
+            runtime,
+            target_triple=None,
+            runtime_build_identity=build_identity,
+            object_format=object_format,
+        )
+        == flags
+    )
+    wrong_format = "coff" if object_format != "coff" else "elf"
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="captured runtime target"
+    ):
+        native_link_flags_from_manifest(
+            manifest, object_format=wrong_format, runtime_lib=runtime
+        )
+
+
+def test_manifest_reader_rejects_object_format_target_disagreement(
+    tmp_path: Path,
+) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="object-format-disagreement-family",
+    )
+    write_native_link_dependency_manifest(
+        _cargo_output("", "-lm"),
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
+    )
+
+    with pytest.raises(NativeLinkDependencyManifestError, match="object format"):
+        read_native_link_flags(
+            runtime,
+            target_triple=target_triple,
+            object_format="coff",
+            runtime_build_identity=build_identity,
+        )
+
+
+@pytest.mark.parametrize("kind", [None, True, 5, [], {}, ["system-library"]])
+def test_manifest_rejects_nonstring_item_kind_with_domain_diagnostic(
+    tmp_path: Path, kind: object
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"runtime")
+    path = write_native_link_dependency_manifest(
+        "",
+        cargo_stderr="note: native-static-libs: -lc\n",
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+    )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["link_plan"]["items"][0]["kind"] = kind
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="kind must be a string"
+    ):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
+
+
+def test_manifest_reader_bounds_input_before_reading_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "oversized.json"
+    path.write_bytes(b"x" * 65)
+    monkeypatch.setattr(native_link_manifest, "RUNTIME_ARTIFACT_METADATA_MAX_BYTES", 64)
+    with pytest.raises(NativeLinkDependencyManifestError, match="exceeds size limit"):
+        native_link_manifest.read_native_link_dependency_manifest_payload(path)
+
+
+def test_manifest_reader_consumes_shared_generation_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text("{}", encoding="utf-8")
+    from molt import exact_json
+
+    open_source = exact_json.open_stable_regular_file
+
+    @contextlib.contextmanager
+    def changed(path: Path, *, label: str):
+        with open_source(path, label=label) as opened:
+            yield opened
+            raise ValueError("source changed during identity read")
+
+    monkeypatch.setattr(exact_json, "open_stable_regular_file", changed)
+    with pytest.raises(NativeLinkDependencyManifestError, match="source changed"):
+        native_link_manifest.read_native_link_dependency_manifest_payload(path)
+
+
+@pytest.mark.parametrize("size", [1.0, True])
+def test_manifest_rejects_resealed_runtime_numeric_coercion(
+    tmp_path: Path, size: object
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"x")
+    manifest_path = write_native_link_dependency_manifest(
+        _cargo_output(""),
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        **_runtime_build_args(),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime"]["size_bytes"] = size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(NativeLinkDependencyManifestError, match="nonnegative integer"):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
 
 
 def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) -> None:
@@ -213,8 +726,18 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        **_source_args(tmp_path),
+        **_runtime_build_args(),
     )
+    manifest_path = native_link_dependency_manifest_path(runtime)
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    manifest = json.loads(original_manifest)
+    manifest["schema_version"] = 5.0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="unsupported manifest schema"
+    ):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
+    manifest_path.write_text(original_manifest, encoding="utf-8")
     with pytest.raises(NativeLinkDependencyManifestError, match="target mismatch"):
         read_native_link_dependency_manifest(
             runtime,
@@ -242,6 +765,11 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
     manifest_path.write_text('{"kind":"a","kind":"b"}', encoding="utf-8")
     with pytest.raises(NativeLinkDependencyManifestError, match="duplicate JSON key"):
         read_native_link_dependency_manifest(runtime, target_triple=None)
+    manifest_path.write_text('{"schema_version":NaN}', encoding="utf-8")
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="non-finite JSON number"
+    ):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
 
     with pytest.raises(
         NativeLinkDependencyManifestError, match="out_dir must be absolute"
@@ -258,7 +786,7 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
             runtime_lib=runtime,
             cargo_profile="dev-fast",
             target_triple=None,
-            **_source_args(tmp_path),
+            **_runtime_build_args(),
         )
 
 
@@ -292,14 +820,13 @@ def test_manifest_not_name_matching_selects_exact_build_script_instance(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        **_source_args(tmp_path),
+        **_runtime_build_args(),
     )
 
     assert native_link_deps._collect_cargo_native_link_deps(
         runtime,
         object_format="elf",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     ) == ["-lexact"]
 
 
@@ -315,20 +842,21 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
     provider_lib = tmp_path / "provider-lib"
     provider_out.mkdir()
     provider_lib.mkdir()
+    (provider_lib / "libprovider.a").write_bytes(b"provider static library")
     write_native_link_dependency_manifest(
         _cargo_output(
             _cargo_message(
                 "path+file:///repo#dep@1.0.0",
                 str(provider_out),
                 linked_paths=[f"native={provider_lib}"],
-                linked_libs=["dylib=provider"],
+                linked_libs=["static=provider"],
             ),
             "-lprovider",
         ),
         runtime_lib=provider,
         cargo_profile="dev-fast",
         target_triple=None,
-        **_source_args(tmp_path),
+        **_runtime_build_args(),
     )
     shutil.copyfile(provider, consumer)
     with pytest.raises(NativeLinkDependencyManifestError, match="cannot read"):
@@ -337,74 +865,82 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
         native_link_dependency_manifest_path(provider),
         native_link_dependency_manifest_path(consumer),
     )
-    assert read_native_link_dependency_manifest(
+    with pytest.raises(NativeLinkDependencyManifestError, match="custody archive"):
+        read_native_link_dependency_manifest(
+            consumer,
+            target_triple=None,
+            cargo_profile="dev-fast",
+        )
+    provider_manifest = json.loads(
+        native_link_dependency_manifest_path(provider).read_text(encoding="utf-8")
+    )
+    copy_native_link_custody_archive(
+        provider,
+        consumer,
+        provider_manifest["custody"],
+    )
+    hydrated = read_native_link_dependency_manifest(
         consumer,
         target_triple=None,
         cargo_profile="dev-fast",
-    )["runtime"]["sha256"]
+    )
+    assert _mapping_field(hydrated, "runtime")["sha256"]
 
 
-def test_manifest_replay_rejects_stale_paths_and_pruned_workspaces(
+def test_manifest_replay_survives_pruned_producer_link_directories(
     tmp_path: Path,
 ) -> None:
-    workspace = tmp_path / "workspace"
     out_dir = tmp_path / "target" / "build" / "dep" / "out"
     linked_dir = tmp_path / "target" / "native"
     runtime = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
-    for directory in (workspace, out_dir, linked_dir, runtime.parent):
+    for directory in (out_dir, linked_dir, runtime.parent):
         directory.mkdir(parents=True, exist_ok=True)
     runtime.write_bytes(b"runtime")
+    (linked_dir / "libdep.a").write_bytes(b"owned static dependency")
     write_native_link_dependency_manifest(
         _cargo_output(
             _cargo_message(
                 "registry#dep@1.0.0",
                 str(out_dir),
                 linked_paths=[f"native={linked_dir}"],
-                linked_libs=["dylib=dep"],
+                linked_libs=["static=dep"],
             ),
             "-ldep",
         ),
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=workspace,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
-    read_native_link_dependency_manifest(
+    manifest = read_native_link_dependency_manifest(
         runtime,
         target_triple=None,
-        source_root=workspace,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
+    encoded = json.dumps(manifest, sort_keys=True)
+    assert os.fspath(out_dir) not in encoded
+    assert os.fspath(linked_dir) not in encoded
 
     shutil.rmtree(linked_dir)
-    with pytest.raises(NativeLinkDependencyManifestError, match="existing directory"):
-        read_native_link_dependency_manifest(runtime, target_triple=None)
-    linked_dir.mkdir()
-    shutil.rmtree(workspace)
-    with pytest.raises(
-        NativeLinkDependencyManifestError, match="cannot resolve expected source"
-    ):
-        read_native_link_dependency_manifest(
-            runtime,
-            target_triple=None,
-            source_root=workspace,
-            source_fingerprint=_SOURCE_FINGERPRINT,
-        )
+    shutil.rmtree(out_dir)
+    flags = read_native_link_flags(
+        runtime,
+        target_triple=None,
+        object_format="elf",
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+    )
+    assert flags[-1] == "-ldep"
+    assert flags[-2].startswith(f"-L{runtime.parent / '.molt-native-link-custody-'}")
 
 
-def test_hydrated_manifest_is_worktree_neutral_but_refuses_foreign_fingerprint(
+def test_hydrated_manifest_refuses_foreign_runtime_build_identity(
     tmp_path: Path,
 ) -> None:
-    workspace_a = tmp_path / "workspace-a"
-    workspace_b = tmp_path / "workspace-b"
     out_dir = tmp_path / "target" / "build" / "dep" / "out"
     linked_dir = tmp_path / "target" / "native"
     provider = tmp_path / "provider" / "dev-fast" / "libmolt_runtime.a"
     consumer = tmp_path / "consumer" / "dev-fast" / "libmolt_runtime.a"
     for directory in (
-        workspace_a,
-        workspace_b,
         out_dir,
         linked_dir,
         provider.parent,
@@ -412,87 +948,92 @@ def test_hydrated_manifest_is_worktree_neutral_but_refuses_foreign_fingerprint(
     ):
         directory.mkdir(parents=True, exist_ok=True)
     provider.write_bytes(b"same-runtime")
+    (linked_dir / "libdep.a").write_bytes(b"dependency static library")
     write_native_link_dependency_manifest(
         _cargo_output(
             _cargo_message(
                 "registry#dep@1.0.0",
                 str(out_dir),
                 linked_paths=[f"native={linked_dir}"],
-                linked_libs=["dylib=dep"],
+                linked_libs=["static=dep"],
             ),
             "-ldep",
         ),
         runtime_lib=provider,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=workspace_a,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
     shutil.copyfile(provider, consumer)
     shutil.copyfile(
         native_link_dependency_manifest_path(provider),
         native_link_dependency_manifest_path(consumer),
     )
+    provider_manifest = json.loads(
+        native_link_dependency_manifest_path(provider).read_text(encoding="utf-8")
+    )
+    copy_native_link_custody_archive(
+        provider,
+        consumer,
+        provider_manifest["custody"],
+    )
     hydrated = read_native_link_dependency_manifest(
         consumer,
         target_triple=None,
-        source_root=workspace_b,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
-    assert hydrated["source"] == {"fingerprint": _SOURCE_FINGERPRINT}
-    changed_fingerprint = {**_SOURCE_FINGERPRINT, "hash": "9" * 64}
-    with pytest.raises(NativeLinkDependencyManifestError, match="fingerprint mismatch"):
+    assert hydrated["runtime_build_identity"] == _RUNTIME_BUILD_IDENTITY.to_dict()
+    foreign_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=None,
+        family_seed="foreign-native-link-family",
+    )
+    with pytest.raises(
+        NativeLinkDependencyManifestError,
+        match="runtime build identity mismatch",
+    ):
         read_native_link_dependency_manifest(
             consumer,
             target_triple=None,
-            source_root=workspace_a,
-            source_fingerprint=changed_fingerprint,
+            runtime_build_identity=foreign_identity,
         )
 
 
-def test_equivalent_worktrees_share_one_semantic_manifest_without_writer_drift(
+def test_repeated_publication_and_concurrent_reads_preserve_exact_build_identity(
     tmp_path: Path,
 ) -> None:
-    workspace_a = tmp_path / "workspace-a"
-    workspace_b = tmp_path / "workspace-b"
     runtime = tmp_path / "shared" / "dev-fast" / "libmolt_runtime.a"
-    for directory in (workspace_a, workspace_b, runtime.parent):
-        directory.mkdir(parents=True)
+    runtime.parent.mkdir(parents=True)
     runtime.write_bytes(b"shared-runtime")
 
-    def publish(source_root: Path) -> Path:
+    def publish() -> Path:
         return write_native_link_dependency_manifest(
             "",
             cargo_stderr="note: native-static-libs: -lc\n",
             runtime_lib=runtime,
             cargo_profile="dev-fast",
             target_triple=None,
-            source_root=source_root,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
         )
 
-    path = publish(workspace_a)
+    path = publish()
     first = path.read_bytes()
-    publish(workspace_b)
+    publish()
     final = path.read_bytes()
     assert final == first
 
-    def consume(source_root: Path) -> Mapping[str, object]:
+    def consume(_index: int) -> Mapping[str, object]:
         return read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
-            source_root=source_root,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
         )
 
-    roots = [workspace_a, workspace_b] * 8
     with ThreadPoolExecutor(max_workers=4) as executor:
-        snapshots = list(executor.map(consume, roots))
+        snapshots = list(executor.map(consume, range(16)))
 
-    assert str(workspace_a).encode() not in final
-    assert str(workspace_b).encode() not in final
     assert all(
-        snapshot["source"] == {"fingerprint": _SOURCE_FINGERPRINT}
+        snapshot["runtime_build_identity"] == _RUNTIME_BUILD_IDENTITY.to_dict()
         for snapshot in snapshots
     )
 
@@ -512,10 +1053,9 @@ def test_native_static_lib_note_is_captured_from_exact_rustc_stderr(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple="x86_64-pc-windows-msvc",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        **_runtime_build_args(target_triple="x86_64-pc-windows-msvc"),
     )
-    assert manifest["native_static_libs"]["arguments"] == [
+    assert [item["argument"] for item in _link_plan_items(manifest)] == [
         "user32.lib",
         "advapi32.lib",
         "user32.lib",
@@ -539,10 +1079,9 @@ def test_native_static_lib_note_ignores_terminal_color_decoration(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple="x86_64-unknown-linux-gnu",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        **_runtime_build_args(target_triple="x86_64-unknown-linux-gnu"),
     )
-    assert manifest["native_static_libs"]["arguments"] == [
+    assert [item["argument"] for item in _link_plan_items(manifest)] == [
         "-lgcc_s",
         "-lutil",
         "-lrt",
@@ -571,16 +1110,10 @@ def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
             },
         }
     )
-    fingerprint = {
-        "hash": "4" * 64,
-        "inputs_digest": "5" * 64,
-        "meta_digest": "6" * 64,
-        "rustc": "rustc 1.96.1",
-    }
     monkeypatch.setattr(
         runtime_build,
-        "_runtime_fingerprint",
-        lambda *_args, **_kwargs: fingerprint,
+        "_runtime_build_identity_for_plan",
+        lambda *_args, **_kwargs: _RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(
         runtime_build,
@@ -598,7 +1131,6 @@ def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
         "_build_lock",
         lambda *_args, **_kwargs: contextlib.nullcontext(),
     )
-    monkeypatch.setattr(runtime_build, "_maybe_enable_sccache", lambda _env: None)
     monkeypatch.setattr(
         runtime_build,
         "_build_state_root",
@@ -606,9 +1138,9 @@ def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
     )
     monkeypatch.setattr(
         runtime_build,
-        "_run_cargo_with_sccache_retry",
-        lambda cmd, **_kwargs: subprocess.CompletedProcess(
-            cmd,
+        "_run_resolved_cargo_plan",
+        lambda plan, **_kwargs: subprocess.CompletedProcess(
+            list(plan.command),
             101,
             cargo_stdout,
             "",
@@ -671,40 +1203,23 @@ def test_multiple_native_static_lib_notes_fail_closed(tmp_path: Path) -> None:
             runtime_lib=runtime,
             cargo_profile="dev-fast",
             target_triple="x86_64-pc-windows-msvc",
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            **_runtime_build_args(target_triple="x86_64-pc-windows-msvc"),
         )
 
 
 @pytest.mark.parametrize(
-    ("field", "invalid"),
+    "identity_path",
     [
-        ("hash", "A" * 64),
-        ("meta_digest", "not-a-digest"),
-        ("inputs_digest", "0" * 63),
+        ("digest",),
+        ("compile_digest",),
+        ("family_digest",),
+        ("payload", "family", "compile", "sources", "digest"),
     ],
 )
-def test_manifest_rejects_non_sha256_source_authority(
-    tmp_path: Path, field: str, invalid: str
+def test_manifest_reader_rejects_tampered_runtime_build_identity(
+    tmp_path: Path,
+    identity_path: tuple[str, ...],
 ) -> None:
-    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
-    runtime.parent.mkdir(parents=True)
-    runtime.write_bytes(b"runtime")
-    fingerprint = {**_SOURCE_FINGERPRINT, field: invalid}
-    with pytest.raises(
-        NativeLinkDependencyManifestError, match="lowercase SHA-256 digest"
-    ):
-        manifest_from_cargo_json(
-            _cargo_output("", "-lc"),
-            runtime_lib=runtime,
-            cargo_profile="dev-fast",
-            target_triple=None,
-            source_root=tmp_path,
-            source_fingerprint=fingerprint,
-        )
-
-
-def test_manifest_reader_rejects_mutated_source_digest(tmp_path: Path) -> None:
     runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
     runtime.parent.mkdir(parents=True)
     runtime.write_bytes(b"runtime")
@@ -713,25 +1228,28 @@ def test_manifest_reader_rejects_mutated_source_digest(tmp_path: Path) -> None:
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["source"]["fingerprint"]["hash"] = "G" * 64
+    identity = payload["runtime_build_identity"]
+    for part in identity_path[:-1]:
+        identity = identity[part]
+    identity[identity_path[-1]] = "tampered"
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(
-        NativeLinkDependencyManifestError, match="lowercase SHA-256 digest"
+        NativeLinkDependencyManifestError,
+        match="runtime build identity is not the selected native staticlib identity",
     ):
         read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
         )
 
 
-def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutation", ["in-place", "replacement"])
+def test_runtime_admission_reads_current_content_and_rejects_preserved_metadata_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
     runtime.parent.mkdir(parents=True)
@@ -741,11 +1259,9 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
 
-    archive_identity._static_archive_identity_cached.cache_clear()
     real_hash_exact = archive_identity._hash_exact
     hash_calls: list[int] = []
 
@@ -758,30 +1274,36 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
         read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
         )
-    assert hash_calls == [9]
+    assert hash_calls == [9, 9, 9]
 
     original = runtime.stat()
-    replacement = runtime.with_suffix(".replacement")
+    replacement = (
+        runtime.with_suffix(".replacement") if mutation == "replacement" else runtime
+    )
     write_test_static_archive(replacement, b"runtime-b")
     os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
-    os.replace(replacement, runtime)
+    if mutation == "replacement":
+        os.replace(replacement, runtime)
     with pytest.raises(
         NativeLinkDependencyManifestError, match="archive digest mismatch"
     ):
         read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
         )
-    assert hash_calls == [9, 9]
-    archive_identity._static_archive_identity_cached.cache_clear()
+    assert hash_calls == [9, 9, 9, 9]
 
 
 def test_rustc_native_static_lib_order_is_replayed_exactly(tmp_path: Path) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="native-link-order-family",
+    )
     runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
     out_dir = tmp_path / "out"
     lib_dir = tmp_path / "lib"
@@ -809,20 +1331,31 @@ def test_rustc_native_static_lib_order_is_replayed_exactly(tmp_path: Path) -> No
             ),
             runtime_lib=runtime,
             cargo_profile="dev-fast",
-            target_triple=None,
-            **_source_args(tmp_path),
+            target_triple=target_triple,
+            runtime_build_identity=build_identity,
         )
         return native_link_deps._collect_cargo_native_link_deps(
             runtime,
+            target_triple=target_triple,
             object_format="elf",
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=build_identity,
         )
 
     good = flags("-lconsumer -lprovider")
     bad = flags("-lprovider -lconsumer")
-    assert good == [f"-L{lib_dir}", "-lconsumer", f"-L{lib_dir}", "-lprovider"]
-    assert bad == [f"-L{lib_dir}", "-lprovider", f"-L{lib_dir}", "-lconsumer"]
+    assert good[1::2] == ["-lconsumer", "-lprovider"]
+    assert bad[1::2] == ["-lprovider", "-lconsumer"]
+    for rendered_flags, names in (
+        (good, ("libconsumer.a", "libprovider.a")),
+        (bad, ("libprovider.a", "libconsumer.a")),
+    ):
+        for directory_flag, name in zip(rendered_flags[::2], names, strict=True):
+            assert directory_flag.startswith(f"-L{runtime.parent}")
+            custody_directory = Path(directory_flag[2:])
+            assert custody_directory != lib_dir
+            assert (custody_directory / name).read_bytes() == (
+                b"consumer" if name == "libconsumer.a" else b"provider"
+            )
     assert good != bad
 
 
@@ -832,6 +1365,11 @@ def test_coff_rustc_linker_tokens_are_forwarded_through_driver_exactly(
     runtime = tmp_path / "dev-fast" / "molt_runtime.lib"
     runtime.parent.mkdir(parents=True)
     runtime.write_bytes(b"runtime")
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple="x86_64-pc-windows-msvc",
+        family_seed="coff-native-link-family",
+    )
     write_native_link_dependency_manifest(
         "",
         cargo_stderr=(
@@ -840,15 +1378,13 @@ def test_coff_rustc_linker_tokens_are_forwarded_through_driver_exactly(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple="x86_64-pc-windows-msvc",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
     )
     assert read_native_link_flags(
         runtime,
         target_triple="x86_64-pc-windows-msvc",
         object_format="coff",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
     ) == [
         "-Wl,kernel32.lib",
         "-Wl,/defaultlib:msvcrt",
@@ -857,6 +1393,12 @@ def test_coff_rustc_linker_tokens_are_forwarded_through_driver_exactly(
 
 
 def test_rustc_lowered_native_flags_are_not_reconstructed(tmp_path: Path) -> None:
+    target_triple = "x86_64-unknown-linux-gnu"
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="native-link-lowered-flags-family",
+    )
     runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
     out_dir = tmp_path / "out"
     lib_dir = tmp_path / "lib"
@@ -881,17 +1423,23 @@ def test_rustc_lowered_native_flags_are_not_reconstructed(tmp_path: Path) -> Non
         ),
         runtime_lib=runtime,
         cargo_profile="dev-fast",
-        target_triple=None,
-        **_source_args(tmp_path),
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
     )
-    assert native_link_deps._collect_cargo_native_link_deps(
+    flags = native_link_deps._collect_cargo_native_link_deps(
         runtime,
+        target_triple=target_triple,
         object_format="elf",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
-    ) == [
+        runtime_build_identity=build_identity,
+    )
+    assert flags[:1] == [
         "-Wl,--whole-archive",
-        f"-L{lib_dir}",
+    ]
+    assert flags[1].startswith(f"-L{runtime.parent}")
+    custody_directory = Path(flags[1][2:])
+    assert custody_directory != lib_dir
+    assert (custody_directory / "libwhole.a").read_bytes() == b"archive"
+    assert flags[2:] == [
         "-lwhole",
         "-Wl,--no-whole-archive",
         "-Wl,--no-as-needed",
@@ -1019,30 +1567,41 @@ def test_runtime_manifest_refresh_uses_exact_cargo_json_command(
     )
     monkeypatch.setattr(
         runtime_build,
-        "_run_cargo_with_sccache_retry",
-        lambda cmd, **_kwargs: (
-            captured.append(list(cmd))
-            or subprocess.CompletedProcess(cmd, 0, cargo_stdout, "")
+        "_run_resolved_cargo_plan",
+        lambda plan, **_kwargs: (
+            captured.append(list(plan.command))
+            or subprocess.CompletedProcess(list(plan.command), 0, cargo_stdout, "")
         ),
     )
-
-    assert runtime_build._refresh_native_link_manifest(
+    monkeypatch.setattr(
+        runtime_build,
+        "_runtime_build_identity_for_plan",
+        lambda *_args, **_kwargs: _RUNTIME_BUILD_IDENTITY,
+    )
+    plan = runtime_build._NativeRuntimeBuildPlan(
         runtime_lib=runtime,
         target_triple=None,
+        json_output=True,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        cmd=command,
-        build_env={},
         cargo_timeout=1.0,
-        json_output=True,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        stage_timings_ms=None,
+        runtime_state=None,
+        cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=command),
+        fingerprint_features=("stdlib_micro",),
+        fingerprint_path=tmp_path / "runtime.fingerprint",
+        stored_fingerprint=None,
+        fingerprint=runtime_build.runtime_build_fingerprint(_RUNTIME_BUILD_IDENTITY),
+        build_identity=_RUNTIME_BUILD_IDENTITY,
+        session_key=None,
     )
-    assert captured == [command]
+
+    assert plan.refresh_manifest()
+    assert captured == [list(plan.cargo_plan.command)]
     assert native_link_deps._collect_cargo_native_link_deps(
         runtime,
         object_format="elf",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     ) == ["-ldep"]
 
 
@@ -1055,11 +1614,10 @@ def test_artifact_reuse_without_manifest_requires_exact_refresh(
     refreshes: list[Path] = []
     monkeypatch.setattr(runtime_build, "_cargo_build_env", lambda: {})
     monkeypatch.setattr(runtime_build, "_cargo_target_root", lambda _root: tmp_path)
-    monkeypatch.setattr(runtime_build, "_maybe_enable_sccache", lambda _env: None)
     monkeypatch.setattr(
         runtime_build,
-        "_runtime_fingerprint",
-        lambda *_a, **_k: dict(_SOURCE_FINGERPRINT),
+        "_runtime_build_identity_for_plan",
+        lambda *_a, **_k: _RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(runtime_build, "_read_runtime_fingerprint", lambda _path: None)
     monkeypatch.setattr(
@@ -1076,9 +1634,9 @@ def test_artifact_reuse_without_manifest_requires_exact_refresh(
         runtime_build, "_native_link_manifest_matches", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
-        runtime_build,
-        "_refresh_native_link_manifest",
-        lambda *, runtime_lib, **_kwargs: refreshes.append(runtime_lib) or True,
+        runtime_build._NativeRuntimeBuildPlan,
+        "refresh_manifest",
+        lambda self: refreshes.append(self.runtime_lib) or True,
     )
     monkeypatch.setattr(
         runtime_build,
@@ -1101,21 +1659,48 @@ def test_artifact_reuse_without_manifest_requires_exact_refresh(
     assert refreshes == [runtime]
 
 
+@pytest.mark.parametrize("rejection_stage", ["canonical", "copied"])
 def test_hydration_without_matching_manifest_requires_exact_refresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    rejection_stage: str,
 ) -> None:
     runtime = tmp_path / "isolated" / "dev-fast" / "molt_runtime.stdlib_micro.lib"
     canonical = tmp_path / "canonical" / "dev-fast" / runtime.name
     canonical.parent.mkdir(parents=True)
     canonical.write_bytes(b"runtime")
+    if rejection_stage == "copied":
+        native_link_dependency_manifest_path(canonical).write_text(
+            "{}", encoding="utf-8"
+        )
+
+        def read_copied_manifest(path: Path, **_kwargs) -> Mapping[str, object]:
+            if path == canonical:
+                return {
+                    "custody": {
+                        "schema": "molt.native-link-custody.v2",
+                        "archive": None,
+                        "entries": [],
+                    }
+                }
+            raise NativeLinkDependencyManifestError(
+                "cannot read copied native manifest"
+            )
+
+        monkeypatch.setattr(
+            runtime_build, "read_native_link_dependency_manifest", read_copied_manifest
+        )
     refreshes: list[Path] = []
+    monkeypatch.setattr(
+        runtime_build, "_build_state_root", lambda _root: tmp_path / "state"
+    )
     monkeypatch.setattr(runtime_build, "_cargo_build_env", lambda: {})
     monkeypatch.setattr(runtime_build, "_cargo_target_root", lambda _root: tmp_path)
-    monkeypatch.setattr(runtime_build, "_maybe_enable_sccache", lambda _env: None)
     monkeypatch.setattr(
         runtime_build,
-        "_runtime_fingerprint",
-        lambda *_a, **_k: dict(_SOURCE_FINGERPRINT),
+        "_runtime_build_identity_for_plan",
+        lambda *_a, **_k: _RUNTIME_BUILD_IDENTITY,
     )
     monkeypatch.setattr(runtime_build, "_read_runtime_fingerprint", lambda _path: None)
     monkeypatch.setattr(
@@ -1150,10 +1735,23 @@ def test_hydration_without_matching_manifest_requires_exact_refresh(
     monkeypatch.setattr(
         runtime_build, "_native_link_manifest_matches", lambda *_a, **_k: False
     )
+
+    def refresh(self) -> bool:
+        records = list(
+            (tmp_path / "state" / "build_failures").glob(
+                "native-runtime-canonical-hydration-rejection-*.json"
+            )
+        )
+        assert len(records) == 1
+        assert (
+            "cannot read"
+            in json.loads(records[0].read_text(encoding="utf-8"))["summary"]
+        )
+        refreshes.append(self.runtime_lib)
+        return True
+
     monkeypatch.setattr(
-        runtime_build,
-        "_refresh_native_link_manifest",
-        lambda *, runtime_lib, **_kwargs: refreshes.append(runtime_lib) or True,
+        runtime_build._NativeRuntimeBuildPlan, "refresh_manifest", refresh
     )
     monkeypatch.setattr(
         runtime_build,
@@ -1174,6 +1772,7 @@ def test_hydration_without_matching_manifest_requires_exact_refresh(
     finally:
         runtime_build._RUNTIME_LIB_VERIFIED.clear()
     assert refreshes == [runtime]
+    assert "Evidence:" in capsys.readouterr().err
 
 
 def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -> None:
@@ -1181,24 +1780,28 @@ def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -
     assert ".iterdir(" not in deps_source
     assert "read_text(" not in deps_source
     assert "read_native_link_flags(" in deps_source
-    assert "source_fingerprint=source_fingerprint" in deps_source
+    assert "runtime_build_identity=runtime_build_identity" in deps_source
 
     publication_source = inspect.getsource(runtime_build._publish_native_runtime_build)
     assert "write_native_link_dependency_manifest(" in publication_source
     refresh_source = inspect.getsource(
         runtime_build._NativeRuntimeBuildPlan.refresh_manifest
     )
-    assert "_refresh_native_link_manifest(" in refresh_source
+    assert "_run_resolved_cargo_plan(" in refresh_source
+    assert "identity_is_current(" in refresh_source
+    assert "write_native_link_dependency_manifest(" in refresh_source
     command_source = inspect.getsource(runtime_build._native_runtime_cargo_command)
     assert '"rustc"' in command_source
     assert "--message-format=json-render-diagnostics" in command_source
     assert "RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)" in command_source
     assert "native-static-libs" in command_source
     manifest_source = inspect.getsource(native_link_deps.read_native_link_flags)
-    assert "source_fingerprint=source_fingerprint" in manifest_source
-    cargo_source = inspect.getsource(cargo_execution._run_cargo_with_sccache_retry)
+    assert "runtime_build_identity=runtime_build_identity" in manifest_source
+    cargo_source = inspect.getsource(cargo_execution._run_resolved_cargo_plan)
     attempt_source = inspect.getsource(cargo_execution._run_cargo_attempt)
     assert "_sccache_wrapper_failure_reason" in cargo_source
-    assert "retrying once without sccache" in cargo_source
+    assert "without_sccache" not in cargo_source
+    assert cargo_source.count("_run_cargo_attempt(") == 1
+    assert cargo_source.count("plan.verify()") == 2
     assert attempt_source.count('encoding="utf-8"') == 1
     assert attempt_source.count('errors="strict"') == 1

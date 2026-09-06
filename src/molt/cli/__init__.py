@@ -668,7 +668,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "runtime_fingerprints",
         "_runtime_artifact_fingerprint_matches",
     ),
-    "_runtime_fingerprint": ("runtime_fingerprints", "_runtime_fingerprint"),
     "_stored_fingerprint_matches_source_metadata": (
         "runtime_fingerprints",
         "_stored_fingerprint_matches_source_metadata",

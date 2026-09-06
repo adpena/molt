@@ -36,6 +36,111 @@ producer selected a different crate-type set. Publication and build identity
 remain owned by their existing authorities; this module owns only producer
 artifact selection.
 
+## Runtime identity consolidation (2026-09-05)
+
+`runtime_identity_schema.py` owns exact v3 compile/family/member receipts;
+`runtime_build_identity.py` captures inputs and projects those receipts. The
+immutable resolved Cargo plan owns effective configuration, selected tools,
+resource custody, target and profile policy. Capture and execution consume the
+same command and environment. A failed wrapper is not retried under a different
+unattested toolchain.
+
+Cargo `[env]` values retain their config-relative source origins, ambient/force
+precedence, and Windows case-insensitive key semantics. Selected tools, wrappers,
+Rust sysroots, codegen backends, extern files, and library search directories have
+live byte-generation custody. The WASM input-capture hook observes the resolved
+environment, tools, and ordered target library roots once; it does not rediscover
+ambient configuration. Inherited profile overrides use the same profile ancestry
+as debug policy.
+
+Final-link responses have separate live custody and member projections, so export
+changes do not invalidate the shared static-library compile identity. Their
+admitted language is the generated runtime response grammar in `wasm_link_args.py`:
+non-resource switches, explicit runtime exports, and numeric table bases. Nested
+response files, scripts, external archives/search paths, and unknown response
+arguments fail with explicit unsupported-resource diagnostics before execution;
+this is not a claim of arbitrary external linker-dialect support. Rust resource
+selectors outside response files use the typed Cargo plan's file/tree closure.
+
+Native linkage uses manifest v5 and portable dependency custody v2. Bundle v3
+derives its target from the runtime receipt; extraction never guesses target
+semantics from the receiving host. Producer directories are not link inputs.
+WASM generation v3 and expected-pair v2 bind both members to one family, retain
+stable file identities through final-link snapshotting, and share the resolved
+linker/archive selection with build capture. Export-only member changes retain
+the static-library compile identity. The deleted per-member Cargo builder and
+metadata-only runtime fingerprint are not fallback authorities.
+
+Live family resolution always captures the selected toolchain. Portable toolchain
+manifests are projections of that capture, never substituted as live inputs.
+The pair and final-preflight consumers capture once, then publish that projection;
+`runtime_family_identity` measures the complete pre/post capture without counting
+an independent toolchain-provision pass.
+Cargo tool and wrapper records project the already-captured executable custody;
+building the family receipt does not hash those same executables again.
+Native-executable admission remains part of that capture, including distinct
+dependency and final-crate linker roles. Generic resource hashing does not admit
+a script linker without its interpreter closure.
+
+WASM link inputs are captured only after Cargo configuration, environment, and
+Rust target-library selection. Both members retain that same capture; final
+linking never rediscovers an ambient Rust target. Linker custody preserves the
+invoked `wasm-ld` alias while attesting its physical content. Captured executable
+search includes PATH, Windows PATHEXT/key casing/current-directory policy, and
+managed roots; cache lookup uses those inputs rather than ambient equivalents.
+Export response files are materialized once per resolved producer, not separately
+for each preliminary member spec.
+
+The resolved Cargo plan also owns C/C++ flag tokenization, ordered include/library
+search paths, and their stable resource contents. Identity consumes its typed
+projection rather than independently parsing cc-rs flags. Relative search paths,
+GCC empty (working-directory) search entries, and unparsed compiler response or
+forwarding forms fail with explicit custody diagnostics; the current local Cargo
+source closure does not establish every registry build-script working directory.
+Explicit search custody does not establish a complete implicit system-SDK or
+compiler-generated include closure, which remains an unverified support frontier.
+Compiler sysroot/prefix-relative include and library operands likewise reject
+when their effective base has no custody; an option separator is not permission
+to reinterpret such an operand as a host-absolute path.
+
+Runtime JSON readers share bounded stable-file exact decoding (16 MiB metadata
+ceiling). Artifact byte/archive receipts reject bool/float substitutions for
+integer counts through one validator. Archive parsing and raw byte hashing use
+one stable direct-file handle, not a metadata-keyed digest cache; same-size,
+preserved-mtime rewrites are re-read on every admission. Archive name metadata
+shares the 16 MiB bound. Native custody and bundles admit only
+regular USTAR records before tar extension decoding; bundle closure is bounded
+before member retention and staged identities survive to publication. Every
+operational WASM builder failure, including the standalone CPython ABI provider,
+uses the same bounded evidence model; JSON mode retains subprocess output,
+timeouts, identity drift, and evidence-write errors.
+Native build and manifest-refresh timeouts retain partial streams as well.
+Native fingerprint publication and refresh fail admission on write errors;
+failure-evidence persistence errors remain visible even without attached state.
+
+Backend probe receipts, object-cache variants and daemon selection likewise use
+the shared stable executable-content primitive. Probe publication fences the
+executable generation around execution. The existing compile-local fingerprint
+passed into the Rust TIR cache includes executable content as well as the source
+projection; a metadata-preserving rewrite cannot select the old namespace.
+Source fingerprints remain rebuild selectors, not executable-content custody.
+Feature aliases and canonical backend hydration require the same source-and-byte
+receipt. Raw Cargo outputs and newer timestamps cannot attest provenance; Cargo
+must establish it before publication. Feature lanes share the canonical output's
+publication lock, and probe/receipt write failures remain typed build failures.
+
+The canonical pure proof command is `python.unit.runtime-artifacts` in
+`tools/proof_plan.toml`; tool-search primitives belong to
+`python.unit.python-custody`. Generated projections are not separate checklists.
+
+The earlier timings below are historical receipts, not measurements of this
+consolidation. Initial verification was serialized Python-only under temporary
+2 GiB process / 3 GiB tree limits. The operator lifted those limits on September
+5; normal resource guards remain, with one heavyweight compiler proof lane
+alongside disjoint integration work. A compiled native/WASM matrix cell,
+benchmark improvement, main landing, or donor retirement still requires its
+own current-source receipt.
+
 ## Recovered baseline evidence
 
 All paths are under the canonical `C:\Molt` root.

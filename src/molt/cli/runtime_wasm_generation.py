@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
-import stat
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.atomic_io import _atomic_write_json
 from molt.file_publication import durable_replace
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
+from molt.exact_json import read_exact
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    stable_regular_file_identity,
+)
 
 
-_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v2"
+_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v3"
+_RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v2"
 _RUNTIME_WASM_GENERATION_NAME = "molt_runtime.generation.json"
 _MEMBER_SUFFIX = ".runtime-wasm-member"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
@@ -28,37 +34,69 @@ class RuntimeWasmGeneration:
     reloc: Path
     shared_identity: RuntimeBuildIdentity
     reloc_identity: RuntimeBuildIdentity
+    shared_member_identity: StableRegularFileIdentity
+    reloc_member_identity: StableRegularFileIdentity
     payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class RuntimeWasmExpectedPair:
+    """Caller-trusted exact build identities for one shared/reloc pair."""
+
+    shared: RuntimeBuildIdentity
+    reloc: RuntimeBuildIdentity
+
+    def __post_init__(self) -> None:
+        if (
+            self.shared.payload.get("member_kind") != "shared"
+            or self.reloc.payload.get("member_kind") != "reloc"
+            or self.shared.family_digest != self.reloc.family_digest
+        ):
+            raise ValueError(
+                "runtime WASM expected pair must name one shared/reloc build pair"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA,
+            "shared": self.shared.to_dict(),
+            "reloc": self.reloc.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> RuntimeWasmExpectedPair:
+        payload = _json_object_mapping(value)
+        if (
+            payload is None
+            or set(payload) != {"schema", "shared", "reloc"}
+            or payload.get("schema") != _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA
+        ):
+            raise ValueError("runtime WASM expected pair schema is invalid")
+        return cls(
+            shared=RuntimeBuildIdentity.from_dict(payload.get("shared")),
+            reloc=RuntimeBuildIdentity.from_dict(payload.get("reloc")),
+        )
+
+    @classmethod
+    def read(cls, path: Path) -> RuntimeWasmExpectedPair:
+        try:
+            payload = read_exact(
+                path,
+                max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+                label="runtime WASM expected pair",
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(
+                f"runtime WASM expected pair is unreadable: {path}: {exc}"
+            ) from exc
+        return cls.from_dict(payload)
+
+    def write(self, path: Path) -> None:
+        _atomic_write_json(path, self.to_dict(), sort_keys=True)
 
 
 def runtime_wasm_generation_path(shared: Path) -> Path:
     return shared.with_name(_RUNTIME_WASM_GENERATION_NAME)
-
-
-def _hash_artifact(path: Path) -> tuple[str, int]:
-    hasher = hashlib.sha256()
-    size = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(8 * 1024 * 1024):
-            hasher.update(chunk)
-            size += len(chunk)
-    return hasher.hexdigest(), size
-
-
-def _is_regular_immutable_member(path: Path) -> bool:
-    """Reject symlink/reparse indirection before trusting a member path."""
-
-    try:
-        member_stat = path.lstat()
-    except OSError:
-        return False
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    file_attributes = getattr(member_stat, "st_file_attributes", 0)
-    return (
-        stat.S_ISREG(member_stat.st_mode)
-        and not path.is_symlink()
-        and not bool(file_attributes & reparse_flag)
-    )
 
 
 def _stage_artifact(
@@ -71,23 +109,18 @@ def _stage_artifact(
 ) -> dict[str, object]:
     hasher = hashlib.sha256()
     size = 0
-    with source.open("rb") as source_handle, staged.open("xb") as staged_handle:
-        before = os.fstat(source_handle.fileno())
-        while chunk := source_handle.read(8 * 1024 * 1024):
+    with (
+        open_stable_regular_file(source, label="runtime generation source") as opened,
+        staged.open("xb") as staged_handle,
+    ):
+        while chunk := opened.stream.read(1024 * 1024):
             hasher.update(chunk)
             staged_handle.write(chunk)
             size += len(chunk)
         staged_handle.flush()
         staged_stat = os.fstat(staged_handle.fileno())
-        after = os.fstat(source_handle.fileno())
     digest = hasher.hexdigest()
-    if (
-        before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or before.st_ctime_ns != after.st_ctime_ns
-        or size != after.st_size
-        or staged_stat.st_size != size
-    ):
+    if size != opened.stat.st_size or staged_stat.st_size != size:
         raise ValueError(f"runtime artifact mutated while staging: {source.name}")
     if expected_record is not None and (
         expected_record.get("sha256") != digest or expected_record.get("size") != size
@@ -109,12 +142,14 @@ def _publish_immutable_member(staged: Path, member: Path, source: Path) -> None:
     """Publish a content-named member; same-name races can only contain same bytes."""
 
     if member.exists():
-        if not _is_regular_immutable_member(member):
-            raise ValueError(
-                f"immutable runtime member is not a regular file: {member.name}"
-            )
-        digest, size = _hash_artifact(member)
-        if digest != member.name.split(".")[-2] or size != staged.stat().st_size:
+        identity = stable_regular_file_identity(
+            member,
+            label="existing immutable runtime member",
+        )
+        if (
+            identity.sha256 != member.name.split(".")[-2]
+            or identity.size != staged.stat().st_size
+        ):
             raise ValueError(f"immutable runtime member is corrupt: {member.name}")
         staged.unlink()
         return
@@ -143,8 +178,9 @@ def publish_runtime_wasm_generation(
     materialized here; only an explicit final deployment may project them.
     """
 
-    if shared_identity.pair_digest != reloc_identity.pair_digest:
-        raise ValueError("shared and reloc runtime identities are not one build pair")
+    expected_pair = RuntimeWasmExpectedPair(shared_identity, reloc_identity)
+    shared_identity = expected_pair.shared
+    reloc_identity = expected_pair.reloc
     if shared.name != _SHARED_RUNTIME_NAME or reloc.name != _RELOC_RUNTIME_NAME:
         raise ValueError("runtime generation coordinates use non-canonical names")
     shared.parent.mkdir(parents=True, exist_ok=True)
@@ -176,13 +212,14 @@ def publish_runtime_wasm_generation(
 
         payload = {
             "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
-            "pair_digest": shared_identity.pair_digest,
+            "family_digest": shared_identity.family_digest,
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
         manifest = runtime_wasm_generation_path(shared)
-        _atomic_write_text(
+        _atomic_write_json(
             manifest,
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            payload,
+            sort_keys=True,
         )
         generation = read_runtime_wasm_generation(
             manifest,
@@ -215,11 +252,15 @@ def _validate_artifact_record(
     manifest: Path,
     expected_name: str,
     expected_identity: RuntimeBuildIdentity,
-) -> Path | None:
-    if not isinstance(record, dict) or record.get("name") != expected_name:
+) -> StableRegularFileIdentity | None:
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"name", "member", "sha256", "size", "identity"}
+        or record.get("name") != expected_name
+    ):
         return None
     member = _member_path(manifest, record)
-    if member is None or not _is_regular_immutable_member(member):
+    if member is None:
         return None
     try:
         recorded_identity = RuntimeBuildIdentity.from_dict(record.get("identity"))
@@ -228,17 +269,22 @@ def _validate_artifact_record(
     if recorded_identity != expected_identity:
         return None
     try:
-        digest, size = _hash_artifact(member)
-    except OSError:
+        member_identity = stable_regular_file_identity(
+            member,
+            label=f"immutable runtime member {expected_name}",
+        )
+    except (OSError, ValueError):
         return None
-    expected_member = f"{expected_name}.{digest}{_MEMBER_SUFFIX}"
+    expected_member = f"{expected_name}.{member_identity.sha256}{_MEMBER_SUFFIX}"
     if (
-        record.get("sha256") != digest
-        or record.get("size") != size
+        record.get("sha256") != member_identity.sha256
+        or not isinstance(record.get("size"), int)
+        or isinstance(record.get("size"), bool)
+        or record.get("size") != member_identity.size
         or member.name != expected_member
     ):
         return None
-    return member
+    return member_identity
 
 
 def _generation_receipts(
@@ -266,41 +312,55 @@ def read_runtime_wasm_generation(
 ) -> RuntimeWasmGeneration | None:
     """Validate the atomically selected immutable pair against trusted identities."""
 
-    if expected_shared_identity.pair_digest != expected_reloc_identity.pair_digest:
-        return None
     try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        expected_pair = RuntimeWasmExpectedPair(
+            expected_shared_identity,
+            expected_reloc_identity,
+        )
+    except ValueError:
+        return None
+    expected_shared_identity = expected_pair.shared
+    expected_reloc_identity = expected_pair.reloc
+    try:
+        payload = read_exact(
+            manifest,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="runtime WASM generation",
+        )
+    except (OSError, UnicodeError, ValueError):
         return None
     if (
         not isinstance(payload, dict)
+        or set(payload) != {"schema", "family_digest", "receipts"}
         or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
-        or payload.get("pair_digest") != expected_shared_identity.pair_digest
+        or payload.get("family_digest") != expected_shared_identity.family_digest
     ):
         return None
     receipts = _generation_receipts(payload.get("receipts"))
     if receipts is None:
         return None
-    shared_member = _validate_artifact_record(
+    shared_member_identity = _validate_artifact_record(
         receipts.get("shared"),
         manifest=manifest,
         expected_name=_SHARED_RUNTIME_NAME,
         expected_identity=expected_shared_identity,
     )
-    reloc_member = _validate_artifact_record(
+    reloc_member_identity = _validate_artifact_record(
         receipts.get("reloc"),
         manifest=manifest,
         expected_name=_RELOC_RUNTIME_NAME,
         expected_identity=expected_reloc_identity,
     )
-    if shared_member is None or reloc_member is None:
+    if shared_member_identity is None or reloc_member_identity is None:
         return None
     return RuntimeWasmGeneration(
         manifest=manifest,
-        shared=shared_member,
-        reloc=reloc_member,
+        shared=shared_member_identity.path,
+        reloc=reloc_member_identity.path,
         shared_identity=expected_shared_identity,
         reloc_identity=expected_reloc_identity,
+        shared_member_identity=shared_member_identity,
+        reloc_member_identity=reloc_member_identity,
         payload=payload,
     )
 

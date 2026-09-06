@@ -9,10 +9,9 @@ from functools import wraps
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import ParamSpec, TypeVar
 
+from molt.portable_paths import portable_path_component
+
 _HEX = frozenset("0123456789abcdef")
-_WINDOWS_RESERVED_NAME = re.compile(
-    r"(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])", re.IGNORECASE
-)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
@@ -32,18 +31,16 @@ def canonical_absolute_path(value: object) -> PurePath:
         raise PythonEnvironmentIdentityError(
             f"Python custody path must be canonical absolute: {value!r}"
         )
-    if isinstance(path, PureWindowsPath) and (
-        value.startswith(("\\\\?\\", "\\\\.\\"))
-        or any(
-            part.endswith((".", " "))
-            or any(character in '<>:"|?*' or ord(character) < 32 for character in part)
-            or _WINDOWS_RESERVED_NAME.fullmatch(part.split(".", 1)[0].rstrip(" "))
-            for part in path.parts[1:]
-        )
-    ):
-        raise PythonEnvironmentIdentityError(
-            f"Python custody path uses an unsupported Windows namespace or alias: {value!r}"
-        )
+    if isinstance(path, PureWindowsPath):
+        try:
+            if value.startswith(("\\\\?\\", "\\\\.\\")):
+                raise ValueError("device namespaces are not canonical paths")
+            for part in path.parts[1:]:
+                portable_path_component(part)
+        except ValueError as exc:
+            raise PythonEnvironmentIdentityError(
+                f"Python custody path uses an unsupported Windows namespace or alias: {value!r}"
+            ) from exc
     return path
 
 

@@ -211,11 +211,12 @@ def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
         assert deleted_authority not in runtime_sources
         assert deleted_authority not in non_native_output
 
-    assert "build_if_missing=False" in runtime_wasm_pair_build
+    assert "_materialize_runtime_wasm_member_from_target(" in runtime_wasm_pair_build
     assert (
         "if not _prepopulate_combined_runtime_wasm_target(" in runtime_wasm_pair_build
     )
-    assert "def _ensure_runtime_wasm(" in runtime_wasm_build
+    assert "def _ensure_runtime_wasm(" not in runtime_wasm_build
+    assert "def _materialize_runtime_wasm_member_from_target(" in runtime_wasm_build
     assert "ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(" in (
         non_native_output
     )

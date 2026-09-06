@@ -68,11 +68,13 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "_tool_version",
-        lambda path: f"version:{path.name}",
+        lambda path, **_kwargs: f"version:{path.name}",
     )
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
@@ -82,11 +84,14 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
     assert family.missing_roles() == ()
     assert family.cc is not None
     assert family.cc.command == (str(paths["cc"]), "--sysroot", "sdk")
+    assert family.nm is not None
+    assert family.nm.path == paths["nm"].absolute()
+    assert family.nm.command == (str(family.nm.path),)
     assert family.metadata()["nm"] == {
-        "command": [str(paths["nm"].resolve())],
-        "path": str(paths["nm"].resolve()),
+        "command": [str(family.nm.path)],
+        "path": str(family.nm.path),
         "sha256": hashlib.sha256(b"tool").hexdigest(),
-        "version": f"version:{paths['nm'].name}",
+        "version": f"version:{family.nm.path.name}",
     }
 
 
@@ -96,10 +101,14 @@ def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
 ) -> None:
     paths = _write_tool_family(tmp_path / "LLVM" / "bin")
     alias, driver = _replace_wasm_ld_with_driver_alias(paths)
-    monkeypatch.setattr(llvm_wasi_tools, "_tool_version", lambda _path: "22.1.8")
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: "22.1.8"
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
@@ -108,8 +117,9 @@ def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
 
     assert family.wasm_ld is not None
     assert family.wasm_ld.path == alias.absolute()
-    assert family.wasm_ld.command == (str(alias.absolute()),)
+    assert family.wasm_ld.command == (str(family.wasm_ld.path),)
     assert family.wasm_ld.path != driver.absolute()
+    assert executable_selects_linker_role(family.wasm_ld.path, "wasm-ld")
 
 
 def test_wasm_ld_role_rejects_explicit_generic_driver_and_uses_named_sibling(
@@ -119,7 +129,9 @@ def test_wasm_ld_role_rejects_explicit_generic_driver_and_uses_named_sibling(
     directory = tmp_path / "llvm" / "bin"
     paths = _write_tool_family(directory)
     alias, driver = _replace_wasm_ld_with_driver_alias(paths)
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
         explicit_commands={"wasm_ld": (str(driver),)},
@@ -128,7 +140,9 @@ def test_wasm_ld_role_rejects_explicit_generic_driver_and_uses_named_sibling(
 
     assert family.wasm_ld is not None
     assert family.wasm_ld.path == alias.absolute()
-    assert family.wasm_ld.command == (str(alias.absolute()),)
+    assert family.wasm_ld.command == (str(family.wasm_ld.path),)
+    assert family.wasm_ld.path != driver.absolute()
+    assert executable_selects_linker_role(family.wasm_ld.path, "wasm-ld")
 
 
 def test_wasm_ld_path_alias_remains_role_specific_across_cache_hits(
@@ -141,12 +155,12 @@ def test_wasm_ld_path_alias_remains_role_specific_across_cache_hits(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "_managed_llvm_bin_directories",
-        lambda _target_root: (),
+        lambda _target_root, **_kwargs: (),
     )
     monkeypatch.setattr(
-        llvm_wasi_tools.shutil,
-        "which",
-        lambda name: str(alias) if name == "wasm-ld" else None,
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: str(alias) if name == "wasm-ld" else None,
     )
 
     first = llvm_wasi_tools.llvm_tool_candidates("wasm_ld")
@@ -192,9 +206,11 @@ def test_every_linker_role_preserves_its_alias_and_rejects_generic_driver(
         alias.symlink_to(driver.name)
     except OSError:
         os.link(driver, alias)
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
     )
 
     candidates = llvm_wasi_tools.llvm_linker_candidates(
@@ -225,9 +241,11 @@ def test_linker_roles_never_accept_a_sibling_role(
 ) -> None:
     wrong_path = tmp_path / wrong
     wrong_path.write_bytes(b"wrong role")
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
     )
 
     assert (
@@ -244,11 +262,13 @@ def test_tool_family_resolves_managed_target_root_before_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     managed = _write_tool_family(tmp_path / "target" / "toolchains" / "llvm-22" / "bin")
-    monkeypatch.setattr(llvm_wasi_tools, "_tool_version", lambda _path: "22.1.8")
     monkeypatch.setattr(
-        llvm_wasi_tools.shutil,
-        "which",
-        lambda name: f"/path/{name}",
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: "22.1.8"
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: f"/path/{name}",
     )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
@@ -281,7 +301,9 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
         str(worktree / "src" / "molt" / "cli" / "llvm_wasi_tools.py"),
     )
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
 
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed["cc"].resolve()
 
@@ -296,17 +318,17 @@ def test_candidate_resolution_memoizes_filesystem_candidate_probes(
     calls: list[str] = []
     managed_calls = 0
 
-    def managed(_target_root: Path | None) -> tuple[Path, ...]:
+    def managed(_target_root: Path | None, **_kwargs) -> tuple[Path, ...]:
         nonlocal managed_calls
         managed_calls += 1
         return ()
 
-    def which(name: str) -> str | None:
+    def which(name: str, **_kwargs) -> str | None:
         calls.append(name)
         return str(clang) if name == "clang" else None
 
     monkeypatch.setattr(llvm_wasi_tools, "_managed_llvm_bin_directories", managed)
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", which)
+    monkeypatch.setattr(llvm_wasi_tools, "find_executable", which)
 
     first = llvm_wasi_tools.llvm_tool_candidates("cc")
     second = llvm_wasi_tools.llvm_tool_candidates("cc")
@@ -338,14 +360,14 @@ def test_candidate_cache_keys_path_and_directory_identity(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "_managed_llvm_bin_directories",
-        lambda _target_root: (managed_dir,),
+        lambda _target_root, **_kwargs: (managed_dir,),
     )
 
-    def which(name: str) -> str | None:
+    def which(name: str, **_kwargs) -> str | None:
         assert name == "clang"
         return str(path_a if os.environ["PATH"] == "A" else path_b)
 
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", which)
+    monkeypatch.setattr(llvm_wasi_tools, "find_executable", which)
     monkeypatch.setenv("PATH", "A")
     assert llvm_wasi_tools.llvm_tool_candidates("cc") == (path_a.resolve(),)
     monkeypatch.setenv("PATH", "B")
@@ -371,12 +393,12 @@ def test_candidate_cache_revalidates_selected_path_removal(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "_managed_llvm_bin_directories",
-        lambda _target_root: (managed_dir,),
+        lambda _target_root, **_kwargs: (managed_dir,),
     )
     monkeypatch.setattr(
-        llvm_wasi_tools.shutil,
-        "which",
-        lambda name: str(fallback) if name == "clang" else None,
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: str(fallback) if name == "clang" else None,
     )
 
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed.resolve()
@@ -397,12 +419,12 @@ def test_candidate_cache_drops_removed_explicit_tool(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "_managed_llvm_bin_directories",
-        lambda _target_root: (),
+        lambda _target_root, **_kwargs: (),
     )
     monkeypatch.setattr(
-        llvm_wasi_tools.shutil,
-        "which",
-        lambda name: str(fallback) if name == "clang" else None,
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: str(fallback) if name == "clang" else None,
     )
 
     command = (str(explicit),)
@@ -414,6 +436,145 @@ def test_candidate_cache_drops_removed_explicit_tool(
     assert llvm_wasi_tools.llvm_tool_candidates("cc", explicit_commands=(command,)) == (
         fallback.resolve(),
     )
+
+
+def test_captured_search_environment_controls_execution_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_paths = _write_tool_family(tmp_path / "captured")
+    ambient_paths = _write_tool_family(tmp_path / "ambient")
+    for path in (*captured_paths.values(), *ambient_paths.values()):
+        path.chmod(0o755)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setenv("PATH", str(ambient_paths["cc"].parent))
+    environment = {
+        "PATH": str(captured_paths["cc"].parent),
+        "PATHEXT": ".EXE",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    command = llvm_wasi_tools.resolve_explicit_tool_command(
+        "clang --version", label="captured compiler", environment=environment
+    )
+    assert Path(command[0]) == captured_paths["cc"].absolute()
+    assert command[1:] == ("--version",)
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
+        captured_paths["cc"].absolute(),
+    )
+    before = llvm_wasi_tools.llvm_tool_candidate_cache_info()
+    monkeypatch.setenv("PATH", "ambient changed after capture")
+    monkeypatch.setenv("PATHEXT", ".AMBIENT")
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
+        captured_paths["cc"].absolute(),
+    )
+    assert (
+        llvm_wasi_tools.llvm_tool_candidate_cache_info()["hits"] == before["hits"] + 1
+    )
+    assert llvm_wasi_tools.llvm_linker_candidates(
+        "wasm-ld", environment=environment
+    ) == (captured_paths["wasm_ld"].absolute(),)
+
+
+def test_empty_captured_environment_never_uses_ambient_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ambient = _write_tool_family(tmp_path / "ambient")
+    for path in ambient.values():
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", str(ambient["cc"].parent))
+    monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", environment={}) == ()
+    with pytest.raises(ValueError, match="not found on PATH"):
+        llvm_wasi_tools.resolve_explicit_tool_command(
+            "clang", label="compiler", environment={}
+        )
+
+
+def test_captured_managed_target_root_owns_candidate_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_root = tmp_path / "captured-target"
+    ambient_root = tmp_path / "ambient-target"
+    captured = _write_tool_family(captured_root / "toolchains" / "llvm-22" / "bin")
+    _write_tool_family(ambient_root / "toolchains" / "llvm-99" / "bin")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(ambient_root))
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    assert llvm_wasi_tools.llvm_tool_candidates(
+        "cc",
+        environment={
+            "MOLT_TARGET_ROOT": str(captured_root),
+            "PATH": "",
+            "PATHEXT": ".EXE",
+        },
+    ) == (captured["cc"].absolute(),)
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows executable suffix/current-directory contract"
+)
+def test_windows_captured_pathext_and_cwd_policy_override_ambient(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "selected"
+    directory.mkdir()
+    selected = directory / "clang.ALT"
+    selected.write_bytes(b"captured suffix")
+    (directory / "clang.exe").write_bytes(b"ambient suffix")
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "clang.ALT").write_bytes(b"implicit current directory")
+    monkeypatch.chdir(current)
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    captured = {
+        "Path": str(directory),
+        "PathExt": ".ALT",
+        "NoDefaultCurrentDirectoryInExePath": "1",
+    }
+    command = llvm_wasi_tools.resolve_explicit_tool_command(
+        "clang", label="compiler", environment=captured
+    )
+    assert len(command) == 1
+    assert Path(command[0]) == selected.absolute()
+    assert llvm_wasi_tools.llvm_named_tool_candidates(
+        "clang", environment=captured
+    ) == (selected.absolute(),)
+    captured.pop("NoDefaultCurrentDirectoryInExePath")
+    assert llvm_wasi_tools.llvm_named_tool_candidates(
+        "clang", environment=captured
+    ) == ((current / "clang.ALT").absolute(),)
+
+
+def test_captured_rust_tool_lookup_threads_actual_executable_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    sysroot = tmp_path / "rust-sysroot"
+    reader = sysroot / "lib" / "rustlib" / "host" / "bin" / "llvm-nm"
+    reader.parent.mkdir(parents=True)
+    reader.write_bytes(b"reader")
+    selected_rustc = tmp_path / "selected-rustc"
+    environment = {
+        "RUSTC": str(selected_rustc),
+        "PATH": "captured",
+        "RUSTUP_HOME": "captured rustup",
+    }
+    seen: list[tuple[list[str], object]] = []
+    monkeypatch.setattr(
+        llvm_wasi_tools, "resolve_executable", lambda command, **kwargs: Path(command)
+    )
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0, str(sysroot), "")
+
+    monkeypatch.setattr(llvm_wasi_tools, "_run_completed_command", run)
+    assert llvm_wasi_tools._rust_llvm_bin_directories(environment=environment) == (
+        reader.parent,
+    )
+    assert seen == [([str(selected_rustc), "--print", "sysroot"], environment)]
 
 
 def test_source_commands_share_family_and_never_duplicate_target() -> None:

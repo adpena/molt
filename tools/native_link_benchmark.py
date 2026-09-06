@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import platform
@@ -39,9 +40,13 @@ from molt.cli.link_pipeline import _native_link_execution_command  # noqa: E402
 from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
     native_link_dependency_manifest_path,
-    read_native_link_dependency_manifest,
 )
 from molt.cli.native_link_plan import NativeLinkPlan  # noqa: E402
+from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.runtime_native_build import (  # noqa: E402
+    current_native_runtime_build_identity,
+)
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
     SourceExtensionLinkRequirements,
@@ -118,24 +123,25 @@ def measurement_authority_fingerprint() -> str:
 
 
 def implementation_source_facts() -> dict[str, object]:
-    """Record the primary native-link authorities as the experimental treatment."""
-    sources = (
-        "llvm_wasi_tools.py",
-        "native_link_plan.py",
-        "native_link_command.py",
-        "native_link_deps.py",
-        "native_link_manifest.py",
-        "static_archive_identity.py",
-        "link_pipeline.py",
-        "build_results.py",
-        "runtime_native_build.py",
+    """Project the import closure of actual measured production entrypoints."""
+    sources = local_python_import_closure(
+        ROOT,
+        tuple(
+            Path(inspect.getfile(function))
+            for function in (
+                _build_native_link_plan,
+                _native_link_execution_command,
+                _finalize_native_link_candidate,
+                current_native_runtime_build_identity,
+            )
+        ),
     )
     files = [
         {
-            "name": name,
-            "sha256": _sha256_file(SRC / "molt" / "cli" / name),
+            "name": path.relative_to(ROOT).as_posix(),
+            "sha256": _sha256_file(path),
         }
-        for name in sources
+        for path in sources
     ]
     return {"files": files, "fingerprint": _stable_hash(files)}
 
@@ -164,6 +170,31 @@ def host_payload() -> dict[str, object]:
     }
     payload["fingerprint"] = _stable_hash(payload)
     return payload
+
+
+def benchmark_runtime_build_identity(
+    runtime_lib: Path,
+    *,
+    target_triple: str | None,
+    cargo_profile: str,
+    stdlib_profile: str,
+    extra_runtime_features: Sequence[str],
+) -> RuntimeBuildIdentity:
+    """Resolve the benchmark expectation from the current runtime build plan."""
+
+    try:
+        return current_native_runtime_build_identity(
+            ROOT,
+            runtime_lib,
+            target_triple=target_triple,
+            cargo_profile=cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=extra_runtime_features,
+        )
+    except (OSError, ValueError) as exc:
+        raise LinkBenchmarkError(
+            f"cannot establish current runtime build identity: {exc}"
+        ) from exc
 
 
 def collect_input_facts(inputs: Mapping[str, Path]) -> dict[str, object]:
@@ -958,18 +989,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     inputs["runtime_link_manifest"] = native_link_dependency_manifest_path(
         inputs["runtime"]
     ).resolve(strict=True)
-    runtime_manifest = read_native_link_dependency_manifest(
+    runtime_build_identity = benchmark_runtime_build_identity(
         inputs["runtime"],
         target_triple=args.target_triple,
-        source_root=ROOT,
+        cargo_profile=args.runtime_cargo_profile,
+        stdlib_profile=args.runtime_stdlib_profile,
+        extra_runtime_features=tuple(args.runtime_feature),
     )
-    manifest_source = runtime_manifest.get("source")
-    if not isinstance(manifest_source, Mapping) or not isinstance(
-        (source_fingerprint := manifest_source.get("fingerprint")), Mapping
-    ):
-        raise LinkBenchmarkError(
-            "runtime native-link manifest has no source fingerprint"
-        )
 
     def factory() -> NativeLinkPlan:
         return _build_native_link_plan(
@@ -980,8 +1006,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             target_triple=args.target_triple,
             sysroot_path=Path(args.sysroot) if args.sysroot else None,
             profile=args.profile,
-            source_root=ROOT,
-            source_fingerprint=source_fingerprint,
+            runtime_build_identity=runtime_build_identity,
             stdlib_obj_path=inputs.get("stdlib"),
             external_static_archives=external_archives,
             external_link_requirements=external_link_requirements,
@@ -1207,6 +1232,23 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-triple")
     parser.add_argument("--sysroot")
     parser.add_argument("--profile", choices=("dev", "release"), default="release")
+    parser.add_argument(
+        "--runtime-cargo-profile",
+        required=True,
+        help="exact Cargo profile used to build the selected runtime archive",
+    )
+    parser.add_argument(
+        "--runtime-stdlib-profile",
+        required=True,
+        choices=("full", "standard", "minimal", "micro"),
+        help="exact concrete stdlib profile used to build the runtime archive",
+    )
+    parser.add_argument(
+        "--runtime-feature",
+        action="append",
+        default=[],
+        help="additional runtime Cargo feature used by the selected build (repeatable)",
+    )
     parser.add_argument("--warm-runs", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--bolt-timeout", type=float, default=600.0)

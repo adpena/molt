@@ -16,27 +16,28 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_missing_required_exports,
     wasm_runtime_required_export_symbol_kinds,
 )
-from molt.cli import wasm_toolchain
 from molt.cli.artifact_state import (
     _build_state_root,
     _runtime_target_fingerprint_path,
 )
-from molt.cli.atomic_io import (
-    _atomic_write_text,
-)
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
+)
+from molt.cli.cargo_execution import (
+    CargoPlanExecutionError,
+    cargo_execution_evidence,
+    _text_output,
 )
 from molt.cli.models import (
     _RuntimeArtifactState,
 )
 from molt.cli.runtime_artifact_selection import (
-    RUNTIME_WASM_COMBINED_ARTIFACTS,
     RuntimeCrateType,
 )
 from molt.cli.runtime_build_identity import (
     RuntimeBuildIdentity,
     RuntimeToolchainContentManifest,
+    runtime_build_fingerprint,
 )
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
@@ -45,24 +46,20 @@ from molt.cli.runtime_wasm_build import _materialize_runtime_wasm_member_from_ta
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
-    _provision_runtime_wasm_toolchain_manifest,
-    _resolved_runtime_wasm_pair_identities,
+    _resolve_runtime_wasm_cargo_specs,
+    _resolved_runtime_wasm_family_identities,
     _runtime_source_identity_tree,
-    _runtime_toolchain_identity_tree,
     _runtime_wasm_toolchain_manifest_path,
     _RuntimeWasmBuildSpec,
     _timed_runtime_identity_phase,
 )
 from molt.cli.runtime_wasm_build_support import (
-    _configure_wasi_sysroot_env,
-    _configure_wasm_cc_env,
-    _configure_wasm_long_double_env,
+    RuntimeWasmLinkError,
     _current_runtime_target_artifact,
     _reported_runtime_artifacts_from_cargo_stdout,
     _run_runtime_wasm_cargo_build,
     _runtime_exports_satisfy_for_mode,
     _runtime_missing_exports_for_mode,
-    _wasm_runtime_codegen_rustflags,
     _wasm_runtime_staticlib_candidates,
     _wasm_runtime_wasm_candidates,
 )
@@ -74,6 +71,7 @@ from molt.cli.runtime_wasm_cache import (
     publish_runtime_wasm_pair_to_shared_cache,
 )
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmExpectedPair,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_path,
@@ -83,12 +81,6 @@ from molt.cli.runtime_wasm_validation import (
     _is_valid_shared_runtime_wasm_artifact,
     _runtime_wasm_artifact_validation_error,
     _shared_runtime_wasm_validation_error,
-)
-from molt.cli.wasm_link_args import (
-    wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
-)
-from molt.cli.wasm_link_args import (
-    write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
 )
 from molt.wasm_artifact import (
     inspect_wasm_binary as _inspect_wasm_binary,
@@ -132,6 +124,7 @@ class _CombinedRuntimeWasmBuild:
         build: subprocess.CompletedProcess[str] | None = None,
         command: tuple[str, ...] = (),
         timed_out: bool = False,
+        timeout_error: subprocess.TimeoutExpired | None = None,
     ) -> bool:
         return record_runtime_wasm_failure(
             self.runtime_state,
@@ -139,10 +132,21 @@ class _CombinedRuntimeWasmBuild:
             stage=stage,
             summary=summary,
             command=command,
-            stdout="" if build is None else build.stdout,
-            stderr="" if build is None else build.stderr,
+            stdout=_text_output(timeout_error.stdout)
+            if timeout_error is not None
+            else ""
+            if build is None
+            else build.stdout,
+            stderr=_text_output(timeout_error.stderr)
+            if timeout_error is not None
+            else ""
+            if build is None
+            else build.stderr,
             returncode=None if build is None else build.returncode,
-            timed_out=timed_out,
+            timed_out=timed_out or timeout_error is not None,
+            details={"cargo_execution": cargo_execution_evidence(build)}
+            if build is not None
+            else None,
         )
 
     def target_pair_is_current(self) -> bool:
@@ -169,52 +173,21 @@ class _CombinedRuntimeWasmBuild:
             target_label="wasm32-wasip1",
             fingerprint=self.reloc_spec.staticlib_fingerprint,
         )
-        return shared is not None and reloc is not None
+        return (
+            shared is not None
+            and reloc is not None
+            and _is_valid_shared_runtime_wasm_artifact(shared[0])
+        )
 
 
 def _combined_runtime_wasm_command(
     ctx: _CombinedRuntimeWasmBuild,
 ) -> tuple[dict[str, str], list[str]]:
-    env = dict(ctx.shared_spec.env)
-    codegen_rustflags = _wasm_runtime_codegen_rustflags(
-        env.get("RUSTFLAGS", "").strip(),
-        simd_enabled=ctx.simd_enabled,
-        freestanding=ctx.freestanding,
-    )
-    if codegen_rustflags:
-        env["RUSTFLAGS"] = codegen_rustflags
-    else:
-        env.pop("RUSTFLAGS", None)
-    if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
-        _configure_wasm_cc_env(env)
-    _configure_wasi_sysroot_env(env)
-    _configure_wasm_long_double_env(env)
-    cmd = [
-        "cargo",
-        "rustc",
-        "--package",
-        "molt-runtime",
-        "--profile",
-        ctx.shared_spec.cargo_profile,
-        "--target",
-        "wasm32-wasip1",
-        "--lib",
-    ]
-    if ctx.shared_spec.no_default_features:
-        cmd.append("--no-default-features")
-    if ctx.shared_spec.wasm_cargo_features:
-        cmd.extend(["--features", ",".join(ctx.shared_spec.wasm_cargo_features)])
-    RUNTIME_WASM_COMBINED_ARTIFACTS.select_in(cmd)
-    cmd.append("--")
-    link_args = _wasm_link_args_from_rustflags(ctx.shared_spec.link_flags)
-    if link_args:
-        response_path = _write_wasm_link_args_response_file(
-            ctx.build_state_root / "wasm_link_args",
-            label=f"runtime.{ctx.shared_spec.cargo_profile}.combined",
-            link_args=link_args,
-        )
-        cmd.extend(["-C", f"link-arg=@{response_path}"])
-    return env, cmd
+    plan = ctx.shared_spec.cargo_plan
+    if plan is None:
+        raise ValueError("runtime WASM execution requires its resolved Cargo plan")
+    plan.verify()
+    return dict(plan.environment), list(plan.command)
 
 
 def _publish_combined_runtime_wasm_target(
@@ -299,17 +272,17 @@ def _prepopulate_combined_runtime_wasm_target(
         simd_enabled,
         freestanding,
     )
+    plan = ctx.shared_spec.cargo_plan
+    if plan is None:
+        return ctx.fail(
+            "combined-cargo-plan", "Runtime WASM execution has no resolved Cargo plan."
+        )
+    try:
+        plan.verify()
+    except (OSError, ValueError) as exc:
+        return ctx.fail("combined-cargo-admission", str(exc), command=plan.command)
     if not force_build and ctx.target_pair_is_current():
         return True
-    if wasm_toolchain.rust_target_libdir("wasm32-wasip1") is None:
-        return ctx.fail(
-            "rust-target",
-            wasm_toolchain.rust_target_missing_message(
-                "wasm32-wasip1",
-                root=project_root,
-                context="Runtime wasm combined build",
-            ),
-        )
     env, cmd = _combined_runtime_wasm_command(ctx)
     if not json_output:
         print(
@@ -319,21 +292,29 @@ def _prepopulate_combined_runtime_wasm_target(
     started = time.perf_counter()
     try:
         build, reported_cdylib = _run_runtime_wasm_cargo_build(
-            cmd=cmd,
-            root=project_root,
-            env=env,
+            cargo_plan=plan,
             cargo_timeout=cargo_timeout,
             profile_dir=shared_spec.profile_dir,
             target_root_override=shared_spec.target_root,
             json_output=json_output,
             artifact_kind=RuntimeCrateType.CDYLIB,
         )
-    except subprocess.TimeoutExpired:
+    except CargoPlanExecutionError as exc:
+        return ctx.fail(
+            "combined-cargo-identity-stability",
+            str(exc),
+            build=exc.cargo_result,
+            command=tuple(cmd),
+        )
+    except (OSError, ValueError) as exc:
+        return ctx.fail("combined-cargo-admission", str(exc), command=tuple(cmd))
+    except subprocess.TimeoutExpired as exc:
         return ctx.fail(
             "combined-cargo",
             "Runtime wasm combined build timed out.",
             command=tuple(cmd),
             timed_out=True,
+            timeout_error=exc,
         )
     if build.returncode != 0:
         return ctx.fail(
@@ -362,6 +343,23 @@ class _RuntimeWasmPairIdentity:
     toolchain: RuntimeToolchainContentManifest
     shared: RuntimeBuildIdentity
     reloc: RuntimeBuildIdentity
+
+
+def _bind_exact_family_fingerprints(
+    ctx: _RuntimeWasmPairBuild,
+    identity: _RuntimeWasmPairIdentity,
+) -> None:
+    """Use the generation authority for Cargo-target admission as well."""
+
+    compile_fingerprint = runtime_build_fingerprint(identity.shared, scope="compile")
+    ctx.shared_spec = ctx.shared_spec._replace(
+        fingerprint=runtime_build_fingerprint(identity.shared, scope="member-output"),
+        staticlib_fingerprint=compile_fingerprint,
+    )
+    ctx.reloc_spec = ctx.reloc_spec._replace(
+        fingerprint=runtime_build_fingerprint(identity.reloc, scope="member-output"),
+        staticlib_fingerprint=compile_fingerprint,
+    )
 
 
 class _PairBuildOutcome(Enum):
@@ -407,8 +405,8 @@ class _RuntimeWasmPairBuild:
     def failure_details(self) -> dict[str, object]:
         identity = self.pre_identity
         return {
-            "pair_digest": (
-                None if identity is None else identity.shared.pair_digest
+            "family_digest": (
+                None if identity is None else identity.shared.family_digest
             ),
             "stdlib_profile": self.stdlib_profile,
             "required_link_features": sorted(self.required_link_features),
@@ -471,19 +469,13 @@ class _RuntimeWasmPairBuild:
         expected_path = (
             _build_state_root(self.project_root)
             / "runtime_wasm_generations"
-            / f"{identity.shared.pair_digest}.expected.json"
+            / f"{identity.shared.family_digest}.expected.json"
         )
-        payload = {
-            "schema": "molt.runtime-wasm-expected-pair.v1",
-            "shared": identity.shared.to_dict(),
-            "reloc": identity.reloc.to_dict(),
-        }
         try:
-            _atomic_write_text(
-                expected_path,
-                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            RuntimeWasmExpectedPair(identity.shared, identity.reloc).write(
+                expected_path
             )
-        except OSError:
+        except (OSError, ValueError):
             return False
         self.runtime_state.runtime_wasm_generation = generation.manifest
         self.runtime_state.runtime_wasm_selected = generation.shared
@@ -533,7 +525,7 @@ class _RuntimeWasmPairBuild:
         root = (
             _build_state_root(self.project_root)
             / "runtime_wasm_staging"
-            / identity.shared.pair_digest
+            / identity.shared.family_digest
             / uuid.uuid4().hex
         )
         root.mkdir(parents=True, exist_ok=False)
@@ -557,18 +549,33 @@ class _RuntimeWasmPairBuild:
         return member
 
     def ensure_member(self, *, reloc: bool) -> bool:
-        if not _materialize_runtime_wasm_member_from_target(
-            self.staging_member(reloc=reloc),
-            reloc=reloc,
-            json_output=self.json_output,
-            cargo_timeout=self.cargo_timeout,
-            project_root=self.project_root,
-            resolved_modules=self.resolved_modules,
-            required_exports=self.required_exports,
-            spec=self.reloc_spec if reloc else self.shared_spec,
-        ):
-            return False
-        return True
+        try:
+            return _materialize_runtime_wasm_member_from_target(
+                self.staging_member(reloc=reloc),
+                reloc=reloc,
+                json_output=self.json_output,
+                cargo_timeout=self.cargo_timeout,
+                project_root=self.project_root,
+                resolved_modules=self.resolved_modules,
+                required_exports=self.required_exports,
+                spec=self.reloc_spec if reloc else self.shared_spec,
+            )
+        except RuntimeWasmLinkError as exc:
+            process = exc.process
+            return record_runtime_wasm_failure(
+                self.runtime_state,
+                project_root=self.project_root,
+                stage="reloc-link",
+                summary=str(exc),
+                command=exc.command,
+                stdout=exc.stdout,
+                stderr=exc.stderr,
+                returncode=None if process is None else process.returncode,
+                timed_out=exc.timed_out,
+                details=self.failure_details(),
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return self.fail("member-publication", str(exc))
 
 
 def _resolve_runtime_wasm_pair_identity(
@@ -578,24 +585,17 @@ def _resolve_runtime_wasm_pair_identity(
     *,
     mode: Literal["pre_build", "post_build"],
 ) -> _RuntimeWasmPairIdentity:
-    toolchain = _timed_runtime_identity_phase(
-        phase="runtime_toolchain_identity",
-        mode=mode,
-        operation=lambda: _provision_runtime_wasm_toolchain_manifest(shared_spec),
-        identity_tree=_runtime_toolchain_identity_tree,
-    )
     shared, reloc = _timed_runtime_identity_phase(
-        phase="runtime_source_identity",
+        phase="runtime_family_identity",
         mode=mode,
-        operation=lambda: _resolved_runtime_wasm_pair_identities(
+        operation=lambda: _resolved_runtime_wasm_family_identities(
             ctx.project_root,
             shared_spec,
             reloc_spec,
-            toolchain_manifest=toolchain,
         ),
         identity_tree=_runtime_source_identity_tree,
     )
-    return _RuntimeWasmPairIdentity(toolchain, shared, reloc)
+    return _RuntimeWasmPairIdentity(shared.toolchain_manifest, shared, reloc)
 
 
 def _prepare_runtime_wasm_pair_build(
@@ -612,24 +612,10 @@ def _prepare_runtime_wasm_pair_build(
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
 ) -> _RuntimeWasmPairBuild | None:
-    try:
-        linker = wasm_toolchain.resolve_wasm_linker()
-    except wasm_toolchain.WasmLinkerContractError as exc:
-        record_runtime_wasm_failure(
-            runtime_state,
-            project_root=project_root,
-            stage="linker-identity",
-            summary=f"Runtime WASM linker identity failed: {exc}",
-        )
-        return None
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
-    if runtime_wasm is None or runtime_reloc_wasm is None or linker is None:
-        reason = (
-            "Runtime WASM linker identity failed: wasm-ld not found."
-            if linker is None
-            else "Runtime WASM shared/reloc artifact path is unavailable."
-        )
+    if runtime_wasm is None or runtime_reloc_wasm is None:
+        reason = "Runtime WASM shared/reloc artifact path is unavailable."
         record_runtime_wasm_failure(
             runtime_state,
             project_root=project_root,
@@ -650,29 +636,12 @@ def _prepare_runtime_wasm_pair_build(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
-            wasm_linker_identity=linker,
         )
 
     shared_spec = spec(runtime_wasm, reloc=False)
     reloc_spec = spec(runtime_reloc_wasm, reloc=True)
     toolchain_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
-    try:
-        toolchain = RuntimeToolchainContentManifest.read(toolchain_path)
-    except ValueError:
-        toolchain = None
-    pre_identity: _RuntimeWasmPairIdentity | None = None
-    if toolchain is not None:
-        try:
-            shared, reloc = _resolved_runtime_wasm_pair_identities(
-                project_root,
-                shared_spec,
-                reloc_spec,
-                toolchain_manifest=toolchain,
-            )
-            pre_identity = _RuntimeWasmPairIdentity(toolchain, shared, reloc)
-        except (OSError, ValueError):
-            pass
-    return _RuntimeWasmPairBuild(
+    ctx = _RuntimeWasmPairBuild(
         runtime_state,
         json_output,
         cargo_profile,
@@ -690,8 +659,32 @@ def _prepare_runtime_wasm_pair_build(
         reloc_spec,
         toolchain_path,
         runtime_wasm_generation_path(runtime_wasm),
-        pre_identity,
+        None,
     )
+    try:
+        shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
+            project_root,
+            shared_spec,
+            reloc_spec,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+        )
+        ctx.shared_spec, ctx.reloc_spec = shared_spec, reloc_spec
+        ctx.pre_identity = _resolve_runtime_wasm_pair_identity(
+            ctx,
+            shared_spec,
+            reloc_spec,
+            mode="pre_build",
+        )
+        _bind_exact_family_fingerprints(ctx, ctx.pre_identity)
+        ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        ctx.fail(
+            "identity-provisioning",
+            f"Runtime WASM identity provisioning failed: {exc}",
+        )
+        return None
+    return ctx
 
 
 def _materialize_runtime_wasm_pair(
@@ -705,16 +698,7 @@ def _materialize_runtime_wasm_pair(
             "Runtime WASM pair is unavailable and MOLT_SKIP_RUNTIME_REBUILD=1.",
         )
         return _PairBuildOutcome.FAILED
-    try:
-        ctx.pre_identity = _resolve_runtime_wasm_pair_identity(
-            ctx, ctx.shared_spec, ctx.reloc_spec, mode="pre_build"
-        )
-        ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        ctx.fail(
-            "identity-provisioning",
-            f"Runtime WASM identity provisioning failed: {exc}",
-        )
+    if ctx.pre_identity is None:
         return _PairBuildOutcome.FAILED
     if ctx.accept_generation():
         return _PairBuildOutcome.ACCEPTED
@@ -751,7 +735,7 @@ def _materialize_runtime_wasm_pair(
         project_root=ctx.project_root,
         simd_enabled=ctx.simd_enabled,
         freestanding=ctx.freestanding,
-        force_build=True,
+        force_build=False,
     ):
         return _PairBuildOutcome.FAILED
     if not ctx.ensure_member(reloc=False):
@@ -772,37 +756,19 @@ def _materialize_runtime_wasm_pair(
 
 
 def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
+    post_shared = ctx.shared_spec
+    post_reloc = ctx.reloc_spec
     try:
-        linker = wasm_toolchain.resolve_wasm_linker()
-    except wasm_toolchain.WasmLinkerContractError as exc:
-        return ctx.fail(
-            "post-build-linker-identity",
-            f"Runtime WASM post-build linker identity failed: {exc}",
+        plan = ctx.shared_spec.cargo_plan
+        if plan is None:
+            raise ValueError("runtime WASM build lost its resolved Cargo plan")
+        plan.verify()
+        post_shared = post_shared.with_cargo_plan(plan)._replace(
+            link_inputs=ctx.shared_spec.link_inputs
         )
-    if linker is None:
-        return ctx.fail(
-            "post-build-linker-identity",
-            "Runtime WASM post-build linker identity failed: wasm-ld not found.",
+        post_reloc = post_reloc.with_cargo_plan(plan)._replace(
+            link_inputs=ctx.reloc_spec.link_inputs
         )
-
-    def spec(path: Path, *, reloc: bool) -> _RuntimeWasmBuildSpec:
-        return _compute_runtime_wasm_build_spec(
-            ctx.project_root,
-            path,
-            reloc=reloc,
-            cargo_profile=ctx.cargo_profile,
-            simd_enabled=ctx.simd_enabled,
-            freestanding=ctx.freestanding,
-            stdlib_profile=ctx.stdlib_profile,
-            resolved_modules=ctx.resolved_modules,
-            required_link_features=ctx.required_link_features,
-            required_exports=ctx.required_exports,
-            wasm_linker_identity=linker,
-        )
-
-    post_shared = spec(ctx.runtime_wasm, reloc=False)
-    post_reloc = spec(ctx.runtime_reloc_wasm, reloc=True)
-    try:
         post_identity = _resolve_runtime_wasm_pair_identity(
             ctx, post_shared, post_reloc, mode="post_build"
         )

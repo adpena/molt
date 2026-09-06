@@ -12,6 +12,8 @@ print(f"mod_alpha={alpha}")
 print(f"mod_hidden={_hidden}")
 print(f"mod_beta={beta}")
 print(f"mod_gamma={globals().get('gamma')}")
+array.__module__ = "star.imported"
+print(f"mod_array={array()}:{array.__module__}")
 
 from import_star_plain import *
 

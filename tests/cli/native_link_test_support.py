@@ -3,14 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.native_link_plan import _host_target_triple
+from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
 
 
-SOURCE_FINGERPRINT = {
-    "hash": "1" * 64,
-    "inputs_digest": "2" * 64,
-    "meta_digest": "3" * 64,
-    "rustc": "rustc test toolchain",
-}
+RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
+    cargo_profile="dev-fast",
+    target_triple=None,
+    family_seed="native-link-test-family",
+)
 
 
 def static_archive_bytes(payload: bytes = b"object") -> bytes:
@@ -36,17 +38,24 @@ def write_test_static_archive(path: Path, payload: bytes = b"object") -> None:
 def write_test_native_link_manifest(
     runtime_lib: Path,
     *,
-    source_root: Path,
+    build_identity: RuntimeBuildIdentity | None = None,
     target_triple: str | None = None,
     native_arguments: str = "-lc",
-) -> None:
+) -> RuntimeBuildIdentity:
     """Attach the minimal strict manifest required by production link plans."""
+    if build_identity is None:
+        build_identity = native_runtime_staticlib_identity(
+            cargo_profile=runtime_lib.parent.name,
+            target_triple=target_triple,
+            family_seed="native-link-test-family",
+            host_target=_host_target_triple(),
+        )
     write_native_link_dependency_manifest(
         "",
         cargo_stderr=f"note: native-static-libs: {native_arguments}\n",
         runtime_lib=runtime_lib,
         cargo_profile=runtime_lib.parent.name,
         target_triple=target_triple,
-        source_root=source_root,
-        source_fingerprint=SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
     )
+    return build_identity

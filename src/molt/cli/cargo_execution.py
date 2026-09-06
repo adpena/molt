@@ -29,6 +29,7 @@ from molt.cli.build_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.project_roots import _find_molt_root
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 
 
 _MAX_CONCURRENT_BUILDS = 2
@@ -483,8 +484,11 @@ def _run_cargo_attempt(
     timeout: float | None,
     tempfile_runner: _TempfileCargoRunner | None,
     progress_label: str | None,
+    resolved_environment: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
-    normalized_env, _applied = normalize_cargo_environment(env)
+    normalized_env = (
+        dict(env) if resolved_environment else normalize_cargo_environment(env)[0]
+    )
     if tempfile_runner is not None:
         return tempfile_runner(
             cmd,
@@ -503,6 +507,61 @@ def _run_cargo_attempt(
         encoding="utf-8",
         errors="strict",
     )
+
+
+class CargoPlanExecutionError(ValueError):
+    """Captured execution evidence from a plan that changed during Cargo."""
+
+    def __init__(self, message: str, cargo_result: CargoExecutionResult) -> None:
+        super().__init__(message)
+        self.cargo_result = cargo_result
+
+
+def _run_resolved_cargo_plan(
+    plan: RuntimeCargoPlan,
+    *,
+    timeout: float | None,
+    json_output: bool,
+    label: str,
+    tempfile_runner: _TempfileCargoRunner | None = None,
+    progress_label: str | None = None,
+) -> CargoExecutionResult:
+    """Execute one attested plan without changing its tools or environment."""
+    plan.verify()
+    started = time.perf_counter()
+    build = _run_cargo_attempt(
+        list(plan.command),
+        cwd=plan.project_root,
+        env=plan.environment,
+        timeout=timeout,
+        tempfile_runner=tempfile_runner,
+        progress_label=progress_label,
+        resolved_environment=True,
+    )
+    wrappers = sccache_compiler_wrappers(plan.environment)
+    wrapper = wrappers[0][1] if wrappers else None
+    failure_kind = (
+        _sccache_wrapper_failure_reason(build)
+        if build.returncode != 0 and wrapper
+        else None
+    )
+    attempt = _cargo_attempt(
+        build,
+        index=1,
+        wrapper=wrapper,
+        duration_seconds=time.perf_counter() - started,
+        failure_kind=failure_kind,
+    )
+    result = CargoExecutionResult(build, attempts=(attempt,), retry_reason=None)
+    try:
+        plan.verify()
+    except (OSError, ValueError) as exc:
+        raise CargoPlanExecutionError(
+            f"Cargo plan changed during execution: {exc}", result
+        ) from exc
+    if not json_output and wrapper:
+        _attest_sccache_stats(wrapper, label)
+    return result
 
 
 def _run_cargo_with_sccache_retry(

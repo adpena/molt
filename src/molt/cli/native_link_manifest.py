@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
@@ -9,16 +8,95 @@ from typing import Any, Mapping, cast
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.diagnostic_text import strip_terminal_decoration
+from molt.cli.native_link_custody import (
+    NativeLinkCustodyEntry,
+    NativeLinkCustodyError,
+    ensure_native_link_custody,
+    publish_native_link_custody,
+    validate_native_link_custody,
+)
+from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
+from molt.cli.runtime_build_identity import (
+    RuntimeBuildIdentity,
+    require_native_runtime_staticlib_identity,
+)
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
+    validate_artifact_content_identity,
 )
+from molt.exact_json import loads_exact, read_exact
 
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _KIND = "molt_native_link_dependencies"
-_FINGERPRINT_FIELDS = frozenset({"hash", "inputs_digest", "meta_digest", "rustc"})
 _NATIVE_STATIC_LIBS_PREFIX = "native-static-libs:"
+_LINK_PLAN_SCHEMA = "molt.native-link-plan.v1"
+_FRAMEWORK_NAME_RE = re.compile(r"[A-Za-z0-9_+.-]+")
+_DYNAMIC_LIBRARY_RE = re.compile(
+    r"(?:.*\.so(?:\.[0-9]+)*|.*\.(?:dylib|dll|tbd)|.*\.dll\.a)",
+    re.I,
+)
+_CUSTODIABLE_LINK_FILE_SUFFIXES = frozenset(
+    {".a", ".lib", ".o", ".obj", ".res", ".rlib"}
+)
+_COFF_PATH_OPTION_PREFIXES = (
+    "/def:",
+    "/implib:",
+    "/libpath:",
+    "/lldmap:",
+    "/manifestfile:",
+    "/manifestinput:",
+    "/natvis:",
+    "/order:",
+    "/out:",
+    "/pdb:",
+    "/pdbaltpath:",
+    "/stub:",
+    "/wholearchive:",
+    "/winsysroot:",
+)
+_PATH_BEARING_LINKER_PREFIXES = (
+    "-F",
+    "-L",
+    "-T",
+    "--dynamic-list",
+    "--just-symbols",
+    "--retain-symbols-file",
+    "--script",
+    "--sysroot",
+    "--version-script",
+    "-bundle_loader",
+    "-filelist",
+    "-force_load",
+    "-fuse-ld",
+    "-isysroot",
+    "-order_file",
+    "-reexport_library",
+    "-weak_library",
+    "-Wl,@",
+    "-Wl,-T",
+    "-Wl,-bundle_loader",
+    "-Wl,-filelist",
+    "-Wl,-force_load",
+    "-Wl,-framework",
+    "-Wl,-l",
+    "-Wl,-order_file",
+    "-Wl,-rpath",
+    "-Wl,-rpath-link",
+    "-Wl,-reexport_library",
+    "-Wl,-syslibroot",
+    "-Wl,-weak_framework",
+    "-Wl,-weak_library",
+    "-Wl,--dynamic-list",
+    "-Wl,--just-symbols",
+    "-Wl,--retain-symbols-file",
+    "-Wl,--script",
+    "-Wl,--sysroot",
+    "-Wl,--version-script",
+)
 
 
 class NativeLinkDependencyManifestError(RuntimeError):
@@ -29,19 +107,10 @@ def native_link_dependency_manifest_path(runtime_lib: Path) -> Path:
     return runtime_lib.with_name(f"{runtime_lib.name}.native-link-deps.json")
 
 
-def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
 def _strict_json_line(raw: str, *, context: str) -> Mapping[str, Any]:
     try:
-        payload = json.loads(raw, object_pairs_hook=_strict_json_object)
-    except (json.JSONDecodeError, ValueError) as exc:
+        payload = loads_exact(raw)
+    except ValueError as exc:
         raise NativeLinkDependencyManifestError(
             f"invalid UTF-8 Cargo JSON for {context}: {exc}"
         ) from exc
@@ -75,17 +144,6 @@ def _existing_directory(raw: str, *, field: str) -> Path:
     return path
 
 
-def _linked_path_value(raw: str) -> str:
-    if "=" not in raw:
-        return raw
-    kind, path = raw.split("=", 1)
-    if not kind or not path:
-        raise NativeLinkDependencyManifestError(
-            f"invalid Cargo linked path directive {raw!r}"
-        )
-    return path
-
-
 def _runtime_identity(runtime_lib: Path) -> dict[str, object]:
     try:
         return artifact_content_identity(runtime_lib)
@@ -95,58 +153,28 @@ def _runtime_identity(runtime_lib: Path) -> dict[str, object]:
         ) from exc
 
 
-def _validated_source_fingerprint(value: object) -> dict[str, str | None]:
-    if not isinstance(value, Mapping) or set(value) != _FINGERPRINT_FIELDS:
-        raise NativeLinkDependencyManifestError(
-            "source fingerprint must contain hash, inputs_digest, meta_digest, and rustc"
-        )
-    fingerprint = cast(Mapping[str, object], value)
-    result: dict[str, str | None] = {}
-    for field in sorted(_FINGERPRINT_FIELDS):
-        raw = fingerprint[field]
-        if field == "inputs_digest" and raw is None:
-            result[field] = None
-            continue
-        if not isinstance(raw, str) or not raw:
-            raise NativeLinkDependencyManifestError(
-                f"source fingerprint {field} must be a non-empty string"
-            )
-        if field != "rustc" and re.fullmatch(r"[0-9a-f]{64}", raw) is None:
-            raise NativeLinkDependencyManifestError(
-                f"source fingerprint {field} must be a lowercase SHA-256 digest"
-            )
-        result[field] = raw
-    return result
-
-
-def _source_identity(
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
-) -> dict[str, object]:
+def _validated_native_runtime_build_identity(
+    value: object,
+    *,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> RuntimeBuildIdentity:
     try:
-        resolved_root = source_root.resolve(strict=True)
-    except OSError as exc:
-        raise NativeLinkDependencyManifestError(
-            f"cannot resolve Cargo workspace root {source_root}: {exc}"
-        ) from exc
-    if not resolved_root.is_dir():
-        raise NativeLinkDependencyManifestError(
-            f"Cargo workspace root is not a directory: {resolved_root}"
+        return require_native_runtime_staticlib_identity(
+            value,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         )
-    # The absolute checkout is local provenance, not semantic identity. Persisting
-    # it beside a shared/hydrated archive makes equivalent worktrees race to
-    # rewrite the same sidecar. The complete source/config/toolchain fingerprint
-    # is the executable authority; source_root is validated only as the invoking
-    # workspace from which that fingerprint was computed.
-    return {"fingerprint": _validated_source_fingerprint(source_fingerprint)}
+    except (TypeError, ValueError) as exc:
+        raise NativeLinkDependencyManifestError(
+            "runtime build identity is not the selected native staticlib identity: "
+            f"{exc}"
+        ) from exc
 
 
-def _native_static_lib_arguments(raw: str, *, target_triple: str | None) -> list[str]:
-    target_is_windows = (
-        "windows" in target_triple.lower() or "msvc" in target_triple.lower()
-        if target_triple
-        else os.name == "nt"
-    )
+def _native_static_lib_arguments(raw: str, *, object_format: str) -> list[str]:
+    target_is_windows = object_format == "coff"
     try:
         arguments = shlex.split(raw, posix=not target_is_windows)
     except ValueError as exc:
@@ -169,6 +197,257 @@ def _native_static_lib_arguments(raw: str, *, target_triple: str | None) -> list
     return arguments
 
 
+def _object_format_for_identity(runtime_build_identity: RuntimeBuildIdentity) -> str:
+    try:
+        return resolve_native_target_spec(
+            runtime_build_identity.effective_target
+        ).object_format.value
+    except RuntimeError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+
+
+def _require_object_format(
+    runtime_build_identity: RuntimeBuildIdentity, object_format: str
+) -> None:
+    expected = _object_format_for_identity(runtime_build_identity)
+    if object_format != expected:
+        raise NativeLinkDependencyManifestError(
+            "native link object format does not match captured runtime target: "
+            f"expected {expected!r}, got {object_format!r}"
+        )
+
+
+def _is_dynamic_library(path: Path) -> bool:
+    return _DYNAMIC_LIBRARY_RE.fullmatch(path.name) is not None
+
+
+def _is_custodiable_link_file(path: Path) -> bool:
+    return path.suffix.casefold() in _CUSTODIABLE_LINK_FILE_SUFFIXES
+
+
+def _reject_path_bearing_argument(argument: str, *, object_format: str) -> None:
+    if not argument or "\x00" in argument:
+        raise NativeLinkDependencyManifestError(
+            "native-static-libs contains an invalid argument"
+        )
+    lowered = argument.casefold()
+    if argument.startswith("@") or argument.startswith(_PATH_BEARING_LINKER_PREFIXES):
+        raise NativeLinkDependencyManifestError(
+            "native-static-libs contains an unowned path-bearing argument: "
+            f"{argument!r}"
+        )
+    if object_format == "coff" and argument.startswith("/"):
+        if (
+            lowered.startswith(_COFF_PATH_OPTION_PREFIXES)
+            or "/" in argument[1:]
+            or "\\" in argument
+        ):
+            raise NativeLinkDependencyManifestError(
+                "native-static-libs contains an unowned path-bearing argument: "
+                f"{argument!r}"
+            )
+        return
+    if (
+        _is_absolute_path(argument)
+        or re.search(r"(?i)[a-z]:[\\/]", argument)
+        or re.search(r"(?:^|[=,@])/[A-Za-z0-9_.-]", argument)
+    ):
+        raise NativeLinkDependencyManifestError(
+            "native-static-libs contains an unowned path-bearing argument: "
+            f"{argument!r}"
+        )
+
+
+def _looks_like_relative_link_input(argument: str) -> bool:
+    lowered = argument.casefold()
+    return (
+        lowered.endswith(
+            (".a", ".lib", ".o", ".obj", ".rlib", ".dylib", ".dll", ".tbd")
+        )
+        or ".so." in lowered
+        or lowered.endswith(".so")
+    )
+
+
+def _library_name_keys(value: str, *, object_format: str) -> frozenset[str]:
+    name = value
+    if name.startswith("-l:"):
+        name = name[3:]
+    elif name.startswith("-l") and len(name) > 2:
+        name = name[2:]
+    normalized = name.casefold() if object_format == "coff" else name
+    keys = {normalized}
+    lowered = normalized.casefold()
+    for suffix in (".lib", ".a", ".dylib", ".tbd", ".so"):
+        if lowered.endswith(suffix):
+            stem = normalized[: -len(suffix)]
+            keys.add(stem)
+            if stem.casefold().startswith("lib") and len(stem) > 3:
+                keys.add(stem[3:])
+            break
+    return frozenset(keys)
+
+
+def _declared_library_policy(
+    raw: str,
+    *,
+    object_format: str,
+) -> tuple[str, frozenset[str]] | None:
+    kind, name = _directive_parts(raw)
+    base_kind = kind.split(":", 1)[0] if kind is not None else "dylib"
+    if base_kind in {"framework", "weak_framework"}:
+        return None
+    if base_kind in {"dylib", "raw-dylib"}:
+        policy = "dynamic"
+    elif base_kind in {"static", "static-nobundle"}:
+        policy = "static"
+    else:
+        raise NativeLinkDependencyManifestError(
+            f"unsupported Cargo linked library kind {base_kind!r}"
+        )
+    return policy, _library_name_keys(name, object_format=object_format)
+
+
+def _relocatable_link_plan(
+    arguments: tuple[str, ...],
+    *,
+    runtime_lib: Path,
+    object_format: str,
+    native_dirs: tuple[Path, ...],
+    framework_dirs: tuple[Path, ...],
+    declared_dynamic_libraries: frozenset[str],
+    declared_static_libraries: frozenset[str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    pending: list[dict[str, object]] = []
+    custody_sources: list[Path] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in {"-framework", "-weak_framework"}:
+            if object_format != "macho" or index + 1 >= len(arguments):
+                raise NativeLinkDependencyManifestError(
+                    f"invalid rustc framework argument sequence at {argument!r}"
+                )
+            framework = arguments[index + 1]
+            if _FRAMEWORK_NAME_RE.fullmatch(framework) is None:
+                raise NativeLinkDependencyManifestError(
+                    f"invalid native framework name: {framework!r}"
+                )
+            match = _unique_search_match(
+                (f"{framework}.framework",),
+                framework_dirs,
+                context=framework,
+            )
+            if match is not None:
+                raise NativeLinkDependencyManifestError(
+                    "non-system frameworks are not relocatable native-link inputs; "
+                    "package the framework and its runtime loader contract explicitly: "
+                    f"{framework}"
+                )
+            pending.append(
+                {
+                    "kind": "system-framework",
+                    "name": framework,
+                    "weak": argument == "-weak_framework",
+                }
+            )
+            index += 2
+            continue
+
+        if _is_absolute_path(argument) and not (
+            object_format == "coff" and argument.startswith("/")
+        ):
+            source = Path(argument)
+            if not source.is_file():
+                raise NativeLinkDependencyManifestError(
+                    f"rustc native-static-libs path no longer exists: {argument}"
+                )
+            if _is_dynamic_library(source):
+                raise NativeLinkDependencyManifestError(
+                    "non-system dynamic libraries require an explicit runtime "
+                    f"distribution contract: {source.name}"
+                )
+            if not _is_custodiable_link_file(source):
+                raise NativeLinkDependencyManifestError(
+                    "native link input has no supported relocatable file role: "
+                    f"{source.name}"
+                )
+            if object_format == "coff" and source.suffix.casefold() == ".lib":
+                raise NativeLinkDependencyManifestError(
+                    "direct COFF .lib input is ambiguous between a static archive and "
+                    "a dynamic import library; use a declared static library search "
+                    f"input or provide an explicit runtime distribution contract: {source.name}"
+                )
+            resolved = source.resolve()
+            custody_sources.append(resolved)
+            pending.append({"kind": "custodied-file", "_source": resolved})
+            index += 1
+            continue
+
+        candidates = _library_candidate_names(argument, object_format=object_format)
+        match = _unique_search_match(candidates, native_dirs, context=argument)
+        if match is not None:
+            library_keys = _library_name_keys(argument, object_format=object_format)
+            if _is_dynamic_library(match) or (
+                object_format == "coff"
+                and bool(library_keys & declared_dynamic_libraries)
+            ):
+                raise NativeLinkDependencyManifestError(
+                    "non-system dynamic libraries require an explicit runtime "
+                    f"distribution contract: {match.name}"
+                )
+            if (
+                object_format == "coff"
+                and match.suffix.casefold() == ".lib"
+                and not library_keys & declared_static_libraries
+            ):
+                raise NativeLinkDependencyManifestError(
+                    "local COFF .lib input is ambiguous between a static archive and "
+                    "a dynamic import library; declare static custody or provide an "
+                    f"explicit runtime distribution contract: {match.name}"
+                )
+            custody_sources.append(match)
+            pending.append(
+                {
+                    "kind": "custodied-library",
+                    "argument": argument,
+                    "_source": match,
+                }
+            )
+        elif candidates:
+            _reject_path_bearing_argument(argument, object_format=object_format)
+            pending.append({"kind": "system-library", "argument": argument})
+        else:
+            if _looks_like_relative_link_input(argument):
+                raise NativeLinkDependencyManifestError(
+                    "relative native link inputs have no relocatable custody: "
+                    f"{argument!r}"
+                )
+            _reject_path_bearing_argument(argument, object_format=object_format)
+            pending.append({"kind": "linker-argument", "argument": argument})
+        index += 1
+
+    try:
+        custody, source_ids = publish_native_link_custody(
+            runtime_lib,
+            custody_sources,
+        )
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+    items: list[dict[str, object]] = []
+    for pending_item in pending:
+        source = pending_item.pop("_source", None)
+        if isinstance(source, Path):
+            identifier = source_ids.get(source.absolute())
+            if identifier is None:
+                raise NativeLinkDependencyManifestError(
+                    f"native link input escaped custody publication: {source}"
+                )
+            pending_item["entry_id"] = identifier
+        items.append(pending_item)
+    return {"schema": _LINK_PLAN_SCHEMA, "items": items}, custody
+
+
 def manifest_from_cargo_json(
     cargo_stdout: str,
     *,
@@ -176,11 +455,20 @@ def manifest_from_cargo_json(
     runtime_lib: Path,
     cargo_profile: str,
     target_triple: str | None,
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
 ) -> dict[str, object]:
     """Capture exact build-script provenance from one successful Cargo JSON run."""
-    scripts: list[dict[str, object]] = []
+    runtime_build_identity = _validated_native_runtime_build_identity(
+        runtime_build_identity,
+        cargo_profile=cargo_profile,
+        target_triple=target_triple,
+    )
+    object_format = _object_format_for_identity(runtime_build_identity)
+    script_records: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    native_dirs: set[Path] = set()
+    framework_dirs: set[Path] = set()
+    declared_dynamic_libraries: set[str] = set()
+    declared_static_libraries: set[str] = set()
     native_static_lib_records: list[str] = []
     for line_number, raw in enumerate(cargo_stdout.splitlines(), start=1):
         if not raw:
@@ -216,21 +504,43 @@ def manifest_from_cargo_json(
         linked_paths = _strict_string_list(
             message.get("linked_paths"), field="linked_paths"
         )
-        for linked_path in linked_paths:
-            _existing_directory(
-                _linked_path_value(linked_path),
-                field="build-script-executed.linked_paths entry",
-            )
-        scripts.append(
-            {
-                "package_id": package_id,
-                "out_dir": out_dir,
-                "linked_paths": list(linked_paths),
-                "linked_libs": list(
-                    _strict_string_list(message.get("linked_libs"), field="linked_libs")
-                ),
-            }
+        linked_libs = _strict_string_list(
+            message.get("linked_libs"), field="linked_libs"
         )
+        identity = (package_id, out_dir)
+        record = (linked_paths, linked_libs)
+        existing = script_records.get(identity)
+        if existing is not None and existing != record:
+            raise NativeLinkDependencyManifestError(
+                "conflicting build-script-executed records for one package/out_dir"
+            )
+        script_records[identity] = record
+        for linked_lib in linked_libs:
+            policy = _declared_library_policy(
+                linked_lib,
+                object_format=object_format,
+            )
+            if policy is None:
+                continue
+            policy_name, names = policy
+            if policy_name == "dynamic":
+                declared_dynamic_libraries.update(names)
+            else:
+                declared_static_libraries.update(names)
+        for linked_path in linked_paths:
+            kind, raw_path = _directive_parts(linked_path)
+            if kind not in {None, "all", "crate", "dependency", "framework", "native"}:
+                raise NativeLinkDependencyManifestError(
+                    f"unsupported Cargo linked_paths kind {kind!r}"
+                )
+            directory = _existing_directory(
+                raw_path,
+                field="build-script-executed.linked_paths entry",
+            ).resolve()
+            if kind == "framework":
+                framework_dirs.add(directory)
+            else:
+                native_dirs.add(directory)
     for raw in cargo_stderr.splitlines():
         # Cargo/rustc diagnostics may still be decorated by a wrapper or an
         # externally supplied log even though Molt's own command requests
@@ -240,43 +550,38 @@ def manifest_from_cargo_json(
         prefix = f"note: {_NATIVE_STATIC_LIBS_PREFIX}"
         if raw.startswith(prefix):
             native_static_lib_records.append(raw[len(prefix) :].strip())
-    scripts.sort(key=lambda script: (str(script["package_id"]), str(script["out_dir"])))
-    deduped_scripts: list[dict[str, object]] = []
-    for script in scripts:
-        identity = (str(script["package_id"]), str(script["out_dir"]))
-        if deduped_scripts and identity == (
-            str(deduped_scripts[-1]["package_id"]),
-            str(deduped_scripts[-1]["out_dir"]),
-        ):
-            if script != deduped_scripts[-1]:
-                raise NativeLinkDependencyManifestError(
-                    "conflicting build-script-executed records for one package/out_dir"
-                )
-            continue
-        deduped_scripts.append(script)
     if len(native_static_lib_records) != 1:
         raise NativeLinkDependencyManifestError(
             "Cargo rustc output must contain exactly one native-static-libs note"
         )
     native_static_libs_raw = native_static_lib_records[0]
+    arguments = tuple(
+        _native_static_lib_arguments(
+            native_static_libs_raw,
+            object_format=object_format,
+        )
+    )
+    link_plan, custody = _relocatable_link_plan(
+        arguments,
+        runtime_lib=runtime_lib,
+        object_format=object_format,
+        native_dirs=tuple(sorted(native_dirs, key=os.fspath)),
+        framework_dirs=tuple(sorted(framework_dirs, key=os.fspath)),
+        declared_dynamic_libraries=frozenset(declared_dynamic_libraries),
+        declared_static_libraries=frozenset(declared_static_libraries),
+    )
     return {
         "schema_version": _SCHEMA_VERSION,
         "kind": _KIND,
         "runtime": _runtime_identity(runtime_lib),
-        "source": _source_identity(source_root, source_fingerprint),
+        "runtime_build_identity": runtime_build_identity.to_dict(),
         "cargo": {
             "profile": cargo_profile,
             "profile_dir": runtime_lib.parent.name,
             "target_triple": target_triple,
         },
-        "build_scripts": deduped_scripts,
-        "native_static_libs": {
-            "raw": native_static_libs_raw,
-            "arguments": _native_static_lib_arguments(
-                native_static_libs_raw,
-                target_triple=target_triple,
-            ),
-        },
+        "link_plan": link_plan,
+        "custody": custody,
     }
 
 
@@ -287,8 +592,7 @@ def write_native_link_dependency_manifest(
     runtime_lib: Path,
     cargo_profile: str,
     target_triple: str | None,
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
 ) -> Path:
     manifest = manifest_from_cargo_json(
         cargo_stdout,
@@ -296,94 +600,125 @@ def write_native_link_dependency_manifest(
         runtime_lib=runtime_lib,
         cargo_profile=cargo_profile,
         target_triple=target_triple,
-        source_root=source_root,
-        source_fingerprint=source_fingerprint,
+        runtime_build_identity=runtime_build_identity,
     )
     path = native_link_dependency_manifest_path(runtime_lib)
     _atomic_write_json(path, manifest, indent=2, sort_keys=True)
     return path
 
 
-def _validated_build_scripts(value: object) -> tuple[Mapping[str, object], ...]:
-    if not isinstance(value, list):
-        raise NativeLinkDependencyManifestError("build_scripts must be an array")
-    scripts: list[Mapping[str, object]] = []
-    for index, script in enumerate(value):
-        if not isinstance(script, dict) or set(script) != {
-            "package_id",
-            "out_dir",
-            "linked_paths",
-            "linked_libs",
-        }:
-            raise NativeLinkDependencyManifestError(
-                f"build_scripts[{index}] has an invalid object shape"
-            )
-        script = cast(dict[str, object], script)
-        package_id = script["package_id"]
-        out_dir = script["out_dir"]
-        if not isinstance(package_id, str) or not package_id:
-            raise NativeLinkDependencyManifestError(
-                f"build_scripts[{index}].package_id is invalid"
-            )
-        if not isinstance(out_dir, str) or not out_dir:
-            raise NativeLinkDependencyManifestError(
-                f"build_scripts[{index}].out_dir is invalid"
-            )
-        if not _is_absolute_path(out_dir):
-            raise NativeLinkDependencyManifestError(
-                f"build_scripts[{index}].out_dir must be absolute"
-            )
-        _existing_directory(out_dir, field=f"build_scripts[{index}].out_dir")
-        linked_paths = _strict_string_list(script["linked_paths"], field="linked_paths")
-        for linked_path in linked_paths:
-            _existing_directory(
-                _linked_path_value(linked_path),
-                field=f"build_scripts[{index}].linked_paths entry",
-            )
-        linked_libs = _strict_string_list(script["linked_libs"], field="linked_libs")
-        scripts.append(
-            {
-                "package_id": package_id,
-                "out_dir": out_dir,
-                "linked_paths": list(linked_paths),
-                "linked_libs": list(linked_libs),
-            }
-        )
-    identities = [
-        (str(script["package_id"]), str(script["out_dir"])) for script in scripts
-    ]
-    if len(identities) != len(set(identities)):
-        raise NativeLinkDependencyManifestError(
-            "build_scripts contains a duplicate package/out_dir record"
-        )
-    if identities != sorted(identities):
-        raise NativeLinkDependencyManifestError(
-            "build_scripts provenance must be deterministically ordered"
-        )
-    return tuple(scripts)
-
-
-def _validated_native_static_libs(
-    value: object,
+def validate_native_link_dependency_manifest(
+    manifest: Mapping[str, object],
     *,
+    runtime_identity: Mapping[str, object],
+    context: str,
     target_triple: str | None,
-) -> tuple[str, ...]:
-    if not isinstance(value, dict) or set(value) != {"raw", "arguments"}:
-        raise NativeLinkDependencyManifestError("invalid native_static_libs shape")
-    raw = value.get("raw")
-    arguments = value.get("arguments")
-    if not isinstance(raw, str):
-        raise NativeLinkDependencyManifestError("invalid native_static_libs payload")
-    validated_arguments = _strict_string_list(
-        arguments, field="native_static_libs.arguments"
-    )
-    if validated_arguments != tuple(
-        _native_static_lib_arguments(raw, target_triple=target_triple)
+    cargo_profile: str | None = None,
+    runtime_build_identity: RuntimeBuildIdentity | None = None,
+) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+    """Validate one decoded manifest against its artifact and build authorities."""
+    if set(manifest) != {
+        "schema_version",
+        "kind",
+        "runtime",
+        "runtime_build_identity",
+        "cargo",
+        "link_plan",
+        "custody",
+    }:
+        raise NativeLinkDependencyManifestError(f"invalid manifest shape: {context}")
+    if (
+        type(manifest.get("schema_version")) is not int
+        or manifest.get("schema_version") != _SCHEMA_VERSION
+        or manifest.get("kind") != _KIND
     ):
         raise NativeLinkDependencyManifestError(
-            "native_static_libs arguments do not match the rustc note"
+            f"unsupported manifest schema: {context}"
         )
-    return validated_arguments
+    runtime = manifest.get("runtime")
+    stored_build_identity_value = manifest.get("runtime_build_identity")
+    cargo = manifest.get("cargo")
+    try:
+        runtime = validate_artifact_content_identity(runtime)
+        runtime_identity = validate_artifact_content_identity(runtime_identity)
+    except StaticArchiveIdentityError as exc:
+        raise NativeLinkDependencyManifestError(
+            f"invalid runtime identity: {context}: {exc}"
+        ) from exc
+    if not isinstance(cargo, dict) or set(cargo) != {
+        "profile",
+        "profile_dir",
+        "target_triple",
+    }:
+        raise NativeLinkDependencyManifestError(f"invalid Cargo identity: {context}")
+    cargo = cast(dict[str, object], cargo)
+    cargo_profile_value = cargo.get("profile")
+    if not isinstance(cargo_profile_value, str) or not cargo_profile_value:
+        raise NativeLinkDependencyManifestError(f"invalid Cargo profile: {context}")
+    if cargo.get("target_triple") != target_triple:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest target mismatch: {context}"
+        )
+    if cargo_profile is not None and cargo.get("profile") != cargo_profile:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest Cargo profile mismatch: {context}"
+        )
+    stored_build_identity = _validated_native_runtime_build_identity(
+        stored_build_identity_value,
+        cargo_profile=cargo_profile_value,
+        target_triple=target_triple,
+    )
+    if (
+        runtime_build_identity is not None
+        and stored_build_identity != runtime_build_identity
+    ):
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest runtime build identity mismatch: {context}"
+        )
+    expected_dir_for_profile = (
+        "debug" if cargo["profile"] == "dev" else cargo["profile"]
+    )
+    if expected_dir_for_profile != cargo["profile_dir"]:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest Cargo profile identity is inconsistent: {context}"
+        )
+    try:
+        _custody, entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=context,
+        )
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+    link_items = _validated_link_plan(
+        manifest.get("link_plan"),
+        entries=entries,
+        object_format=_object_format_for_identity(stored_build_identity),
+        context=context,
+    )
+    if runtime != runtime_identity:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest archive digest mismatch: {context}"
+        )
+    return manifest, link_items
+
+
+def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, object]:
+    """Read one bounded, stable direct-file generation of native metadata."""
+    try:
+        payload = read_exact(
+            path,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="native link dependency manifest",
+        )
+    except (OSError, ValueError) as exc:
+        raise NativeLinkDependencyManifestError(
+            f"cannot read native link dependency manifest {path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise NativeLinkDependencyManifestError(
+            f"native link dependency manifest must be an object: {path}"
+        )
+    return payload
 
 
 def _read_native_link_dependency_manifest(
@@ -391,97 +726,18 @@ def _read_native_link_dependency_manifest(
     *,
     target_triple: str | None,
     cargo_profile: str | None = None,
-    source_root: Path | None = None,
-    source_fingerprint: Mapping[str, object] | None = None,
+    runtime_build_identity: RuntimeBuildIdentity | None = None,
 ) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
     path = native_link_dependency_manifest_path(runtime_lib)
-    try:
-        text = path.read_text(encoding="utf-8", errors="strict")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise NativeLinkDependencyManifestError(
-            f"cannot read native link dependency manifest {path}: {exc}"
-        ) from exc
-    manifest = _strict_json_line(text, context=str(path))
-    if set(manifest) != {
-        "schema_version",
-        "kind",
-        "runtime",
-        "source",
-        "cargo",
-        "build_scripts",
-        "native_static_libs",
-    }:
-        raise NativeLinkDependencyManifestError(f"invalid manifest shape: {path}")
-    if (
-        manifest.get("schema_version") != _SCHEMA_VERSION
-        or manifest.get("kind") != _KIND
-    ):
-        raise NativeLinkDependencyManifestError(f"unsupported manifest schema: {path}")
-    runtime = manifest.get("runtime")
-    source = manifest.get("source")
-    cargo = manifest.get("cargo")
-    runtime_shapes = (
-        {"schema", "semantic_sha256", "member_count", "content_size_bytes"},
-        {"schema", "sha256", "size_bytes"},
+    manifest = read_native_link_dependency_manifest_payload(path)
+    return validate_native_link_dependency_manifest(
+        manifest,
+        runtime_identity=_runtime_identity(runtime_lib),
+        context=str(path),
+        target_triple=target_triple,
+        cargo_profile=cargo_profile,
+        runtime_build_identity=runtime_build_identity,
     )
-    if not isinstance(runtime, dict) or set(runtime) not in runtime_shapes:
-        raise NativeLinkDependencyManifestError(f"invalid runtime identity: {path}")
-    if not isinstance(cargo, dict) or set(cargo) != {
-        "profile",
-        "profile_dir",
-        "target_triple",
-    }:
-        raise NativeLinkDependencyManifestError(f"invalid Cargo identity: {path}")
-    if not isinstance(source, dict) or set(source) != {"fingerprint"}:
-        raise NativeLinkDependencyManifestError(f"invalid source identity: {path}")
-    stored_fingerprint = _validated_source_fingerprint(source.get("fingerprint"))
-    if source_root is not None:
-        try:
-            expected_root = source_root.resolve(strict=True)
-        except OSError as exc:
-            raise NativeLinkDependencyManifestError(
-                f"cannot resolve expected source workspace {source_root}: {exc}"
-            ) from exc
-        if not expected_root.is_dir():
-            raise NativeLinkDependencyManifestError(
-                f"expected source workspace is not a directory: {expected_root}"
-            )
-    if source_fingerprint is not None:
-        if stored_fingerprint != _validated_source_fingerprint(source_fingerprint):
-            raise NativeLinkDependencyManifestError(
-                f"native link manifest source fingerprint mismatch for {runtime_lib}"
-            )
-    if cargo.get("target_triple") != target_triple:
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest target mismatch for {runtime_lib}"
-        )
-    expected_profile_dir = runtime_lib.parent.name
-    if cargo.get("profile_dir") != expected_profile_dir:
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest profile directory mismatch for {runtime_lib}"
-        )
-    if cargo_profile is not None and cargo.get("profile") != cargo_profile:
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest Cargo profile mismatch for {runtime_lib}"
-        )
-    if not isinstance(cargo.get("profile"), str) or not cargo["profile"]:
-        raise NativeLinkDependencyManifestError(f"invalid Cargo profile: {path}")
-    expected_dir_for_profile = (
-        "debug" if cargo["profile"] == "dev" else cargo["profile"]
-    )
-    if expected_dir_for_profile != cargo["profile_dir"]:
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest Cargo profile identity is inconsistent for {runtime_lib}"
-        )
-    scripts = _validated_build_scripts(manifest.get("build_scripts"))
-    _validated_native_static_libs(
-        manifest.get("native_static_libs"), target_triple=target_triple
-    )
-    if runtime != _runtime_identity(runtime_lib):
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest archive digest mismatch for {runtime_lib}"
-        )
-    return manifest, scripts
 
 
 def read_native_link_dependency_manifest(
@@ -489,16 +745,24 @@ def read_native_link_dependency_manifest(
     *,
     target_triple: str | None,
     cargo_profile: str | None = None,
-    source_root: Path | None = None,
-    source_fingerprint: Mapping[str, object] | None = None,
+    runtime_build_identity: RuntimeBuildIdentity | None = None,
 ) -> Mapping[str, object]:
     manifest, _scripts = _read_native_link_dependency_manifest(
         runtime_lib,
         target_triple=target_triple,
         cargo_profile=cargo_profile,
-        source_root=source_root,
-        source_fingerprint=source_fingerprint,
+        runtime_build_identity=runtime_build_identity,
     )
+    try:
+        custody, _entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=str(runtime_lib),
+        )
+        ensure_native_link_custody(runtime_lib, custody)
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(
+            f"native link custody archive is unavailable or invalid: {exc}"
+        ) from exc
     return manifest
 
 
@@ -511,32 +775,6 @@ def _directive_parts(raw: str) -> tuple[str | None, str]:
     return kind, value
 
 
-def _native_search_directories(
-    scripts: tuple[Mapping[str, object], ...],
-) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-    native_dirs: set[Path] = set()
-    framework_dirs: set[Path] = set()
-    for script in scripts:
-        for raw in _strict_string_list(script["linked_paths"], field="linked_paths"):
-            kind, path = _directive_parts(raw)
-            if kind not in {None, "all", "crate", "dependency", "framework", "native"}:
-                raise NativeLinkDependencyManifestError(
-                    f"unsupported Cargo linked_paths kind {kind!r}"
-                )
-            if not _is_absolute_path(path):
-                raise NativeLinkDependencyManifestError(
-                    f"Cargo linked path must be absolute: {path!r}"
-                )
-            if kind == "framework":
-                framework_dirs.add(Path(path))
-            else:
-                native_dirs.add(Path(path))
-    return (
-        tuple(sorted(native_dirs, key=os.fspath)),
-        tuple(sorted(framework_dirs, key=os.fspath)),
-    )
-
-
 def _library_candidate_names(argument: str, *, object_format: str) -> tuple[str, ...]:
     if argument.startswith("-l:"):
         return (argument[3:],)
@@ -547,7 +785,11 @@ def _library_candidate_names(argument: str, *, object_format: str) -> tuple[str,
         if object_format == "macho":
             return (f"lib{name}.a", f"lib{name}.dylib", f"lib{name}.tbd")
         return (f"lib{name}.a", f"lib{name}.so")
-    if object_format == "coff" and argument.lower().endswith(".lib"):
+    if (
+        object_format == "coff"
+        and not argument.startswith("/")
+        and argument.lower().endswith(".lib")
+    ):
         return (argument,)
     return ()
 
@@ -573,65 +815,181 @@ def _unique_search_match(
     return next(iter(matches), None)
 
 
-def _native_link_flags(
-    arguments: tuple[str, ...],
-    scripts: tuple[Mapping[str, object], ...],
+def _validated_link_plan(
+    value: object,
     *,
+    entries: tuple[NativeLinkCustodyEntry, ...],
     object_format: str,
-) -> list[str]:
-    """Replay rustc's exact native-static-libs sequence with explicit custody."""
+    context: str,
+) -> tuple[Mapping[str, object], ...]:
     if object_format not in {"coff", "elf", "macho"}:
         raise NativeLinkDependencyManifestError(
             f"unsupported native object format {object_format!r}"
         )
-    native_dirs, framework_dirs = _native_search_directories(scripts)
-    flags: list[str] = []
-    index = 0
-    while index < len(arguments):
-        argument = arguments[index]
-        if argument in {"-framework", "-weak_framework"}:
-            if object_format != "macho" or index + 1 >= len(arguments):
-                raise NativeLinkDependencyManifestError(
-                    f"invalid rustc framework argument sequence at {argument!r}"
-                )
-            framework = arguments[index + 1]
-            match = _unique_search_match(
-                (f"{framework}.framework",),
-                framework_dirs,
-                context=framework,
+    if not isinstance(value, dict) or set(value) != {"schema", "items"}:
+        raise NativeLinkDependencyManifestError(f"invalid native link plan: {context}")
+    if value.get("schema") != _LINK_PLAN_SCHEMA:
+        raise NativeLinkDependencyManifestError(
+            f"unsupported native link plan schema: {context}"
+        )
+    raw_items = value.get("items")
+    if not isinstance(raw_items, list):
+        raise NativeLinkDependencyManifestError(
+            f"native link plan items must be an array: {context}"
+        )
+    entries_by_id = {entry.identifier: entry for entry in entries}
+    used_entries: set[str] = set()
+    items: list[Mapping[str, object]] = []
+    for index, item in enumerate(raw_items):
+        item_context = f"{context}:link_plan.items[{index}]"
+        if not isinstance(item, dict):
+            raise NativeLinkDependencyManifestError(
+                f"native link plan item must be an object: {item_context}"
             )
-            if match is not None:
-                flags.append(f"-F{match.parent}")
-            flags.extend((argument, framework))
-            index += 2
-            continue
-        path = Path(argument)
-        if path.is_absolute():
-            if not path.is_file():
+        item = cast(dict[str, object], item)
+        kind = item.get("kind")
+        if not isinstance(kind, str):
+            raise NativeLinkDependencyManifestError(
+                f"native link plan item kind must be a string: {item_context}"
+            )
+        if kind in {"system-library", "linker-argument"}:
+            if set(item) != {"kind", "argument"}:
                 raise NativeLinkDependencyManifestError(
-                    f"rustc native-static-libs path no longer exists: {path}"
+                    f"invalid {kind} item: {item_context}"
+                )
+            argument = item.get("argument")
+            if not isinstance(argument, str):
+                raise NativeLinkDependencyManifestError(
+                    f"invalid native link argument: {item_context}"
+                )
+            _reject_path_bearing_argument(argument, object_format=object_format)
+            candidates = _library_candidate_names(argument, object_format=object_format)
+            if kind == "system-library" and not candidates:
+                raise NativeLinkDependencyManifestError(
+                    f"system library item is not a library selector: {item_context}"
+                )
+            if kind == "linker-argument" and (
+                candidates or _looks_like_relative_link_input(argument)
+            ):
+                raise NativeLinkDependencyManifestError(
+                    f"linker argument bypasses native input custody: {item_context}"
+                )
+        elif kind == "custodied-library":
+            if set(item) != {"kind", "argument", "entry_id"}:
+                raise NativeLinkDependencyManifestError(
+                    f"invalid custodied library item: {item_context}"
+                )
+            argument = item.get("argument")
+            entry_id = item.get("entry_id")
+            if not isinstance(argument, str) or not isinstance(entry_id, str):
+                raise NativeLinkDependencyManifestError(
+                    f"invalid custodied library item: {item_context}"
+                )
+            _reject_path_bearing_argument(argument, object_format=object_format)
+            entry = entries_by_id.get(entry_id)
+            candidates = _library_candidate_names(argument, object_format=object_format)
+            if (
+                entry is None
+                or entry.filename not in candidates
+                or _is_dynamic_library(Path(entry.filename))
+            ):
+                raise NativeLinkDependencyManifestError(
+                    f"custodied library does not match its selector: {item_context}"
+                )
+            assert isinstance(entry_id, str)
+            used_entries.add(entry_id)
+        elif kind == "custodied-file":
+            if set(item) != {"kind", "entry_id"}:
+                raise NativeLinkDependencyManifestError(
+                    f"invalid custodied file item: {item_context}"
+                )
+            entry_id = item.get("entry_id")
+            entry = entries_by_id.get(entry_id) if isinstance(entry_id, str) else None
+            if (
+                entry is None
+                or _is_dynamic_library(Path(entry.filename))
+                or not _is_custodiable_link_file(Path(entry.filename))
+            ):
+                raise NativeLinkDependencyManifestError(
+                    f"custodied file has no matching entry: {item_context}"
+                )
+            assert isinstance(entry_id, str)
+            used_entries.add(entry_id)
+        elif kind == "system-framework":
+            if set(item) != {"kind", "name", "weak"} or object_format != "macho":
+                raise NativeLinkDependencyManifestError(
+                    f"invalid system framework item: {item_context}"
+                )
+            name = item.get("name")
+            weak = item.get("weak")
+            if (
+                not isinstance(name, str)
+                or _FRAMEWORK_NAME_RE.fullmatch(name) is None
+                or not isinstance(weak, bool)
+            ):
+                raise NativeLinkDependencyManifestError(
+                    f"invalid system framework item: {item_context}"
+                )
+        else:
+            raise NativeLinkDependencyManifestError(
+                f"unsupported native link plan item kind {kind!r}: {item_context}"
+            )
+        items.append(item)
+    if used_entries != set(entries_by_id):
+        missing = sorted(set(entries_by_id) - used_entries)
+        raise NativeLinkDependencyManifestError(
+            f"native-link custody contains unreferenced entries: {missing}"
+        )
+    return tuple(items)
+
+
+def _native_link_flags(
+    items: tuple[Mapping[str, object], ...],
+    *,
+    object_format: str,
+    custody_paths: Mapping[str, Path],
+) -> list[str]:
+    """Render the path-neutral Cargo link plan through local content custody."""
+    if object_format not in {"coff", "elf", "macho"}:
+        raise NativeLinkDependencyManifestError(
+            f"unsupported native object format {object_format!r}"
+        )
+    flags: list[str] = []
+    for item in items:
+        kind = item["kind"]
+        if kind == "system-framework":
+            flags.extend(
+                (
+                    "-weak_framework" if item["weak"] else "-framework",
+                    str(item["name"]),
+                )
+            )
+            continue
+        if kind == "custodied-file":
+            path = custody_paths.get(str(item["entry_id"]))
+            if path is None:
+                raise NativeLinkDependencyManifestError(
+                    f"native link file is absent from custody: {item['entry_id']}"
                 )
             flags.append(os.fspath(path))
-            index += 1
             continue
-        candidates = _library_candidate_names(argument, object_format=object_format)
-        match = _unique_search_match(candidates, native_dirs, context=argument)
-        if match is not None:
+        argument = str(item["argument"])
+        if kind == "custodied-library":
+            path = custody_paths.get(str(item["entry_id"]))
+            if path is None:
+                raise NativeLinkDependencyManifestError(
+                    f"native link library is absent from custody: {item['entry_id']}"
+                )
             if object_format == "coff" and not argument.startswith("-l"):
-                flags.append(os.fspath(match))
+                flags.append(os.fspath(path))
             else:
-                flags.extend((f"-L{match.parent}", argument))
+                flags.extend((f"-L{path.parent}", argument))
         elif object_format == "coff" and (
             argument.lower().endswith(".lib") or argument.startswith("/")
         ):
-            # rustc prints linker arguments, while Molt executes a Clang driver.
-            # Preserve the exact ordered token (including duplicates) behind the
-            # driver's transparent linker forwarding syntax so Clang does not
-            # misclassify a system .lib or /defaultlib option as an input path.
             flags.append(f"-Wl,{argument}")
         else:
             flags.append(argument)
-        index += 1
     return flags
 
 
@@ -639,19 +997,46 @@ def native_link_flags_from_manifest(
     manifest: Mapping[str, object],
     *,
     object_format: str,
+    runtime_lib: Path | None = None,
 ) -> list[str]:
-    cargo = manifest.get("cargo")
-    if not isinstance(cargo, Mapping):
-        raise NativeLinkDependencyManifestError("manifest has no Cargo identity")
-    target_triple = cargo.get("target_triple")
-    if target_triple is not None and not isinstance(target_triple, str):
-        raise NativeLinkDependencyManifestError("manifest target triple is invalid")
-    return _native_link_flags(
-        _validated_native_static_libs(
-            manifest.get("native_static_libs"), target_triple=target_triple
-        ),
-        _validated_build_scripts(manifest.get("build_scripts")),
+    try:
+        runtime_build_identity = RuntimeBuildIdentity.from_dict(
+            manifest.get("runtime_build_identity")
+        )
+    except (TypeError, ValueError) as exc:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest runtime build identity is invalid: {exc}"
+        ) from exc
+    _require_object_format(runtime_build_identity, object_format)
+    try:
+        custody, entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=os.fspath(runtime_lib) if runtime_lib is not None else "manifest",
+        )
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+    items = _validated_link_plan(
+        manifest.get("link_plan"),
+        entries=entries,
         object_format=object_format,
+        context=os.fspath(runtime_lib) if runtime_lib is not None else "manifest",
+    )
+    if entries and runtime_lib is None:
+        raise NativeLinkDependencyManifestError(
+            "native link manifest requires its adjacent custody archive"
+        )
+    try:
+        custody_paths = (
+            ensure_native_link_custody(runtime_lib, custody)
+            if runtime_lib is not None
+            else {}
+        )
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+    return _native_link_flags(
+        items,
+        object_format=object_format,
+        custody_paths=custody_paths,
     )
 
 
@@ -660,16 +1045,24 @@ def read_native_link_flags(
     *,
     target_triple: str | None,
     object_format: str,
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
 ) -> list[str]:
-    manifest, scripts = _read_native_link_dependency_manifest(
+    _require_object_format(runtime_build_identity, object_format)
+    manifest, items = _read_native_link_dependency_manifest(
         runtime_lib,
         target_triple=target_triple,
-        source_root=source_root,
-        source_fingerprint=source_fingerprint,
+        runtime_build_identity=runtime_build_identity,
     )
-    arguments = _validated_native_static_libs(
-        manifest.get("native_static_libs"), target_triple=target_triple
+    try:
+        custody, _entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=str(runtime_lib),
+        )
+        custody_paths = ensure_native_link_custody(runtime_lib, custody)
+    except NativeLinkCustodyError as exc:
+        raise NativeLinkDependencyManifestError(str(exc)) from exc
+    return _native_link_flags(
+        items,
+        object_format=object_format,
+        custody_paths=custody_paths,
     )
-    return _native_link_flags(arguments, scripts, object_format=object_format)

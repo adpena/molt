@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import io
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
-import stat
 import subprocess
 import sys
 import tarfile
-import tempfile
 from typing import IO, TypedDict
 
 
@@ -22,41 +20,84 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from molt.cli.native_link_manifest import (  # noqa: E402
+    NativeLinkDependencyManifestError,
     native_link_dependency_manifest_path,
     read_native_link_dependency_manifest,
+    read_native_link_dependency_manifest_payload,
+    validate_native_link_dependency_manifest,
+)
+from molt.cli.native_link_custody import (  # noqa: E402
+    NativeLinkCustodyError,
+    native_link_custody_archive_path,
+    validate_native_link_custody,
+    validate_native_link_custody_archive,
+)
+from molt.cli.runtime_artifact_selection import (  # noqa: E402
+    RUNTIME_STATICLIB_ARTIFACTS,
+)
+from molt.cli.runtime_build_identity import (  # noqa: E402
+    RuntimeBuildIdentity,
+    require_native_runtime_staticlib_identity,
 )
 from molt.cli.runtime_paths import _runtime_lib_archive_name  # noqa: E402
 from molt.cli.runtime_native_build import (  # noqa: E402
-    _prepare_native_runtime_build,
+    current_native_runtime_build_identity,
 )
 from molt.cli.static_archive_identity import (  # noqa: E402
     StaticArchiveIdentityError,
     artifact_content_identity,
+    validate_artifact_content_identity,
 )
-from molt.file_hashing import _sha256_file  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
+)
 from molt.exact_json import dumps_exact, encode_exact, loads_exact  # noqa: E402
+from molt.portable_paths import portable_relative_path  # noqa: E402
+from molt.ustar import RegularUstarTarInfo  # noqa: E402
 from tools.artifact_publish import (  # noqa: E402
     fsync_file,
     publish_validated_outputs,
     staged_output_path,
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.git_identity import clean_checkout_status_arguments  # noqa: E402
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 KIND = "molt_nightly_runtime_bundle"
 MANIFEST_NAME = "nightly-runtime-manifest.json"
 PROFILE = "dev-fast"
 STDLIB_PROFILE = "full"
 RUNTIME_ROLE = "runtime_archive"
 LINK_ROLE = "native_link_manifest"
+CUSTODY_ROLE = "native_link_custody_archive"
 BACKEND_ROLE = "backend_executable"
-_ROLES = (RUNTIME_ROLE, LINK_ROLE, BACKEND_ROLE)
+_REQUIRED_ROLES = (RUNTIME_ROLE, LINK_ROLE, BACKEND_ROLE)
+_ROLES_WITH_CUSTODY = (RUNTIME_ROLE, LINK_ROLE, CUSTODY_ROLE, BACKEND_ROLE)
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _MAX_BUNDLE_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024
+# Each permitted USTAR member adds a header and at most one padding block;
+# reserve the final record for end markers and record-alignment padding.
+_MAX_BUNDLE_ARCHIVE_BYTES = (
+    _MAX_BUNDLE_PAYLOAD_BYTES
+    + (len(_ROLES_WITH_CUSTODY) + 1) * 2 * tarfile.BLOCKSIZE
+    + tarfile.RECORDSIZE
+)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40,64}")
+_CUSTODY_ARCHIVE_RE = re.compile(r"molt-native-link-custody-[0-9a-f]{64}\.tar")
+_NATIVE_TARGET_CELLS = {
+    "x86_64-unknown-linux-gnu": ("linux", "x86_64"),
+    "aarch64-unknown-linux-gnu": ("linux", "aarch64"),
+    "x86_64-apple-darwin": ("macos", "x86_64"),
+    "aarch64-apple-darwin": ("macos", "aarch64"),
+    "x86_64-pc-windows-msvc": ("windows", "x86_64"),
+    "aarch64-pc-windows-msvc": ("windows", "aarch64"),
+}
 
 
 class NightlyRuntimeBundleError(RuntimeError):
@@ -66,20 +107,32 @@ class NightlyRuntimeBundleError(RuntimeError):
 @dataclass(frozen=True)
 class BundleIdentity:
     source_commit: str
-    platform_system: str
-    platform_machine: str
-    rustc_verbose: str
-    cargo_version: str
+    target_triple: str
 
     def __post_init__(self) -> None:
         if _COMMIT_RE.fullmatch(self.source_commit) is None:
             raise ValueError("source_commit must be a lowercase Git object id")
-        if self.platform_system != "linux":
-            raise ValueError("Nightly runtime bundles currently require Linux")
-        if self.platform_machine not in {"x86_64", "aarch64"}:
-            raise ValueError("Nightly runtime bundles require Linux x86_64 or aarch64")
-        if not self.rustc_verbose.strip() or not self.cargo_version.strip():
-            raise ValueError("toolchain identity must not be empty")
+        if self.target_triple not in _NATIVE_TARGET_CELLS:
+            raise ValueError(
+                f"unsupported Nightly runtime bundle target: {self.target_triple}"
+            )
+
+    @property
+    def platform_system(self) -> str:
+        return _NATIVE_TARGET_CELLS[self.target_triple][0]
+
+    @property
+    def platform_machine(self) -> str:
+        return _NATIVE_TARGET_CELLS[self.target_triple][1]
+
+    @classmethod
+    def from_runtime(
+        cls, source_commit: str, runtime_build_identity: RuntimeBuildIdentity
+    ) -> BundleIdentity:
+        runtime_build_identity = _validated_runtime_build_identity(
+            runtime_build_identity, cargo_profile=PROFILE, target_triple=None
+        )
+        return cls(source_commit, runtime_build_identity.effective_target)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -87,10 +140,7 @@ class BundleIdentity:
             "platform": {
                 "system": self.platform_system,
                 "machine": self.platform_machine,
-            },
-            "toolchain": {
-                "rustc_verbose": self.rustc_verbose,
-                "cargo_version": self.cargo_version,
+                "target_triple": self.target_triple,
             },
         }
 
@@ -141,83 +191,112 @@ def _run_identity_command(
     return value
 
 
-def collect_bundle_identity(project_root: Path) -> BundleIdentity:
+def collect_bundle_identity(
+    project_root: Path, *, runtime_build_identity: RuntimeBuildIdentity
+) -> BundleIdentity:
     project_root = project_root.resolve(strict=True)
     status = _run_identity_command(
-        ("git", "status", "--porcelain", "--untracked-files=no"),
+        ("git", *clean_checkout_status_arguments()),
         cwd=project_root,
         allow_empty=True,
     )
     if status:
         raise NightlyRuntimeBundleError(
-            "refusing to publish a Nightly runtime bundle from tracked dirty sources"
+            "refusing to publish a Nightly runtime bundle from a dirty checkout"
         )
     source_commit = _run_identity_command(
         ("git", "rev-parse", "HEAD"), cwd=project_root
     )
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
-    return BundleIdentity(
-        source_commit=source_commit,
-        platform_system=system,
-        platform_machine=machine,
-        rustc_verbose=_run_identity_command(("rustc", "-vV"), cwd=project_root),
-        cargo_version=_run_identity_command(("cargo", "--version"), cwd=project_root),
+    return BundleIdentity.from_runtime(source_commit, runtime_build_identity)
+
+
+def capture_bundle_runtime_identity(
+    project_root: Path, target_root: Path
+) -> RuntimeBuildIdentity:
+    """Capture the native producer once before projecting bundle metadata."""
+    runtime = target_root / PROFILE / _runtime_lib_archive_name(STDLIB_PROFILE, None)
+    try:
+        return current_native_runtime_build_identity(
+            project_root,
+            runtime,
+            target_triple=None,
+            cargo_profile=PROFILE,
+            stdlib_profile=STDLIB_PROFILE,
+        )
+    except (OSError, ValueError) as exc:
+        raise NightlyRuntimeBundleError(
+            "cannot compute the canonical runtime build identity"
+        ) from exc
+
+
+def _runtime_archive_name(identity: BundleIdentity) -> str:
+    return _runtime_lib_archive_name(STDLIB_PROFILE, identity.target_triple)
+
+
+def _backend_executable_name(identity: BundleIdentity) -> str:
+    return (
+        "molt-backend.exe" if identity.platform_system == "windows" else "molt-backend"
     )
 
 
 def _require_regular_file(path: Path, *, role: str) -> os.stat_result:
     try:
-        metadata = path.lstat()
-    except OSError as exc:
+        with open_stable_regular_file(path, label=role) as opened:
+            metadata = opened.stat
+    except (OSError, ValueError) as exc:
         raise NightlyRuntimeBundleError(f"missing {role}: {path}: {exc}") from exc
-    if not stat.S_ISREG(metadata.st_mode):
-        raise NightlyRuntimeBundleError(f"{role} must be a regular file: {path}")
     if metadata.st_size <= 0:
         raise NightlyRuntimeBundleError(f"{role} must not be empty: {path}")
     return metadata
 
 
-def _stat_stamp(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-        metadata.st_dev,
-        metadata.st_ino,
-    )
-
-
-def _require_unchanged(path: Path, stamp: tuple[int, int, int, int, int]) -> None:
+def _capture_file(
+    path: Path,
+    *,
+    role: str,
+    max_bytes: int = _MAX_BUNDLE_PAYLOAD_BYTES,
+) -> StableRegularFileIdentity:
     try:
-        current = _stat_stamp(path.stat())
-    except OSError as exc:
+        with open_stable_regular_file(path, label=role) as opened:
+            if opened.stat.st_size <= 0:
+                raise NightlyRuntimeBundleError(f"{role} must not be empty: {path}")
+            if opened.stat.st_size > max_bytes:
+                raise NightlyRuntimeBundleError(
+                    f"{role} exceeds safety limit of {max_bytes} bytes: {path}"
+                )
+            return stable_regular_file_identity(path, label=role)
+    except (OSError, ValueError) as exc:
         raise NightlyRuntimeBundleError(
-            f"artifact disappeared while bundling or verifying: {path}: {exc}"
+            f"cannot capture {role}: {path}: {exc}"
         ) from exc
-    if current != stamp:
+
+
+def _require_unchanged(identity: StableRegularFileIdentity) -> None:
+    try:
+        verify_stable_regular_file_identity(identity, label="bundle input")
+    except (OSError, ValueError) as exc:
         raise NightlyRuntimeBundleError(
-            f"artifact changed while bundling or verifying: {path}"
-        )
+            f"artifact changed while bundling or verifying: {identity.path}: {exc}"
+        ) from exc
 
 
 def select_bundle_inputs(
     target_root: Path,
     *,
-    source_root: Path,
-    source_fingerprint: Mapping[str, object],
+    identity: BundleIdentity,
+    runtime_build_identity: RuntimeBuildIdentity,
     profile: str = PROFILE,
 ) -> tuple[BundleInput, ...]:
     if profile != PROFILE:
         raise NightlyRuntimeBundleError(
             f"Nightly runtime bundle profile must be {PROFILE!r}, got {profile!r}"
         )
+    _require_bundle_runtime_identity(identity, runtime_build_identity)
     profile_root = target_root / profile
-    runtime_name = _runtime_lib_archive_name(STDLIB_PROFILE, "x86_64-unknown-linux-gnu")
+    runtime_name = _runtime_archive_name(identity)
     runtime = profile_root / runtime_name
     link_manifest = native_link_dependency_manifest_path(runtime)
-    backend = profile_root / "molt-backend"
+    backend = profile_root / _backend_executable_name(identity)
     runtime_metadata = _require_regular_file(runtime, role=RUNTIME_ROLE)
     _require_regular_file(link_manifest, role=LINK_ROLE)
     backend_metadata = _require_regular_file(backend, role=BACKEND_ROLE)
@@ -230,18 +309,17 @@ def select_bundle_inputs(
             f"backend executable has no executable bit: {backend}"
         )
     try:
-        read_native_link_dependency_manifest(
+        manifest = read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
             cargo_profile=profile,
-            source_root=source_root,
-            source_fingerprint=source_fingerprint,
+            runtime_build_identity=runtime_build_identity,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         raise NightlyRuntimeBundleError(
             f"native link metadata does not attest the selected runtime archive: {exc}"
         ) from exc
-    return (
+    inputs = [
         BundleInput(RUNTIME_ROLE, runtime, f"{profile}/{runtime.name}", 0o644),
         BundleInput(
             LINK_ROLE,
@@ -249,41 +327,46 @@ def select_bundle_inputs(
             f"{profile}/{link_manifest.name}",
             0o644,
         ),
-        BundleInput(BACKEND_ROLE, backend, f"{profile}/{backend.name}", 0o755),
-    )
-
-
-def current_runtime_source_fingerprint(
-    project_root: Path,
-    runtime_archive: Path,
-    *,
-    profile: str = PROFILE,
-) -> dict[str, object]:
-    plan = _prepare_native_runtime_build(
-        runtime_archive,
-        None,
-        True,
-        profile,
-        project_root,
-        None,
-        stdlib_profile=STDLIB_PROFILE,
-        extra_runtime_features=None,
-        stage_timings_ms=None,
-        runtime_state=None,
-    )
-    if plan is None:
-        raise NightlyRuntimeBundleError(
-            "cannot compute the canonical runtime source/config/toolchain fingerprint"
+    ]
+    try:
+        custody, entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=str(link_manifest),
         )
-    return dict(plan.source_fingerprint)
+        if entries:
+            custody_archive = native_link_custody_archive_path(runtime, custody)
+            if custody_archive is None:
+                raise NativeLinkCustodyError(
+                    "native-link custody entries have no archive"
+                )
+            _require_regular_file(custody_archive, role=CUSTODY_ROLE)
+            inputs.append(
+                BundleInput(
+                    CUSTODY_ROLE,
+                    custody_archive,
+                    f"{profile}/{custody_archive.name}",
+                    0o644,
+                )
+            )
+    except NativeLinkCustodyError as exc:
+        raise NightlyRuntimeBundleError(
+            f"native link custody does not attest the selected runtime archive: {exc}"
+        ) from exc
+    inputs.append(
+        BundleInput(BACKEND_ROLE, backend, f"{profile}/{backend.name}", 0o755)
+    )
+    return tuple(inputs)
 
 
-def _file_record(bundle_input: BundleInput) -> BundleFileRecord:
+def _file_record(
+    bundle_input: BundleInput, identity: StableRegularFileIdentity
+) -> BundleFileRecord:
+    _require_unchanged(identity)
     record: BundleFileRecord = {
         "role": bundle_input.role,
         "path": bundle_input.archive_path,
-        "size_bytes": bundle_input.source.stat().st_size,
-        "sha256": _sha256_file(bundle_input.source),
+        "size_bytes": identity.size,
+        "sha256": identity.sha256,
         "mode": f"{bundle_input.mode:04o}",
     }
     if bundle_input.role == RUNTIME_ROLE:
@@ -300,12 +383,16 @@ def build_manifest(
     inputs: Sequence[BundleInput],
     *,
     identity: BundleIdentity,
-    runtime_source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
+    input_identities: Mapping[Path, StableRegularFileIdentity],
     profile: str = PROFILE,
 ) -> dict[str, object]:
-    if tuple(item.role for item in inputs) != _ROLES:
+    _require_bundle_runtime_identity(identity, runtime_build_identity)
+    roles = tuple(item.role for item in inputs)
+    if roles not in (_REQUIRED_ROLES, _ROLES_WITH_CUSTODY):
         raise NightlyRuntimeBundleError(
-            f"bundle inputs must contain exactly the ordered roles {_ROLES!r}"
+            "bundle inputs must contain the exact ordered runtime, native-link, "
+            "optional custody, and backend roles"
         )
     paths = [item.archive_path for item in inputs]
     if len(set(paths)) != len(paths):
@@ -316,8 +403,8 @@ def build_manifest(
         "identity": identity.as_dict(),
         "profile": profile,
         "stdlib_profile": STDLIB_PROFILE,
-        "runtime_source_fingerprint": dict(runtime_source_fingerprint),
-        "files": [_file_record(item) for item in inputs],
+        "runtime_build_identity": runtime_build_identity.to_dict(),
+        "files": [_file_record(item, input_identities[item.source]) for item in inputs],
     }
 
 
@@ -336,41 +423,44 @@ def _tar_info(name: str, *, size: int, mode: int) -> tarfile.TarInfo:
 
 def pack_bundle(
     *,
-    project_root: Path,
     target_root: Path,
     output: Path,
     manifest_output: Path,
     identity: BundleIdentity,
+    runtime_build_identity: RuntimeBuildIdentity,
     profile: str = PROFILE,
 ) -> dict[str, object]:
     output = output.absolute()
     manifest_output = manifest_output.absolute()
     if output == manifest_output:
         raise NightlyRuntimeBundleError("archive and manifest output paths must differ")
-    runtime_name = _runtime_lib_archive_name(STDLIB_PROFILE, "x86_64-unknown-linux-gnu")
-    runtime_archive = target_root / profile / runtime_name
-    source_fingerprint = current_runtime_source_fingerprint(
-        project_root, runtime_archive, profile=profile
-    )
     inputs = select_bundle_inputs(
         target_root,
-        source_root=project_root,
-        source_fingerprint=source_fingerprint,
+        identity=identity,
+        runtime_build_identity=runtime_build_identity,
         profile=profile,
     )
-    input_stamps = {
-        item.source: _stat_stamp(_require_regular_file(item.source, role=item.role))
-        for item in inputs
+    input_identities = {
+        item.source: _capture_file(item.source, role=item.role) for item in inputs
     }
     manifest = build_manifest(
         inputs,
         identity=identity,
-        runtime_source_fingerprint=source_fingerprint,
+        runtime_build_identity=runtime_build_identity,
+        input_identities=input_identities,
         profile=profile,
     )
-    for source, stamp in input_stamps.items():
-        _require_unchanged(source, stamp)
+    for input_identity in input_identities.values():
+        _require_unchanged(input_identity)
     encoded_manifest = encode_exact(manifest)
+    if len(encoded_manifest) > _MAX_MANIFEST_BYTES:
+        raise NightlyRuntimeBundleError("bundle manifest exceeds safety limit")
+    if (
+        len(encoded_manifest)
+        + sum(identity.size for identity in input_identities.values())
+        > _MAX_BUNDLE_PAYLOAD_BYTES
+    ):
+        raise NightlyRuntimeBundleError("bundle payload exceeds safety limit")
     staged_archive = staged_output_path(output)
     staged_manifest = staged_output_path(manifest_output)
     try:
@@ -389,21 +479,41 @@ def pack_bundle(
                     io.BytesIO(encoded_manifest),
                 )
                 for item in inputs:
-                    with item.source.open("rb") as source:
+                    with open_stable_regular_file(
+                        item.source, label=item.role
+                    ) as opened:
+                        _require_unchanged(input_identities[item.source])
                         bundle.addfile(
                             _tar_info(
                                 item.archive_path,
-                                size=item.source.stat().st_size,
+                                size=input_identities[item.source].size,
                                 mode=item.mode,
                             ),
-                            source,
+                            opened.stream,
                         )
+                        _require_unchanged(input_identities[item.source])
             raw_archive.flush()
             os.fsync(raw_archive.fileno())
-        for source, stamp in input_stamps.items():
-            _require_unchanged(source, stamp)
+        archive_identity = _capture_file(
+            staged_archive,
+            role="staged bundle archive",
+            max_bytes=_MAX_BUNDLE_ARCHIVE_BYTES,
+        )
+        for input_identity in input_identities.values():
+            _require_unchanged(input_identity)
         staged_manifest.write_bytes(encoded_manifest)
         fsync_file(staged_manifest)
+        manifest_identity = _capture_file(
+            staged_manifest,
+            role="staged bundle manifest",
+            max_bytes=_MAX_MANIFEST_BYTES,
+        )
+        if manifest_identity.sha256 != hashlib.sha256(encoded_manifest).hexdigest():
+            raise NightlyRuntimeBundleError(
+                "staged bundle manifest changed after writing"
+            )
+        _require_unchanged(archive_identity)
+        _require_unchanged(manifest_identity)
         publish_validated_outputs(
             [(staged_archive, output), (staged_manifest, manifest_output)]
         )
@@ -429,14 +539,12 @@ def _read_manifest_bytes(raw: bytes) -> Mapping[str, object]:
 
 
 def _validated_member_name(name: str) -> str:
-    if not name or "\\" in name:
-        raise NightlyRuntimeBundleError(f"unsafe archive member path: {name!r}")
-    path = PurePosixPath(name)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise NightlyRuntimeBundleError(f"unsafe archive member path: {name!r}")
-    if path.as_posix() != name:
-        raise NightlyRuntimeBundleError(f"non-canonical archive member path: {name!r}")
-    return name
+    try:
+        return portable_relative_path(name).as_posix()
+    except ValueError as exc:
+        raise NightlyRuntimeBundleError(
+            f"unsafe archive member path: {name!r}"
+        ) from exc
 
 
 def _identity_text(value: object) -> str:
@@ -448,41 +556,44 @@ def _identity_text(value: object) -> str:
 
 
 def _validated_identity(value: object) -> BundleIdentity:
-    if not isinstance(value, dict) or set(value) != {
-        "source_commit",
-        "platform",
-        "toolchain",
-    }:
+    if not isinstance(value, dict) or set(value) != {"source_commit", "platform"}:
         raise NightlyRuntimeBundleError("bundle identity shape is invalid")
     platform_value = value.get("platform")
-    toolchain = value.get("toolchain")
     if not isinstance(platform_value, dict) or set(platform_value) != {
         "system",
         "machine",
+        "target_triple",
     }:
         raise NightlyRuntimeBundleError("bundle platform identity is invalid")
-    if not isinstance(toolchain, dict) or set(toolchain) != {
-        "rustc_verbose",
-        "cargo_version",
-    }:
-        raise NightlyRuntimeBundleError("bundle toolchain identity is invalid")
     try:
-        return BundleIdentity(
+        identity = BundleIdentity(
             source_commit=_identity_text(value.get("source_commit")),
-            platform_system=_identity_text(platform_value.get("system")),
-            platform_machine=_identity_text(platform_value.get("machine")),
-            rustc_verbose=_identity_text(toolchain.get("rustc_verbose")),
-            cargo_version=_identity_text(toolchain.get("cargo_version")),
+            target_triple=_identity_text(platform_value.get("target_triple")),
         )
     except ValueError as exc:
         raise NightlyRuntimeBundleError(f"bundle identity is invalid: {exc}") from exc
+    if (
+        _identity_text(platform_value.get("system")) != identity.platform_system
+        or _identity_text(platform_value.get("machine")) != identity.platform_machine
+    ):
+        raise NightlyRuntimeBundleError(
+            "bundle platform projection disagrees with target identity"
+        )
+    return identity
 
 
 def _validated_file_records(value: object) -> tuple[BundleFileRecord, ...]:
-    if not isinstance(value, list) or len(value) != len(_ROLES):
-        raise NightlyRuntimeBundleError("bundle must declare exactly three files")
+    if not isinstance(value, list):
+        raise NightlyRuntimeBundleError("bundle files must be an array")
+    roles = tuple(raw.get("role") if isinstance(raw, dict) else None for raw in value)
+    if roles not in (_REQUIRED_ROLES, _ROLES_WITH_CUSTODY):
+        raise NightlyRuntimeBundleError(
+            "bundle must declare the exact ordered runtime, native-link, optional "
+            "custody, and backend file closure"
+        )
     records: list[BundleFileRecord] = []
-    for expected_role, raw in zip(_ROLES, value, strict=True):
+    for expected_role, raw in zip(roles, value, strict=True):
+        assert isinstance(expected_role, str)
         if not isinstance(raw, dict):
             raise NightlyRuntimeBundleError("bundle file record must be an object")
         expected_fields = set(BundleFileRecord.__required_keys__)
@@ -518,7 +629,14 @@ def _validated_file_records(value: object) -> tuple[BundleFileRecord, ...]:
             "mode": mode,
         }
         if expected_role == RUNTIME_ROLE:
-            record["artifact_identity"] = raw.get("artifact_identity")
+            try:
+                record["artifact_identity"] = validate_artifact_content_identity(
+                    raw.get("artifact_identity")
+                )
+            except StaticArchiveIdentityError as exc:
+                raise NightlyRuntimeBundleError(
+                    f"bundle runtime content identity is invalid: {exc}"
+                ) from exc
         records.append(record)
     paths = [record["path"] for record in records]
     if len(set(paths)) != len(paths):
@@ -526,37 +644,45 @@ def _validated_file_records(value: object) -> tuple[BundleFileRecord, ...]:
     return tuple(records)
 
 
-def _validated_source_fingerprint(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != {
-        "hash",
-        "inputs_digest",
-        "meta_digest",
-        "rustc",
-    }:
-        raise NightlyRuntimeBundleError("runtime source fingerprint shape is invalid")
-    result: dict[str, object] = {}
-    for field in ("hash", "inputs_digest", "meta_digest"):
-        raw = value.get(field)
-        if field == "inputs_digest" and raw is None:
-            result[field] = None
-            continue
-        if not isinstance(raw, str) or _SHA256_RE.fullmatch(raw) is None:
-            raise NightlyRuntimeBundleError(
-                f"runtime source fingerprint {field} is invalid"
-            )
-        result[field] = raw
-    rustc = value.get("rustc")
-    if not isinstance(rustc, str) or not rustc:
-        raise NightlyRuntimeBundleError("runtime source fingerprint rustc is invalid")
-    result["rustc"] = rustc
-    return result
+def _validated_runtime_build_identity(
+    value: object,
+    *,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> RuntimeBuildIdentity:
+    try:
+        return require_native_runtime_staticlib_identity(
+            value,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+        )
+    except (TypeError, ValueError) as exc:
+        raise NightlyRuntimeBundleError("runtime build identity is invalid") from exc
+
+
+def _require_bundle_runtime_identity(
+    identity: BundleIdentity, runtime_build_identity: RuntimeBuildIdentity
+) -> None:
+    try:
+        projected = BundleIdentity.from_runtime(
+            identity.source_commit, runtime_build_identity
+        )
+    except ValueError as exc:
+        raise NightlyRuntimeBundleError(
+            f"bundle runtime target is unsupported: {exc}"
+        ) from exc
+    if identity != projected:
+        raise NightlyRuntimeBundleError(
+            "bundle target does not match the captured runtime effective target"
+        )
 
 
 def validate_manifest(
     manifest: Mapping[str, object],
     *,
     expected_identity: BundleIdentity,
-    expected_runtime_source_fingerprint: Mapping[str, object],
+    expected_runtime_build_identity: RuntimeBuildIdentity,
 ) -> tuple[BundleFileRecord, ...]:
     if set(manifest) != {
         "schema_version",
@@ -564,7 +690,7 @@ def validate_manifest(
         "identity",
         "profile",
         "stdlib_profile",
-        "runtime_source_fingerprint",
+        "runtime_build_identity",
         "files",
     }:
         raise NightlyRuntimeBundleError("bundle manifest shape is invalid")
@@ -582,24 +708,41 @@ def validate_manifest(
     actual_identity = _validated_identity(manifest.get("identity"))
     if actual_identity != expected_identity:
         raise NightlyRuntimeBundleError(
-            "bundle source, platform, or toolchain identity does not match this job"
+            "bundle source or target identity does not match this job"
         )
-    actual_source_fingerprint = _validated_source_fingerprint(
-        manifest.get("runtime_source_fingerprint")
+    actual_runtime_build_identity = _validated_runtime_build_identity(
+        manifest.get("runtime_build_identity"),
+        cargo_profile=PROFILE,
+        target_triple=None,
     )
-    if actual_source_fingerprint != _validated_source_fingerprint(
-        expected_runtime_source_fingerprint
-    ):
+    expected_runtime_build_identity = _validated_runtime_build_identity(
+        expected_runtime_build_identity,
+        cargo_profile=PROFILE,
+        target_triple=None,
+    )
+    if actual_runtime_build_identity != expected_runtime_build_identity:
         raise NightlyRuntimeBundleError(
-            "bundle runtime source/config/toolchain fingerprint does not match this job"
+            "bundle runtime build identity does not match this job"
         )
+    _require_bundle_runtime_identity(actual_identity, actual_runtime_build_identity)
     records = _validated_file_records(manifest.get("files"))
-    runtime_name = _runtime_lib_archive_name(STDLIB_PROFILE, "x86_64-unknown-linux-gnu")
-    expected_paths = (
+    runtime_name = _runtime_archive_name(expected_identity)
+    expected_paths: tuple[str, ...] = (
         f"{PROFILE}/{runtime_name}",
         f"{PROFILE}/{runtime_name}.native-link-deps.json",
-        f"{PROFILE}/molt-backend",
+        f"{PROFILE}/{_backend_executable_name(expected_identity)}",
     )
+    if tuple(record["role"] for record in records) == _ROLES_WITH_CUSTODY:
+        custody_path = records[2]["path"]
+        custody_relative = PurePosixPath(custody_path)
+        if (
+            custody_relative.parent != PurePosixPath(PROFILE)
+            or _CUSTODY_ARCHIVE_RE.fullmatch(custody_relative.name) is None
+        ):
+            raise NightlyRuntimeBundleError(
+                "bundle native-link custody path is not canonical"
+            )
+        expected_paths = (*expected_paths[:2], custody_path, expected_paths[2])
     if tuple(record["path"] for record in records) != expected_paths:
         raise NightlyRuntimeBundleError("bundle contains a non-canonical payload path")
     return records
@@ -636,50 +779,80 @@ def _validate_staged_link_metadata(
     path: Path,
     *,
     runtime_identity: Mapping[str, object],
-    source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
+    custody_archive: Path | None,
+    custody_archive_name: str | None,
 ) -> None:
     try:
-        payload = loads_exact(path.read_text(encoding="utf-8", errors="strict"))
-    except (OSError, ValueError) as exc:
+        payload = read_native_link_dependency_manifest_payload(path)
+        manifest, _items = validate_native_link_dependency_manifest(
+            payload,
+            runtime_identity=runtime_identity,
+            context=str(path),
+            target_triple=None,
+            cargo_profile=PROFILE,
+            runtime_build_identity=runtime_build_identity,
+        )
+        custody, entries = validate_native_link_custody(
+            manifest.get("custody"),
+            context=str(path),
+        )
+        if bool(entries) is not (custody_archive is not None):
+            raise NativeLinkCustodyError(
+                "bundle custody archive presence does not match the native-link manifest"
+            )
+        custody_record = custody.get("archive")
+        expected_name = (
+            custody_record.get("name") if isinstance(custody_record, Mapping) else None
+        )
+        if custody_archive_name != expected_name:
+            raise NativeLinkCustodyError(
+                "bundle custody archive name does not match the native-link manifest"
+            )
+        validate_native_link_custody_archive(
+            custody_archive,
+            custody,
+            context=str(path),
+        )
+    except (NativeLinkCustodyError, NativeLinkDependencyManifestError) as exc:
         raise NightlyRuntimeBundleError(
             f"extracted native link metadata is invalid: {exc}"
         ) from exc
-    if not isinstance(payload, dict):
-        raise NightlyRuntimeBundleError(
-            "extracted native link metadata must be a JSON object"
-        )
-    source = payload.get("source")
-    cargo = payload.get("cargo")
-    if (
-        payload.get("runtime") != runtime_identity
-        or not isinstance(source, dict)
-        or set(source) != {"fingerprint"}
-        or _validated_source_fingerprint(source.get("fingerprint"))
-        != _validated_source_fingerprint(source_fingerprint)
-        or not isinstance(cargo, dict)
-        or cargo.get("profile") != PROFILE
-        or cargo.get("profile_dir") != PROFILE
-        or cargo.get("target_triple") is not None
-    ):
-        raise NightlyRuntimeBundleError(
-            "native link metadata does not match the runtime/source/profile identity"
-        )
 
 
-def _ensure_destination_has_no_symlink(
-    destination: Path, relative: PurePosixPath
-) -> None:
+def _ensure_destination_has_no_link(destination: Path, relative: PurePosixPath) -> None:
     current = destination
-    if current.exists() and current.is_symlink():
+    if current.is_symlink() or current.is_junction():
         raise NightlyRuntimeBundleError(
-            f"extraction destination is a symlink: {current}"
+            f"extraction destination is link-like: {current}"
         )
     for part in relative.parts[:-1]:
         current = current / part
-        if current.exists() and current.is_symlink():
+        if current.is_symlink() or current.is_junction():
             raise NightlyRuntimeBundleError(
-                f"extraction destination component is a symlink: {current}"
+                f"extraction destination component is link-like: {current}"
             )
+
+
+@contextlib.contextmanager
+def _open_stable_bundle(
+    archive: Path,
+) -> Iterator[tuple[tarfile.TarFile, StableRegularFileIdentity]]:
+    try:
+        identity = _capture_file(
+            archive, role="bundle archive", max_bytes=_MAX_BUNDLE_ARCHIVE_BYTES
+        )
+        with open_stable_regular_file(archive, label="bundle archive") as opened:
+            _require_unchanged(identity)
+            with tarfile.open(
+                fileobj=opened.stream, mode="r:", tarinfo=RegularUstarTarInfo
+            ) as bundle:
+                yield bundle, identity
+            _require_unchanged(identity)
+    except (OSError, ValueError, tarfile.TarError) as exc:
+        raise NightlyRuntimeBundleError(
+            f"cannot process uncompressed bundle {archive}: {exc}"
+        ) from exc
 
 
 def verify_extract_bundle(
@@ -687,24 +860,35 @@ def verify_extract_bundle(
     archive: Path,
     destination: Path,
     expected_identity: BundleIdentity,
-    expected_runtime_source_fingerprint: Mapping[str, object],
+    expected_runtime_build_identity: RuntimeBuildIdentity,
 ) -> Mapping[str, object]:
-    archive_stamp = _stat_stamp(_require_regular_file(archive, role="bundle archive"))
     destination = destination.absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        bundle = tarfile.open(archive, mode="r:")
-    except (OSError, tarfile.TarError) as exc:
-        raise NightlyRuntimeBundleError(
-            f"cannot read uncompressed bundle: {exc}"
-        ) from exc
-    with bundle:
+    with _open_stable_bundle(archive) as (bundle, archive_identity):
         members: dict[str, tarfile.TarInfo] = {}
         total_size = 0
+        runtime_name = _runtime_archive_name(expected_identity)
+        permitted_names = {
+            MANIFEST_NAME,
+            f"{PROFILE}/{runtime_name}",
+            f"{PROFILE}/{runtime_name}.native-link-deps.json",
+            f"{PROFILE}/{_backend_executable_name(expected_identity)}",
+        }
         for member in bundle:
             name = _validated_member_name(member.name)
             if name in members:
                 raise NightlyRuntimeBundleError(f"duplicate archive member: {name}")
+            relative = PurePosixPath(name)
+            custody_member = (
+                relative.parent == PurePosixPath(PROFILE)
+                and _CUSTODY_ARCHIVE_RE.fullmatch(relative.name) is not None
+            )
+            if len(members) >= len(_ROLES_WITH_CUSTODY) + 1 or (
+                name not in permitted_names and not custody_member
+            ):
+                raise NightlyRuntimeBundleError(
+                    f"bundle member closure mismatch: unexpected archive member {name}"
+                )
             if not member.isreg():
                 raise NightlyRuntimeBundleError(
                     f"archive member is not a regular file: {name}"
@@ -725,7 +909,7 @@ def verify_extract_bundle(
         records = validate_manifest(
             manifest,
             expected_identity=expected_identity,
-            expected_runtime_source_fingerprint=expected_runtime_source_fingerprint,
+            expected_runtime_build_identity=expected_runtime_build_identity,
         )
         expected_names = {MANIFEST_NAME, *(record["path"] for record in records)}
         if set(members) != expected_names:
@@ -742,16 +926,26 @@ def verify_extract_bundle(
                 raise NightlyRuntimeBundleError(
                     f"archive member mode does not match manifest: {record['path']}"
                 )
-        with tempfile.TemporaryDirectory(
-            prefix=".nightly-runtime-extract-", dir=destination.parent
-        ) as temporary:
-            stage_root = Path(temporary)
-            staged_pairs: list[tuple[Path, Path]] = []
+        staged_pairs: list[tuple[Path, Path]] = []
+        staged_identities: list[StableRegularFileIdentity] = []
+        created_parents: set[Path] = set()
+        try:
             for record in records:
                 relative = PurePosixPath(record["path"])
-                _ensure_destination_has_no_symlink(destination, relative)
-                staged = stage_root.joinpath(*relative.parts)
-                staged.parent.mkdir(parents=True, exist_ok=True)
+                _ensure_destination_has_no_link(destination, relative)
+                final = destination.joinpath(*relative.parts)
+                cursor = final.parent
+                while not cursor.exists():
+                    created_parents.add(cursor)
+                    if cursor.parent == cursor:
+                        break
+                    cursor = cursor.parent
+                staged = staged_output_path(
+                    final,
+                    purpose="nightly-hydrate",
+                    suffix=final.suffix or ".tmp",
+                )
+                staged_pairs.append((staged, final))
                 stream = bundle.extractfile(members[record["path"]])
                 if stream is None:
                     raise NightlyRuntimeBundleError(
@@ -764,10 +958,22 @@ def verify_extract_bundle(
                     expected_sha256=record["sha256"],
                 )
                 staged.chmod(int(record["mode"], 8))
-                final = destination.joinpath(*relative.parts)
-                staged_pairs.append((staged, final))
+                fsync_file(staged)
+                staged_identity = _capture_file(staged, role=record["role"])
+                if (
+                    staged_identity.size != record["size_bytes"]
+                    or staged_identity.sha256 != record["sha256"]
+                ):
+                    raise NightlyRuntimeBundleError(
+                        "staged bundle member changed after extraction"
+                    )
+                staged_identities.append(staged_identity)
+            staged_by_role = {
+                record["role"]: staged
+                for record, (staged, _final) in zip(records, staged_pairs, strict=True)
+            }
             runtime_record = records[0]
-            staged_runtime = staged_pairs[0][0]
+            staged_runtime = staged_by_role[RUNTIME_ROLE]
             try:
                 runtime_identity = artifact_content_identity(staged_runtime)
             except StaticArchiveIdentityError as exc:
@@ -779,29 +985,76 @@ def verify_extract_bundle(
                     "runtime archive semantic identity does not match manifest"
                 )
             _validate_staged_link_metadata(
-                staged_pairs[1][0],
+                staged_by_role[LINK_ROLE],
                 runtime_identity=runtime_identity,
-                source_fingerprint=expected_runtime_source_fingerprint,
+                runtime_build_identity=expected_runtime_build_identity,
+                custody_archive=staged_by_role.get(CUSTODY_ROLE),
+                custody_archive_name=next(
+                    (
+                        PurePosixPath(record["path"]).name
+                        for record in records
+                        if record["role"] == CUSTODY_ROLE
+                    ),
+                    None,
+                ),
             )
-            staged_manifest = stage_root / MANIFEST_NAME
-            staged_manifest.write_bytes(encode_exact(manifest))
-            staged_manifest.chmod(0o644)
-            fsync_file(staged_manifest)
-            _ensure_destination_has_no_symlink(
-                destination, PurePosixPath(MANIFEST_NAME)
+            staged_manifest = staged_output_path(
+                destination / MANIFEST_NAME,
+                purpose="nightly-hydrate",
             )
             staged_pairs.append((staged_manifest, destination / MANIFEST_NAME))
-            _require_unchanged(archive, archive_stamp)
+            encoded_manifest = encode_exact(manifest)
+            staged_manifest.write_bytes(encoded_manifest)
+            staged_manifest.chmod(0o644)
+            fsync_file(staged_manifest)
+            manifest_identity = _capture_file(
+                staged_manifest, role="bundle manifest", max_bytes=_MAX_MANIFEST_BYTES
+            )
+            if manifest_identity.sha256 != hashlib.sha256(encoded_manifest).hexdigest():
+                raise NightlyRuntimeBundleError(
+                    "staged bundle manifest changed after writing"
+                )
+            staged_identities.append(manifest_identity)
+            _ensure_destination_has_no_link(destination, PurePosixPath(MANIFEST_NAME))
+            _require_unchanged(archive_identity)
             for _staged, final in staged_pairs:
                 relative = PurePosixPath(final.relative_to(destination).as_posix())
-                _ensure_destination_has_no_symlink(destination, relative)
-            publish_validated_outputs(staged_pairs)
+                _ensure_destination_has_no_link(destination, relative)
+            payload_pairs = {
+                record["role"]: pair
+                for record, pair in zip(records, staged_pairs[:-1], strict=True)
+            }
+            publication_order = (CUSTODY_ROLE, RUNTIME_ROLE, BACKEND_ROLE, LINK_ROLE)
+            for identity in staged_identities:
+                _require_unchanged(identity)
+            publish_validated_outputs(
+                [
+                    payload_pairs[role]
+                    for role in publication_order
+                    if role in payload_pairs
+                ]
+                + [staged_pairs[-1]]
+            )
+        finally:
+            for staged, _final in staged_pairs:
+                with contextlib.suppress(OSError):
+                    staged.unlink()
+            for directory in sorted(
+                created_parents,
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                with contextlib.suppress(OSError):
+                    directory.rmdir()
     return manifest
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Pack or hydrate the exact portable Linux Nightly runtime bundle."
+        description=(
+            "Pack or hydrate an exact portable native Nightly runtime bundle for "
+            "Linux, macOS, or Windows."
+        )
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
     pack = subparsers.add_parser("pack")
@@ -818,28 +1071,27 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    identity = collect_bundle_identity(args.project_root)
+    target_root = args.target_root if args.action == "pack" else args.destination
+    runtime_build_identity = capture_bundle_runtime_identity(
+        args.project_root, target_root
+    )
+    identity = collect_bundle_identity(
+        args.project_root, runtime_build_identity=runtime_build_identity
+    )
     if args.action == "pack":
         manifest = pack_bundle(
-            project_root=args.project_root,
             target_root=args.target_root,
             output=args.output,
             manifest_output=args.manifest_out,
             identity=identity,
+            runtime_build_identity=runtime_build_identity,
         )
     else:
-        runtime_name = _runtime_lib_archive_name(
-            STDLIB_PROFILE, "x86_64-unknown-linux-gnu"
-        )
-        runtime_source_fingerprint = current_runtime_source_fingerprint(
-            args.project_root,
-            args.destination / PROFILE / runtime_name,
-        )
         manifest = verify_extract_bundle(
             archive=args.archive,
             destination=args.destination,
             expected_identity=identity,
-            expected_runtime_source_fingerprint=runtime_source_fingerprint,
+            expected_runtime_build_identity=runtime_build_identity,
         )
     sys.stdout.write(dumps_exact(manifest, indent=None))
     return 0

@@ -95,12 +95,18 @@ def prepare(
 
     archive = output_root / "runtime-bundle.tar"
     manifest_path = output_root / "runtime-bundle-manifest.json"
-    identity = nightly_runtime_bundle.collect_bundle_identity(ROOT)
+    runtime_build_identity = nightly_runtime_bundle.capture_bundle_runtime_identity(
+        ROOT, target_root
+    )
+    identity = nightly_runtime_bundle.collect_bundle_identity(
+        ROOT, runtime_build_identity=runtime_build_identity
+    )
     manifest = nightly_runtime_bundle.pack_bundle(
         target_root=target_root,
         output=archive,
         manifest_output=manifest_path,
         identity=identity,
+        runtime_build_identity=runtime_build_identity,
     )
     smoke_output.unlink()
     plan = nightly_sharding.build_plan(

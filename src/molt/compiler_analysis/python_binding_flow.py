@@ -67,7 +67,7 @@ from molt.compiler_analysis.python_imports import import_metadata_target_name
 from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
 
 
-_ANALYSIS_SCHEMA: Final = 4
+_ANALYSIS_SCHEMA: Final = 5
 _MAX_LOOP_FIXPOINT_STEPS: Final = 8
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -408,16 +408,17 @@ class _StatePool:
                         else None
                     )
                     static_value = left_static if left_static == right_static else None
-                    clean = bool(left.clean_mask & slot_bit) and bool(
-                        right.clean_mask & slot_bit
-                    )
-                    if clean and taint_mask & slot_bit:
-                        clean = (
-                            left_epoch == taint_epoch
-                            and right_epoch == taint_epoch
-                            and left.clean_epochs[chunk_offset] == left_epoch
+                    left_clean = bool(left.clean_mask & slot_bit)
+                    right_clean = bool(right.clean_mask & slot_bit)
+                    if taint_mask & slot_bit:
+                        left_clean = (
+                            left_clean and left.clean_epochs[chunk_offset] == left_epoch
+                        ) or (left_identity == UNBOUND_IDENTITY and left_epoch == 0)
+                        right_clean = (
+                            right_clean
                             and right.clean_epochs[chunk_offset] == right_epoch
-                        )
+                        ) or (right_identity == UNBOUND_IDENTITY and right_epoch == 0)
+                    clean = left_clean and right_clean
                     identities[chunk_offset] = identity
                     static_values[chunk_offset] = static_value
                     clean_epochs[chunk_offset] = taint_epoch
@@ -457,11 +458,18 @@ class _StatePool:
                     elif candidate_static != static_value:
                         static_value = None
                     parent_clean = bool(chunk.clean_mask & slot_bit)
-                    if parent_clean and taint_mask & slot_bit:
-                        parent_clean = chunk.clean_epochs[chunk_offset] == parent_epoch
+                    if taint_mask & slot_bit:
+                        parent_clean = (
+                            parent_clean
+                            and chunk.clean_epochs[chunk_offset] == parent_epoch
+                        ) or (
+                            (
+                                not present
+                                or chunk.identities[chunk_offset] == UNBOUND_IDENTITY
+                            )
+                            and parent_epoch == 0
+                        )
                     clean = clean and parent_clean
-                    if clean and taint_mask & slot_bit:
-                        clean = parent_epoch == taint_epoch
                 identities[chunk_offset] = identity
                 static_values[chunk_offset] = static_value
                 clean_epochs[chunk_offset] = taint_epoch
@@ -726,19 +734,22 @@ class _StatePool:
             for slot in self.changed_slots_between(previous, current)
         )
 
+    def taint_module_bindings(self, state_id: int) -> int:
+        # The namespace can acquire previously undeclared names, even when the
+        # module has no statically allocated binding slots (e.g. import-star).
+        state = self._states[state_id]
+        return self.intern(
+            _BindingState(
+                parents=(state_id,),
+                taint_epoch=state.taint_epoch + 1,
+                maybe_invalidated_members=state.maybe_invalidated_members,
+                definitely_invalidated_members=state.definitely_invalidated_members,
+            )
+        )
+
     def taint_slots(self, state_id: int, slots: int) -> int:
         if slots & self._taint_domain_mask:
-            state = self._states[state_id]
-            state_id = self.intern(
-                _BindingState(
-                    parents=(state_id,),
-                    taint_epoch=state.taint_epoch + 1,
-                    maybe_invalidated_members=state.maybe_invalidated_members,
-                    definitely_invalidated_members=(
-                        state.definitely_invalidated_members
-                    ),
-                )
-            )
+            state_id = self.taint_module_bindings(state_id)
             slots &= ~self._taint_domain_mask
         remaining = slots
         while remaining:
@@ -1496,6 +1507,24 @@ class _Analyzer:
         slot = self._slot_for_name(scope, name)
         return None if slot is None else self.states.static_value(state_id, slot)
 
+    def _name_binding_status(
+        self, state_id: int, scope: _Scope, name: str
+    ) -> tuple[bool, bool]:
+        slot = self._slot_for_name(scope, name)
+        if slot is not None and not self.states.slot_in_taint_domain(slot):
+            # Lexical declarations shadow builtins even before assignment:
+            # the runtime local load must raise UnboundLocalError on a miss.
+            return False, True
+        resolution = (
+            self.states._binding_resolution(state_id, slot)
+            if slot is not None
+            else _UNBOUND_BINDING_RESOLUTION
+        )
+        return (
+            self.states.get(state_id).taint_epoch != 0 and not resolution.clean,
+            resolution.identities != UNBOUND_IDENTITY,
+        )
+
     def _record_state(self, state_id: int) -> None:
         for observed in self._observed_stack:
             observed.append(state_id)
@@ -1507,6 +1536,8 @@ class _Analyzer:
         identities: IdentityMask,
         effects: EffectMask,
         static_value: PythonStaticValue,
+        binding_invalidated: bool = False,
+        binding_is_bound: bool = False,
     ) -> None:
         key = self._node_key(node)
         self.expressions[key] = PythonExpressionFact(
@@ -1515,10 +1546,12 @@ class _Analyzer:
             identities,
             effects,
             static_value,
+            binding_invalidated,
+            binding_is_bound,
         )
 
     def _widen_module_bindings(self, state_id: int) -> int:
-        return self.states.taint_slots(state_id, self.module_slot_mask)
+        return self.states.taint_module_bindings(state_id)
 
     def _apply_effects(self, state_id: int, effects: EffectMask) -> int:
         callback_effects = (
@@ -1754,12 +1787,38 @@ class _Analyzer:
         fact = self.expressions.get(self._node_key(node))
         return fact.identities if fact is not None else OTHER_IDENTITY
 
+    def _eval_truth_test(
+        self, node: ast.expr, state_id: int, scope: _Scope
+    ) -> _ExpressionResult:
+        result = self.eval_expr(node, state_id, scope)
+        # Identity comparisons and exact inert constants produce builtin truth
+        # values. An unknown object's __bool__/__len__ executes before either
+        # successor and can publish or replace module bindings.
+        truth_effects = (
+            NO_EFFECTS
+            if result.identities
+            in {
+                int(PythonIdentity.INERT_VALUE),
+                int(PythonIdentity.STATIC_FALSE),
+            }
+            else INVOKES_COMPARISON_CALLBACK | RAISES
+        )
+        return _ExpressionResult(
+            self._apply_effects(result.state_id, truth_effects),
+            result.identities,
+            result.effects | truth_effects,
+            result.static_value,
+        )
+
     def eval_expr(
         self, node: ast.expr, state_id: int, scope: _Scope
     ) -> _ExpressionResult:
         effects = NO_EFFECTS
         identities = OTHER_IDENTITY
         static_value: PythonStaticValue = None
+        binding_invalidated = False
+        binding_is_bound = False
+        effects_applied = False
         if isinstance(node, ast.Constant):
             identities = exact_identity(
                 PythonIdentity.STATIC_FALSE
@@ -1773,6 +1832,9 @@ class _Analyzer:
         elif isinstance(node, ast.Name):
             identities = self._lookup_name(state_id, scope, node.id)
             static_value = self._lookup_static_value(state_id, scope, node.id)
+            binding_invalidated, binding_is_bound = self._name_binding_status(
+                state_id, scope, node.id
+            )
         elif isinstance(node, ast.Attribute):
             base = self.eval_expr(node.value, state_id, scope)
             state_id = base.state_id
@@ -1814,6 +1876,7 @@ class _Analyzer:
             else:
                 effects |= EXECUTES_ARBITRARY_PYTHON
         elif isinstance(node, ast.Call):
+            effects_applied = True
             callee_result = self.eval_expr(node.func, state_id, scope)
             state_id = callee_result.state_id
             effects |= callee_result.effects
@@ -1860,6 +1923,7 @@ class _Analyzer:
                 self.states.get(state_id).definitely_invalidated_members,
             )
         elif isinstance(node, ast.NamedExpr):
+            effects_applied = True
             value = self.eval_expr(node.value, state_id, scope)
             state_id, target_effects = self.assign_target(
                 node.target,
@@ -1879,7 +1943,8 @@ class _Analyzer:
             identities = exact_identity(PythonIdentity.USER_FUNCTION)
             self._queue_function(node, scope, state_id, defaults)
         elif isinstance(node, ast.IfExp):
-            test = self.eval_expr(node.test, state_id, scope)
+            effects_applied = True
+            test = self._eval_truth_test(node.test, state_id, scope)
             truth = _literal_truth(node.test)
             if truth is not None:
                 selected = self.eval_expr(
@@ -1893,22 +1958,21 @@ class _Analyzer:
                 right = self.eval_expr(node.orelse, test.state_id, scope)
                 state_id = self.states.join(left.state_id, right.state_id)
                 identities = left.identities | right.identities
-                effects = (
-                    test.effects
-                    | left.effects
-                    | right.effects
-                    | INVOKES_COMPARISON_CALLBACK
-                    | RAISES
-                )
+                effects = test.effects | left.effects | right.effects
         elif isinstance(node, ast.BoolOp):
+            effects_applied = True
             possible_exits: list[int] = []
             identities = NO_IDENTITIES
             current = state_id
             for index, value in enumerate(node.values):
-                result = self.eval_expr(value, current, scope)
+                final_value = index == len(node.values) - 1
+                result = (
+                    self.eval_expr(value, current, scope)
+                    if final_value
+                    else self._eval_truth_test(value, current, scope)
+                )
                 effects |= result.effects
                 truth = _literal_truth(value)
-                final_value = index == len(node.values) - 1
                 stops = (
                     final_value
                     or isinstance(node.op, ast.And)
@@ -1921,13 +1985,23 @@ class _Analyzer:
                     identities |= result.identities
                 if stops:
                     break
-                if truth is None:
-                    callback_effects = INVOKES_COMPARISON_CALLBACK | RAISES
-                    effects |= callback_effects
-                    current = self._apply_effects(result.state_id, callback_effects)
-                else:
-                    current = result.state_id
+                current = result.state_id
             state_id = self.states.join(*possible_exits)
+        elif isinstance(node, ast.Compare) and all(
+            isinstance(operator, (ast.Is, ast.IsNot)) for operator in node.ops
+        ):
+            effects_applied = True
+            left = self.eval_expr(node.left, state_id, scope)
+            state_id = left.state_id
+            effects |= left.effects
+            exits: list[int] = []
+            for comparator in node.comparators:
+                right = self.eval_expr(comparator, state_id, scope)
+                state_id = right.state_id
+                effects |= right.effects
+                exits.append(state_id)
+            state_id = self.states.join(*exits)
+            identities = exact_identity(PythonIdentity.INERT_VALUE)
         elif isinstance(
             node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
         ):
@@ -1986,9 +2060,17 @@ class _Analyzer:
             effects |= EXECUTES_ARBITRARY_PYTHON | RAISES
             if isinstance(node, (ast.Compare, ast.UnaryOp, ast.BinOp)):
                 effects |= INVOKES_COMPARISON_CALLBACK
-        if not isinstance(node, ast.Call):
+        if not effects_applied:
             state_id = self._apply_effects(state_id, effects)
-        self._record_expression(node, scope, identities, effects, static_value)
+        self._record_expression(
+            node,
+            scope,
+            identities,
+            effects,
+            static_value,
+            binding_invalidated,
+            binding_is_bound,
+        )
         self._record_state(state_id)
         return _ExpressionResult(state_id, identities, effects, static_value)
 
@@ -2052,11 +2134,9 @@ class _Analyzer:
             )
             deferred_effects |= target_effects
             for condition in generator.ifs:
-                condition_result = self.eval_expr(condition, current, scope)
+                condition_result = self._eval_truth_test(condition, current, scope)
                 current = condition_result.state_id
-                deferred_effects |= (
-                    condition_result.effects | INVOKES_COMPARISON_CALLBACK
-                )
+                deferred_effects |= condition_result.effects
         payloads: list[ast.expr]
         if isinstance(node, ast.DictComp):
             payloads = [node.key, node.value]
@@ -2357,7 +2437,7 @@ class _Analyzer:
                 )
                 effects |= bind_effects
         elif isinstance(node, ast.If):
-            test = self.eval_expr(node.test, state_id, scope)
+            test = self._eval_truth_test(node.test, state_id, scope)
             truth = _literal_truth(node.test)
             if truth is None and test.identities == int(PythonIdentity.STATIC_FALSE):
                 truth = False
@@ -2376,11 +2456,7 @@ class _Analyzer:
                     node.orelse, test.state_id, scope
                 )
                 state_id = self.states.join(left, right)
-                callback_effects = INVOKES_COMPARISON_CALLBACK | RAISES
-                effects |= (
-                    test.effects | left_effects | right_effects | callback_effects
-                )
-                state_id = self._apply_effects(state_id, callback_effects)
+                effects |= test.effects | left_effects | right_effects
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             state_id, loop_effects = self._exec_loop(node, state_id, scope)
             effects |= loop_effects
@@ -2413,25 +2489,27 @@ class _Analyzer:
         elif isinstance(node, ast.Match):
             subject = self.eval_expr(node.subject, state_id, scope)
             effects |= subject.effects | INVOKES_COMPARISON_CALLBACK | RAISES
-            branches = [subject.state_id]
+            unmatched = subject.state_id
+            branches: list[int] = []
             for case in node.cases:
-                branch = subject.state_id
+                unmatched = self._apply_effects(
+                    unmatched, INVOKES_COMPARISON_CALLBACK | RAISES
+                )
+                branch = unmatched
                 for name in _target_names(case.pattern):
                     branch, target_effects = self._bind_name(
                         name, OTHER_IDENTITY, branch, scope
                     )
                     effects |= target_effects
                 if case.guard is not None:
-                    guard = self.eval_expr(case.guard, branch, scope)
+                    guard = self._eval_truth_test(case.guard, branch, scope)
                     branch = guard.state_id
-                    effects |= guard.effects | INVOKES_COMPARISON_CALLBACK
+                    unmatched = self.states.join(unmatched, branch)
+                    effects |= guard.effects
                 branch, branch_effects = self.exec_statements(case.body, branch, scope)
                 effects |= branch_effects
                 branches.append(branch)
-            state_id = self.states.join(*branches)
-            state_id = self._apply_effects(
-                state_id, INVOKES_COMPARISON_CALLBACK | RAISES
-            )
+            state_id = self.states.join(*branches, unmatched)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in node.decorator_list:
                 result = self.eval_expr(decorator, state_id, scope)
@@ -2510,16 +2588,13 @@ class _Analyzer:
                 effects |= result.effects
             effects |= RAISES if isinstance(node, ast.Raise) else NO_EFFECTS
         elif isinstance(node, (ast.Assert,)):
-            test = self.eval_expr(node.test, state_id, scope)
+            test = self._eval_truth_test(node.test, state_id, scope)
             state_id = test.state_id
-            effects |= test.effects | INVOKES_COMPARISON_CALLBACK | RAISES
+            effects |= test.effects | RAISES
             if node.msg is not None:
                 message = self.eval_expr(node.msg, state_id, scope)
                 state_id = self.states.join(state_id, message.state_id)
                 effects |= message.effects
-            state_id = self._apply_effects(
-                state_id, INVOKES_COMPARISON_CALLBACK | RAISES
-            )
         elif isinstance(
             node, (ast.Global, ast.Nonlocal, ast.Pass, ast.Break, ast.Continue)
         ):
@@ -2550,12 +2625,16 @@ class _Analyzer:
                 | RAISES
             )
         else:
-            test = self.eval_expr(node.test, entry, scope)
+            test = self._eval_truth_test(node.test, entry, scope)
             entry = test.state_id
-            effects |= test.effects | INVOKES_COMPARISON_CALLBACK | RAISES
+            effects |= test.effects
         header = entry
         for _step in range(_MAX_LOOP_FIXPOINT_STEPS):
             body_entry = header
+            if isinstance(node, ast.While):
+                test = self._eval_truth_test(node.test, header, scope)
+                body_entry = test.state_id
+                effects |= test.effects
             if isinstance(node, (ast.For, ast.AsyncFor)):
                 body_entry, target_effects = self.assign_target(
                     node.target, OTHER_IDENTITY, body_entry, scope

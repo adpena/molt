@@ -10,6 +10,7 @@ import pytest
 import molt.cli as cli
 from molt.cli import build_results, native_link_command, native_link_plan
 from molt.cli.native_link_plan import NativeObjectFormat
+from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
 
 
@@ -66,8 +67,7 @@ def _plan(
         target_triple=None,
         sysroot_path=None,
         profile=profile,
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         bolt_requested=bolt_requested,
         host_platform=host_platform,
         host_arch=host_arch,
@@ -300,7 +300,7 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
         )
     )
 
-    assert command[0] == str(clang.resolve())
+    assert Path(command[0]) == clang.resolve()
     assert command.count("-fuse-ld=lld") == 1
     assert linker_hint == "lld"
 
@@ -340,7 +340,7 @@ def test_coff_librarian_prefers_managed_llvm_lib(
         input_objects=(input_object,), output_path=tmp_path / "output.lib"
     )
 
-    assert command[0] == str(llvm_lib.resolve())
+    assert Path(command[0]) == llvm_lib.resolve()
 
 
 def test_explicit_mold_non_elf_selection_fails_before_link(

@@ -55,6 +55,7 @@ from molt.cli.runtime_fingerprints import (
     _stored_fingerprint_matches_source_metadata,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
@@ -290,7 +291,7 @@ def _prepare_native_link(
     json_output: bool,
     output_binary: Path | None,
     runtime_lib: Path | None,
-    runtime_source_fingerprint: Mapping[str, object],
+    runtime_build_identity: RuntimeBuildIdentity,
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
@@ -392,8 +393,7 @@ def _prepare_native_link(
             target_triple=target_triple,
             sysroot_path=sysroot_path,
             profile=profile,
-            source_root=molt_root,
-            source_fingerprint=runtime_source_fingerprint,
+            runtime_build_identity=runtime_build_identity,
             stdlib_obj_path=link_stdlib_obj,
             external_static_archives=external_static_archives,
             external_link_requirements=external_link_requirements,

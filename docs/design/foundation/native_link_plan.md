@@ -56,10 +56,11 @@ Cargo's structured compiler message when present, or its strict stderr note—is
 the sole authority for the final native-library argument sequence: its order
 and duplicates are persisted and replayed verbatim because static archive order
 is semantic. Cargo `build-script-executed` events are not treated as a cross-script
-ordering authority; parallel script completion can reorder them. Their full
-package IDs, `out_dir`, `linked_paths`, and per-script `linked_libs` remain
-canonicalized non-semantic provenance used to validate custody and resolve the
-files named by rustc.
+ordering authority; parallel script completion can reorder them. Package IDs,
+`out_dir`, `linked_paths`, and per-script `linked_libs` are producer-side inputs
+used to resolve the files named by rustc. The published manifest retains a
+path-neutral typed link plan and adjacent content-addressed custody, not a
+dependency on those producer directories.
 
 The manifest binds the runtime through the shared semantic static-archive
 identity used by runtime publication, hydration, native link fingerprints, and
@@ -76,22 +77,34 @@ Rustc prints linker tokens, while Molt invokes a compiler driver. On COFF, bare
 the payload spelling, order, and duplicates remain unchanged. There is no
 separate hard-coded Windows system-library list.
 
-The atomically published, strictly UTF-8/JSON manifest records the Cargo
-profile/target, runtime archive size/SHA-256, and the complete
-source/config/toolchain fingerprint. Its digest fields are validated as lowercase
-SHA-256 values rather than arbitrary strings. Runtime readiness carries that
-verified fingerprint into native plan construction; every production link read
-requires the same fingerprint. The invoking workspace must exist while its
-fingerprint is computed and consumed, but its absolute path is deliberately not
-persisted as semantic identity: byte-equivalent sibling worktrees and hydrated
-archives therefore share one content-addressed sidecar without last-writer path
-thrash. Plan construction
-also rejects missing, corrupt, wrong-profile, wrong-target, archive-mismatched,
-foreign-source, or stale-path manifests. Every recorded `out_dir` and
-native/framework search directory must still exist. This prevents a hydrated
-artifact from retaining link-input custody in a deleted worktree. It
-never scans `target/<profile>/build/*/output`, never chooses a newest directory,
-and never matches provenance by crate name.
+The exclusively versioned manifest uses integer schema **5**, strict UTF-8/exact
+JSON, and a stable direct-file read bounded to 16 MiB. It records the Cargo
+profile/target, semantic runtime archive identity, typed link items, adjacent
+custody, and the validated `RuntimeBuildIdentity`. Float schema values and
+earlier manifest versions are rejected. Digest fields must be lowercase SHA-256
+values. Runtime readiness carries this independently captured build identity
+into every production native link read; a manifest cannot attest itself.
+
+The effective target comes exclusively from the captured runtime identity:
+explicit target selection or the captured toolchain host when selection was
+implicit. Its object format governs parser lowering, manifest validation, and
+flag reconstruction even on a reader host with a different OS or architecture.
+There is no ambient-host fallback in native manifest interpretation. Missing,
+corrupt, wrong-profile, wrong-target, archive-mismatched, or foreign-build
+manifests fail admission. Discovery never scans
+`target/<profile>/build/*/output`, chooses a newest directory, or matches
+provenance by crate name.
+
+`native_link_custody.py` owns schema `molt.native-link-custody.v2`; v1 is rejected.
+Canonical UTF-8 JSON identifies the ordered entries, and deterministic USTAR
+archives carry the required local link inputs beside the runtime. Portable
+component/member names, exact member closure, content digests, direct regular
+files, stable generation fences, extraction containment, and exclusive durable
+publication are shared admission invariants. Unowned path-bearing linker
+arguments, unsupported local dynamic dependencies/frameworks, and ambiguous
+local COFF libraries fail closed. The published plan contains neither producer
+`out_dir` nor source paths, so deleting a producer worktree does not orphan a
+hydrated runtime's native dependencies.
 
 Repeated plan construction memoizes the expensive archive digest by robust file
 identity (resolved path, size, modification/change times, device, and inode) in a
@@ -100,19 +113,36 @@ or mutation changes that identity, forces a fresh SHA-256, and still fails again
 the artifact-bound digest. This removes repeated `O(runtime archive bytes)` reads
 from warm plans without weakening content custody.
 
-Build-script search directories are treated as an unordered custody set, not a
-surrogate link plan. Each rustc library argument is resolved against that set:
-a unique package-owned match receives an explicit adjacent search directory (or
-exact COFF path), an ambiguous match fails closed, and an unmatched argument
-remains a toolchain/system library. Framework lookup follows the same rule.
-This preserves rustc's target-specific lowering—including whole-archive,
-as-needed, verbatim, framework, and platform library forms—without reimplementing
-Cargo modifier semantics. Fingerprint reuse requires the matching manifest.
-Canonical hydration copies a sidecar only when its content-addressed source
-identity matches the invoking workspace fingerprint; otherwise it refreshes
-through the same exact no-op-capable
-Cargo rustc command and accepts the result only when the selected archive is
-byte-identical. Failure is fatal.
+Build-script search directories are an unordered producer custody set, not a
+surrogate link plan. Each rustc library argument resolves against that set; a
+unique package-owned local archive is captured into adjacent custody, ambiguity
+fails closed, and unmatched supported arguments remain toolchain/system
+libraries. Ordered typed items preserve rustc's linker-token semantics while
+reconstructing owned paths from validated adjacent custody.
+
+One immutable `RuntimeCargoPlan` captures command, environment, selected tools,
+configuration, and target admission before build identity is computed. Native
+build and manifest refresh execute that exact plan once, with pre/post custody
+verification; they do not renormalize the environment, retry through another
+tool, or change sccache policy after capture. Guarded execution evidence remains
+available if post-execution plan verification fails.
+
+Canonical hydration copies custody before the native manifest and validates the
+copied artifact against the invoking plan's independent identity. Canonical or
+copied-manifest rejection records bounded failure evidence and its path before
+an exact-plan refresh. A successful recovery does not poison final runtime
+state; failed refresh or admission is fatal. Nightly bundle schema **3** carries
+the same manifest/custody authorities. Bundle OS/architecture fields are checked
+projections of the captured target, not reader-host observations. Supported
+bundle cells are GNU Linux, macOS, and Windows MSVC on x86_64/aarch64; other
+targets such as musl are rejected rather than inferred from an OS name. These
+metadata gates do not establish native execution proof for those cells.
+
+Bundle archive size is admitted under a stable direct-file handle before
+hashing, with a ceiling derived from the 2 GiB payload limit plus bounded USTAR
+header/padding overhead. Individual inputs are bounded before hashing, and
+publication checks manifest and aggregate payload sizes. These are resource
+admission bounds, not measured performance improvements.
 
 The former archive-member parser and crate-name scanner were deleted when the
 Cargo JSON manifest became the sole dependency authority. Keeping them would
@@ -168,6 +198,19 @@ and reject the return of post-failure linker retry lanes.
 
 ## Performance and measurement authority
 
+Custody pass topology is explicit and **not yet profiled**. An existing
+extraction admission hashes the full archive, streams and hashes every member
+for validation, then hashes extracted files. First extraction additionally
+hashes the archive again, streams extraction with member hashes, hashes staged
+files, and hashes published files. A publication collision validates the winning
+extraction before the final validation. Native manifest reads invoke custody
+admission, so bundle selection can create an extraction as a side effect. Shared
+`stable_regular_file_identity` hashes on each call; subsequent generation
+verification is metadata/change-time checking, not another content hash. No
+custody cache or speedup is claimed. Any consolidation of these passes must
+retain exact member closure and generation custody, and be justified by the
+actual consumer profile rather than weakening admission.
+
 `tools/native_link_benchmark.py` is the canonical native-link profiler. It
 imports the production plan, command retargeter, memory guard, and candidate
 finalizer; it does not reconstruct flags, stripping, validation, or publication.
@@ -214,6 +257,12 @@ identity resolver so a profiler implementation change cannot silently reuse an
 older baseline. Response files are content-addressed first-class inputs.
 Comparison is rejected before execution if any identity differs.
 
+Production implementation facts are generated from the local Python import
+closure of the actual plan, command, finalizer, and runtime-identity entrypoints,
+not a handwritten source-file list. Their repository-relative paths and hashes
+form a separate implementation identity, allowing before/after implementation
+comparisons without changing the measurement-semantics authority.
+
 Warm comparisons require certified whole-host quiescence before and after both
 runs, zero detected competing Cargo/rustc/backend/wasmtime processes, at least
 five samples, and relative median absolute deviation at or below 5% on both
@@ -232,9 +281,11 @@ x86_64/aarch64 cells.
 Example after a normal Molt build has produced the three canonical inputs:
 
 ```text
-python tools/native_link_benchmark.py \
+uv run python tools/native_link_benchmark.py \
   --object <program.o> --stub <main_stub.c> --runtime <runtime.a> \
   --output <bench-program> --profile release --warm-runs 7 \
+  --runtime-cargo-profile <exact-cargo-profile> \
+  --runtime-stdlib-profile <exact-stdlib-profile> \
   --json-out <report.json>
 ```
 

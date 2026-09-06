@@ -257,10 +257,10 @@ def _emit_backend_pipeline_outputs(
             _fail("Runtime build failed", json_output, command="build")
         )
     snapshot_build_diagnostics()
-    runtime_source_fingerprint = (
-        prepared_backend_runtime_context.runtime_state.native_link_source_fingerprint
+    runtime_build_identity = (
+        prepared_backend_runtime_context.runtime_state.native_runtime_build_identity
     )
-    assert runtime_source_fingerprint is not None
+    assert runtime_build_identity is not None
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
@@ -269,7 +269,7 @@ def _emit_backend_pipeline_outputs(
             json_output=json_output,
             output_binary=output_layout.output_binary,
             runtime_lib=runtime_lib,
-            runtime_source_fingerprint=runtime_source_fingerprint,
+            runtime_build_identity=runtime_build_identity,
             molt_root=prepared_build_roots.molt_root,
             runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
             target_triple=output_layout.target_triple,

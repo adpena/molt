@@ -64,7 +64,8 @@ def _record_runtime_wasm_build_phase(
     """Append one completed runtime-wasm build phase to the accumulator.
 
     ``wall_s`` is a wall-clock duration in seconds (``time.perf_counter`` delta).
-    ``kind`` is the artifact kind (``shared`` / ``reloc`` / ``combined``).
+    ``kind`` is the artifact or identity-family kind
+    (``shared`` / ``reloc`` / ``combined`` / ``family``).
     ``mode`` is one of the modes documented in the module docstring.
     """
     record: dict[str, Any] = {
@@ -102,9 +103,7 @@ def _runtime_wasm_build_timings_snapshot() -> dict[str, Any] | None:
         if record["phase"] == "cargo_compile" and record["mode"] != "build"
     ]
     identity_phases = [
-        record
-        for record in phases
-        if record["phase"] in {"runtime_toolchain_identity", "runtime_source_identity"}
+        record for record in phases if record["phase"] == "runtime_family_identity"
     ]
     identity_pre = [
         record for record in identity_phases if record["mode"] == "pre_build"

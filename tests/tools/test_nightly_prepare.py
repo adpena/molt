@@ -37,13 +37,20 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
 
     monkeypatch.setattr(nightly_prepare, "COMMANDS", SimpleNamespace(run=fake_run))
     identity = SimpleNamespace(source_commit="a" * 40)
+    runtime_build_identity = object()
+    monkeypatch.setattr(
+        nightly_prepare.nightly_runtime_bundle,
+        "capture_bundle_runtime_identity",
+        lambda _root, _target: runtime_build_identity,
+    )
     monkeypatch.setattr(
         nightly_prepare.nightly_runtime_bundle,
         "collect_bundle_identity",
-        lambda _root: identity,
+        lambda _root, **_kwargs: identity,
     )
 
     def fake_pack(**kwargs):
+        assert kwargs["runtime_build_identity"] is runtime_build_identity
         kwargs["output"].write_bytes(b"bundle")
         kwargs["manifest_output"].write_text("{}", encoding="utf-8")
         return {"schema_version": 1}
