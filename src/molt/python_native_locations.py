@@ -189,7 +189,11 @@ def _loaded_native_module_paths(
 def loaded_native_module_paths(
     *, operating_system: str | None = None
 ) -> tuple[Path, ...]:
-    """Return exact native files to prearm before the full content probe."""
+    """Prearm the current file census, not future loads or optional bindings.
+
+    The content probe recaptures and fences its own census. A location receipt
+    cannot authorize a file first loaded after this snapshot.
+    """
     if operating_system is None:
         operating_system = {
             "win32": "windows",

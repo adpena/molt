@@ -40,6 +40,10 @@ def test_python_capture_source_closure_is_proof_authority(
     assert {
         root / "src/molt/__init__.py",
         root / "src/molt/_version.py",
+        root / "src/sitecustomize.py",
+        root / "src/molt/pytest_memory_guard_bootstrap.py",
+        root / "src/molt/memory_guard_paths.py",
+        root / "src/molt/process_spawn.py",
         root / "pyproject.toml",
     }.issubset(capture_paths)
     for path in capture_paths:

@@ -90,7 +90,19 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
 
 
 def _path_stat_identity(value: os.stat_result) -> tuple[int, ...]:
-    return (value.st_mode, *_stat_identity(value))
+    device, inode, size, mtime, ctime = _stat_identity(value)
+    # Directory storage allocation is not membership. Windows can report a
+    # directory as size 0 then 4096 on read-only enumeration; the complete
+    # membership snapshots below own its children. Retain object, mode and
+    # timestamp checks, and exact byte length for every non-directory entry.
+    return (
+        value.st_mode,
+        device,
+        inode,
+        0 if stat.S_ISDIR(value.st_mode) else size,
+        mtime,
+        ctime,
+    )
 
 
 def _semantic_access(metadata: os.stat_result) -> dict[str, bool]:
@@ -125,6 +137,7 @@ class PythonFileCaptureContext:
         self._hashed_bytes = 0
         self._hashed_files = 0
         self._hash_seconds = 0.0
+        self._verification_fences: list[Callable[[], None]] = []
 
     def _remember(self, identity: StableRegularFileIdentity) -> None:
         metadata = identity.path.lstat()
@@ -196,6 +209,12 @@ class PythonFileCaptureContext:
             verify_stable_regular_file_identity(
                 identity, label="Python capture custody"
             )
+        for verify in self._verification_fences:
+            verify()
+
+    def register_verification_fence(self, verify: Callable[[], None]) -> None:
+        """Retain a producer's non-file snapshot through outer publication."""
+        self._verification_fences.append(verify)
 
     def register_node(
         self, node: dict[str, object], identity: StableRegularFileIdentity
@@ -558,9 +577,14 @@ def _tree_membership_snapshot(
     return _path_stat_identity(root_metadata), records
 
 
+_TreeSnapshotFingerprint = tuple[
+    tuple[int, ...], tuple[tuple[str, tuple[int, ...]], ...]
+]
+
+
 def _snapshot_fingerprint(
     root_identity: tuple[int, ...], records: Sequence[tuple[str, Path, os.stat_result]]
-) -> tuple[tuple[int, ...], tuple[tuple[str, tuple[int, ...]], ...]]:
+) -> _TreeSnapshotFingerprint:
     return (
         root_identity,
         tuple(
@@ -571,19 +595,23 @@ def _snapshot_fingerprint(
 
 
 def _snapshot_difference(
-    before_root: tuple[int, ...],
-    before: Sequence[tuple[str, Path, os.stat_result]],
-    after_root: tuple[int, ...],
-    after: Sequence[tuple[str, Path, os.stat_result]],
+    before: _TreeSnapshotFingerprint,
+    after: _TreeSnapshotFingerprint,
 ) -> str:
-    if before_root != after_root:
-        return "root metadata changed"
-    before_by_path = {
-        relative: _path_stat_identity(metadata) for relative, _path, metadata in before
-    }
-    after_by_path = {
-        relative: _path_stat_identity(metadata) for relative, _path, metadata in after
-    }
+    def metadata_delta(old: tuple[int, ...], new: tuple[int, ...]) -> str:
+        # Keep the exact changed fields in failure evidence; a path-only report
+        # cannot distinguish replacement, access-mode drift and timestamp drift.
+        fields = ("mode", "device", "inode", "size", "mtime_ns", "ctime_ns")
+        return ", ".join(
+            f"{field}={left}->{right}"
+            for field, left, right in zip(fields, old, new, strict=True)
+            if left != right
+        )
+
+    if before[0] != after[0]:
+        return f"root metadata changed: {metadata_delta(before[0], after[0])}"
+    before_by_path = dict(before[1])
+    after_by_path = dict(after[1])
     for relative in sorted(
         before_by_path.keys() | after_by_path.keys(),
         key=lambda value: (value.casefold(), value),
@@ -593,7 +621,10 @@ def _snapshot_difference(
         if relative not in after_by_path:
             return f"entry removed: {relative}"
         if before_by_path[relative] != after_by_path[relative]:
-            return f"entry metadata changed: {relative}"
+            return (
+                f"entry metadata changed: {relative} "
+                f"[{metadata_delta(before_by_path[relative], after_by_path[relative])}]"
+            )
     return "snapshot identity changed"
 
 
@@ -733,20 +764,27 @@ def _stable_tree_inventory(
             ) from exc
         if _path_stat_identity(after_link) != _path_stat_identity(metadata):
             raise PythonEnvironmentIdentityError(f"{label} symlink changed: {path}")
-    after_root, after = _tree_membership_snapshot(
-        canonical,
-        label=label,
-        excluded=excluded,
-        pruned_components=pruned_components,
-    )
-    if _snapshot_fingerprint(before_root, before) != _snapshot_fingerprint(
-        after_root, after
-    ):
-        difference = _snapshot_difference(before_root, before, after_root, after)
-        raise PythonEnvironmentIdentityError(
-            f"{label} changed during inventory between stable snapshots: {canonical} "
-            f"({difference})"
+    expected_membership = _snapshot_fingerprint(before_root, before)
+
+    def verify_membership() -> None:
+        after_root, after = _tree_membership_snapshot(
+            canonical,
+            label=label,
+            excluded=excluded,
+            pruned_components=pruned_components,
         )
+        actual = _snapshot_fingerprint(after_root, after)
+        if expected_membership != actual:
+            difference = _snapshot_difference(expected_membership, actual)
+            raise PythonEnvironmentIdentityError(
+                f"{label} changed during inventory between stable snapshots: {canonical} "
+                f"({difference})"
+            )
+
+    verify_membership()
+    # Keep only compact metadata, not parser bytes or duplicate Path/stat rows.
+    # Each public capture checks this same fence after all later root inventories.
+    pool.capture_context.register_verification_fence(verify_membership)
     rows.sort(key=lambda row: (str(row["path"]).casefold(), str(row["path"])))
     node_ids = sorted(
         {str(row["node"]) for row in rows if "node" in row},

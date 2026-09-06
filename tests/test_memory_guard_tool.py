@@ -17,7 +17,7 @@ import pytest
 from tools.memory_guard_core import process_custody
 
 import tools.memory_guard as memory_guard
-from tools.memory_guard_core.paths import (
+from molt.memory_guard_paths import (
     active_guard_marker_dir,
     pytest_guard_summary_dir,
 )

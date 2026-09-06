@@ -22,7 +22,7 @@ load NumPy/SciPy witness tooling. New behavior belongs in its owning module;
 `tools/proof_queue.py` must not become a compatibility facade or re-export
 internal implementation symbols.
 
-Process launch options come from the typed `tools/process_spawn.py` authority,
+Process launch options come from the typed `src/molt/process_spawn.py` authority,
 shared by queue custody, the memory guard, and pytest bootstrap. Keep explicit
 launch arguments and text streams typed through their consumers. Named proof
 environments are parsed by `policy` into string tables and case-folded locked
@@ -34,6 +34,16 @@ share one submission path, and detached dispatch closes its database connection
 on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
+
+Python startup guarding is owned by `src/molt/pytest_memory_guard_bootstrap.py`;
+state paths are owned by `src/molt/memory_guard_paths.py`. Source and test-local
+`sitecustomize.py` files are adapters into that package, not repository-wide
+import-path authorities. Non-test startup must leave the checkout root absent
+unless the caller already selected it. Only a confirmed pytest, test-module, or
+direct-test invocation may expose repository tooling and enter the existing
+memory-guard handoff. Keep this distinction intact: making the whole checkout
+importable forces isolated Python custody to inventory artifacts and unrelated
+WIP as executable input.
 Running and terminal guard summaries share `reporting.GuardReportContext`.
 Win32 process-query signatures come from `tools/windows_process_api.py`; query-only
 consumers share its cached table, while consumers binding additional APIs own
