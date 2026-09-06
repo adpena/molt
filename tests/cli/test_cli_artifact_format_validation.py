@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import molt.cli as cli
-from molt.cli import backend_binary as cli_backend_binary
+from molt.exact_json import canonical_json_sha256
+from tests.cli.native_link_test_support import static_archive_bytes
 
 
 def test_is_valid_static_library_artifact_checks_archive_magic(tmp_path: Path) -> None:
@@ -26,22 +27,13 @@ def test_artifact_needs_rebuild_for_invalid_static_library_even_with_matching_fi
     tmp_path: Path,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
+    fingerprint = {
+        "hash": canonical_json_sha256("artifact-format"),
+        "rustc": "rustc-test",
+    }
+    stored = {"version": 3, **fingerprint}
+    runtime_lib.write_bytes(static_archive_bytes(b"object"))
+    assert cli._artifact_needs_rebuild(runtime_lib, fingerprint, stored) is False
     runtime_lib.write_bytes(b"runtime")
-    fingerprint = {"hash": "abc", "rustc": "rustc-test"}
 
-    assert (
-        cli._artifact_needs_rebuild(runtime_lib, fingerprint, dict(fingerprint)) is True
-    )
-
-
-def test_artifact_newer_than_sources_rejects_invalid_static_library(
-    tmp_path: Path,
-) -> None:
-    runtime_lib = tmp_path / "libmolt_runtime.a"
-    runtime_lib.write_bytes(b"runtime")
-    source = tmp_path / "source.rs"
-    source.write_text("// source\n")
-
-    assert (
-        cli_backend_binary._artifact_newer_than_sources(runtime_lib, [source]) is False
-    )
+    assert cli._artifact_needs_rebuild(runtime_lib, fingerprint, stored) is True

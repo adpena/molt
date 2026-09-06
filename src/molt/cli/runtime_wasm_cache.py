@@ -62,7 +62,7 @@ def _shared_runtime_wasm_cache_root() -> Path:
 
 
 def _runtime_wasm_cache_generation_dir(identity: RuntimeBuildIdentity) -> Path:
-    return _shared_runtime_wasm_cache_root() / identity.pair_digest
+    return _shared_runtime_wasm_cache_root() / identity.family_digest
 
 
 def _cached_pair_paths(identity: RuntimeBuildIdentity) -> tuple[Path, Path, Path]:

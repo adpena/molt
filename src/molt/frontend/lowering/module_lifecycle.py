@@ -11,6 +11,7 @@ import ast
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     ModuleExecutionKind,
@@ -96,6 +97,7 @@ class ModuleLifecycleMixin(_MixinBase):
             execution_kind=self.module_execution_kind,
         )
         self.module_import_state = loader_module_import_state(import_context)
+        self.python_binding_index: PythonBindingIndex | None = None
         self.module_import_flow: ModuleImportFlow | None = None
         self.target_python = target_python
 

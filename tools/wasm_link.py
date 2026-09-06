@@ -42,12 +42,18 @@ from molt.cli.external_link_providers import (  # noqa: E402
     WASM_LIBC_LINK_IMPORT_CLASS,
     wasm_external_link_provider_symbols,
 )
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
+    StableRegularFileChangedError,
+    StableRegularFileError,
+    StableRegularFileIdentity,
+    snapshot_stable_regular_file,
+)
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
     render_source_extension_link_arguments as render_source_extension_link_arguments,
     source_extension_link_requirements as source_extension_link_requirements,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
+    RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
 )
@@ -173,6 +179,12 @@ from wasm_link_optimize import (  # noqa: E402
 )
 import wasm_link_callable_table as _callable_table  # noqa: E402
 import wasm_link_export_contract as _link_export_contract  # noqa: E402
+from wasm_link_context import (  # noqa: E402
+    SplitRuntimeExportContractEntry as _SplitRuntimeExportContractEntry,
+    WasmExportContext,
+    WasmOptimizerContext,
+    WasmValidationContext,
+)
 import wasm_link_fact_provider as _link_facts  # noqa: E402
 import wasm_link_pipeline as _link_pipeline  # noqa: E402
 import wasm_link_validation as _link_validation  # noqa: E402
@@ -338,20 +350,13 @@ def _verify_runtime_generation(
         if ".." in path.parts:
             raise SystemExit(f"Runtime custody path contains '..': {path}")
     try:
-        payload = json.loads(expected_identity.read_text(encoding="utf-8"))
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema") != "molt.runtime-wasm-expected-pair.v1"
-        ):
-            raise ValueError("expected pair schema is invalid")
-        shared_identity = RuntimeBuildIdentity.from_dict(payload.get("shared"))
-        reloc_identity = RuntimeBuildIdentity.from_dict(payload.get("reloc"))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        expected_pair = RuntimeWasmExpectedPair.read(expected_identity)
+    except ValueError as exc:
         raise SystemExit(f"Trusted runtime pair identity is invalid: {exc}") from exc
     generation = read_runtime_wasm_generation(
         generation_manifest,
-        expected_shared_identity=shared_identity,
-        expected_reloc_identity=reloc_identity,
+        expected_shared_identity=expected_pair.shared,
+        expected_reloc_identity=expected_pair.reloc,
     )
     if generation is None:
         raise SystemExit(
@@ -763,49 +768,84 @@ def _snapshot_link_input(
     label: str,
     attempts: int = 100,
     retry_delay_seconds: float = 0.05,
-    accept: Callable[[bytes], bool] | None = None,
+    required_prefix: bytes | None = None,
     accept_path: Callable[[Path], bool] | None = None,
+    expected_identity: StableRegularFileIdentity | None = None,
+    snapshot_directory: Path | None = None,
 ) -> Path:
     """Capture one complete immutable linker input from a mutable build path."""
+    source = source.expanduser().absolute()
+    snapshot_root = snapshot_root.expanduser().absolute()
+    if expected_identity is not None and source != expected_identity.path:
+        raise OSError(f"Linker input path crossed its trusted identity: {source}")
+    if source.name.endswith(".runtime-wasm-member") and expected_identity is None:
+        raise OSError(
+            f"Immutable runtime member requires its trusted content identity: {source}"
+        )
+    if attempts <= 0:
+        raise ValueError("linker input snapshot attempts must be positive")
+    if retry_delay_seconds < 0:
+        raise ValueError("linker input snapshot retry delay must be non-negative")
+    if required_prefix is not None and not isinstance(required_prefix, bytes):
+        raise TypeError("linker input required prefix must be bytes")
     last_observation = "unreadable"
     snapshot_root.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = (
+        snapshot_root / label
+        if snapshot_directory is None
+        else snapshot_directory.expanduser().absolute()
+    )
+    if not snapshot_dir.is_relative_to(snapshot_root):
+        raise OSError(
+            f"Linker input snapshot directory escaped its custody root: {snapshot_dir}"
+        )
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = snapshot_dir / source.name
     for _attempt in range(attempts):
         try:
-            before = source.stat()
-            first = source.read_bytes()
-            middle = source.stat()
-            second = source.read_bytes()
-            after = source.stat()
-        except OSError as exc:
+            captured = snapshot_stable_regular_file(
+                source,
+                snapshot,
+                label=f"linker input {label}",
+                capture_prefix_bytes=len(required_prefix or b""),
+            )
+        except StableRegularFileChangedError as exc:
             last_observation = str(exc)
-            time.sleep(retry_delay_seconds)
+            if retry_delay_seconds:
+                time.sleep(retry_delay_seconds)
             continue
-        stable_identity = (
-            before.st_size == middle.st_size == after.st_size == len(first)
-            and before.st_mtime_ns == middle.st_mtime_ns == after.st_mtime_ns
-        )
-        if stable_identity and first == second:
-            if accept is not None and not accept(first):
-                last_observation = "stable bytes failed linker input contract"
-                time.sleep(retry_delay_seconds)
-                continue
-            digest = hashlib.sha256(first).hexdigest()
-            snapshot_dir = snapshot_root / label
-            snapshot_dir.mkdir(parents=True, exist_ok=True)
-            snapshot = snapshot_dir / source.name
-            snapshot.write_bytes(first)
-            if hashlib.sha256(snapshot.read_bytes()).hexdigest() != digest:
-                raise OSError(f"Failed to attest linker input snapshot: {snapshot}")
-            if accept_path is not None and not accept_path(snapshot):
-                last_observation = "stable snapshot failed linker metadata preflight"
-                time.sleep(retry_delay_seconds)
-                continue
-            return snapshot
-        last_observation = (
-            f"size={before.st_size}/{middle.st_size}/{after.st_size} "
-            f"mtime={before.st_mtime_ns}/{middle.st_mtime_ns}/{after.st_mtime_ns}"
-        )
-        time.sleep(retry_delay_seconds)
+        except (OSError, StableRegularFileError) as exc:
+            raise OSError(f"Failed to snapshot linker input {label}: {exc}") from exc
+        if expected_identity is not None and captured.source != expected_identity:
+            captured.discard()
+            raise OSError(
+                f"Linker input crossed its trusted content identity: {source}"
+            )
+        if (
+            captured.source.sha256 != captured.snapshot.sha256
+            or captured.source.size != captured.snapshot.size
+        ):
+            captured.discard()
+            raise OSError(f"Failed to attest linker input snapshot: {snapshot}")
+        if required_prefix is not None and captured.prefix != required_prefix:
+            captured.discard()
+            raise OSError(
+                "Failed to snapshot linker input "
+                f"{label}: stable prefix failed linker input contract"
+            )
+        if accept_path is not None:
+            try:
+                accepted_path = accept_path(snapshot)
+            except BaseException:
+                captured.discard()
+                raise
+            if not accepted_path:
+                captured.discard()
+                raise OSError(
+                    "Failed to snapshot linker input "
+                    f"{label}: stable snapshot failed linker metadata preflight"
+                )
+        return snapshot
     raise OSError(
         f"Linker input remained mutable while snapshotting {label}: "
         f"{source} ({last_observation})"
@@ -910,23 +950,6 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
 _COMPILER_RT_LINK_IMPORT_CLASS = "wasm_compiler_rt_link_import"
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 _SYMBOL_KIND_DATA = 1
-
-
-class _SplitRuntimeExportContractEntry:
-    __slots__ = ("artifact", "kind", "canonical_name", "accepted_names")
-
-    def __init__(
-        self,
-        *,
-        artifact: str,
-        kind: int,
-        canonical_name: str,
-        accepted_names: tuple[str, ...],
-    ) -> None:
-        self.artifact = artifact
-        self.kind = kind
-        self.canonical_name = canonical_name
-        self.accepted_names = accepted_names
 
 
 _SPLIT_RUNTIME_EXPORT_CONTRACT = (
@@ -1797,27 +1820,37 @@ def _validate_split_app_data_layout(
     return original, linked
 
 
-_link_export_contract.configure_api(globals())
+_export_context = cast(WasmExportContext, globals())
 _public_output_export_symbol_map = (
     _link_export_contract._public_output_export_symbol_map
 )
 _app_export_identity_maps = _link_export_contract._app_export_identity_maps
-_strip_app_export_identity_markers = (
-    _link_export_contract._strip_app_export_identity_markers
+_strip_app_export_identity_markers = functools.partial(
+    _link_export_contract._strip_app_export_identity_markers, _export_context
 )
-_publish_app_export_identity_markers = (
-    _link_export_contract._publish_app_export_identity_markers
+_publish_app_export_identity_markers = functools.partial(
+    _link_export_contract._publish_app_export_identity_markers, _export_context
 )
-_app_export_surface_error = _link_export_contract._app_export_surface_error
-_restore_public_output_exports = _link_export_contract._restore_public_output_exports
-_import_index_for_kind = _link_export_contract._import_index_for_kind
-_ensure_export_by_index = _link_export_contract._ensure_export_by_index
-_ensure_defined_memory_export = _link_export_contract._ensure_defined_memory_export
-_restore_split_runtime_contract_exports = (
-    _link_export_contract._restore_split_runtime_contract_exports
+_app_export_surface_error = functools.partial(
+    _link_export_contract._app_export_surface_error, _export_context
 )
-_strip_and_restore_split_artifact = (
-    _link_export_contract._strip_and_restore_split_artifact
+_restore_public_output_exports = functools.partial(
+    _link_export_contract._restore_public_output_exports, _export_context
+)
+_import_index_for_kind = functools.partial(
+    _link_export_contract._import_index_for_kind, _export_context
+)
+_ensure_export_by_index = functools.partial(
+    _link_export_contract._ensure_export_by_index, _export_context
+)
+_ensure_defined_memory_export = functools.partial(
+    _link_export_contract._ensure_defined_memory_export, _export_context
+)
+_restore_split_runtime_contract_exports = functools.partial(
+    _link_export_contract._restore_split_runtime_contract_exports, _export_context
+)
+_strip_and_restore_split_artifact = functools.partial(
+    _link_export_contract._strip_and_restore_split_artifact, _export_context
 )
 
 
@@ -2012,18 +2045,32 @@ def _compose_split_runtime_native_allowlist(
     return composed
 
 
-_optimizer_policy.configure_api(globals())
-_tree_shake_runtime = _optimizer_policy._tree_shake_runtime
-_optimize_split_app_module = _optimizer_policy._optimize_split_app_module
-_run_wasm_opt_via_optimize = _optimizer_policy._run_wasm_opt_via_optimize
+_optimizer_context = cast(WasmOptimizerContext, globals())
+_tree_shake_runtime = functools.partial(
+    _optimizer_policy._tree_shake_runtime, _optimizer_context
+)
+_optimize_split_app_module = functools.partial(
+    _optimizer_policy._optimize_split_app_module, _optimizer_context
+)
+_run_wasm_opt_via_optimize = functools.partial(
+    _optimizer_policy._run_wasm_opt_via_optimize, _optimizer_context
+)
 
 
-_link_validation.configure_api(globals())
+_validation_context = cast(WasmValidationContext, globals())
 _canonicalize_wasm_ld_output = _link_validation._canonicalize_wasm_ld_output
-_validate_freestanding = _link_validation._validate_freestanding
-_validate_wasm_structural = _link_validation._validate_wasm_structural
-_validate_linked = _link_validation._validate_linked
-_validate_split_runtime_outputs = _link_validation._validate_split_runtime_outputs
+_validate_freestanding = functools.partial(
+    _link_validation._validate_freestanding, _validation_context
+)
+_validate_wasm_structural = functools.partial(
+    _link_validation._validate_wasm_structural, _validation_context
+)
+_validate_linked = functools.partial(
+    _link_validation._validate_linked, _validation_context
+)
+_validate_split_runtime_outputs = functools.partial(
+    _link_validation._validate_split_runtime_outputs, _validation_context
+)
 
 
 _WASM_LINK_FACTS_SCHEMA_VERSION = _link_facts._WASM_LINK_FACTS_SCHEMA_VERSION
@@ -2150,6 +2197,8 @@ def _run_wasm_ld(
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
+    runtime_identity: StableRegularFileIdentity | None = None,
+    deploy_runtime_identity: StableRegularFileIdentity | None = None,
 ) -> int:
     for native_object in native_objects:
         if not native_object.exists():
@@ -2163,6 +2212,7 @@ def _run_wasm_ld(
                 runtime,
                 runtime_snapshot_root,
                 label="selected",
+                expected_identity=runtime_identity,
                 accept_path=(
                     lambda path: (
                         _preflight_relocatable_runtime(
@@ -2182,7 +2232,7 @@ def _run_wasm_ld(
                 output,
                 snapshot_root,
                 label="app",
-                accept=_is_wasm_binary,
+                required_prefix=WASM_MAGIC + WASM_VERSION,
             )
             app_export_contract_snapshot = None
             if app_export_contract_path is not None:
@@ -2202,13 +2252,11 @@ def _run_wasm_ld(
                     native_object.name + ".extension_manifest.json"
                 )
                 if manifest.exists():
-                    manifest_snapshot = _snapshot_link_input(
+                    _snapshot_link_input(
                         manifest,
                         snapshot_root,
                         label=f"native-{index}-manifest",
-                    )
-                    (native_snapshot.parent / manifest.name).write_bytes(
-                        manifest_snapshot.read_bytes()
+                        snapshot_directory=native_snapshot.parent,
                     )
                 native_snapshot_list.append(native_snapshot)
             native_snapshots = tuple(native_snapshot_list)
@@ -2219,6 +2267,7 @@ def _run_wasm_ld(
                     deploy_runtime,
                     snapshot_root,
                     label="deploy-runtime",
+                    expected_identity=deploy_runtime_identity,
                 )
             return _run_wasm_ld_with_custodied_inputs(
                 wasm_ld,
@@ -2240,7 +2289,7 @@ def _run_wasm_ld(
                 wasm_facts_scanner=wasm_facts_scanner,
                 app_export_contract_path=app_export_contract_snapshot,
             )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
         return 1
 
@@ -2372,6 +2421,10 @@ def main() -> int:
         phase_timings_file=args.phase_timings_file,
         wasm_facts_scanner=args.wasm_facts_scanner,
         app_export_contract_path=args.app_export_contract,
+        runtime_identity=generation.reloc_member_identity,
+        deploy_runtime_identity=(
+            generation.shared_member_identity if args.split_runtime else None
+        ),
     )
 
 

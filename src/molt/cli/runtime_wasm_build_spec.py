@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import shlex
 import time
@@ -12,6 +10,7 @@ from typing import (
     Literal,
     Mapping,
     NamedTuple,
+    Sequence,
     TypeVar,
     cast,
 )
@@ -28,8 +27,8 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_export_name_for_import,
     wasm_runtime_shared_export_link_args,
 )
-from molt.cli import wasm_toolchain
 from molt.cli.artifact_state import (
+    _build_state_root,
     _runtime_fingerprint_path,
 )
 from molt.cli.cargo_execution import (
@@ -46,11 +45,15 @@ from molt.cli.runtime_artifact_selection import (
 )
 from molt.cli.runtime_build_identity import (
     RuntimeBuildIdentity,
-    RuntimePairMemberPlan,
-    RuntimeToolchainContentManifest,
+    RuntimeBuildMemberPlan,
     _tree_hash_worker_count,
-    provision_runtime_toolchain_content_manifest,
-    resolve_runtime_build_pair_identities,
+    resolve_wasm_runtime_build_family_identities,
+    runtime_build_tooling_authority,
+)
+from molt.cli.runtime_cargo_plan import (
+    CargoResourceRoot,
+    RuntimeCargoPlan,
+    resolve_runtime_cargo_plan,
 )
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
@@ -58,7 +61,6 @@ from molt.cli.runtime_features import (
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
-    _runtime_fingerprint,
 )
 from molt.cli.runtime_paths import (
     _cargo_profile_dir,
@@ -71,59 +73,27 @@ from molt.cli.runtime_wasm_build_policy import (
     _runtime_wasm_incremental_target_root,
 )
 from molt.cli.runtime_wasm_build_support import (
-    _append_rustflags_text,
+    RuntimeWasmLinkInputs,
+    resolve_runtime_wasm_link_inputs,
+    _cargo_cmd_with_json_artifact_messages,
     _configure_wasi_sysroot_env,
     _configure_wasm_cc_env,
     _configure_wasm_long_double_env,
-    _reloc_link_archive_fingerprint_token,
-    _wasm_runtime_codegen_rustflags,
+    _wasm_runtime_codegen_flags,
 )
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
 )
 from molt.cli.wasm_link_args import (
-    wasm_link_args_response_file as _wasm_link_args_response_file,
-)
-from molt.file_hashing import _sha256_file
-
-
-_RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS = (
-    "src/molt/_wasm_runtime_exports.py",
-    "src/molt/cli/runtime_wasm_build.py",
-    "src/molt/cli/runtime_wasm_build_support.py",
-    "src/molt/wasm_artifact.py",
+    wasm_link_args_from_rustflags,
+    write_wasm_link_args_response_file,
 )
 
 
 def _runtime_wasm_publication_authority(root: Path) -> dict[str, object]:
-    """Return the exact source identity for post-Cargo runtime publication.
+    """Return the shared complete runtime planning/publication authority."""
 
-    Cargo fingerprints own compilation reuse.  These Python authorities own the
-    later reloc link, export rewrite, custom-section transform, and final member
-    publication.  Keeping their content identity separate lets a transform-only
-    change reuse the staticlib while making every older published pair ineligible.
-    """
-
-    files: list[dict[str, object]] = []
-    digest = hashlib.sha256()
-    for relative in _RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS:
-        path = root / relative
-        if not path.is_file():
-            raise ValueError(f"runtime WASM publication authority is missing: {path}")
-        content_digest = _sha256_file(path)
-        size = path.stat().st_size
-        files.append({"path": relative, "sha256": content_digest, "size": size})
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(content_digest.encode("ascii"))
-        digest.update(b"\0")
-        digest.update(str(size).encode("ascii"))
-        digest.update(b"\0")
-    return {
-        "schema": "molt.runtime-wasm-publication-authority.v1",
-        "digest": digest.hexdigest(),
-        "files": files,
-    }
+    return runtime_build_tooling_authority(root)
 
 
 class _RuntimeWasmBuildSpec(NamedTuple):
@@ -131,11 +101,8 @@ class _RuntimeWasmBuildSpec(NamedTuple):
 
     Single source of truth for the cargo profile, feature plan, RUSTFLAGS, and
     the content-address ``fingerprint`` of a reloc/shared runtime-wasm build.
-    Shared by ``_ensure_runtime_wasm`` (which consumes exactly these values) and
-    ``_prepopulate_combined_runtime_wasm_target`` (which must compute a
-    byte-identical ``fingerprint`` so the combined single-compile's artifacts are
-    recognised by the per-artifact target-reuse fast path).  Keeping one
-    authority means the two can never silently drift out of fingerprint parity.
+    The atomic pair producer and member finalizer consume the same resolved
+    Cargo plan and compile/member fingerprint projections.
     """
 
     requested_cargo_profile: str
@@ -146,7 +113,6 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     artifact_selection: RuntimeArtifactSelection
     runtime_exports: str
     link_flags: str
-    cargo_link_response_path: Path | None
     cargo_rustflags: str
     fingerprint_rustflags: str
     no_default_features: bool
@@ -157,106 +123,166 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     stored_fingerprint: dict[str, Any] | None
     fingerprint: dict[str, Any] | None
     staticlib_fingerprint: dict[str, Any] | None
+    cargo_plan: RuntimeCargoPlan | None = None
+    link_inputs: RuntimeWasmLinkInputs | None = None
+
+    def with_cargo_plan(self, plan: RuntimeCargoPlan) -> _RuntimeWasmBuildSpec:
+        return self._replace(
+            cargo_plan=plan,
+            env=dict(plan.environment),
+            cargo_rustflags=shlex.join(plan.rustflags),
+            fingerprint_rustflags=shlex.join(
+                (*plan.rustflags, *shlex.split(self.link_flags))
+            ),
+        )
 
 
-def _resolved_runtime_wasm_pair_identities(
+def _runtime_wasm_combined_cargo_command(
+    spec: _RuntimeWasmBuildSpec,
+) -> list[str]:
+    """Construct the combined producer command before resolving one Cargo plan."""
+
+    command = [
+        "cargo",
+        "rustc",
+        "--package",
+        "molt-runtime",
+        "--profile",
+        spec.cargo_profile,
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+    ]
+    if spec.no_default_features:
+        command.append("--no-default-features")
+    if spec.wasm_cargo_features:
+        command.extend(["--features", ",".join(spec.wasm_cargo_features)])
+    RUNTIME_WASM_COMBINED_ARTIFACTS.select_in(command)
+    command.append("--")
+    return command
+
+
+def _resolve_runtime_wasm_cargo_specs(
+    root: Path,
+    shared: _RuntimeWasmBuildSpec,
+    reloc: _RuntimeWasmBuildSpec,
+    *,
+    simd_enabled: bool,
+    freestanding: bool,
+) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
+    """Resolve the one command/environment consumed by capture and execution."""
+    env = dict(shared.env)
+    link_inputs: RuntimeWasmLinkInputs | None = None
+
+    def capture_inputs(
+        effective_env: Mapping[str, str],
+        _tools: Mapping[str, Path],
+        rust_roots: Sequence[CargoResourceRoot],
+    ) -> None:
+        nonlocal link_inputs
+        target_libdirs = [
+            resource.path
+            for resource in rust_roots
+            if resource.label.startswith("rust/target-libdir/")
+        ]
+        if not target_libdirs:
+            raise ValueError(
+                "runtime WASM Cargo plan did not capture its Rust target library directory"
+            )
+        link_inputs = resolve_runtime_wasm_link_inputs(
+            env=effective_env,
+            target_libdir=target_libdirs[-1],
+            project_root=root,
+        )
+
+    env["CARGO_TARGET_DIR"] = str(shared.target_root)
+    command = _runtime_wasm_combined_cargo_command(shared)
+    command[0] = env.get("CARGO", command[0])
+    link_args = wasm_link_args_from_rustflags(shared.link_flags)
+    if link_args:
+        response = write_wasm_link_args_response_file(
+            _build_state_root(root) / "wasm_link_args",
+            label=f"runtime.{shared.cargo_profile}.combined",
+            link_args=link_args,
+        )
+        command.extend(["-C", f"link-arg=@{response}"])
+    plan = resolve_runtime_cargo_plan(
+        root,
+        env=env,
+        cargo_command=_cargo_cmd_with_json_artifact_messages(command),
+        requested_target="wasm32-wasip1",
+        rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
+            flags,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+        ),
+        capture_inputs=capture_inputs,
+    )
+    if link_inputs is None:
+        raise ValueError("runtime WASM Cargo plan did not capture its link inputs")
+    return (
+        shared.with_cargo_plan(plan)._replace(link_inputs=link_inputs),
+        reloc.with_cargo_plan(plan)._replace(link_inputs=link_inputs),
+    )
+
+
+def _resolved_runtime_wasm_family_identities(
     root: Path,
     shared_spec: _RuntimeWasmBuildSpec,
     reloc_spec: _RuntimeWasmBuildSpec,
-    *,
-    toolchain_manifest: RuntimeToolchainContentManifest | None = None,
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
     if (
         shared_spec.cargo_profile != reloc_spec.cargo_profile
         or shared_spec.fingerprint_features != reloc_spec.fingerprint_features
         or shared_spec.cargo_rustflags != reloc_spec.cargo_rustflags
     ):
-        raise ValueError("runtime shared/reloc specs do not form one resolved pair")
-    sysroot_raw = shared_spec.env.get("MOLT_WASI_SYSROOT") or shared_spec.env.get(
-        "WASI_SYSROOT"
+        raise ValueError("runtime shared/reloc specs do not form one resolved family")
+    inputs = shared_spec.link_inputs
+    if inputs is None:
+        raise ValueError("runtime WASM family requires its resolved link inputs")
+    inputs.verify()
+    if shared_spec.cargo_plan is None:
+        raise ValueError("runtime WASM family requires its resolved Cargo plan")
+    preserve_debug = shared_spec.cargo_plan.preserve_debug_for_profile(
+        shared_spec.cargo_profile
     )
-    linker = wasm_toolchain.resolve_wasm_linker()
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
-    wasi_libc = wasm_toolchain.wasm_wasi_libc_archive()
-    rust_builtins = wasm_toolchain.wasm_compiler_builtins_archive()
-    if (
-        not sysroot_raw
-        or linker is None
-        or policy.error is not None
-        or policy.printscan is None
-        or policy.builtins is None
-        or wasi_libc is None
-        or rust_builtins is None
-    ):
-        raise ValueError(
-            policy.error or "runtime WASM toolchain identity is incomplete"
-        )
-    preserve_debug = any(
-        marker in shared_spec.cargo_profile.lower() for marker in ("dev", "debug")
-    )
-    return resolve_runtime_build_pair_identities(
+    identities = resolve_wasm_runtime_build_family_identities(
         root,
         env=shared_spec.env,
         cargo_profile=shared_spec.cargo_profile,
         target_triple="wasm32-wasip1",
         runtime_features=shared_spec.fingerprint_features,
         base_rustflags=shared_spec.cargo_rustflags,
+        cargo_command=shared_spec.cargo_plan.command,
         producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
         publication_authority=_runtime_wasm_publication_authority(root),
-        shared=RuntimePairMemberPlan(
-            kind="shared",
-            resolved_rustflags=shared_spec.fingerprint_rustflags,
-            link_args=tuple(shlex.split(shared_spec.link_flags)),
-            publication_transform="shared-runtime-publication-v2",
-            preserve_debug=preserve_debug,
+        members=(
+            RuntimeBuildMemberPlan(
+                kind="shared",
+                resolved_rustflags=shared_spec.fingerprint_rustflags,
+                link_args=tuple(shlex.split(shared_spec.link_flags)),
+                publication_transform="shared-runtime-publication-v2",
+                preserve_debug=preserve_debug,
+            ),
+            RuntimeBuildMemberPlan(
+                kind="reloc",
+                resolved_rustflags=reloc_spec.fingerprint_rustflags,
+                link_args=tuple(shlex.split(reloc_spec.link_flags)),
+                publication_transform="relocatable-runtime-publication-v2",
+                preserve_debug=True,
+            ),
         ),
-        reloc=RuntimePairMemberPlan(
-            kind="reloc",
-            resolved_rustflags=reloc_spec.fingerprint_rustflags,
-            link_args=tuple(shlex.split(reloc_spec.link_flags)),
-            publication_transform="relocatable-runtime-publication-v2",
-            preserve_debug=True,
-        ),
-        wasi_sysroot=Path(sysroot_raw),
-        wasm_linker=linker.path,
-        long_double_archive=policy.printscan,
-        builtins_archive=policy.builtins,
-        wasi_libc_archive=wasi_libc,
-        rust_builtins_archive=rust_builtins,
-        toolchain_manifest=toolchain_manifest,
+        wasi_sysroot=inputs.wasi_sysroot,
+        wasm_linker=inputs.linker.entrypoint,
+        long_double_archive=inputs.long_double.path,
+        builtins_archive=inputs.clang_builtins.path,
+        wasi_libc_archive=inputs.libc.path,
+        rust_builtins_archive=inputs.rust_builtins.path,
+        cargo_plan=shared_spec.cargo_plan,
     )
-
-
-def _provision_runtime_wasm_toolchain_manifest(
-    spec: _RuntimeWasmBuildSpec,
-) -> RuntimeToolchainContentManifest:
-    sysroot_raw = spec.env.get("MOLT_WASI_SYSROOT") or spec.env.get("WASI_SYSROOT")
-    linker = wasm_toolchain.resolve_wasm_linker()
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
-    wasi_libc = wasm_toolchain.wasm_wasi_libc_archive()
-    rust_builtins = wasm_toolchain.wasm_compiler_builtins_archive()
-    if (
-        not sysroot_raw
-        or linker is None
-        or policy.error is not None
-        or policy.printscan is None
-        or policy.builtins is None
-        or wasi_libc is None
-        or rust_builtins is None
-    ):
-        raise ValueError(
-            policy.error or "runtime WASM toolchain identity is incomplete"
-        )
-    return provision_runtime_toolchain_content_manifest(
-        env=spec.env,
-        target_triple="wasm32-wasip1",
-        wasi_sysroot=Path(sysroot_raw),
-        wasm_linker=linker.path,
-        long_double_archive=policy.printscan,
-        builtins_archive=policy.builtins,
-        wasi_libc_archive=wasi_libc,
-        rust_builtins_archive=rust_builtins,
-    )
+    if len(identities) != 2:
+        raise ValueError("runtime WASM build family must contain shared and reloc")
+    return identities[0], identities[1]
 
 
 def _runtime_wasm_toolchain_manifest_path(spec: _RuntimeWasmBuildSpec) -> Path:
@@ -278,24 +304,17 @@ def _runtime_identity_tree_phase_detail(
     return f"status={status},files={file_count},bytes={total_size},workers={workers}"
 
 
-def _runtime_toolchain_identity_tree(
-    manifest: RuntimeToolchainContentManifest,
-) -> Mapping[str, object] | None:
-    toolchain = manifest.payload.get("toolchain")
-    if not isinstance(toolchain, Mapping):
-        return None
-    tree = toolchain.get("wasi_sysroot")
-    return cast(Mapping[str, object], tree) if isinstance(tree, Mapping) else None
-
-
 def _runtime_source_identity_tree(
     identities: tuple[RuntimeBuildIdentity, RuntimeBuildIdentity],
 ) -> Mapping[str, object] | None:
     identity = identities[0]
-    pair = identity.payload.get("pair")
-    if not isinstance(pair, Mapping):
+    family = identity.payload.get("family")
+    if not isinstance(family, Mapping):
         return None
-    tree = pair.get("sources")
+    compile_payload = family.get("compile")
+    if not isinstance(compile_payload, Mapping):
+        return None
+    tree = compile_payload.get("sources")
     return cast(Mapping[str, object], tree) if isinstance(tree, Mapping) else None
 
 
@@ -304,7 +323,7 @@ _RuntimeIdentityPhaseResult = TypeVar("_RuntimeIdentityPhaseResult")
 
 def _timed_runtime_identity_phase(
     *,
-    phase: Literal["runtime_toolchain_identity", "runtime_source_identity"],
+    phase: Literal["runtime_family_identity"],
     mode: Literal["pre_build", "post_build"],
     operation: Callable[[], _RuntimeIdentityPhaseResult],
     identity_tree: Callable[[_RuntimeIdentityPhaseResult], Mapping[str, object] | None],
@@ -319,7 +338,7 @@ def _timed_runtime_identity_phase(
         _record_runtime_wasm_build_phase(
             phase,
             time.perf_counter() - started,
-            kind="pair",
+            kind="family",
             mode=mode,
             detail=_runtime_identity_tree_phase_detail(
                 tree,
@@ -340,7 +359,6 @@ def _compute_runtime_wasm_build_spec(
     resolved_modules: set[str] | frozenset[str] | None,
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
-    wasm_linker_identity: wasm_toolchain.WasmLinkerIdentity | None = None,
 ) -> _RuntimeWasmBuildSpec:
     """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
     # The emitted app import ABI is the final link-time requirement authority.
@@ -387,7 +405,6 @@ def _compute_runtime_wasm_build_spec(
             resolved_modules=resolved_modules,
         )
         link_flags = runtime_exports
-        cargo_link_response_path = None
     else:
         runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
         shared_import_flags = (
@@ -396,50 +413,6 @@ def _compute_runtime_wasm_build_spec(
             f" -C link-arg=--table-base={1 + WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT}"
         )
         link_flags = f"{shared_import_flags}{runtime_exports}"
-        cargo_link_response_path = _wasm_link_args_response_file(
-            root,
-            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
-            link_flags=link_flags,
-        )
-    base_rustflags = env.get("RUSTFLAGS", "").strip()
-    cargo_rustflags = _wasm_runtime_codegen_rustflags(
-        base_rustflags,
-        simd_enabled=simd_enabled,
-        freestanding=freestanding,
-    )
-    fingerprint_rustflags = _wasm_runtime_codegen_rustflags(
-        _append_rustflags_text(base_rustflags, link_flags),
-        simd_enabled=simd_enabled,
-        freestanding=freestanding,
-    )
-    # Fold the long-double archive identity into BOTH runtime fingerprints so a
-    # change to those archives (first provisioning, version bump, or removal)
-    # invalidates the cached runtime instead of serving a stale
-    # long-double-stubbed one (effect-attestation: configured != effective, M34).
-    # The reloc link whole-archives them via wasm-ld; the shared cdylib links
-    # them via build.rs `rustc-link-lib` (see _configure_wasm_long_double_env) â€”
-    # in BOTH cases the archives never otherwise enter the fingerprint/compat
-    # digest (the shared build passes them by env, not rustc link-args). The tag
-    # is a pure fingerprint input (a distinct cfg name per crate-type, never
-    # handed to the real compile) so the emitted wasm stays byte-identical for a
-    # fixed archive set â€” the CDN-cacheable shared runtime is stable across
-    # builds and only re-keys when the archives actually change.
-    _longdouble_link_token = _reloc_link_archive_fingerprint_token()
-    fingerprint_rustflags = _append_rustflags_text(
-        fingerprint_rustflags,
-        f"--cfg molt_{'reloc' if reloc else 'shared'}_longdouble_link"
-        f'="{_longdouble_link_token}"',
-    )
-    if reloc:
-        linker_token = (
-            wasm_linker_identity.fingerprint_token
-            if wasm_linker_identity is not None
-            else "wasm-ld:unattested"
-        )
-        fingerprint_rustflags = _append_rustflags_text(
-            fingerprint_rustflags,
-            f'--cfg molt_wasm_linker_identity="{linker_token}"',
-        )
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     artifact_selection = (
         RUNTIME_STATICLIB_ARTIFACTS if reloc else RUNTIME_CDYLIB_ARTIFACTS
@@ -475,52 +448,6 @@ def _compute_runtime_wasm_build_spec(
     else:
         target_root = _cargo_target_root(root)
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-    fingerprint = _runtime_fingerprint(
-        root,
-        cargo_profile=cargo_profile,
-        target_triple="wasm32-wasip1",
-        rustflags=fingerprint_rustflags,
-        runtime_features=fingerprint_features,
-        artifact_selection=artifact_selection,
-        stored_fingerprint=stored_fingerprint,
-    )
-    # Cargo's staticlib is a pre-link compile product.  Its bytes depend on the
-    # source/feature/codegen plan and on the exact CPython-ABI anchors emitted
-    # by build.rs, but NOT on reloc export flags or long-double archives that
-    # are consumed only by the later wasm-ld publication step.  Keying the
-    # target staticlib with the final reloc fingerprint made every change from
-    # the early native-object closure to the final app import subset look like
-    # a codegen miss and caused a second full Cargo compile.  Keep a distinct
-    # compile identity while the published reloc wasm retains the complete
-    # link identity above.
-    requested_function_anchors = wasm_cpython_abi_requested_export_names(
-        required_exports
-    )
-    requested_data_anchors = wasm_cpython_abi_requested_data_export_names(
-        required_exports
-    )
-    anchor_payload = json.dumps(
-        {
-            "functions": requested_function_anchors,
-            "data": requested_data_anchors,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    anchor_digest = hashlib.sha256(anchor_payload.encode("utf-8")).hexdigest()
-    staticlib_identity_rustflags = _append_rustflags_text(
-        cargo_rustflags,
-        f'--cfg molt_staticlib_anchor_plan="{anchor_digest}"',
-    )
-    staticlib_fingerprint = _runtime_fingerprint(
-        root,
-        cargo_profile=cargo_profile,
-        target_triple="wasm32-wasip1",
-        rustflags=staticlib_identity_rustflags,
-        runtime_features=fingerprint_features,
-        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
-        stored_fingerprint=None,
-    )
     return _RuntimeWasmBuildSpec(
         requested_cargo_profile=requested_cargo_profile,
         cargo_profile=cargo_profile,
@@ -530,15 +457,14 @@ def _compute_runtime_wasm_build_spec(
         artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,
         link_flags=link_flags,
-        cargo_link_response_path=cargo_link_response_path,
-        cargo_rustflags=cargo_rustflags,
-        fingerprint_rustflags=fingerprint_rustflags,
+        cargo_rustflags="",
+        fingerprint_rustflags=link_flags,
         no_default_features=no_default_features,
         wasm_cargo_features=tuple(wasm_cargo_features),
         fingerprint_features=tuple(fingerprint_features),
         fingerprint_path=fingerprint_path,
         target_root=target_root,
         stored_fingerprint=stored_fingerprint,
-        fingerprint=fingerprint,
-        staticlib_fingerprint=staticlib_fingerprint,
+        fingerprint=None,
+        staticlib_fingerprint=None,
     )

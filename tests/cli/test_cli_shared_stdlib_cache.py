@@ -13,6 +13,7 @@ import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
+from molt.exact_json import canonical_json_sha256
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -1279,7 +1280,11 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
 
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": canonical_json_sha256("shared-stdlib-backend-source"),
+        "rustc": "rustc",
+        "inputs_digest": canonical_json_sha256("shared-stdlib-backend-inputs"),
+    }
     build_cmds: list[list[str]] = []
 
     def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
@@ -2379,7 +2384,7 @@ def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
     ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
 
 
-def test_backend_binary_identity_tracks_stat_and_fails_safe(tmp_path: Path) -> None:
+def test_backend_binary_identity_tracks_content_and_fails_safe(tmp_path: Path) -> None:
     backend_bin = tmp_path / "molt-backend"
 
     missing = cli._backend_binary_identity(backend_bin)
@@ -2397,12 +2402,42 @@ def test_backend_binary_identity_tracks_stat_and_fails_safe(tmp_path: Path) -> N
     ident_big = cli._backend_binary_identity(backend_bin)
     assert ident_big != ident_small
 
-    # Same bytes but a newer mtime (cargo relink with identical content) still
-    # changes identity — mirrors backend_cache_dir_for's path+mtime convention.
+    # A same-content relink does not invalidate a content-addressed cache.
     backend_bin.write_bytes(b"BBBBBBBB")
     os.utime(backend_bin, (1_700_000_020, 1_700_000_020))
     ident_touched = cli._backend_binary_identity(backend_bin)
-    assert ident_touched != ident_big
+    assert ident_touched == ident_big
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace: bool
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_bytes(b"old-binary")
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cargo_target_root", lambda _root: tmp_path / "target"
+    )
+    before = cli._backend_binary_identity(backend_bin)
+    daemon_before = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
+        tmp_path, backend_bin
+    )
+    metadata = backend_bin.stat()
+    if replace:
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"new-binary")
+        os.replace(replacement, backend_bin)
+    else:
+        backend_bin.write_bytes(b"new-binary")
+    assert backend_bin.stat().st_size == metadata.st_size
+    os.utime(backend_bin, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    after = cli._backend_binary_identity(backend_bin)
+    daemon_after = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
+        tmp_path, backend_bin
+    )
+    assert before != after
+    assert daemon_before["backend_bin"] == before
+    assert daemon_after["backend_bin"] == after
 
 
 def test_backend_features_for_target_single_source_of_truth() -> None:

@@ -9,6 +9,7 @@ from typing import Any
 
 from molt.file_hashing import _sha256_bytes
 from molt.file_publication import atomic_write_bytes
+from molt.toolchain_identity import open_stable_regular_file
 
 
 class ExactJsonError(ValueError):
@@ -44,6 +45,19 @@ def loads_exact(value: str) -> Any:
         parse_constant=_constant,
         parse_float=_finite_float,
     )
+
+
+def read_exact(path: Path, *, max_bytes: int, label: str) -> Any:
+    """Decode one bounded direct-file generation, fencing mutation during read."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("exact JSON byte limit must be a positive integer")
+    with open_stable_regular_file(path, label=label) as opened:
+        if opened.stat.st_size > max_bytes:
+            raise ExactJsonError(f"{label} exceeds size limit: {path}")
+        raw = opened.stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise ExactJsonError(f"{label} exceeds size limit: {path}")
+    return loads_exact(raw.decode("utf-8", errors="strict"))
 
 
 def canonical_json_bytes(value: object, *, default: Any | None = None) -> bytes:

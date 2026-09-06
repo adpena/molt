@@ -6,7 +6,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 import unicodedata
 
 
-_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"\\|?*')
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"/\\|?*')
 _WINDOWS_RESERVED_STEMS = frozenset(
     {
         "AUX",
@@ -27,6 +27,23 @@ _WINDOWS_RESERVED_STEMS = frozenset(
 )
 
 
+def portable_path_component(value: object) -> str:
+    """Validate a native Windows or portable archive component without rewriting it."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("path component must be a nonempty portable name")
+    stem = value.split(".", 1)[0].rstrip(" ").upper()
+    if (
+        value.endswith((" ", "."))
+        or stem in _WINDOWS_RESERVED_STEMS
+        or any(
+            character in _WINDOWS_FORBIDDEN_CHARACTERS or ord(character) < 32
+            for character in value
+        )
+    ):
+        raise ValueError("path component must be a portable name")
+    return value
+
+
 def portable_relative_path(value: object) -> PurePosixPath:
     """Parse the sole receipt/archive path dialect shared by every platform."""
 
@@ -40,17 +57,13 @@ def portable_relative_path(value: object) -> PurePosixPath:
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise ValueError("path must be a portable relative POSIX path")
-    for part in path.parts:
-        stem = part.split(".", 1)[0].upper()
-        if (
-            part.endswith((" ", "."))
-            or stem in _WINDOWS_RESERVED_STEMS
-            or any(
-                character in _WINDOWS_FORBIDDEN_CHARACTERS or ord(character) < 32
-                for character in part
-            )
-        ):
-            raise ValueError("path must be a portable relative POSIX path")
+    for index, part in enumerate(path.parts):
+        try:
+            portable_path_component(part)
+        except ValueError as exc:
+            raise ValueError(
+                f"path must be a portable relative POSIX path: component {index} is not portable"
+            ) from exc
     return path
 
 

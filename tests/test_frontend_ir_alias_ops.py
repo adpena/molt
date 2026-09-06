@@ -184,9 +184,7 @@ def test_class_control_flow_type_alias_publishes_through_class_namespace() -> No
     member_keys = {
         op.result.name
         for op in ops
-        if op.kind == "CONST_STR"
-        and op.args == ["Member"]
-        and op.result is not None
+        if op.kind == "CONST_STR" and op.args == ["Member"] and op.result is not None
     }
 
     assert member_keys
@@ -398,7 +396,10 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
         assert invoke_op["source_line"] == 2
 
 
-def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> None:
+@pytest.mark.parametrize("condition", ["flag is not None", "flag"])
+def test_conditional_native_callable_import_guards_global_then_invokes_ffi(
+    condition: str,
+) -> None:
     gen = SimpleTIRGenerator(
         known_modules={"nativepkg", "nativepkg.ndimage"},
         direct_call_modules={"__main__"},
@@ -415,7 +416,7 @@ def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> 
     )
     gen.visit(
         ast.parse(
-            "if flag:\n"
+            f"if {condition}:\n"
             "    from nativepkg.ndimage import distance_transform_edt\n"
             "value = distance_transform_edt(data)\n"
         )
@@ -425,6 +426,24 @@ def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> 
     )
 
     invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
+    if condition == "flag":
+        # An unconstrained __bool__ may publish a different callable and return
+        # false, bypassing the import. Mere global existence cannot authorize FFI.
+        assert not invoke_ops
+        consts = _const_str_map(ops)
+        reads = {
+            op["out"]
+            for op in ops
+            if op.get("kind") == "module_get_global"
+            and consts.get((op.get("args") or [None, None])[1])
+            == "distance_transform_edt"
+        }
+        assert reads
+        assert any(
+            op.get("kind") == "call_indirect" and (op.get("args") or [None])[0] in reads
+            for op in ops
+        )
+        return
     assert len(invoke_ops) == 1
     invoke_op = invoke_ops[0]
     assert invoke_op["native_callable_export"] == (
@@ -446,8 +465,7 @@ def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> 
         i
         for i, op in enumerate(post_if_ops)
         if op["kind"] == "module_get_global"
-        and consts.get((op.get("args") or [None, None])[1])
-        == "distance_transform_edt"
+        and consts.get((op.get("args") or [None, None])[1]) == "distance_transform_edt"
     )
     invoke_index = next(i for i, op in enumerate(post_if_ops) if op is invoke_op)
     assert guard_index < invoke_index
@@ -632,8 +650,7 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
 
     gen.visit(
         ast.parse(
-            "import nativepkg\n"
-            "value = nativepkg.ndimage.distance_transform_edt(data)\n"
+            "import nativepkg\nvalue = nativepkg.ndimage.distance_transform_edt(data)\n"
         )
     )
     ir = gen.to_json()
@@ -699,9 +716,7 @@ def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_f
     assert invoke_op["source_line"] == 2
     # The witness call must never degrade to a dynamic bound/bridge call.
     assert not any(
-        op["kind"] == "call_bind"
-        for fn in ir["functions"]
-        for op in fn["ops"]
+        op["kind"] == "call_bind" for fn in ir["functions"] for op in fn["ops"]
     )
 
 
@@ -753,9 +768,7 @@ def test_conditional_reimport_reads_global_not_branch_local() -> None:
         "print(type(sys).__name__)\n"
     )
     consts = _const_str_map(ops)
-    end_if_index = next(
-        i for i, op in enumerate(ops) if op.get("kind") == "end_if"
-    )
+    end_if_index = next(i for i, op in enumerate(ops) if op.get("kind") == "end_if")
     post = ops[end_if_index + 1 :]
 
     # The post-branch read of `sys` is a module_get_global for 'sys'.
@@ -770,17 +783,38 @@ def test_conditional_reimport_reads_global_not_branch_local() -> None:
         f"post ops: {[op.get('kind') for op in post]}"
     )
 
-    # And the value feeding type_of() must be defined on the fall-through
-    # path (i.e. the module_get_global result), never a branch-local SSA
-    # value.
-    type_of_ops = [op for op in post if op.get("kind") == "type_of"]
-    assert type_of_ops
-    fallthrough = _defined_before(ops, len(ops))
-    for top in type_of_ops:
-        arg = (top.get("args") or [None])[0]
-        assert arg in fallthrough, (
-            f"type_of reads {arg!r} which is not defined on the fall-through "
-            "path (branch-local leak)"
+    # The condition can execute callbacks, so the type binding itself is a
+    # live namespace read. Prove its real dynamic consumer and argument custody,
+    # rather than requiring a name-only TYPE_OF specialization after effects.
+    type_reads = [
+        op
+        for op in post
+        if op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "type"
+    ]
+    assert type_reads
+    type_values = {op["out"] for op in type_reads}
+    calls = [
+        op
+        for op in post
+        if op.get("kind") == "call_indirect"
+        and (op.get("args") or [None])[0] in type_values
+    ]
+    assert calls
+    callargs = {op["args"][1] for op in calls}
+    sys_values = {op["out"] for op in global_reads}
+    pushes = [
+        op
+        for op in post
+        if op.get("kind") == "callargs_push_pos"
+        and (op.get("args") or [None, None])[0] in callargs
+        and (op.get("args") or [None, None])[1] in sys_values
+    ]
+    assert pushes
+    for consumer in calls + pushes:
+        available = _defined_before(ops, ops.index(consumer))
+        assert set(consumer["args"]) <= available, (
+            "branch-local SSA escaped into a call"
         )
 
 
@@ -802,3 +836,108 @@ def test_collect_assigned_names_includes_import_bindings() -> None:
     assert "b" not in assigned and "c" not in assigned and "*" not in assigned
     ordered = gen._collect_assigned_names_ordered(body)
     assert set(ordered) >= {"sys", "a", "f", "h", "j"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "array",
+        "len",
+        "list",
+        "ValueError",
+        "TYPE_CHECKING",
+        "NotImplemented",
+        "Ellipsis",
+    ],
+)
+def test_import_star_dynamic_binding_precedes_bare_name_fallback(name: str) -> None:
+    ops = _molt_main_ops(f"from ext import *\nresult = {name}\n")
+    consts = _const_str_map(ops)
+    assert any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == name
+        for op in ops
+    ), "source-ordered dynamic bindings must be read from the live module namespace"
+    assert not any(
+        op.get("kind") == "module_import"
+        and consts.get((op.get("args") or [None])[0]) == name
+        for op in ops
+    )
+
+
+def test_import_star_dynamic_binding_precedes_stdlib_bare_name_fallback() -> None:
+    ops = _molt_main_ops("from ext import *\narray.__module__ = 'pkg'\n")
+    consts = _const_str_map(ops)
+    assert any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "array"
+        for op in ops
+    )
+    assert not any(
+        op.get("kind") == "module_import"
+        and consts.get((op.get("args") or [None])[0]) == "array"
+        for op in ops
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expression", "name"),
+    [
+        ("array = 1\n", "array", "array"),
+        ("", "abs(-1)", "abs"),
+        ("", "len([])", "len"),
+        ("from builtins import abs as original\n", "original(-1)", "original"),
+        ("import math\n", "math.sqrt(4)", "math"),
+        ("def original():\n    return 1\n", "original()", "original"),
+        ("", "__name__", "__name__"),
+    ],
+)
+def test_invalidated_bindings_precede_cached_values_and_direct_call_shortcuts(
+    prefix: str, expression: str, name: str
+) -> None:
+    ops = _molt_main_ops(f"{prefix}from ext import *\nresult = {expression}\n")
+    consts = _const_str_map(ops)
+    assert any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == name
+        for op in ops
+    ), "callee/value resolution must observe the live namespace after import-star"
+
+
+def test_clean_builtin_read_retains_static_lowering() -> None:
+    ops = _molt_main_ops("result = Ellipsis\n")
+    assert any(op.get("kind") == "const_ellipsis" for op in ops)
+    consts = _const_str_map(ops)
+    assert not any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "Ellipsis"
+        for op in ops
+    )
+
+
+def test_import_star_does_not_replace_lexical_parameter() -> None:
+    ir = compile_to_tir("from ext import *\ndef f(array):\n    return array\n")
+    functions = [fn for fn in ir["functions"] if fn.get("name") != "molt_main"]
+    assert functions
+    ops = [op for fn in functions for op in fn["ops"]]
+    consts = _const_str_map(ops)
+    assert not any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "array"
+        for op in ops
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(abs):\n    return abs(-1)\n",
+        "def replacement(value):\n    return value\nabs = replacement\nresult = abs(-1)\n",
+        "def f(abs):\n    def g():\n        return abs(-1)\n    return g\n",
+    ],
+)
+def test_bound_builtin_calls_do_not_use_name_only_specialization(source: str) -> None:
+    ir = compile_to_tir(source)
+    assert not any(
+        op.get("kind") == "abs" for fn in ir["functions"] for op in fn["ops"]
+    )

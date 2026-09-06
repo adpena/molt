@@ -48,6 +48,16 @@ class CallVisitorMixin(
     _MixinBase,
 ):
     def visit_Call(self, node: ast.Call) -> Any:
+        if self._expression_has_invalidated_binding(
+            node.func
+        ) or self._call_has_bound_builtin_name(node.func):
+            callee = self.visit(node.func)
+            if callee is None:
+                raise FrontendRejection(
+                    Diagnostic.CALL_TARGET, "Unsupported call target"
+                )
+            return self._emit_dynamic_call(node, callee, self._call_needs_bind(node))
+
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
         if gpu_launch is not None:
             return gpu_launch

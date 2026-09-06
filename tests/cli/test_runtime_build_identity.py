@@ -1,26 +1,32 @@
 from __future__ import annotations
 
 import os
-import json
 import hashlib
-import shutil
 import subprocess
+from collections.abc import Sequence
+from typing import Any
+import json
+import shutil
 import sys
 import threading
 import time
 from pathlib import Path
-from collections.abc import Sequence
-from typing import Any
 
 import pytest
 
+from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RUNTIME_WASM_COMBINED_ARTIFACTS,
     RuntimeArtifactSelection,
 )
+from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
+from tests.runtime_build_identity_helper import build_python_identity_fixture
+from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+from molt.cli import runtime_cargo_plan as cargo_plans
+from molt.cli import runtime_identity_schema as schema
 from molt.python_runtime_identity import validate_python_runtime_identity
 from tests.python_environment_test_support import runtime_identity_manifest
 
@@ -30,37 +36,31 @@ def runtime_receipt() -> dict[str, object]:
     return runtime_identity_manifest()
 
 
-@pytest.fixture
-def synthetic_runtime_probe(
-    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
-) -> list[tuple[str, ...]]:
-    """Replace only interpreter capture, leaving the identity consumers real."""
-    original = identity.process_guard.run_completed_command
-    output = json.dumps(runtime_receipt)
-    calls: list[tuple[str, ...]] = []
-
-    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if "--capture-runtime" not in argv:
-            return original(argv, **kwargs)
-        assert tuple(argv[1:]) == (
-            "-I",
-            "-S",
-            str(
-                Path(identity.__file__).resolve().parents[1]
-                / "python_environment_identity.py"
-            ),
-            "--capture-runtime",
-        )
-        calls.append(tuple(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    return calls
+def _test_plan(root: Path, env: dict[str, str], *, response_path: Path | None = None):
+    link_args = (
+        ("--", "-C", "link-arg=@" + str(response_path))
+        if response_path is not None
+        else ()
+    )
+    return resolve_runtime_cargo_plan(
+        root,
+        env=env,
+        cargo_command=(
+            sys.executable,
+            "rustc",
+            "--target",
+            "wasm32-wasip1",
+            *link_args,
+        ),
+        requested_target="wasm32-wasip1",
+        host_target="test-host",
+    )
 
 
 def _provision_toolchain(root: Path) -> identity.RuntimeToolchainContentManifest:
     archive_root = root / "archives"
     env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
     env.update(
         {
             "RUSTC": sys.executable,
@@ -69,10 +69,17 @@ def _provision_toolchain(root: Path) -> identity.RuntimeToolchainContentManifest
             "CC_wasm32-wasip1": sys.executable,
             "CXX_wasm32-wasip1": sys.executable,
             "AR_wasm32-wasip1": sys.executable,
+            "RANLIB_wasm32-wasip1": sys.executable,
+            "CARGO_HOME": str(root / "test-cargo-home"),
+            "RUSTC_WRAPPER": "",
+            "RUSTC_WORKSPACE_WRAPPER": "",
         }
     )
-    return identity.provision_runtime_toolchain_content_manifest(
-        env=env,
+    plan = _test_plan(root, env)
+    return identity.provision_wasm_runtime_toolchain_content_manifest(
+        project_root=root,
+        env=plan.environment,
+        cargo_plan=plan,
         target_triple="wasm32-wasip1",
         wasi_sysroot=root / "wasi-sysroot",
         wasm_linker=Path(sys.executable),
@@ -91,10 +98,10 @@ def _resolve(
     profile: str = "release-output",
     base_rustflags: str = "-C panic=abort",
     response_path: Path | None = None,
-    toolchain_manifest: identity.RuntimeToolchainContentManifest | None = None,
     extra_env: dict[str, str] | None = None,
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
     publication_digest: str = "test-publication-authority",
+    runtime_features: tuple[str, ...] = ("stdlib_micro",),
 ) -> identity.RuntimeBuildIdentity:
     archive_root = root / "archives"
     sysroot = root / "wasi-sysroot"
@@ -105,6 +112,7 @@ def _resolve(
         archive_root / "libclang_rt.builtins-wasm32.a",
     ]
     env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
     env.update(
         {
             "RUSTC": sys.executable,
@@ -113,42 +121,54 @@ def _resolve(
             "CC_wasm32-wasip1": sys.executable,
             "CXX_wasm32-wasip1": sys.executable,
             "AR_wasm32-wasip1": sys.executable,
+            "RANLIB_wasm32-wasip1": sys.executable,
+            "CARGO_HOME": str(root / "test-cargo-home"),
+            "RUSTC_WRAPPER": "",
+            "RUSTC_WORKSPACE_WRAPPER": "",
         }
     )
     env.update(extra_env or {})
-    shared, reloc = identity.resolve_runtime_build_pair_identities(
+    env["RUSTFLAGS"] = base_rustflags
+    plan = _test_plan(root, env, response_path=response_path)
+    shared, reloc = identity.resolve_wasm_runtime_build_family_identities(
         root,
-        env=env,
+        env=plan.environment,
+        cargo_plan=plan,
         cargo_profile=profile,
         target_triple="wasm32-wasip1",
-        runtime_features=("stdlib_micro",),
+        runtime_features=runtime_features,
         base_rustflags=base_rustflags,
+        cargo_command=plan.command,
         producer_artifact_selection=artifact_selection,
         publication_authority={
             "schema": "molt.runtime-wasm-publication-authority.v1",
-            "digest": publication_digest,
+            "digest": canonical_json_sha256(publication_digest),
             "files": [],
         },
-        shared=identity.RuntimePairMemberPlan(
-            kind="shared",
-            resolved_rustflags=(
-                "-C panic=abort --cfg shared"
-                + (f" -C link-arg=@{response_path}" if response_path else "")
+        members=(
+            identity.RuntimeBuildMemberPlan(
+                kind="shared",
+                resolved_rustflags=(
+                    "-C panic=abort --cfg shared"
+                    + (f" -C link-arg=@{response_path}" if response_path else "")
+                ),
+                publication_transform=(
+                    publication if kind == "shared" else "strip-final-link-metadata-v1"
+                ),
+                preserve_debug=False,
+                link_args=("--export=shared",),
             ),
-            publication_transform=(
-                publication if kind == "shared" else "strip-final-link-metadata-v1"
+            identity.RuntimeBuildMemberPlan(
+                kind="reloc",
+                resolved_rustflags="-C panic=abort --cfg reloc",
+                publication_transform=(
+                    publication
+                    if kind == "reloc"
+                    else "relocatable-wasm-byte-identity-v1"
+                ),
+                preserve_debug=False,
+                link_args=("--export=reloc",),
             ),
-            preserve_debug=False,
-            link_args=("--export=shared",),
-        ),
-        reloc=identity.RuntimePairMemberPlan(
-            kind="reloc",
-            resolved_rustflags="-C panic=abort --cfg reloc",
-            publication_transform=(
-                publication if kind == "reloc" else "relocatable-wasm-byte-identity-v1"
-            ),
-            preserve_debug=False,
-            link_args=("--export=reloc",),
         ),
         wasi_sysroot=sysroot,
         wasm_linker=Path(sys.executable),
@@ -156,17 +176,22 @@ def _resolve(
         builtins_archive=archives[3],
         wasi_libc_archive=archives[0],
         rust_builtins_archive=archives[1],
-        toolchain_manifest=toolchain_manifest,
     )
     return shared if kind == "shared" else reloc
 
 
 @pytest.fixture
-def identity_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    synthetic_runtime_probe: list[tuple[str, ...]],
-) -> Path:
+def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cargo_plans, "_rust_resource_roots", lambda *args, **kwargs: ())
+    monkeypatch.setattr(
+        identity,
+        "_python_identity",
+        lambda _env: build_python_identity_fixture(),
+    )
+    (tmp_path / "Cargo.toml").write_text(
+        '[profile.release-output]\ninherits = "release"\n[profile.dev-fast]\ninherits = "dev"\n',
+        encoding="utf-8",
+    )
     source = tmp_path / "runtime" / "src"
     source.mkdir(parents=True)
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
@@ -194,10 +219,26 @@ def identity_root(
         lambda root, _features=(): (root / "runtime" / "src",),
         raising=True,
     )
+    monkeypatch.setattr(
+        identity,
+        "_rust_toolchain_resources",
+        lambda **_kwargs: {
+            "host_triple": "test-host",
+            "selected_target": "wasm32-wasip1",
+            "content": {
+                "digest": "0" * 64,
+                "file_count": 0,
+                "total_size": 0,
+                "roots": [],
+                "missing": [],
+            },
+        },
+        raising=True,
+    )
     return tmp_path
 
 
-def test_identity_roundtrips_and_shared_reloc_form_one_pair(
+def test_identity_roundtrips_and_shared_reloc_form_one_family(
     identity_root: Path,
 ) -> None:
     shared = _resolve(
@@ -212,8 +253,28 @@ def test_identity_roundtrips_and_shared_reloc_form_one_pair(
     )
 
     assert shared.digest != reloc.digest
-    assert shared.pair_digest == reloc.pair_digest
+    assert shared.family_digest == reloc.family_digest
     assert identity.RuntimeBuildIdentity.from_dict(shared.to_dict()) == shared
+
+
+def test_runtime_features_change_exact_compile_and_member_identity(
+    identity_root: Path,
+) -> None:
+    def resolve(features: tuple[str, ...]) -> identity.RuntimeBuildIdentity:
+        return _resolve(
+            identity_root,
+            kind="shared",
+            publication="strip-final-link-metadata-v1",
+            runtime_features=features,
+        )
+
+    baseline = resolve(("stdlib_micro",))
+    repeated = resolve(("stdlib_micro",))
+    expanded = resolve(("stdlib_micro", "molt_tk_native"))
+    assert repeated == baseline
+    assert expanded.compile_digest != baseline.compile_digest
+    assert expanded.family_digest != baseline.family_digest
+    assert expanded.digest != baseline.digest
 
 
 def test_identity_observes_source_and_sysroot_mutation_without_cache(
@@ -233,7 +294,7 @@ def test_identity_observes_source_and_sysroot_mutation_without_cache(
         publication="strip-final-link-metadata-v1",
     )
     assert after_source.digest != before.digest
-    assert after_source.pair_digest != before.pair_digest
+    assert after_source.family_digest != before.family_digest
 
     (identity_root / "wasi-sysroot" / "include" / "stddef.h").write_text(
         "typedef unsigned size_t;\n", encoding="utf-8"
@@ -244,7 +305,7 @@ def test_identity_observes_source_and_sysroot_mutation_without_cache(
         publication="strip-final-link-metadata-v1",
     )
     assert after_header.digest != after_source.digest
-    assert after_header.pair_digest != after_source.pair_digest
+    assert after_header.family_digest != after_source.family_digest
 
 
 def test_canonical_profile_and_publication_transform_are_identity_inputs(
@@ -268,11 +329,11 @@ def test_canonical_profile_and_publication_transform_are_identity_inputs(
     )
 
     assert len({release.digest, dev.digest, unstripped.digest}) == 3
-    assert release.pair_digest != dev.pair_digest
-    assert release.pair_digest != unstripped.pair_digest
+    assert release.family_digest != dev.family_digest
+    assert release.family_digest != unstripped.family_digest
 
 
-def test_publication_authority_content_is_pair_identity_input(
+def test_publication_authority_content_is_family_identity_input(
     identity_root: Path,
 ) -> None:
     before = _resolve(
@@ -288,11 +349,11 @@ def test_publication_authority_content_is_pair_identity_input(
         publication_digest="b" * 64,
     )
 
-    assert before.pair_digest != after.pair_digest
+    assert before.family_digest != after.family_digest
     assert before.digest != after.digest
 
 
-def test_exact_producer_artifact_selection_is_pair_identity_input(
+def test_exact_producer_artifact_selection_is_family_identity_input(
     identity_root: Path,
 ) -> None:
     combined = _resolve(
@@ -307,9 +368,13 @@ def test_exact_producer_artifact_selection_is_pair_identity_input(
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
     )
 
-    assert combined.pair_digest != staticlib_only.pair_digest
+    assert combined.family_digest != staticlib_only.family_digest
+    assert combined.compile_digest != staticlib_only.compile_digest
+    assert combined.digest != staticlib_only.digest
     assert (
-        combined.payload["pair"]["common_config"]["producer_artifact_selection"]
+        combined.payload["family"]["compile"]["common_config"][
+            "producer_artifact_selection"
+        ]
         == RUNTIME_WASM_COMBINED_ARTIFACTS.source_identity
     )
 
@@ -332,30 +397,121 @@ def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         identity.RuntimeBuildIdentity.from_dict(
             {
-                "schema": "molt.runtime-build-identity.v2",
+                "schema": "molt.runtime-build-member-identity.v3",
                 "digest": "0" * 64,
-                "pair_digest": "0" * 64,
+                "compile_digest": "0" * 64,
+                "family_digest": "0" * 64,
                 "payload": {1: "not-json"},
             }
         )
 
 
-def test_identity_rejects_digest_valid_wrong_pair_schema(identity_root: Path) -> None:
+def test_runtime_identity_uses_shared_exact_json_authority() -> None:
+    payload = {"language": "λ", "values": [1, True, None]}
+
+    assert (
+        identity._digest(payload)
+        == hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    )
+    assert identity._digest(payload) == canonical_json_sha256(payload)
+    with pytest.raises(ValueError, match="Out of range float values"):
+        identity._digest({"invalid": float("nan")})
+
+
+def test_identity_rejects_digest_valid_wrong_family_schema(
+    identity_root: Path,
+) -> None:
     value = _resolve(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
     ).to_dict()
-    pair = value["payload"]["pair"]
-    pair["schema"] = "molt.runtime-build-pair.v1"
-    value["pair_digest"] = identity._digest(pair)
+    family = value["payload"]["family"]
+    family["schema"] = "molt.runtime-build-family.v2"
+    value["family_digest"] = identity._digest(family)
     value["digest"] = identity._digest(value["payload"])
 
-    with pytest.raises(ValueError, match="digest"):
+    with pytest.raises(ValueError, match="family shape"):
         identity.RuntimeBuildIdentity.from_dict(value)
 
 
-def test_ambient_c_and_cxx_flags_are_pair_identity_inputs(
+def _reseal_runtime_build_identity(value: dict[str, object]) -> None:
+    payload = value["payload"]
+    family = payload["family"]
+    compile_payload = family["compile"]
+    compile_digest = identity._digest(compile_payload)
+    family["compile_digest"] = compile_digest
+    value["compile_digest"] = compile_digest
+    value["family_digest"] = identity._digest(family)
+    value["digest"] = identity._digest(payload)
+
+
+def test_identity_rejects_digest_valid_shape_and_type_drift(
+    identity_root: Path,
+) -> None:
+    baseline = _resolve(
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+    ).to_dict()
+
+    outer_extra = json.loads(json.dumps(baseline))
+    outer_extra["legacy"] = True
+    with pytest.raises(ValueError, match="schema"):
+        identity.RuntimeBuildIdentity.from_dict(outer_extra)
+
+    compile_extra = json.loads(json.dumps(baseline))
+    compile_extra["payload"]["family"]["compile"]["legacy"] = True
+    _reseal_runtime_build_identity(compile_extra)
+    with pytest.raises(ValueError, match="compile/family shape"):
+        identity.RuntimeBuildIdentity.from_dict(compile_extra)
+
+    member_type = json.loads(json.dumps(baseline))
+    member_type["payload"]["family"]["members"]["shared"]["preserve_debug"] = 1
+    _reseal_runtime_build_identity(member_type)
+    with pytest.raises(ValueError, match="member shape"):
+        identity.RuntimeBuildIdentity.from_dict(member_type)
+
+    direct_payload = member_type["payload"]
+    with pytest.raises(ValueError, match="member shape"):
+        identity.RuntimeBuildIdentity(
+            digest=member_type["digest"],
+            compile_digest=member_type["compile_digest"],
+            family_digest=member_type["family_digest"],
+            payload=direct_payload,
+        )
+
+
+def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
+    tmp_path: Path,
+) -> None:
+    authority_paths = {
+        path.relative_to(tmp_path).as_posix()
+        for path in identity.runtime_build_tooling_paths(tmp_path)
+    }
+    assert "pyproject.toml" in authority_paths
+    assert "src/molt/pyproject.toml" not in authority_paths
+    for relative in authority_paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {relative}\n", encoding="utf-8")
+    unrelated = tmp_path / "src/molt/cli/frontend_pipeline.py"
+    unrelated.write_text("# unrelated 1\n", encoding="utf-8")
+
+    before = identity.runtime_build_tooling_authority(tmp_path)
+    unrelated.write_text("# unrelated 2\n", encoding="utf-8")
+    after_unrelated = identity.runtime_build_tooling_authority(tmp_path)
+    owned = tmp_path / identity._RUNTIME_BUILD_TOOLING_RELPATHS[0]
+    owned.write_text("# runtime authority changed\n", encoding="utf-8")
+    after_owned = identity.runtime_build_tooling_authority(tmp_path)
+
+    assert before["schema"] == "molt.runtime-build-tooling-authority.v2"
+    assert before["file_count"] == len(authority_paths)
+    assert after_unrelated == before
+    assert after_owned["digest"] != before["digest"]
+
+
+def test_ambient_c_and_cxx_flags_are_family_identity_inputs(
     identity_root: Path,
 ) -> None:
     baseline = _resolve(
@@ -371,11 +527,104 @@ def test_ambient_c_and_cxx_flags_are_pair_identity_inputs(
         extra_env={"CFLAGS_wasm32-wasip1": "-O2", "CXXFLAGS": "-fno-rtti"},
     )
 
-    assert baseline.pair_digest != changed.pair_digest
-    assert baseline.payload["pair"]["common_config"]["ambient_c_build_environment"] == {
-        "CFLAGS_wasm32-wasip1": ("-O1",),
+    assert baseline.family_digest != changed.family_digest
+    assert baseline.payload["family"]["compile"]["common_config"][
+        "ambient_c_build_environment"
+    ] == {
+        cargo_plans._CargoEnvironment({}).canonical_key("CFLAGS_wasm32-wasip1"): (
+            "-O1",
+        ),
         "CXXFLAGS": ("-fno-rtti",),
     }
+
+
+def test_build_script_environment_is_semantic_content_identity(
+    identity_root: Path,
+) -> None:
+    pythonpath = identity_root / "pythonpath"
+    pythonpath.mkdir()
+    (pythonpath / "helper.py").write_text("VERSION = 1\n", encoding="utf-8")
+    relocated = identity_root / "relocated-pythonpath"
+    shutil.copytree(pythonpath, relocated)
+    archives = identity_root / "archives"
+    common = {
+        "MOLT_WASM_CPYTHON_ABI_EXPORTS": "Py_False, PyLong_Type; Py_False",
+        "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "Py_False",
+        "MOLT_WASM_LONGDOUBLE_ARCHIVE": str(archives / "libc-printscan-long-double.a"),
+        "MOLT_WASM_BUILTINS_ARCHIVE": str(archives / "libclang_rt.builtins-wasm32.a"),
+    }
+    baseline = _resolve(
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        extra_env={**common, "PYTHONPATH": str(pythonpath)},
+    )
+    relocated_identity = _resolve(
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        extra_env={
+            **common,
+            "PYTHONPATH": str(relocated),
+            "MOLT_WASM_CPYTHON_ABI_EXPORTS": "PyLong_Type\nPy_False",
+        },
+    )
+    assert relocated_identity == baseline
+
+    build_script = baseline.payload["family"]["compile"]["common_config"][
+        "build_script_environment"
+    ]
+    assert build_script["MOLT_WASM_CPYTHON_ABI_EXPORTS"] == (
+        "PyLong_Type",
+        "Py_False",
+    )
+    assert build_script["MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS"] == ("Py_False",)
+    assert build_script["MOLT_WASM_LONGDOUBLE_ARCHIVE"]["state"] == "resolved"
+    assert build_script["MOLT_WASM_BUILTINS_ARCHIVE"]["state"] == "resolved"
+    assert str(identity_root) not in json.dumps(baseline.to_dict(), sort_keys=True)
+
+    (relocated / "helper.py").write_text("VERSION = 2\n", encoding="utf-8")
+    changed_pythonpath = _resolve(
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        extra_env={**common, "PYTHONPATH": str(relocated)},
+    )
+    assert changed_pythonpath.compile_digest != baseline.compile_digest
+
+    changed_exports = _resolve(
+        identity_root,
+        kind="shared",
+        publication="strip-final-link-metadata-v1",
+        extra_env={
+            **common,
+            "PYTHONPATH": str(pythonpath),
+            "MOLT_WASM_CPYTHON_ABI_EXPORTS": "Py_False PyLong_Type Py_True",
+        },
+    )
+    assert changed_exports.compile_digest != baseline.compile_digest
+
+
+def test_build_script_environment_rejects_invalid_or_unowned_data_exports(
+    identity_root: Path,
+) -> None:
+    with pytest.raises(ValueError, match="invalid C symbols"):
+        _resolve(
+            identity_root,
+            kind="shared",
+            publication="strip-final-link-metadata-v1",
+            extra_env={"MOLT_WASM_CPYTHON_ABI_EXPORTS": "not-a-symbol"},
+        )
+    with pytest.raises(ValueError, match="data exports are not a subset"):
+        _resolve(
+            identity_root,
+            kind="shared",
+            publication="strip-final-link-metadata-v1",
+            extra_env={
+                "MOLT_WASM_CPYTHON_ABI_EXPORTS": "Py_False",
+                "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "Py_True",
+            },
+        )
 
 
 def test_identity_serialization_is_detached_and_rejects_nested_mutation(
@@ -387,14 +636,20 @@ def test_identity_serialization_is_detached_and_rejects_nested_mutation(
         publication="strip-final-link-metadata-v1",
     )
     detached = resolved.to_dict()
-    detached["payload"]["pair"]["common_config"]["cargo_profile"] = "poison"
+    detached["payload"]["family"]["compile"]["common_config"]["cargo_profile"] = (
+        "poison"
+    )
     assert (
-        resolved.to_dict()["payload"]["pair"]["common_config"]["cargo_profile"]
+        resolved.to_dict()["payload"]["family"]["compile"]["common_config"][
+            "cargo_profile"
+        ]
         == "release-output"
     )
 
     with pytest.raises(TypeError):
-        resolved.payload["pair"]["common_config"]["cargo_profile"] = "poison"
+        resolved.payload["family"]["compile"]["common_config"]["cargo_profile"] = (
+            "poison"
+        )
 
 
 def test_identity_is_location_independent_including_response_files(
@@ -431,7 +686,10 @@ def test_identity_is_location_independent_including_response_files(
 
 
 def test_identity_rejects_unknown_absolute_flag_path(identity_root: Path) -> None:
-    with pytest.raises(ValueError, match="absolute host path"):
+    with pytest.raises(
+        ValueError,
+        match="runtime Rust -L all resource is missing or has the wrong kind",
+    ):
         _resolve(
             identity_root,
             kind="shared",
@@ -461,11 +719,11 @@ def test_tool_version_banner_never_serializes_installed_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tool = tmp_path / "clang.exe"
-    tool.write_bytes(b"tool-bytes")
+    tool.write_bytes(b"MZtool-bytes")
     monkeypatch.setattr(identity, "_command_path", lambda *_args, **_kwargs: tool)
     monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
+        toolchain_identity.subprocess,
+        "run",
         lambda *_args, **_kwargs: type(
             "Completed",
             (),
@@ -481,202 +739,6 @@ def test_tool_version_banner_never_serializes_installed_directory(
 
     assert result["version"] == "22.1.7"
     assert "poison" not in json.dumps(result)
-
-
-def test_python_identity_uses_exact_isolated_facade_and_preserves_v2_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
-) -> None:
-    executable = tmp_path / "selected-python.exe"
-    executable.write_bytes(b"selected-interpreter-launcher")
-    environment = {
-        "MOLT_BUILD_PYTHON": str(executable),
-        "PYTHON": "ignored-python",
-        "PATH": "untrusted-search-path",
-    }
-    observed: list[tuple[tuple[str, ...], dict[str, Any]]] = []
-
-    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        observed.append((tuple(argv), kwargs))
-        return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
-        )
-
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    result = identity._python_identity(environment)
-
-    assert result == {
-        "logical_name": "build-python",
-        "sha256": hashlib.sha256(b"selected-interpreter-launcher").hexdigest(),
-        "runtime": runtime_receipt,
-    }
-    assert observed == [
-        (
-            (
-                str(executable),
-                "-I",
-                "-S",
-                str(
-                    Path(identity.__file__).resolve().parents[1]
-                    / "python_environment_identity.py"
-                ),
-                "--capture-runtime",
-            ),
-            {
-                "check": False,
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "env": environment,
-                "timeout": 30,
-                "memory_guard_prefix": None,
-            },
-        )
-    ]
-    assert identity._SCHEMA == "molt.runtime-build-identity.v2"
-    assert identity._PAIR_SCHEMA == "molt.runtime-build-pair.v2"
-    assert identity._TOOLCHAIN_MANIFEST_SCHEMA == "molt.runtime-toolchain-content.v2"
-
-
-@pytest.mark.parametrize(
-    "corruption", ["malformed", "duplicate-root", "duplicate-node", "nonfinite"]
-)
-def test_python_identity_rejects_ambiguous_probe_json(
-    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object], corruption: str
-) -> None:
-    output = json.dumps(runtime_receipt)
-    if corruption == "malformed":
-        output = "{not-json"
-    elif corruption == "duplicate-root":
-        output = '{"schema":"discarded-duplicate",' + output[1:]
-    elif corruption == "duplicate-node":
-        assert '"size": 1' in output
-        output = output.replace('"size": 1', '"size": 1, "size": 1', 1)
-    else:
-        output = "NaN"
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout=output, stderr=""
-        ),
-    )
-    with pytest.raises(ValueError, match="probe emitted invalid JSON"):
-        identity._python_identity({})
-
-
-def test_python_identity_validates_receipt_after_successful_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout="{}", stderr=""
-        ),
-    )
-    with pytest.raises(ValueError, match="runtime closure shape is invalid"):
-        identity._python_identity({})
-
-
-@pytest.mark.parametrize(
-    "stdout,stderr,detail",
-    [
-        ("ignored stdout", " loader closure missing \n", "loader closure missing"),
-        (" unresolved import \n", "", "unresolved import"),
-        ("", "", "probe failed"),
-    ],
-)
-def test_python_identity_preserves_probe_failure_signal(
-    monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str, detail: str
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 7, stdout=stdout, stderr=stderr
-        ),
-    )
-    with pytest.raises(ValueError, match=detail):
-        identity._python_identity({})
-
-
-def test_python_identity_preserves_timeout_without_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    timeout = subprocess.TimeoutExpired([sys.executable, "--capture-runtime"], 30)
-    calls = 0
-
-    def run(_argv: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal calls
-        calls += 1
-        raise timeout
-
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    with pytest.raises(subprocess.TimeoutExpired) as failure:
-        identity._python_identity({})
-    assert failure.value is timeout
-    assert calls == 1
-
-
-def test_python_identity_unresolved_interpreter_never_spawns_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(identity, "_command_path", lambda *_args: None)
-    monkeypatch.setattr(
-        identity.process_guard,
-        "run_completed_command",
-        lambda *_args, **_kwargs: pytest.fail(
-            "unresolved interpreter must not execute"
-        ),
-    )
-    with pytest.raises(ValueError, match="build Python is unresolved"):
-        identity._python_identity({})
-
-
-@pytest.mark.slow
-def test_python_identity_live_content_probe() -> None:
-    """Native integration owns the actual isolated scanner/consumer boundary."""
-    result = identity._python_identity(
-        {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
-    )
-    runtime = validate_python_runtime_identity(result["runtime"])
-    assert runtime["file_nodes"]
-    assert runtime["native_dependency_closure"]["status"] == "closed"
-    assert result["sha256"] == identity._sha256_file(Path(sys.executable))
-
-
-@pytest.mark.parametrize("mutation", ["rewrite", "replace", "restore-bytes"])
-def test_python_identity_binds_launcher_generation_across_probe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_receipt: dict[str, object],
-    mutation: str,
-) -> None:
-    executable = tmp_path / "python.exe"
-    executable.write_bytes(b"before")
-    before = executable.stat()
-
-    def run(argv, **_kwargs):
-        if mutation == "replace":
-            replacement = tmp_path / "replacement.exe"
-            replacement.write_bytes(b"before")
-            replacement.replace(executable)
-        else:
-            executable.write_bytes(b"after!")
-            if mutation == "restore-bytes":
-                executable.write_bytes(b"before")
-            os.utime(executable, ns=(before.st_atime_ns, before.st_mtime_ns))
-        return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
-        )
-
-    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
-    with pytest.raises(ValueError, match="changed"):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(executable)})
 
 
 def test_tree_identity_rejects_logical_label_collision(tmp_path: Path) -> None:
@@ -989,6 +1051,37 @@ def test_distro_wasi_layout_identities_only_target_content(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize(
+    "relative_sysroot",
+    (Path("usr/share/wasi-sysroot"), Path("arbitrary/wasi-sysroot")),
+)
+def test_wasi_sysroot_layout_does_not_include_unattested_parent_version(
+    tmp_path: Path,
+    relative_sysroot: Path,
+) -> None:
+    sysroot = tmp_path / relative_sysroot
+    target_include = sysroot / "include" / "wasm32-wasip1"
+    target_lib = sysroot / "lib" / "wasm32-wasip1"
+    target_include.mkdir(parents=True)
+    target_lib.mkdir(parents=True)
+    (target_include / "errno.h").write_text("#define WASI_ERRNO 1\n", encoding="utf-8")
+    (target_lib / "libc.a").write_bytes(b"wasi-libc")
+    sdk_root = (
+        sysroot.parent.parent if sysroot.parent.name == "share" else sysroot.parent
+    )
+    version = sdk_root / "VERSION"
+    version.write_text("33.0+m\nllvm-version: 22.1.0\n", encoding="utf-8")
+
+    layout = resolve_wasi_sysroot_layout(sysroot)
+    assert layout is not None
+    assert layout.version_file is None
+    roots = tuple((f"wasi/{label}", path) for label, path in layout.content_roots())
+    before = identity._tree_identity(roots, require_all=False)
+    version.write_text("33.0+m\nllvm-version: 22.1.1\n", encoding="utf-8")
+
+    assert identity._tree_identity(roots, require_all=False) == before
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
 def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
     generic = tmp_path / "lld"
@@ -1014,29 +1107,35 @@ def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) ->
     assert tool["version"] == "22.1.8"
 
 
-def test_normal_identity_consumes_only_provisioned_toolchain_manifest(
-    identity_root: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("resource", ["archive", "sysroot", "python"])
+def test_portable_manifest_is_evidence_not_live_capture_authority(
+    identity_root: Path, monkeypatch: pytest.MonkeyPatch, resource: str
 ) -> None:
-    manifest = _provision_toolchain(identity_root)
+    before = _resolve(
+        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
+    )
     manifest_path = identity_root / "toolchain.json"
-    manifest.write(manifest_path)
+    before.toolchain_manifest.write(manifest_path)
     restored = identity.RuntimeToolchainContentManifest.read(manifest_path)
-    monkeypatch.setattr(
-        identity,
-        "_runtime_toolchain_content",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("normal identity rescanned provisioned toolchain")
-        ),
+    assert restored == before.toolchain_manifest
+    if resource == "archive":
+        (identity_root / "archives" / "libc.a").write_bytes(b"changed")
+    elif resource == "sysroot":
+        (identity_root / "wasi-sysroot" / "include" / "errno.h").write_text(
+            "#define WASI_ERRNO 2\\n", encoding="utf-8"
+        )
+    else:
+        python = build_python_identity_fixture()
+        python["selected_executable"]["sha256"] = "1" * 64
+        python["identity_sha256"] = canonical_json_sha256(
+            {key: value for key, value in python.items() if key != "identity_sha256"}
+        )
+        monkeypatch.setattr(identity, "_python_identity", lambda _env: python)
+    after = _resolve(
+        identity_root, kind="shared", publication="strip-final-link-metadata-v1"
     )
-
-    resolved = _resolve(
-        identity_root,
-        kind="shared",
-        publication="strip-final-link-metadata-v1",
-        toolchain_manifest=restored,
-    )
-
-    assert resolved.payload["pair"]["toolchain"] == manifest.payload["toolchain"]
+    assert after.toolchain_manifest != restored
+    assert after.compile_digest != before.compile_digest
 
 
 def test_exact_toolchain_manifest_observes_changed_archive_byte(
@@ -1064,6 +1163,26 @@ def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
     value = first.to_dict()
     value["payload"]["target_triple"] = "wasm32-poison"
     with pytest.raises(ValueError, match="digest"):
+        identity.RuntimeToolchainContentManifest.from_dict(value)
+
+
+def test_toolchain_manifest_rejects_resealed_nested_python_runtime_drift(
+    identity_root: Path,
+) -> None:
+    value = _provision_toolchain(identity_root).to_dict()
+    payload = value["payload"]
+    build_python = payload["toolchain"]["tools"]["build_python"]
+    runtime = build_python["runtime"]
+    runtime["explicit_files"][0]["node"] = "missing-node"
+    runtime_material = dict(runtime)
+    runtime_material.pop("runtime_closure_sha256")
+    runtime["runtime_closure_sha256"] = identity._digest(runtime_material)
+    build_python_material = dict(build_python)
+    build_python_material.pop("identity_sha256")
+    build_python["identity_sha256"] = identity._digest(build_python_material)
+    value["digest"] = identity._digest(payload)
+
+    with pytest.raises(ValueError, match="build Python closure is invalid"):
         identity.RuntimeToolchainContentManifest.from_dict(value)
 
 
@@ -1106,3 +1225,206 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
     assert errors == []
     final = identity.RuntimeToolchainContentManifest.read(path)
     assert final.digest in {first.digest, second.digest}
+
+
+def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object]
+) -> None:
+    executable = tmp_path / "selected-python.exe"
+    executable.write_bytes(b"selected-interpreter-launcher")
+    environment = {
+        "MOLT_BUILD_PYTHON": str(executable),
+        "PYTHON": "ignored-python",
+        "PATH": "untrusted-search-path",
+    }
+    observed: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed.append((tuple(argv), kwargs))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
+        )
+
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    result = identity._python_identity(environment)
+
+    assert result["runtime"] == runtime_receipt
+    assert (
+        result["selected_executable"]["sha256"]
+        == hashlib.sha256(b"selected-interpreter-launcher").hexdigest()
+    )
+    assert result["logical_name"] == "build_python"
+    assert result["identity_sha256"] == canonical_json_sha256(
+        {key: value for key, value in result.items() if key != "identity_sha256"}
+    )
+    assert observed == [
+        (
+            (
+                str(executable),
+                "-I",
+                "-S",
+                str(
+                    Path(identity.__file__).resolve().parents[1]
+                    / "python_environment_identity.py"
+                ),
+                "--capture-runtime",
+            ),
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "env": environment,
+                "timeout": 30,
+                "memory_guard_prefix": None,
+            },
+        )
+    ]
+    assert schema._SCHEMA == "molt.runtime-build-member-identity.v3"
+    assert schema._TOOLCHAIN_MANIFEST_SCHEMA == "molt.runtime-toolchain-content.v3"
+
+
+@pytest.mark.parametrize(
+    "corruption", ["malformed", "duplicate-root", "duplicate-node", "nonfinite"]
+)
+def test_python_identity_rejects_ambiguous_probe_json(
+    monkeypatch: pytest.MonkeyPatch, runtime_receipt: dict[str, object], corruption: str
+) -> None:
+    output = json.dumps(runtime_receipt)
+    if corruption == "malformed":
+        output = "{not-json"
+    elif corruption == "duplicate-root":
+        output = '{"schema":"discarded-duplicate",' + output[1:]
+    elif corruption == "duplicate-node":
+        assert '"size": 1' in output
+        output = output.replace('"size": 1', '"size": 1, "size": 1', 1)
+    else:
+        output = "NaN"
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout=output, stderr=""
+        ),
+    )
+    with pytest.raises(ValueError, match="probe emitted invalid JSON"):
+        identity._python_identity({})
+
+
+def test_python_identity_validates_receipt_after_successful_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout="{}", stderr=""
+        ),
+    )
+    with pytest.raises(ValueError, match="runtime closure shape is invalid"):
+        identity._python_identity({})
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,detail",
+    [
+        ("ignored stdout", " loader closure missing \n", "loader closure missing"),
+        (" unresolved import \n", "", "unresolved import"),
+        ("", "", "probe failed"),
+    ],
+)
+def test_python_identity_preserves_probe_failure_signal(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str, detail: str
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 7, stdout=stdout, stderr=stderr
+        ),
+    )
+    with pytest.raises(ValueError, match=detail):
+        identity._python_identity({})
+
+
+def test_python_identity_preserves_timeout_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout = subprocess.TimeoutExpired([sys.executable, "--capture-runtime"], 30)
+    calls = 0
+
+    def run(_argv: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        raise timeout
+
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: Path(sys.executable))
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        identity._python_identity({})
+    assert failure.value is timeout
+    assert calls == 1
+
+
+def test_python_identity_unresolved_interpreter_never_spawns_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity, "_command_path", lambda *_args: None)
+    monkeypatch.setattr(
+        identity.process_guard,
+        "run_completed_command",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unresolved interpreter must not execute"
+        ),
+    )
+    with pytest.raises(ValueError, match="build Python is unresolved"):
+        identity._python_identity({})
+
+
+@pytest.mark.slow
+def test_python_identity_live_content_probe() -> None:
+    """Native integration owns the actual isolated scanner/consumer boundary."""
+    result = identity._python_identity(
+        {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
+    )
+    runtime = validate_python_runtime_identity(result["runtime"])
+    assert runtime["file_nodes"]
+    assert runtime["native_dependency_closure"]["status"] == "closed"
+    assert result["selected_executable"][
+        "sha256"
+    ] == toolchain_identity.stable_file_sha256(
+        Path(sys.executable), label="test Python executable"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "replace", "restore-bytes"])
+def test_python_identity_binds_launcher_generation_across_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_receipt: dict[str, object],
+    mutation: str,
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"before")
+    before = executable.stat()
+
+    def run(argv, **_kwargs):
+        if mutation == "replace":
+            replacement = tmp_path / "replacement.exe"
+            replacement.write_bytes(b"before")
+            replacement.replace(executable)
+        else:
+            executable.write_bytes(b"after!")
+            if mutation == "restore-bytes":
+                executable.write_bytes(b"before")
+            os.utime(executable, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(runtime_receipt), stderr=""
+        )
+
+    monkeypatch.setattr(identity.process_guard, "run_completed_command", run)
+    with pytest.raises(ValueError, match="changed"):
+        identity._python_identity({"MOLT_BUILD_PYTHON": str(executable)})

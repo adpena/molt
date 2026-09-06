@@ -10,7 +10,6 @@ from io import BufferedReader
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 
@@ -184,6 +183,97 @@ def executable_content_path(path: Path, *, label: str) -> Path:
     return _executable_paths(path, label=label)[1]
 
 
+def executable_environment_value(
+    environment: Mapping[str, str],
+    key: str,
+    default: str = "",
+    *,
+    windows: bool | None = None,
+) -> str:
+    """Read captured executable-selection inputs with host key semantics."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return environment.get(key, default)
+    values = {
+        value
+        for name, value in environment.items()
+        if name.casefold() == key.casefold()
+    }
+    if len(values) > 1:
+        raise ValueError(f"conflicting captured environment spellings for {key}")
+    return next(iter(values), default)
+
+
+def executable_name_candidates(
+    command: str, *, environment: Mapping[str, str], windows: bool | None = None
+) -> tuple[str, ...]:
+    """Expand executable suffixes solely from the captured PATHEXT policy."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return (command,)
+    extensions = tuple(
+        extension
+        for extension in executable_environment_value(
+            environment, "PATHEXT", ".COM;.EXE;.BAT;.CMD", windows=True
+        ).split(";")
+        if extension
+    )
+    if any(
+        command.casefold().endswith(extension.casefold()) for extension in extensions
+    ):
+        return (command,)
+    return (command, *(command + extension for extension in extensions))
+
+
+def executable_search_directories(
+    *, environment: Mapping[str, str], cwd: Path, windows: bool | None = None
+) -> tuple[Path, ...]:
+    """Project PATH and Windows implicit-cwd policy without consulting ambient env.
+
+    An absent or empty captured PATH disables PATH lookup. Explicit executable
+    paths remain available. Empty components in a nonempty PATH name cwd.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    path = executable_environment_value(environment, "PATH", windows=windows)
+    if not path:
+        return ()
+    roots: list[Path] = []
+    if windows and not any(
+        key.casefold() == "nodefaultcurrentdirectoryinexepath" for key in environment
+    ):
+        roots.append(cwd)
+    for raw in path.split(";" if windows else ":"):
+        root = Path(raw.strip('"') if windows else raw) if raw else cwd
+        roots.append(root if root.is_absolute() else cwd / root)
+    return tuple(dict.fromkeys(roots))
+
+
+def find_executable(
+    command: str, *, environment: Mapping[str, str], cwd: Path | None = None
+) -> Path | None:
+    """Select one executable using only explicit paths or captured search inputs."""
+    if not command or "\x00" in command:
+        return None
+    cwd = Path.cwd() if cwd is None else cwd
+    candidate = Path(command).expanduser()
+    if candidate.is_absolute() or any(separator in command for separator in "/\\"):
+        candidate = candidate if candidate.is_absolute() else cwd / candidate
+        directories = (candidate.parent,)
+        command = candidate.name
+    else:
+        directories = executable_search_directories(environment=environment, cwd=cwd)
+    names = executable_name_candidates(command, environment=environment)
+    for directory in directories:
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK):
+                return candidate.absolute()
+    return None
+
+
 def resolve_executable(
     command: str,
     *,
@@ -198,7 +288,7 @@ def resolve_executable(
     if not candidate.is_absolute() and not any(
         separator in command for separator in "/\\"
     ):
-        selected = shutil.which(command, path=environment.get("PATH"))
+        selected = find_executable(command, environment=environment)
         if selected is None:
             raise ValueError(f"{label} is unavailable: {command}")
         candidate = Path(selected)
@@ -213,7 +303,7 @@ def _stable_file_content(
     """Snapshot a regular file while proving pathname and handle stability."""
 
     with stable_executable_probe(path, label=label) as (lexical, identity):
-        with _open_stable_regular_file(identity.path, label=label) as opened:
+        with open_stable_regular_file(identity.path, label=label) as opened:
             header = opened.stream.read(4)
         return lexical, identity.path, identity.size, identity.sha256, header
 
@@ -252,7 +342,7 @@ def stable_file_content_identity(path: Path, *, label: str) -> dict[str, str | i
 
 
 @dataclass(frozen=True, slots=True)
-class _StableRegularFileHandle:
+class StableRegularFileHandle:
     path: Path
     stream: BufferedReader
     stat: os.stat_result
@@ -260,11 +350,11 @@ class _StableRegularFileHandle:
 
 
 @contextmanager
-def _open_stable_regular_file(
+def open_stable_regular_file(
     path: Path,
     *,
     label: str,
-) -> Iterator[_StableRegularFileHandle]:
+) -> Iterator[StableRegularFileHandle]:
     """Open one direct regular file without following path indirection."""
 
     lexical = path.expanduser().absolute()
@@ -330,7 +420,7 @@ def _open_stable_regular_file(
             raise StableRegularFileChangedError(
                 f"{label} changed before identity read: {lexical}"
             )
-        opened = _StableRegularFileHandle(
+        opened = StableRegularFileHandle(
             path=lexical,
             stream=stream,
             stat=before_handle,
@@ -374,7 +464,7 @@ def _stable_regular_file_snapshot(
     """Read one direct regular file's stable open-handle identity."""
 
     try:
-        with _open_stable_regular_file(path, label=label) as opened:
+        with open_stable_regular_file(path, label=label) as opened:
             digest = (
                 hashlib.file_digest(opened.stream, "sha256").hexdigest()
                 if hash_content
@@ -434,7 +524,7 @@ def snapshot_stable_regular_file(
     prefix = bytearray()
     owned_snapshot_identity: os.stat_result | None = None
     try:
-        with _open_stable_regular_file(source, label=label) as opened:
+        with open_stable_regular_file(source, label=label) as opened:
             if snapshot == opened.path:
                 raise StableRegularFileError(
                     f"{label} snapshot must differ from its source: {snapshot}"
@@ -531,7 +621,7 @@ def read_stable_regular_file(
 ) -> bytes:
     """Read attested bytes without rehashing or retaining a second content cache."""
 
-    with _open_stable_regular_file(identity.path, label=label) as opened:
+    with open_stable_regular_file(identity.path, label=label) as opened:
         if (
             _stat_identity(opened.stat) != identity._stat_identity
             or opened.content_change_time_ns != identity._content_change_time_ns
@@ -600,6 +690,22 @@ def _native_executable_header(header: bytes) -> bool:
     }
 
 
+@contextmanager
+def stable_native_executable_probe(
+    path: Path, *, label: str
+) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
+    """Bind native executable admission and a probe to one captured generation."""
+    with stable_executable_probe(path, label=label) as (entrypoint, identity):
+        with open_stable_regular_file(identity.path, label=label) as opened:
+            header = opened.stream.read(4)
+        if not _native_executable_header(header):
+            raise ValueError(
+                f"{label} must be a native executable, not a script or delegating wrapper: "
+                f"{identity.path}"
+            )
+        yield entrypoint, identity
+
+
 def native_executable_content_identity(
     path: Path,
     *,
@@ -607,18 +713,13 @@ def native_executable_content_identity(
 ) -> dict[str, str | int]:
     """Return content identity only when the selected file is a native executable."""
 
-    lexical, resolved, size, digest, header = _stable_file_content(path, label=label)
-    if not _native_executable_header(header):
-        raise ValueError(
-            f"{label} must be a native executable, not a script or delegating wrapper: "
-            f"{resolved}"
-        )
-    return {
-        "entrypoint": _portable_filename(lexical.name),
-        "content_filename": _portable_filename(resolved.name),
-        "size": size,
-        "sha256": digest,
-    }
+    with stable_native_executable_probe(path, label=label) as (entrypoint, identity):
+        return {
+            "entrypoint": _portable_filename(entrypoint.name),
+            "content_filename": _portable_filename(identity.path.name),
+            "size": identity.size,
+            "sha256": identity.sha256,
+        }
 
 
 def probe_executable(
@@ -636,14 +737,8 @@ def probe_executable(
 
     if version_pattern is not None and version_patterns is not None:
         raise ValueError(f"{label} version identity has conflicting patterns")
-    with stable_executable_probe(path, label=label) as (entrypoint, identity):
+    with stable_native_executable_probe(path, label=label) as (entrypoint, identity):
         resolved = identity.path
-        with _open_stable_regular_file(resolved, label=label) as opened:
-            header = opened.stream.read(4)
-        if not _native_executable_header(header):
-            raise ValueError(
-                f"{label} must be a native executable, not a script or delegating wrapper: {resolved}"
-            )
         version = ""
         for raw_arguments in version_arguments:
             arguments = tuple(raw_arguments)

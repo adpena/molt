@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
-import json
 from pathlib import Path
 
 import pytest
 
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
-from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
-
-
-def _digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _identity(kind: str, pair: dict[str, object]) -> RuntimeBuildIdentity:
-    member = {"kind": kind}
-    payload = {"pair": pair, "member": member}
-    return RuntimeBuildIdentity(_digest(payload), _digest(pair), payload)
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmExpectedPair,
+    publish_runtime_wasm_generation,
+)
+from tests.runtime_build_identity_helper import runtime_build_identity
 
 
 def _load_wasm_link():
@@ -33,9 +23,8 @@ def _load_wasm_link():
 
 def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> None:
     wasm_link = _load_wasm_link()
-    pair = {"schema": "molt.runtime-build-pair.v2", "plan": "exact"}
-    shared_identity = _identity("shared", pair)
-    reloc_identity = _identity("reloc", pair)
+    shared_identity = runtime_build_identity("shared")
+    reloc_identity = runtime_build_identity("reloc")
     shared = tmp_path / "deploy" / "molt_runtime.wasm"
     reloc = tmp_path / "deploy" / "molt_runtime_reloc.wasm"
     shared.parent.mkdir()
@@ -55,16 +44,7 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
     )
     expected = tmp_path / "trusted-build-state" / "expected.json"
     expected.parent.mkdir()
-    expected.write_text(
-        json.dumps(
-            {
-                "schema": "molt.runtime-wasm-expected-pair.v1",
-                "shared": shared_identity.to_dict(),
-                "reloc": reloc_identity.to_dict(),
-            }
-        ),
-        encoding="utf-8",
-    )
+    RuntimeWasmExpectedPair(shared_identity, reloc_identity).write(expected)
 
     selected = wasm_link._verify_runtime_generation(
         reloc=generation.reloc,

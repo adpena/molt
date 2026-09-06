@@ -361,7 +361,15 @@ def test_acceptance_receipt_rejects_unicode_normalization_collision(
 
 @pytest.mark.parametrize(
     "value",
-    ("CONIN$", "conout$.json", "COM¹.log", "bad?.json", "bad|.json"),
+    (
+        "CONIN$",
+        "conout$.json",
+        "COM¹.log",
+        "CON .txt",
+        "NUL .json",
+        "bad?.json",
+        "bad|.json",
+    ),
 )
 def test_acceptance_receipt_uses_shared_cross_platform_path_grammar(
     value: str,

@@ -8,15 +8,11 @@ import pytest
 import molt.cli as cli
 import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from tests.cli.native_link_test_support import (
+    write_test_static_archive,
+)
 from tests.cli.process_guard import run_cli_test_process
-
-
-_SOURCE_FINGERPRINT = {
-    "hash": "1" * 64,
-    "inputs_digest": "2" * 64,
-    "meta_digest": "3" * 64,
-    "rustc": "rustc 1.91.0",
-}
+from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
 
 
 def _cargo_output(message: str, native_arguments: str = "") -> str:
@@ -58,10 +54,9 @@ def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
 def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(args, target_triple=None)
+    cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
     assert args[-7:] == [
         "-framework",
         "Security",
@@ -101,15 +96,17 @@ def test_append_darwin_runtime_frameworks_adds_webgpu_when_enabled(
 def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
     tmp_path: Path,
 ) -> None:
+    target_triple = "aarch64-apple-darwin"
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="darwin-framework-link-kinds",
+    )
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
     runtime_lib.write_bytes(b"!<arch>\n")
     out_dir = tmp_path / "out"
-    framework_dir = tmp_path / "fwk"
     out_dir.mkdir()
-    framework_dir.mkdir()
-    (framework_dir / "Metal.framework").mkdir()
-    (framework_dir / "Foundation.framework").mkdir()
     write_native_link_dependency_manifest(
         _cargo_output(
             json.dumps(
@@ -117,7 +114,7 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
                     "reason": "build-script-executed",
                     "package_id": "registry#mdk-sys@0.1.0",
                     "out_dir": str(out_dir),
-                    "linked_paths": [f"framework={framework_dir}"],
+                    "linked_paths": [],
                     "linked_libs": [
                         "framework=Metal",
                         "framework=Foundation",
@@ -129,23 +126,20 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
         ),
         runtime_lib=runtime_lib,
         cargo_profile="dev-fast",
-        target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
     )
 
     link_flags = cli._collect_cargo_native_link_deps(
         runtime_lib,
+        target_triple=target_triple,
         object_format="macho",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
     )
 
     assert link_flags == [
-        f"-F{framework_dir}",
         "-framework",
         "Metal",
-        f"-F{framework_dir}",
         "-framework",
         "Foundation",
         "-lc++",
@@ -155,9 +149,15 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
 def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
     tmp_path: Path,
 ) -> None:
+    target_triple = "aarch64-apple-darwin"
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="release-output",
+        target_triple=target_triple,
+        family_seed="darwin-ignore-stale-build-outputs",
+    )
     runtime_lib = tmp_path / "target" / "release-output" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
-    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    write_test_static_archive(runtime_lib)
     exact_out = tmp_path / "exact-out"
     exact_out.mkdir()
 
@@ -195,16 +195,15 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         ),
         runtime_lib=runtime_lib,
         cargo_profile="release-output",
-        target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
     )
 
     link_flags = cli._collect_cargo_native_link_deps(
         runtime_lib,
+        target_triple=target_triple,
         object_format="macho",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
     )
 
     assert link_flags == ["-framework", "Security"]
@@ -215,11 +214,16 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    target_triple = "aarch64-apple-darwin"
+    build_identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=target_triple,
+        family_seed="darwin-metal-runtime-plan",
+    )
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
-    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    write_test_static_archive(runtime_lib)
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path = tmp_path / "main_stub.c"
@@ -229,9 +233,8 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         _cargo_output(""),
         runtime_lib=runtime_lib,
         cargo_profile="dev-fast",
-        target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        target_triple=target_triple,
+        runtime_build_identity=build_identity,
     )
 
     plan = cli._build_native_link_plan(
@@ -239,11 +242,10 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target_triple=target_triple,
         sysroot_path=None,
         profile="dev",
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=build_identity,
         stdlib_obj_path=None,
     )
 

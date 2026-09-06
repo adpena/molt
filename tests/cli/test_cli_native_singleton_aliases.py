@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.cli import native_link_command
+from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 
 
 def test_bool_singletons_need_no_final_link_aliases() -> None:
@@ -46,8 +47,7 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         target_triple=None,
         sysroot_path=None,
         profile="dev",
-        source_root=tmp_path,
-        source_fingerprint={},
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         external_static_archives=(external_archive,),
         host_platform=platform,
     )

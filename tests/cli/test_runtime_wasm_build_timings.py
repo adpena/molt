@@ -67,20 +67,14 @@ def test_negative_wall_is_clamped_and_detail_preserved() -> None:
 
 def test_runtime_identity_pre_and_post_wall_are_attributed_separately() -> None:
     _record_runtime_wasm_build_phase(
-        "runtime_toolchain_identity",
-        7.0,
+        "runtime_family_identity",
+        8.5,
         kind="pair",
         mode="pre_build",
         detail="status=ok,files=17983,bytes=249161774",
     )
     _record_runtime_wasm_build_phase(
-        "runtime_source_identity", 1.5, kind="pair", mode="pre_build"
-    )
-    _record_runtime_wasm_build_phase(
-        "runtime_toolchain_identity", 6.0, kind="pair", mode="post_build"
-    )
-    _record_runtime_wasm_build_phase(
-        "runtime_source_identity", 1.0, kind="pair", mode="post_build"
+        "runtime_family_identity", 7.0, kind="pair", mode="post_build"
     )
 
     snap = _runtime_wasm_build_timings_snapshot()
@@ -129,13 +123,12 @@ def test_exact_pair_build_records_pre_and_post_identity_phases() -> None:
         runtime_wasm_pair_build._resolve_runtime_wasm_pair_identity
     )
     prebuild_source = inspect.getsource(
-        runtime_wasm_pair_build._materialize_runtime_wasm_pair
+        runtime_wasm_pair_build._prepare_runtime_wasm_pair_build
     )
     publication_source = inspect.getsource(
         runtime_wasm_pair_build._publish_runtime_wasm_pair
     )
 
-    assert identity_source.count('phase="runtime_toolchain_identity"') == 1
-    assert identity_source.count('phase="runtime_source_identity"') == 1
+    assert identity_source.count('phase="runtime_family_identity"') == 1
     assert 'mode="pre_build"' in prebuild_source
     assert 'mode="post_build"' in publication_source

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import functools
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 import tomllib
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.file_hashing import _sha256_file
+from molt.toolchain_identity import stable_executable_probe
 from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
     resolve_explicit_tool_command,
@@ -353,13 +353,14 @@ def _resolve_wasi_sysroot_cached(
     return None
 
 
-def resolve_wasi_sysroot() -> Path | None:
+def resolve_wasi_sysroot(*, env: Mapping[str, str] | None = None) -> Path | None:
+    environment = os.environ if env is None else env
     return _resolve_wasi_sysroot_cached(
-        os.environ.get("MOLT_WASI_SYSROOT"),
-        os.environ.get("WASI_SYSROOT"),
-        os.environ.get("WASI_SDK_PATH"),
-        os.environ.get("WASI_SDK_PREFIX"),
-        os.environ.get("MOLT_TARGET_ROOT"),
+        environment.get("MOLT_WASI_SYSROOT"),
+        environment.get("WASI_SYSROOT"),
+        environment.get("WASI_SDK_PATH"),
+        environment.get("WASI_SDK_PREFIX"),
+        environment.get("MOLT_TARGET_ROOT"),
     )
 
 
@@ -371,12 +372,12 @@ def _wasi_sdk_root_for_sysroot(sysroot: Path) -> Path | None:
     return None
 
 
-def _wasm_linker_version(path: Path) -> str:
+def _wasm_linker_version(path: Path, *, env: Mapping[str, str], cwd: Path) -> str:
     result = _run_completed_command(
         [str(path), "--version"],
         capture_output=True,
-        env=None,
-        cwd=None,
+        env=dict(env),
+        cwd=cwd,
         memory_guard_prefix="MOLT_BUILD",
     )
     output = f"{result.stdout}\n{result.stderr}"
@@ -389,27 +390,18 @@ def _wasm_linker_version(path: Path) -> str:
     return match.group(1)
 
 
-@functools.lru_cache(maxsize=32)
 def _wasm_linker_binary_identity(
-    path_text: str,
-    stat_identity: tuple[int, int, int, int, int],
+    path: Path,
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
 ) -> tuple[str, str]:
-    path = Path(path_text)
-    version = _wasm_linker_version(path)
-    sha256 = _sha256_file(path)
-    stat = path.stat()
-    after = (
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-        stat.st_dev,
-        stat.st_ino,
-    )
-    if after != stat_identity:
-        raise WasmLinkerContractError(
-            f"wasm-ld changed while its linker identity was computed: {path}"
-        )
-    return version, sha256
+    with stable_executable_probe(path, label="runtime WASM linker") as (
+        entrypoint,
+        identity,
+    ):
+        version = _wasm_linker_version(entrypoint, env=env, cwd=cwd)
+        return version, identity.sha256
 
 
 def _llvm_release_line(version: str) -> tuple[int, int]:
@@ -417,15 +409,24 @@ def _llvm_release_line(version: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
-def resolve_wasm_linker() -> WasmLinkerIdentity | None:
-    sysroot = resolve_wasi_sysroot()
+def resolve_wasm_linker(
+    *, env: Mapping[str, str] | None = None, cwd: Path | None = None
+) -> WasmLinkerIdentity | None:
+    environment = os.environ if env is None else env
+    sysroot = resolve_wasi_sysroot(env=environment)
     explicit_commands: tuple[tuple[str, ...], ...] = ()
-    override = os.environ.get("MOLT_WASM_LD", "").strip()
+    override = environment.get("MOLT_WASM_LD", "").strip()
     if override:
         try:
-            explicit = resolve_explicit_tool_command(override, label="MOLT_WASM_LD")
+            explicit = resolve_explicit_tool_command(
+                override, label="MOLT_WASM_LD", environment=environment
+            )
         except ValueError as exc:
             raise WasmLinkerContractError(str(exc)) from exc
+        if len(explicit) != 1:
+            raise WasmLinkerContractError(
+                "MOLT_WASM_LD must select one linker executable without embedded arguments"
+            )
         if not executable_selects_linker_role(Path(explicit[0]), "wasm-ld"):
             raise WasmLinkerContractError(
                 "MOLT_WASM_LD must select the wasm-ld entrypoint; generic lld and "
@@ -441,19 +442,14 @@ def resolve_wasm_linker() -> WasmLinkerIdentity | None:
         "wasm-ld",
         explicit_commands=explicit_commands,
         sibling_directories=sibling_directories,
+        environment=environment,
     )
     if not candidates:
         return None
     linker = candidates[0]
-    stat = linker.stat()
-    stat_identity = (
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-        stat.st_dev,
-        stat.st_ino,
+    version, sha256 = _wasm_linker_binary_identity(
+        linker, env=environment, cwd=cwd or Path.cwd()
     )
-    version, sha256 = _wasm_linker_binary_identity(str(linker), stat_identity)
     expected = None
     if sysroot is not None:
         expected = wasi_sysroot_llvm_version(sysroot)
@@ -493,8 +489,11 @@ def rust_target_libdir(target_triple: str) -> Path | None:
     return Path(path_text)
 
 
-def wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
-    target_libdir = rust_target_libdir(target_triple)
+def wasm_wasi_libc_archive(
+    target_triple: str = "wasm32-wasip1", *, target_libdir: Path | None = None
+) -> Path | None:
+    if target_libdir is None:
+        target_libdir = rust_target_libdir(target_triple)
     if target_libdir is None:
         return None
     libc_archive = target_libdir / "self-contained" / "libc.a"
@@ -503,8 +502,11 @@ def wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
     return libc_archive
 
 
-def wasm_compiler_builtins_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
-    target_libdir = rust_target_libdir(target_triple)
+def wasm_compiler_builtins_archive(
+    target_triple: str = "wasm32-wasip1", *, target_libdir: Path | None = None
+) -> Path | None:
+    if target_libdir is None:
+        target_libdir = rust_target_libdir(target_triple)
     if target_libdir is None:
         return None
     candidates = sorted(target_libdir.glob("libcompiler_builtins-*.rlib"))
@@ -544,14 +546,16 @@ def wasm_cxx_runtime_archives(
 _WASI_SYSROOT_LIB_SUBDIRS = ("wasm32-wasip1", "wasm32-wasi")
 
 
-def _wasi_sysroot_lib_archive(name: str) -> Path | None:
+def _wasi_sysroot_lib_archive(
+    name: str, *, env: Mapping[str, str] | None = None
+) -> Path | None:
     """Resolve a named archive under the active WASI sysroot's lib dir.
 
     Probes the ABI-variant lib subdirs (``lib/wasm32-wasip1`` then the legacy
     ``lib/wasm32-wasi``) of :func:`resolve_wasi_sysroot`. Returns ``None`` when
     no sysroot resolves or the archive is absent from every candidate dir.
     """
-    sysroot = resolve_wasi_sysroot()
+    sysroot = resolve_wasi_sysroot(env=env)
     if sysroot is None:
         return None
     for subdir in _WASI_SYSROOT_LIB_SUBDIRS:
@@ -561,7 +565,9 @@ def _wasi_sysroot_lib_archive(name: str) -> Path | None:
     return None
 
 
-def wasm_wasi_printscan_long_double_archive() -> Path | None:
+def wasm_wasi_printscan_long_double_archive(
+    *, env: Mapping[str, str] | None = None
+) -> Path | None:
     """wasi-libc's long-double-capable printf/scanf archive.
 
     The default ``libc.a`` links a ``long_double_not_supported`` stub for the
@@ -577,12 +583,18 @@ def wasm_wasi_printscan_long_double_archive() -> Path | None:
     ``vendor/wasm-builtins`` copy so a fresh/incomplete session sysroot cannot
     silently drop it (which masked the E1 witness long-double regression).
     """
+    environment = os.environ if env is None else env
+    if override := environment.get("MOLT_WASM_LONGDOUBLE_ARCHIVE"):
+        return Path(override)
     return _wasi_sysroot_lib_archive(
-        "libc-printscan-long-double.a"
+        "libc-printscan-long-double.a",
+        env=environment,
     ) or _vendored_wasm_lib_archive("libc-printscan-long-double.a")
 
 
-def _wasi_sdk_compiler_rt_builtins_archive() -> Path | None:
+def _wasi_sdk_compiler_rt_builtins_archive(
+    *, env: Mapping[str, str] | None = None
+) -> Path | None:
     """``libclang_rt.builtins-wasm32.a`` from a full wasi-sdk's clang resource dir.
 
     In a complete wasi-sdk install the compiler-rt builtins live under
@@ -592,7 +604,7 @@ def _wasi_sdk_compiler_rt_builtins_archive() -> Path | None:
     sibling resource dir so a genuine wasi-sdk resolves the archive without the
     vendored fallback. Returns ``None`` when no such tree exists.
     """
-    sysroot = resolve_wasi_sysroot()
+    sysroot = resolve_wasi_sysroot(env=env)
     if sysroot is None:
         return None
     sdk_roots: list[Path] = [sysroot.parent]
@@ -639,7 +651,9 @@ def _vendored_wasm_lib_archive(name: str) -> Path | None:
     return None
 
 
-def wasm_clang_rt_builtins_archive() -> Path | None:
+def wasm_clang_rt_builtins_archive(
+    *, env: Mapping[str, str] | None = None
+) -> Path | None:
     """LLVM compiler-rt builtins (incl. binary128 ``__addtf3``/``__multf3`` …).
 
     Rust's ``wasm32-wasip1`` sysroot ships only ``libc.a`` + a
@@ -657,9 +671,12 @@ def wasm_clang_rt_builtins_archive() -> Path | None:
     2. a full wasi-sdk's clang compiler-rt resource dir, and
     3. the repo-vendored ``vendor/wasm-builtins`` copy.
     """
+    environment = os.environ if env is None else env
+    if override := environment.get("MOLT_WASM_BUILTINS_ARCHIVE"):
+        return Path(override)
     return (
-        _wasi_sysroot_lib_archive("libclang_rt.builtins-wasm32.a")
-        or _wasi_sdk_compiler_rt_builtins_archive()
+        _wasi_sysroot_lib_archive("libclang_rt.builtins-wasm32.a", env=environment)
+        or _wasi_sdk_compiler_rt_builtins_archive(env=environment)
         or _vendored_wasm_lib_archive("libclang_rt.builtins-wasm32.a")
     )
 
@@ -725,7 +742,9 @@ def long_double_archives_missing_message(missing: Sequence[str]) -> str:
     )
 
 
-def resolve_long_double_link_policy(*, required: bool) -> LongDoubleLinkPolicy:
+def resolve_long_double_link_policy(
+    *, required: bool, env: Mapping[str, str] | None = None
+) -> LongDoubleLinkPolicy:
     """Resolve the long-double link archives and decide fail-loud vs degrade.
 
     ``required`` (numpy/scipy or CPython-ABI tier): a missing archive returns an
@@ -733,8 +752,8 @@ def resolve_long_double_link_policy(*, required: bool) -> LongDoubleLinkPolicy:
     archives plus any degrade ``warnings`` for a module that provably never hits
     ``%L`` (micro / no-numpy).
     """
-    printscan = wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_clang_rt_builtins_archive()
+    printscan = wasm_wasi_printscan_long_double_archive(env=env)
+    builtins = wasm_clang_rt_builtins_archive(env=env)
     resolved = {
         "libc-printscan-long-double.a": printscan,
         "libclang_rt.builtins-wasm32.a": builtins,

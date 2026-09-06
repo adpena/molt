@@ -331,7 +331,32 @@ def test_measurement_authority_is_content_addressed(monkeypatch) -> None:
 
 def test_implementation_identity_includes_canonical_tool_candidate_resolver() -> None:
     facts = benchmark.implementation_source_facts()
-    assert "llvm_wasi_tools.py" in {str(item["name"]) for item in facts["files"]}
+    names = {str(item["name"]) for item in facts["files"]}
+    assert {
+        "src/molt/cli/llvm_wasi_tools.py",
+        "src/molt/cli/runtime_cargo_plan.py",
+        "src/molt/cli/runtime_identity_schema.py",
+        "src/molt/toolchain_identity.py",
+        "src/molt/portable_paths.py",
+        "src/molt/exact_json.py",
+        "src/molt/file_publication.py",
+    } <= names
+
+
+def test_implementation_identity_follows_generated_dependency_closure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dependency = tmp_path / "dependency.py"
+    dependency.write_text("VERSION = 1\n", encoding="utf-8")
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        benchmark, "local_python_import_closure", lambda root, seeds: (dependency,)
+    )
+    first = benchmark.implementation_source_facts()
+    dependency.write_text("VERSION = 2\n", encoding="utf-8")
+    second = benchmark.implementation_source_facts()
+    assert first["fingerprint"] != second["fingerprint"]
+    assert second["files"][0]["name"] == "dependency.py"
 
 
 def test_comparison_is_attestable_only_for_stable_five_run_warm_samples() -> None:
@@ -416,7 +441,9 @@ def test_named_llvm_tool_uses_canonical_managed_resolution(
     suffix = ".exe" if llvm_wasi_tools.os.name == "nt" else ""
     readobj = managed / f"llvm-readobj{suffix}"
     readobj.write_bytes(b"readobj")
-    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
 
     candidates = llvm_wasi_tools.llvm_named_tool_candidates(
         "llvm-readobj", target_root=tmp_path / "target"
@@ -583,6 +610,10 @@ def test_parser_preserves_external_static_link_contract() -> None:
             "main.c",
             "--runtime",
             "libmolt_runtime.a",
+            "--runtime-cargo-profile",
+            "dev-fast",
+            "--runtime-stdlib-profile",
+            "full",
             "--output",
             "app",
             "--external-static-archive",

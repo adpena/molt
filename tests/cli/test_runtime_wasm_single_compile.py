@@ -19,15 +19,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from molt.capability_manifest import CapabilityManifest
+
 from molt.cli import artifact_state as runtime_artifact_state
 from molt.cli import (
     runtime_build_identity,
     runtime_fingerprints,
     runtime_wasm_build,
-    runtime_wasm_build_spec,
     runtime_wasm_build_support,
+    runtime_wasm_build_spec,
     runtime_wasm_pair_build,
 )
 from molt.cli.compiler_metadata import _compiler_root
@@ -46,7 +46,13 @@ from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
     _runtime_wasm_build_timings_snapshot,
 )
-from molt.cli.wasm_toolchain import WasmLinkerIdentity
+from tests.runtime_build_identity_helper import (
+    runtime_wasm_link_inputs,
+    bind_runtime_wasm_specs as _bind_specs,
+    runtime_build_identity as make_runtime_build_identity,
+    runtime_toolchain_content_manifest,
+    runtime_cargo_plan,
+)
 
 _COMMON = dict(
     cargo_profile="release",
@@ -59,6 +65,18 @@ _COMMON = dict(
 )
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_cargo_plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        runtime_wasm_build_spec, "resolve_runtime_cargo_plan", runtime_cargo_plan
+    )
+    monkeypatch.setattr(
+        runtime_wasm_build_spec,
+        "resolve_runtime_wasm_link_inputs",
+        lambda **kwargs: runtime_wasm_link_inputs(tmp_path, env=kwargs["env"]),
+    )
+
+
 def _specs(root: Path):
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root, root / "wasm" / "molt_runtime.wasm", reloc=False, **_COMMON
@@ -66,24 +84,25 @@ def _specs(root: Path):
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
     )
-    return shared, reloc
+    return _bind_specs(shared, reloc)
 
 
 def test_runtime_publication_authority_is_exact_and_content_addressed(
     tmp_path: Path,
 ) -> None:
     root = _compiler_root()
-    for relative in runtime_wasm_build_spec._RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS:
+    authority_paths = {
+        path.relative_to(root).as_posix()
+        for path in runtime_build_identity.runtime_build_tooling_paths(root)
+    }
+    for relative in authority_paths:
         source = root / relative
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
 
     before = runtime_wasm_build_spec._runtime_wasm_publication_authority(tmp_path)
-    assert {
-        entry["path"]
-        for entry in before["files"]  # type: ignore[index]
-    } == set(runtime_wasm_build_spec._RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS)
+    assert before["file_count"] == len(authority_paths)
 
     changed = tmp_path / "src/molt/cli/runtime_wasm_build.py"
     changed.write_bytes(changed.read_bytes() + b"\n# publication mutation\n")
@@ -104,36 +123,20 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     assert shared.artifact_selection is RUNTIME_CDYLIB_ARTIFACTS
     assert reloc.artifact_selection is RUNTIME_STATICLIB_ARTIFACTS
     # ...but the artifacts have distinct content identities (link args differ).
-    assert shared.fingerprint["meta_digest"] != reloc.fingerprint["meta_digest"]
+    assert shared.fingerprint["hash"] != reloc.fingerprint["hash"]
     # Shared link flags carry the split-runtime import ABI.
     for flag in ("--import-memory", "--import-table", "--growable-table"):
         assert flag in shared.link_flags
 
 
-def test_reloc_cache_identity_tracks_exact_wasm_linker_binary() -> None:
-    root = _compiler_root()
-    first = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
-        root,
-        root / "wasm" / "molt_runtime_reloc.wasm",
-        reloc=True,
-        wasm_linker_identity=WasmLinkerIdentity(
-            Path("/llvm/bin/wasm-ld"), "22.1.8", "22.1.8", "a" * 64
-        ),
-        **_COMMON,
-    )
-    second = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
-        root,
-        root / "wasm" / "molt_runtime_reloc.wasm",
-        reloc=True,
-        wasm_linker_identity=WasmLinkerIdentity(
-            Path("/llvm/bin/wasm-ld"), "22.1.8", "22.1.8", "b" * 64
-        ),
-        **_COMMON,
-    )
-
-    assert first.fingerprint is not None and second.fingerprint is not None
-    assert first.fingerprint["meta_digest"] != second.fingerprint["meta_digest"]
-    assert first.staticlib_fingerprint == second.staticlib_fingerprint
+def test_reloc_linker_custody_tracks_exact_binary_bytes(tmp_path: Path) -> None:
+    inputs = runtime_wasm_link_inputs(tmp_path)
+    before = inputs.linker.identity.sha256
+    inputs.linker.entrypoint.write_bytes(b"other-linker")
+    after = runtime_wasm_link_inputs(tmp_path).linker.identity.sha256
+    assert before != after
+    with pytest.raises(ValueError, match="changed"):
+        inputs.verify()
 
 
 def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:
@@ -202,10 +205,28 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         reloc=True,
         **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
     )
+    early_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+        root,
+        tmp_path / "early_shared.wasm",
+        reloc=False,
+        **{**common, "required_exports": {"add"}},
+    )
+    final_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+        root,
+        tmp_path / "final_shared.wasm",
+        reloc=False,
+        **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
+    )
+    _, early = _bind_specs(
+        early_shared, early, family_seed="early", compile_seed="same-compile"
+    )
+    _, final = _bind_specs(
+        final_shared, final, family_seed="final", compile_seed="same-compile"
+    )
     assert early.fingerprint is not None and final.fingerprint is not None
     assert early.staticlib_fingerprint is not None
     assert early.fingerprint["meta_digest"] != final.fingerprint["meta_digest"]
-    assert early.staticlib_fingerprint == final.staticlib_fingerprint
+    assert early.staticlib_fingerprint["hash"] == final.staticlib_fingerprint["hash"]
 
     final = final._replace(target_root=target_root)
     staticlib = runtime_wasm_build_support._wasm_runtime_staticlib_path(
@@ -229,13 +250,10 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
 
     linked: list[tuple[Path, str]] = []
     monkeypatch.setattr(
-        runtime_wasm_build, "_compute_runtime_wasm_build_spec", lambda *a, **k: final
-    )
-    monkeypatch.setattr(
         runtime_wasm_build, "_build_state_root", lambda _root: state_root
     )
     monkeypatch.setattr(
-        runtime_wasm_build,
+        runtime_wasm_pair_build,
         "_run_runtime_wasm_cargo_build",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("cross-export staticlib reuse must not invoke Cargo")
@@ -249,9 +267,9 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         json_output: bool,
         link_timeout: float | None,
         export_link_args: str,
-        long_double_required: bool,
+        **_kwargs: object,
     ) -> bool:
-        del json_output, link_timeout, long_double_required
+        del json_output, link_timeout
         linked.append((staticlib_path, export_link_args))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\0asm\x01\0\0\0")
@@ -265,19 +283,16 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         "_runtime_missing_exports_for_mode",
         lambda _path, _required, *, reloc: set(),
     )
-    monkeypatch.setattr(
-        runtime_wasm_build, "_is_valid_runtime_wasm_artifact", lambda _path: True
-    )
     output = tmp_path / "molt_runtime_reloc.wasm"
-    assert runtime_wasm_build._ensure_runtime_wasm(
+    assert runtime_wasm_build._materialize_runtime_wasm_member_from_target(
         output,
         reloc=True,
         json_output=True,
-        cargo_profile="release-fast",
         cargo_timeout=1.0,
         project_root=root,
-        stdlib_profile="full",
         required_exports={"add", "abc_abstractmethod_check"},
+        resolved_modules=None,
+        spec=final,
     )
     assert linked and linked[0][0] == staticlib
     assert "--export-if-defined=molt_abc_abstractmethod_check" in linked[0][1]
@@ -318,9 +333,14 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
             reloc=True,
             **{**common, "required_exports": required_exports},
         )
-        return (
-            shared._replace(target_root=target_root),
-            reloc._replace(target_root=target_root),
+        shared, reloc = _bind_specs(
+            shared,
+            reloc,
+            family_seed=label,
+            compile_seed="shared-compile",
+        )
+        return shared._replace(target_root=target_root), reloc._replace(
+            target_root=target_root
         )
 
     early_shared, early_reloc = _pair("early", {"add"})
@@ -335,9 +355,12 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
             "re_compile",
         },
     )
-    assert early_shared.fingerprint == final_shared.fingerprint
+    assert early_shared.fingerprint["hash"] == final_shared.fingerprint["hash"]
     assert early_reloc.fingerprint != final_reloc.fingerprint
-    assert early_reloc.staticlib_fingerprint == final_reloc.staticlib_fingerprint
+    assert (
+        early_reloc.staticlib_fingerprint["hash"]
+        == final_reloc.staticlib_fingerprint["hash"]
+    )
 
     profile_root = target_root / "wasm32-wasip1" / early_shared.profile_dir
     cdylib = profile_root / "deps" / "molt_runtime-feedface.wasm"
@@ -345,7 +368,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     cargo_calls: list[list[str]] = []
 
     def _fake_build(**kwargs):  # noqa: ANN003
-        cmd = list(kwargs["cmd"])
+        cmd = list(kwargs["cargo_plan"].command)
         cargo_calls.append(cmd)
         cdylib.parent.mkdir(parents=True, exist_ok=True)
         cdylib.write_bytes(b"\0asm\x01\0\0\0")
@@ -373,11 +396,6 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build.wasm_toolchain,
-        "rust_target_libdir",
-        lambda *a, **k: tmp_path,
     )
 
     _reset_runtime_wasm_build_timings()
@@ -411,23 +429,13 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
 
 
 def _test_pair_identity():
-    pair_payload = {"schema": "molt.runtime-build-pair.v2", "test": "pair"}
-    payload = {"pair": pair_payload}
-    pair_digest = runtime_build_identity._digest(pair_payload)
-    member = runtime_build_identity.RuntimeBuildIdentity(
-        digest=runtime_build_identity._digest(payload),
-        pair_digest=pair_digest,
-        payload=payload,
-    )
-    toolchain_payload = {"test": "toolchain"}
-    toolchain = runtime_build_identity.RuntimeToolchainContentManifest(
-        digest=runtime_build_identity._digest(toolchain_payload),
-        payload=toolchain_payload,
-    )
     return runtime_wasm_pair_build._RuntimeWasmPairIdentity(
-        toolchain=toolchain,
-        shared=member,
-        reloc=member,
+        toolchain=runtime_toolchain_content_manifest(
+            "test-family",
+            target_triple="wasm32-wasip1",
+        ),
+        shared=make_runtime_build_identity("shared", "test-family"),
+        reloc=make_runtime_build_identity("reloc", "test-family"),
     )
 
 
@@ -488,7 +496,7 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     ctx.provision_staging()
     first_root = ctx.staging_root
     assert first_root is not None
-    assert first_root.parent.name == identity.shared.pair_digest
+    assert first_root.parent.name == identity.shared.family_digest
     assert ctx.staging_member(reloc=False).name == canonical_shared.name
     assert ctx.staging_member(reloc=True).name == canonical_reloc.name
     assert ctx.ensure_member(reloc=False)
@@ -618,17 +626,16 @@ def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
 
     def _fake_build(
         *,
-        cmd,
-        root,
-        env,
+        cargo_plan,
         cargo_timeout,
         profile_dir,
         target_root_override,
         json_output,
         artifact_kind,
     ):
+        cmd = cargo_plan.command
         captured["cmd"] = list(cmd)
-        captured["env"] = dict(env)
+        captured["env"] = dict(cargo_plan.environment)
         # Return a non-zero build so _prepopulate returns without touching disk.
         return (
             subprocess.CompletedProcess(cmd, 1, "", "stopped-for-test"),
@@ -643,11 +650,6 @@ def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
         runtime_wasm_pair_build,
         "_current_runtime_target_artifact",
         lambda *a, **k: None,
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build.wasm_toolchain,
-        "rust_target_libdir",
-        lambda *a, **k: Path(tmp_path),
     )
 
     ok = runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
@@ -721,7 +723,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     )
 
     def _fake_build(**kwargs):  # noqa: ANN003
-        cmd = kwargs["cmd"]
+        cmd = kwargs["cargo_plan"].command
         return (
             subprocess.CompletedProcess(cmd, 0, cargo_stdout, ""),
             reported_cdylib,
@@ -746,11 +748,6 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
-    )
-    monkeypatch.setattr(
-        runtime_wasm_pair_build.wasm_toolchain,
-        "rust_target_libdir",
-        lambda *a, **k: tmp_path,
     )
 
     assert (
@@ -852,6 +849,7 @@ def _run_app_ensure_routing(
 
     log: list[str] = []
     _result, err = nno._prepare_non_native_build_result(
+        resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -861,7 +859,6 @@ def _run_app_ensure_routing(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
-        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_RuntimeArtifactState(
             runtime_wasm=runtime_shared_missing,
             runtime_reloc_wasm=runtime_reloc,
@@ -937,6 +934,7 @@ def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
         return False
 
     _result, err = nno._prepare_non_native_build_result(
+        resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -945,7 +943,6 @@ def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
-        resolved_capability_policy=CapabilityManifest().resolve(),
         runtime_state=_RuntimeArtifactState(),
         ensure_runtime_wasm_both=ensure_pair,
         runtime_cargo_profile="release",

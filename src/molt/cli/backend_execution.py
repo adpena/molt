@@ -16,6 +16,8 @@ from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
 from molt import backend_daemon_custody as _daemon_custody
+from molt.exact_json import canonical_json_sha256
+from molt.toolchain_identity import executable_content_identity
 from molt.cli.backend_cache import (
     _native_artifact_source_key,
     _shared_stdlib_cache_matches_key_locked,
@@ -54,7 +56,7 @@ _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 4
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 5
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 6
 
 
 _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
@@ -239,41 +241,14 @@ def _backend_features_for_build_target(
 
 
 def _backend_binary_identity(backend_bin: Path) -> str:
-    """Return a stable identity string for the backend binary the daemon runs.
-
-    Finding #4 (design 20 section 4.1) confound: the ``stdlib_shared_<key>.o``
-    cache -- and the module/function ``.o`` caches that share
-    ``_build_cache_variant`` -- were keyed on the backend *source tree*
-    fingerprint (``_cache_fingerprint``) but NOT on the backend *binary*
-    identity. A rebuilt backend with different codegen (e.g. drop passes wired
-    in) whose source fingerprint happened to be stable -- or any A/B toggle that
-    did not monotonically bump tracked source mtimes -- silently linked stale
-    objects compiled by the OLD binary. Backend binary identity is therefore
-    part of the cache variant itself; shared cache validation only accepts exact
-    key/manifest sidecars and never relies on broad mtime sweeps.
-
-    This mirrors the established staleness convention the codebase already uses
-    for the per-function TIR cache (``backend_cache_dir_for`` salts its namespace
-    with the executable path + mtime) and the callable-symbol sidecar
-    (size + mtime): the identity is the resolved path plus ``(mtime_ns, size)``.
-    We intentionally use a stat-based stamp rather than a content hash -- hashing
-    the multi-hundred-MB binary on every build would dominate cold-start cost,
-    and the per-function TIR cache already accepts exactly this trade-off.
-
-    Fail-safe: if the binary cannot be stat'd (not yet built), return a
-    ``missing:`` sentinel keyed on the path. That sentinel differs from every
-    real-binary identity, so a stale ``.o`` left by a prior binary is never
-    reused; once the binary exists the identity becomes its real stamp.
-    """
+    """Bind object-cache and daemon selection to stable executable content."""
     try:
-        resolved = backend_bin.resolve()
-    except OSError:
-        resolved = backend_bin
-    try:
-        stat = backend_bin.stat()
-    except OSError:
-        return f"missing:{resolved}"
-    return f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+        identity = executable_content_identity(backend_bin, label="backend executable")
+    except (OSError, ValueError):
+        if not backend_bin.exists():
+            return f"missing:{backend_bin.absolute()}"
+        raise
+    return canonical_json_sha256({"schema": 2, "binary": identity})
 
 
 def _runtime_lib_freshness_candidates(
@@ -508,7 +483,7 @@ def _backend_daemon_freshness_inputs(
         if path.exists()
     ]
     return {
-        "backend_bin": _path_freshness_fingerprint(backend_bin),
+        "backend_bin": _backend_binary_identity(backend_bin),
         "target_root": os.fspath(target_root),
         "target_triple": target_triple,
         "runtime_libs": runtime_candidates,

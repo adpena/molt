@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
@@ -8,6 +9,7 @@ from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
     static_archive_identity,
+    validate_artifact_content_identity,
 )
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
@@ -20,6 +22,7 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_native_build import _runtime_archives_semantically_match
+from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from tools.native_link_benchmark import collect_input_facts
 
 
@@ -29,6 +32,42 @@ _SOURCE_FINGERPRINT = {
     "meta_digest": "3" * 64,
     "rustc": "rustc test",
 }
+
+
+@pytest.mark.parametrize("schema", ["bytes", "archive"])
+@pytest.mark.parametrize("mutation", ["float", "bool", "negative", "extra", "digest"])
+def test_artifact_receipts_reject_resealed_shape_and_numeric_coercion(
+    schema: str, mutation: str
+) -> None:
+    from molt.cli.runtime_fingerprints import _runtime_fingerprint_payload_is_valid
+
+    receipt = (
+        {"schema": "molt.artifact-bytes.v1", "sha256": "a" * 64, "size_bytes": 1}
+        if schema == "bytes"
+        else {
+            "schema": "molt.static-archive-semantic.v1",
+            "semantic_sha256": "a" * 64,
+            "member_count": 1,
+            "content_size_bytes": 1,
+        }
+    )
+    assert validate_artifact_content_identity(receipt) == receipt
+    count_key = "size_bytes" if schema == "bytes" else "member_count"
+    if mutation in {"float", "bool", "negative"}:
+        receipt[count_key] = {"float": 1.0, "bool": True, "negative": -1}[mutation]
+    elif mutation == "extra":
+        receipt["unknown"] = "resealed"
+    else:
+        receipt["sha256" if schema == "bytes" else "semantic_sha256"] = "A" * 64
+    with pytest.raises(StaticArchiveIdentityError, match="artifact content identity"):
+        validate_artifact_content_identity(receipt)
+    assert not _runtime_fingerprint_payload_is_valid(
+        {
+            "version": 3,
+            **_SOURCE_FINGERPRINT,
+            "artifact_content_identity": receipt,
+        }
+    )
 
 
 def _header(name: str, size: int, *, timestamp: int) -> bytes:
@@ -106,6 +145,35 @@ def _archive(
     else:  # pragma: no cover - test helper contract
         raise AssertionError(style)
     path.write_bytes(b"".join(parts))
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib", ".o", ".wasm"])
+def test_artifact_identity_observes_same_size_preserved_mtime_mutation(
+    tmp_path: Path, suffix: str
+) -> None:
+    path = tmp_path / ("artifact" + suffix)
+    before_bytes = b"before"
+    after_bytes = b"after!"
+    if suffix in {".a", ".lib"}:
+        before_bytes = b"!<arch>\n" + _member("object.o/", before_bytes, timestamp=0)
+        after_bytes = b"!<arch>\n" + _member("object.o/", after_bytes, timestamp=0)
+    path.write_bytes(before_bytes)
+    before = artifact_content_identity(path)
+    metadata = path.stat()
+    path.write_bytes(after_bytes)
+    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    assert path.stat().st_size == metadata.st_size
+    assert artifact_content_identity(path) != before
+
+
+@pytest.mark.parametrize("name", ["//", "#1/16777217"])
+def test_archive_name_metadata_is_bounded_before_allocation(
+    tmp_path: Path, name: str
+) -> None:
+    path = tmp_path / "oversized.a"
+    path.write_bytes(b"!<arch>\n" + _header(name, 16_777_217, timestamp=0))
+    with pytest.raises(StaticArchiveIdentityError, match="bounded input limit"):
+        artifact_content_identity(path)
 
 
 @pytest.mark.parametrize("style", ("coff", "gnu", "bsd"))
@@ -229,8 +297,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
         runtime_lib=runtime,
         cargo_profile="dev-fast",
         target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
     )
 
     _archive(
@@ -263,8 +330,7 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
     read_native_link_dependency_manifest(
         runtime,
         target_triple=None,
-        source_root=tmp_path,
-        source_fingerprint=_SOURCE_FINGERPRINT,
+        runtime_build_identity=RUNTIME_BUILD_IDENTITY,
     )
 
     _archive(
@@ -298,6 +364,5 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
         read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
-            source_root=tmp_path,
-            source_fingerprint=_SOURCE_FINGERPRINT,
+            runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         )
