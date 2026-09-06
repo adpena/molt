@@ -69,6 +69,9 @@ def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> floa
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.memory_limits import (  # noqa: E402
     DEFAULT_GLOBAL_FRACTION_OF_USABLE as DEFAULT_GLOBAL_FRACTION_OF_USABLE,
@@ -152,7 +155,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     windows_process_handle_rss_kb as windows_process_handle_rss_kb,
     windows_process_handle_started_at_ns as windows_process_handle_started_at_ns,
 )
-from tools.process_spawn import (  # noqa: E402
+from molt.process_spawn import (  # noqa: E402
     ProcessGroupKwargs,
     ProcessSpawnKwargs,
     detached_process_group_kwargs,
@@ -165,7 +168,7 @@ from tools.memory_guard_core import process_model as _process_model  # noqa: E40
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
-from tools.memory_guard_core.paths import (  # noqa: E402
+from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
     pytest_guard_summary_dir,
 )

@@ -16,11 +16,9 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
 try:
     from tools import memory_guard, process_sentinel
-    from tools.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs
 except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
     import memory_guard
     import process_sentinel
-    from process_spawn import ProcessGroupKwargs, detached_process_group_kwargs
 
 try:
     from tools.memory_guard_core import harness_outcomes as _harness_outcomes
@@ -56,6 +54,7 @@ from molt.dx import (  # noqa: E402
     development_artifacts_requested,
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
 CANONICAL_RUN_ENV_KEYS = _CANONICAL_RUN_ENV_KEYS

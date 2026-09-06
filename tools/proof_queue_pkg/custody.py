@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TextIO
 
 from tools import harness_memory_guard, memory_guard
-from tools.process_spawn import (
+from molt.process_spawn import (
     ProcessGroupKwargs,
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,

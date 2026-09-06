@@ -1,16 +1,19 @@
 """Platform-gated loaded CPython native/system ABI dependency closure.
 
-The roots are the executable, CPython library, and dynamic Unicode-data owner.
-Only dependencies bound by the current loader and explicit virtual OS contracts
-are closed here. Runtime inventories hash lazy stdlib-extension bytes, but this
-policy does not attest their unloaded external dependencies or resolve rpaths.
+Runtime roots and the complete observed loaded-image census are attested here.
+Mandatory imports must resolve within that census or explicit virtual OS
+contracts. Optional declarations are retained, never inferred to be bound from
+a matching basename. This snapshot does not attest future loader selections,
+unloaded extension dependencies, or resolve rpaths. Later loads need readmission.
 """
 
 from __future__ import annotations
 
 import struct
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from molt.exact_json import canonical_json_sha256
 from molt.python_file_node_custody import _FileNodePool
@@ -20,6 +23,20 @@ from molt.python_native_locations import (
     _loader_name,
     _native_contract_valid,
 )
+
+
+DependencyKind = Literal["required", "delay", "weak", "lazy", "reexport", "upward"]
+DEFERRED_DEPENDENCY_KINDS = {
+    "windows": frozenset({"delay"}),
+    "macos": frozenset({"weak", "lazy"}),
+    "linux": frozenset(),
+}
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class NativeDependency:
+    name: str
+    kind: DependencyKind
 
 
 def _pe_rva_offset(
@@ -45,7 +62,7 @@ def _pe_rva_offset(
     )
 
 
-def _pe_dependency_names(data: bytes) -> tuple[str, ...]:
+def _pe_dependencies(data: bytes) -> tuple[NativeDependency, ...]:
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise PythonEnvironmentIdentityError(
             "loaded Windows dependency is not a PE image"
@@ -87,9 +104,9 @@ def _pe_dependency_names(data: bytes) -> tuple[str, ...]:
         if raw_offset + raw_size > len(data):
             raise PythonEnvironmentIdentityError("PE section raw data is truncated")
         sections.append((virtual_address, virtual_size, raw_offset, raw_size))
-    names: set[str] = set()
+    dependencies: set[NativeDependency] = set()
 
-    def read_name(rva: int) -> None:
+    def read_name(rva: int, kind: DependencyKind) -> None:
         offset = _pe_rva_offset(data, rva, sections)
         section_end = next(
             raw_offset + raw_size
@@ -107,7 +124,7 @@ def _pe_dependency_names(data: bytes) -> tuple[str, ...]:
             ) from exc
         if not name or "/" in name or "\\" in name:
             raise PythonEnvironmentIdentityError("PE dependency name is invalid")
-        names.add(name)
+        dependencies.add(NativeDependency(name, kind))
 
     def directory(index: int) -> tuple[int, int]:
         if index >= directory_count:
@@ -127,7 +144,7 @@ def _pe_dependency_names(data: bytes) -> tuple[str, ...]:
             descriptor = struct.unpack_from("<IIIII", data, offset)
             if not any(descriptor):
                 break
-            read_name(descriptor[3])
+            read_name(descriptor[3], "required")
             offset += 20
         else:
             raise PythonEnvironmentIdentityError("PE import table is unterminated")
@@ -148,16 +165,19 @@ def _pe_dependency_names(data: bytes) -> tuple[str, ...]:
                 data,
                 optional + (24 if magic == 0x20B else 28),
             )[0]
-            read_name(descriptor[1] if descriptor[0] else descriptor[1] - image_base)
+            read_name(
+                descriptor[1] if descriptor[0] else descriptor[1] - image_base,
+                "delay",
+            )
             offset += 32
         else:
             raise PythonEnvironmentIdentityError(
                 "PE delay-import table is unterminated"
             )
-    return tuple(sorted(names))
+    return tuple(sorted(dependencies))
 
 
-def _elf_dependency_names(data: bytes) -> tuple[str, ...]:
+def _elf_dependencies(data: bytes) -> tuple[NativeDependency, ...]:
     if len(data) < 64 or data[:4] != b"\x7fELF":
         raise PythonEnvironmentIdentityError(
             "loaded Linux dependency is not an ELF image"
@@ -270,12 +290,12 @@ def _elf_dependency_names(data: bytes) -> tuple[str, ...]:
         if not name:
             raise PythonEnvironmentIdentityError("ELF dependency name is invalid")
         names.add(name)
-    return tuple(sorted(names))
+    return tuple(NativeDependency(name, "required") for name in sorted(names))
 
 
-def _macho_dependency_names(
+def _macho_dependencies(
     data: bytes, *, architecture: str | None = None
-) -> tuple[str, ...]:
+) -> tuple[NativeDependency, ...]:
     fat_formats = {
         b"\xca\xfe\xba\xbe": (">", False),
         b"\xbe\xba\xfe\xca": ("<", False),
@@ -364,8 +384,14 @@ def _macho_dependency_names(
         raise PythonEnvironmentIdentityError(
             "loaded macOS dependency has truncated load commands"
         )
-    dylib_commands = {0xC, 0x18, 0x1F, 0x20, 0x23}
-    names: set[str] = set()
+    dylib_commands: dict[int, DependencyKind] = {
+        0xC: "required",
+        0x18: "weak",
+        0x1F: "reexport",
+        0x20: "lazy",
+        0x23: "upward",
+    }
+    dependencies: set[NativeDependency] = set()
     for _index in range(command_count):
         if offset + 8 > limit:
             raise PythonEnvironmentIdentityError(
@@ -397,20 +423,20 @@ def _macho_dependency_names(
                 ) from exc
             if not name:
                 raise PythonEnvironmentIdentityError("Mach-O dependency name is empty")
-            names.add(name)
+            dependencies.add(NativeDependency(name, dylib_commands[base_command]))
         offset += size
     if offset != limit:
         raise PythonEnvironmentIdentityError(
             "Mach-O load-command count/extent disagree"
         )
-    return tuple(sorted(names))
+    return tuple(sorted(dependencies))
 
 
-def _native_dependency_names(
+def _native_dependencies(
     data: bytes, operating_system: str, *, architecture: str | None = None
-) -> tuple[str, ...]:
+) -> tuple[NativeDependency, ...]:
     if operating_system == "windows":
-        names = _pe_dependency_names(data)
+        names = _pe_dependencies(data)
         if architecture is not None:
             offset = struct.unpack_from("<I", data, 0x3C)[0]
             machine = struct.unpack_from("<H", data, offset + 4)[0]
@@ -420,9 +446,9 @@ def _native_dependency_names(
                 )
         return names
     if operating_system == "macos":
-        return _macho_dependency_names(data, architecture=architecture)
+        return _macho_dependencies(data, architecture=architecture)
     if operating_system == "linux":
-        names = _elf_dependency_names(data)
+        names = _elf_dependencies(data)
         if architecture is not None and (
             data[4:6] != b"\x02\x01"
             or struct.unpack_from("<H", data, 18)[0]
@@ -470,9 +496,14 @@ def _native_dependency_closure(
         by_name[root_name] = canonical
     discovered: dict[str, Path] = {}
     nodes: dict[str, str] = {}
-    contracts: set[str] = set()
+    contracts: set[str] = set(loader_contracts)
     raw_edges: set[tuple[str, str]] = set()
-    pending = list(roles_by_path)
+    deferred: set[tuple[str, NativeDependency]] = set()
+    observed_paths = {path.resolve(strict=True) for path in loaded}
+    pending = sorted(
+        observed_paths | set(roles_by_path),
+        key=lambda path: _loader_name(path.name, operating_system),
+    )
     while pending:
         path = pending.pop()
         name = _loader_name(path.name, operating_system)
@@ -483,11 +514,17 @@ def _native_dependency_closure(
         data = pool.read_bound(node, label="loaded native dependency")
         nodes[name] = node
         discovered[name] = path
-        dependencies = _native_dependency_names(
+        dependencies = _native_dependencies(
             data, operating_system, architecture=architecture
         )
         del data
-        for dependency in dependencies:
+        for declaration in dependencies:
+            if declaration.kind in DEFERRED_DEPENDENCY_KINDS[operating_system]:
+                # A loaded basename does not establish this importer's optional
+                # binding (delay hooks and dyld weak/lazy resolution can differ).
+                deferred.add((name, declaration))
+                continue
+            dependency = declaration.name
             dependency_key = _loader_name(Path(dependency).name, operating_system)
             target = by_name.get(dependency_key)
             contract: str | None = None
@@ -574,20 +611,41 @@ def _native_dependency_closure(
         raise PythonEnvironmentIdentityError(
             "native dependency closure has no runtime roots"
         )
-    return {
-        "status": "closed",
+    observed_components = [
+        ids[name] for name in ordered_names if discovered[name] in observed_paths
+    ]
+    deferred_imports = [
+        {"from": ids[source], "name": declaration.name, "kind": declaration.kind}
+        for source, declaration in sorted(deferred)
+    ]
+
+    def verify_census() -> None:
+        after_loaded, after_aliases, after_contracts = _loaded_native_module_paths(
+            operating_system
+        )
+        if (
+            set(after_loaded) != set(loaded)
+            or after_aliases != loader_aliases
+            or set(after_contracts) != set(loader_contracts)
+        ):
+            raise PythonEnvironmentIdentityError(
+                "loaded native image census changed during dependency capture"
+            )
+
+    verify_census()
+    pool.capture_context.register_verification_fence(verify_census)
+    material = {
         "policy": policy,
         "root_components": root_components,
+        "observed_components": observed_components,
+        "observed_contracts": sorted(loader_contracts),
         "components": components,
         "contracts": sorted(contracts),
         "edges": edges,
-        "closure_sha256": canonical_json_sha256(
-            {
-                "policy": policy,
-                "root_components": root_components,
-                "components": components,
-                "contracts": sorted(contracts),
-                "edges": edges,
-            }
-        ),
+        "deferred_imports": deferred_imports,
+    }
+    return {
+        "status": "closed",
+        **material,
+        "closure_sha256": canonical_json_sha256(material),
     }

@@ -29,7 +29,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import run_l7_numeric_attestation as l7  # noqa: E402
-from memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
 
 DEFAULT_OUTPUT = (
     REPO_ROOT

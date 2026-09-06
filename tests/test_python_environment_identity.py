@@ -37,6 +37,108 @@ def _tree(root: Path, context: files.PythonFileCaptureContext):
     return tree, pool
 
 
+@pytest.mark.parametrize(
+    "index,field",
+    tuple(enumerate(("mode", "device", "inode", "size", "mtime_ns", "ctime_ns"))),
+)
+def test_snapshot_diagnostic_records_changed_root_field(index, field):
+    before = (1, 2, 3, 4, 5, 6)
+    after = list(before)
+    after[index] = 99
+    assert files._snapshot_difference((before, ()), (tuple(after), ())) == (
+        f"root metadata changed: {field}={before[index]}->99"
+    )
+
+
+def test_snapshot_diagnostic_records_changed_entry_field(tmp_path):
+    path = tmp_path / "entry"
+    path.write_bytes(b"data")
+    before = path.lstat()
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    after = path.lstat()
+    root = files._path_stat_identity(tmp_path.lstat())
+    difference = files._snapshot_difference(
+        files._snapshot_fingerprint(root, [("entry", path, before)]),
+        files._snapshot_fingerprint(root, [("entry", path, after)]),
+    )
+    assert difference.startswith("entry metadata changed: entry [")
+    assert f"mtime_ns={before.st_mtime_ns}->{after.st_mtime_ns}" in difference
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK])
+def test_path_identity_separates_directory_allocation_from_file_length(mode):
+    def metadata(size):
+        return SimpleNamespace(
+            st_mode=mode, st_dev=1, st_ino=2, st_size=size, st_mtime_ns=3, st_ctime_ns=4
+        )
+
+    before = files._path_stat_identity(metadata(0))
+    after = files._path_stat_identity(metadata(4096))
+    assert (before == after) is (mode == stat.S_IFDIR)
+
+
+@pytest.mark.parametrize(
+    "field", ["st_mode", "st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns"]
+)
+def test_directory_identity_retains_replacement_access_and_timestamp_fences(field):
+    values = dict(
+        st_mode=stat.S_IFDIR,
+        st_dev=1,
+        st_ino=2,
+        st_size=0,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    before = files._path_stat_identity(SimpleNamespace(**values))
+    values[field] += 1
+    assert files._path_stat_identity(SimpleNamespace(**values)) != before
+
+
+@pytest.mark.parametrize("change", ["add", "remove", "symlink"])
+def test_outer_capture_verification_retains_tree_membership(tmp_path, change):
+    path = tmp_path / "original.py"
+    path.write_bytes(b"same")
+    target = tmp_path / "second.py"
+    target.write_bytes(b"same")
+    link = tmp_path / "link.py"
+    if change == "symlink":
+        try:
+            link.symlink_to(path.name)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+    context = files.PythonFileCaptureContext()
+    _tree(tmp_path, context)
+    context.verify()
+    before_root = tmp_path.lstat()
+    if change == "add":
+        (tmp_path / "new.py").write_bytes(b"new import")
+    elif change == "remove":
+        path.unlink()
+    else:
+        link.unlink()
+        link.symlink_to(target.name)
+    os.utime(tmp_path, ns=(before_root.st_atime_ns, before_root.st_mtime_ns))
+    with pytest.raises(ValueError, match="changed|unavailable|could not be verified"):
+        context.verify()
+
+
+def test_outer_tree_fence_retains_pruning_policy(tmp_path):
+    path = tmp_path / "original.py"
+    path.write_bytes(b"same")
+    excluded = tmp_path / "ignored"
+    excluded.mkdir()
+    context = files.PythonFileCaptureContext()
+    files._stable_tree_inventory(
+        tmp_path,
+        root_id="fixture",
+        label="fixture",
+        pool=files._FileNodePool(capture_context=context),
+        excluded=frozenset({"ignored"}),
+    )
+    (excluded / "data").write_bytes(b"not in the attested tree")
+    context.verify()
+
+
 @pytest.mark.parametrize("workers", [1, 2, 4])
 def test_file_inventory_hashes_each_object_once_and_is_deterministic(tmp_path, workers):
     for name, data in (("b.py", b"b"), ("a.py", b"a"), ("c.py", b"c")):

@@ -51,9 +51,9 @@ def _ensure_pytest_process_scope() -> None:
 
 
 def _assert_pytest_memory_guard_active() -> None:
-    from tools import pytest_memory_guard_bootstrap
+    from molt import pytest_memory_guard_bootstrap
 
-    pytest_args = pytest_memory_guard_bootstrap.pytest_invocation_args()
+    pytest_args = pytest_memory_guard_bootstrap.python_pytest_invocation_args()
     try:
         pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
             os.environ,
@@ -103,11 +103,11 @@ def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     if _is_xdist_run(session):
         return
     from tools import harness_memory_guard
-    from tools.pytest_memory_guard_bootstrap import pytest_outer_guard_summary_dir
+    from molt.pytest_memory_guard_bootstrap import outer_guard_summary_dir
 
     sentinel = harness_memory_guard.repo_process_sentinel(
         repo_root=ROOT,
-        artifact_root=pytest_outer_guard_summary_dir(),
+        artifact_root=outer_guard_summary_dir(),
         label=f"pytest-{os.getpid()}",
         limits=harness_memory_guard.limits_from_env("MOLT_PYTEST"),
         drain_on_exit=True,

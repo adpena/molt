@@ -19,6 +19,7 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
     REPO_ROOT / "src" / "molt" / "cli",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
+    REPO_ROOT / "src" / "molt" / "pytest_memory_guard_bootstrap.py",
     REPO_ROOT / "src" / "molt" / "toolchain_identity.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
     REPO_ROOT / "src" / "molt_accel",
@@ -606,7 +607,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "memory guard watched process-group signal primitive",
     ),
     AllowedRawSubprocessUse(
-        "tools/pytest_memory_guard_bootstrap.py",
+        "src/molt/pytest_memory_guard_bootstrap.py",
         "handoff_to_outer_guard",
         "run",
         "Windows import-time custody handoff waits for tools/memory_guard.py "

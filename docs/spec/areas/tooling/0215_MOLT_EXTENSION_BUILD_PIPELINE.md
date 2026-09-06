@@ -196,6 +196,18 @@ schema is unchanged by this cut.
 
 The path-only locator runs before proof watches are armed. Native files outside
 environment roots receive exact-file watches, never broad system-directory watches.
+Runtime closure v4 and loaded-dependency policies v2 attest all observed native
+file components and loader-provided virtual contracts, not just runtime-root
+reachability. PE eager imports, ELF `DT_NEEDED` (including lazy symbol binding),
+and Mach-O required/reexport/upward loads remain mandatory. PE delay and Mach-O
+weak/lazy declarations are recorded separately with their importer and kind;
+a matching loaded basename never proves that importer's optional binding.
+Optional targets already in the census retain independent byte custody, without
+invented dependency edges. Native file nodes are allocated in loader-name order,
+independent of absolute installation roots. The parser fences capture with a
+second loader census and retains that fence through outer custody publication.
+This is a snapshot of observed files and declarations, not an attestation of
+future dynamic loads: later files require renewed admission and exact watches.
 After capture, every absolute file in the custody envelope must be covered; only
 then may the full child-executable policy be bound and payload execution begin.
 Capture timing and worker telemetry are queryable but excluded from semantic hashes.
@@ -216,8 +228,16 @@ Failed capture drains watches without claiming that a payload ran.
 `PythonFileCaptureContext` shares handle/change-time-bound hashes across runtime
 and environment inventories. Hashing has bounded workers and pending work; parser
 bytes are read on demand rather than retaining every source/bytecode/native image.
-Each public capture closes its file-mutation fence. Receipt-owned tool selection
-uses the same tree/access/link semantics, including Unicode host-name resolution.
+Each public capture closes its file-mutation fence. Directory capture
+retains membership, object, access-mode and timestamp checks;
+directory storage allocation size is not semantic identity. Windows can change
+that reported size during read-only enumeration. File lengths remain exact,
+and failed snapshots report the specific differing metadata fields and values.
+Each root retains its compact membership fingerprint through outer publication,
+with its original exclusions/pruning, so later additions and topology changes
+cannot escape by leaving the previously captured regular files untouched.
+Receipt-owned tool selection uses the same tree/access/link semantics, including
+Unicode host-name resolution.
 Requirement versions, console entry points and Meson/Ninja/pkg-config discovery
 come from the realized distribution inventory, not ambient metadata rescans.
 Selection and provisioning share one recipe computation per request; requirement

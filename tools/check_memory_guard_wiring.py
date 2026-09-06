@@ -422,18 +422,6 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "conftest loading",
     ),
     TokenContract(
-        "src/molt/pytest_memory_guard_bootstrap.py",
-        (
-            "tools.pytest_memory_guard_bootstrap",
-            "ensure_current_file_test_script_memory_guard",
-            "ensure_repo_test_module_memory_guard",
-            "pytest_load_initial_conftests",
-            "pytest_runtest_call",
-        ),
-        "packaged pytest plugin shim must make repo startup guard importable "
-        "from console-script pytest before pytest mutates sys.path",
-    ),
-    TokenContract(
         "src/molt/pytest_memory_guard_config_plugin.py",
         (
             "pytest_load_initial_conftests",
@@ -446,7 +434,7 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "src/sitecustomize.py",
         (
             "ensure_python_test_memory_guard",
-            "tools.pytest_memory_guard_bootstrap",
+            "molt.pytest_memory_guard_bootstrap",
         ),
         "project-managed Python startup must guard uv-run direct tests without "
         "adding harness files inside differential corpus directories",
@@ -458,17 +446,11 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "custody before test code can run outside the guard",
     ),
     TokenContract(
-        "tests/_sitecustomize.py",
+        "src/molt/pytest_memory_guard_bootstrap.py",
         (
-            "install_test_memory_guard_sitecustomize",
-            "ensure_repo_test_script_memory_guard",
-        ),
-        "tests/** path-local sitecustomize routers must share the same "
-        "guard bootstrap helper instead of per-file memory custody code",
-    ),
-    TokenContract(
-        "tools/pytest_memory_guard_bootstrap.py",
-        (
+            "_bind_confirmed_test_repository",
+            "pytest_load_initial_conftests",
+            "pytest_runtest_call",
             "MOLT_MEMORY_GUARD_ACTIVE",
             "MOLT_MEMORY_GUARD_PID",
             "MOLT_PYTEST_OUTER_GUARD_REEXEC",
@@ -641,7 +623,7 @@ REQUIRED_SENTINEL_TOKENS: tuple[str, ...] = (
     "/tests/benchmarks/bench_generator.py",
 )
 
-DIRECT_TEST_SITECUSTOMIZE_TOKEN = "install_test_memory_guard_sitecustomize"
+DIRECT_TEST_SITECUSTOMIZE_TOKEN = "ensure_python_test_memory_guard"
 DIRECT_TEST_SCRIPT_EXCLUDED_PARTS = frozenset(
     {
         "__pycache__",

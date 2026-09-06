@@ -6,12 +6,111 @@ import os
 from pathlib import Path
 import sys
 
+import pytest
+
 from tools import check_memory_guard_wiring
 from tools import check_subprocess_guard_coverage
 from tools import memory_guard
-from tools import pytest_memory_guard_bootstrap
+from molt import pytest_memory_guard_bootstrap
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_packaged_bootstrap_exports_only_valid_pytest_hooks():
+    manager = pytest.PytestPluginManager()
+    manager.register(pytest_memory_guard_bootstrap, "molt_memory_guard")
+    manager.check_pending()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "src/molt/pytest_memory_guard_bootstrap.py",
+        "src/sitecustomize.py",
+        "sitecustomize.py",
+        "tests/sitecustomize.py",
+        "tests/cli/sitecustomize.py",
+        "tests/c_api/sitecustomize.py",
+        "tests/e2e/sitecustomize.py",
+        "tests/harness/sitecustomize.py",
+        "tests/helpers/sitecustomize.py",
+        "tests/mutation/sitecustomize.py",
+        "tests/runtime_compat/sitecustomize.py",
+        "tests/wasm_planned/sitecustomize.py",
+    ],
+)
+def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, relative):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def no_repository_tooling(name, *args, **kwargs):
+        if name == "tools" or name.startswith("tools."):
+            pytest.fail(f"non-test startup imported repository tooling: {name}")
+        return original_import(name, *args, **kwargs)
+
+    root = str(REPO_ROOT)
+    test_root = str(REPO_ROOT / "tests")
+    source = str(REPO_ROOT / "src")
+    paths = [path for path in sys.path if path not in {root, test_root}]
+    monkeypatch.setattr(sys, "path", paths.copy())
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-I", "-c", "pass"])
+    monkeypatch.setattr(sys, "argv", ["-c"])
+    monkeypatch.setattr(builtins, "__import__", no_repository_tooling)
+    surface = REPO_ROOT / relative
+    # Startup imports preserve interpreter argv; runpy would replace argv[0]
+    # with the adapter path and falsely simulate a direct test invocation.
+    exec(
+        compile(surface.read_text(encoding="utf-8"), str(surface), "exec"),
+        {"__file__": str(surface), "__name__": "startup_import_boundary_probe"},
+    )
+    assert root not in sys.path
+    assert test_root not in sys.path
+    assert [path for path in sys.path if path != source] == [
+        path for path in paths if path != source
+    ]
+
+
+@pytest.mark.parametrize("invocation", ["pytest", "module", "script"])
+def test_confirmed_test_invocations_bind_repository_before_guard_check(
+    monkeypatch, invocation
+):
+    root = str(REPO_ROOT)
+    monkeypatch.setattr(sys, "path", [path for path in sys.path if path != root])
+    checks = []
+
+    def guarded(_environment):
+        checks.append(root in sys.path)
+        return True
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "outer_memory_guard_active", guarded
+    )
+    if invocation == "pytest":
+        result = pytest_memory_guard_bootstrap.ensure_pytest_memory_guard(
+            pytest_args=(), environ={}
+        )
+    elif invocation == "module":
+        result = pytest_memory_guard_bootstrap.ensure_repo_test_module_memory_guard(
+            orig_argv=[sys.executable, "-m", "tests.test_memory_guard_wiring"],
+            environ={},
+        )
+    else:
+        result = pytest_memory_guard_bootstrap.ensure_repo_test_script_memory_guard(
+            runtime_argv=[__file__], environ={}
+        )
+    assert result is True
+    assert checks == [True]
+
+
+def test_guard_authority_has_no_replaced_tool_or_router_implementation():
+    for relative in (
+        "tools/pytest_memory_guard_bootstrap.py",
+        "tools/process_spawn.py",
+        "tools/memory_guard_core/paths.py",
+        "tests/_sitecustomize.py",
+    ):
+        assert not (REPO_ROOT / relative).exists()
 
 
 def _clean_subprocess_audit() -> check_subprocess_guard_coverage.SubprocessGuardAudit:
@@ -58,27 +157,19 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
         "molt.pytest_memory_guard_bootstrap",
         "molt.pytest_memory_guard_config_plugin",
     )
-    assert contracts["src/molt/pytest_memory_guard_bootstrap.py"] == (
-        "tools.pytest_memory_guard_bootstrap",
-        "ensure_current_file_test_script_memory_guard",
-        "ensure_repo_test_module_memory_guard",
-        "pytest_load_initial_conftests",
-        "pytest_runtest_call",
-    )
     assert contracts["src/molt/pytest_memory_guard_config_plugin.py"] == (
         "pytest_load_initial_conftests",
         "pytest_runtest_call",
     )
     assert contracts["src/sitecustomize.py"] == (
         "ensure_python_test_memory_guard",
-        "tools.pytest_memory_guard_bootstrap",
+        "molt.pytest_memory_guard_bootstrap",
     )
     assert contracts["sitecustomize.py"] == ("ensure_python_test_memory_guard",)
-    assert contracts["tests/_sitecustomize.py"] == (
-        "install_test_memory_guard_sitecustomize",
-        "ensure_repo_test_script_memory_guard",
-    )
-    assert contracts["tools/pytest_memory_guard_bootstrap.py"] == (
+    assert contracts["src/molt/pytest_memory_guard_bootstrap.py"] == (
+        "_bind_confirmed_test_repository",
+        "pytest_load_initial_conftests",
+        "pytest_runtest_call",
         "MOLT_MEMORY_GUARD_ACTIVE",
         "MOLT_MEMORY_GUARD_PID",
         "MOLT_PYTEST_OUTER_GUARD_REEXEC",
@@ -489,7 +580,7 @@ def test_direct_executable_test_audit_requires_path_local_sitecustomize(
     assert missing[0].line == 1
 
     (test_dir / "sitecustomize.py").write_text(
-        "from tests._sitecustomize import install_test_memory_guard_sitecustomize\n",
+        "from molt.pytest_memory_guard_bootstrap import ensure_python_test_memory_guard\n",
         encoding="utf-8",
     )
 
@@ -499,35 +590,35 @@ def test_direct_executable_test_audit_requires_path_local_sitecustomize(
 
 
 def test_pytest_startup_detects_console_script_and_module_invocations() -> None:
-    assert pytest_memory_guard_bootstrap.pytest_invocation_args(
+    assert pytest_memory_guard_bootstrap.python_pytest_invocation_args(
         orig_argv=[sys.executable, "-m", "pytest", "-q"],
         runtime_argv=["-m", "-q"],
     ) == ("-q",)
     assert (
-        pytest_memory_guard_bootstrap.pytest_invocation_args(
+        pytest_memory_guard_bootstrap.python_pytest_invocation_args(
             orig_argv=[sys.executable, "-m", "pytest"],
             runtime_argv=["-m"],
         )
         == ()
     )
-    assert pytest_memory_guard_bootstrap.pytest_invocation_args(
+    assert pytest_memory_guard_bootstrap.python_pytest_invocation_args(
         orig_argv=[sys.executable, "-u", "-m", "pytest", "-q"],
         runtime_argv=["-m", "-q"],
     ) == ("-q",)
-    assert pytest_memory_guard_bootstrap.pytest_invocation_args(
+    assert pytest_memory_guard_bootstrap.python_pytest_invocation_args(
         orig_argv=[sys.executable, "-X", "dev", "-I", "-m", "pytest", "-q"],
         runtime_argv=["-m", "-q"],
     ) == ("-q",)
-    assert pytest_memory_guard_bootstrap.pytest_invocation_args(
+    assert pytest_memory_guard_bootstrap.python_pytest_invocation_args(
         orig_argv=[sys.executable, "-S", "-Xdev", "-m", "pytest", "tests"],
         runtime_argv=["-m", "tests"],
     ) == ("tests",)
-    assert pytest_memory_guard_bootstrap.pytest_invocation_args(
+    assert pytest_memory_guard_bootstrap.python_pytest_invocation_args(
         orig_argv=[sys.executable, str(REPO_ROOT / ".venv" / "bin" / "pytest"), "-q"],
         runtime_argv=[str(REPO_ROOT / ".venv" / "bin" / "pytest"), "-q"],
     ) == ("-q",)
     assert (
-        pytest_memory_guard_bootstrap.pytest_invocation_args(
+        pytest_memory_guard_bootstrap.python_pytest_invocation_args(
             orig_argv=[sys.executable, "tools/memory_guard.py"],
             runtime_argv=["tools/memory_guard.py"],
         )
@@ -921,9 +1012,7 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
         pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
     )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid
-    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid)
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(

@@ -234,6 +234,8 @@ def locate_current_python_environment() -> dict[str, object]:
         "base_executable": str(base),
         "roots": [str(path) for path in ordered_roots],
         "external_roots": [str(path) for path in ordered_external],
+        # Path-only prearming does not close future loads. Content capture owns
+        # a fresh fenced native census and optional-declaration receipt.
         "file_paths": [str(path) for path in loaded_native_module_paths()],
     }
     return {**material, "identity_sha256": canonical_json_sha256(material)}
