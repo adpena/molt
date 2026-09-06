@@ -104,6 +104,12 @@ def python_capture_authority_paths() -> tuple[Path, ...]:
     names = (
         "__init__",
         "_version",
+        "_host_exit",
+        "pytest_memory_guard_bootstrap",
+        "memory_guard_paths",
+        "process_spawn",
+        "dx",
+        "path_custody",
         "python_environment_identity",
         "python_environment_location",
         "python_environment_custody",
@@ -126,6 +132,7 @@ def python_capture_authority_paths() -> tuple[Path, ...]:
     # consults this source-tree marker even when the proof's cwd is another repo.
     return (
         *(root / f"{name}.py" for name in names),
+        root.parent / "sitecustomize.py",
         root.parent.parent / "pyproject.toml",
     )
 

@@ -18,7 +18,7 @@ from typing import TextIO, TypeGuard
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from tools.command_execution import CommandExecutor
 from tools.memory_guard_core import repro_context as guard_repro_context
-from tools.memory_guard_core.paths import pytest_guard_summary_dir
+from molt.memory_guard_paths import pytest_guard_summary_dir
 from tools.proof_queue_pkg import (
     command_admission,
     command_identity,

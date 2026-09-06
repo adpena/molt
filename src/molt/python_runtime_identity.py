@@ -30,15 +30,18 @@ from molt.python_identity_common import (
     _valid_relative_payload_path,
     _valid_sha256,
 )
-from molt.python_native_dependency_custody import _native_dependency_closure
+from molt.python_native_dependency_custody import (
+    DEFERRED_DEPENDENCY_KINDS,
+    _native_dependency_closure,
+)
 from molt.python_native_locations import _native_contract_valid
 
-PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v3"
+PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v4"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
 _NATIVE_DEPENDENCY_POLICIES = {
-    "windows": "pe-loaded-import-closure-v1",
-    "macos": "mach-o-loaded-dylib-closure-v1",
-    "linux": "elf-loaded-needed-closure-v1",
+    "windows": "pe-loaded-import-closure-v2",
+    "macos": "mach-o-loaded-dylib-closure-v2",
+    "linux": "elf-loaded-needed-closure-v2",
 }
 _RUNTIME_IDENTITY_FIELDS = frozenset(
     {
@@ -780,9 +783,12 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         "status",
         "policy",
         "root_components",
+        "observed_components",
+        "observed_contracts",
         "components",
         "contracts",
         "edges",
+        "deferred_imports",
         "closure_sha256",
     }:
         raise PythonEnvironmentIdentityError(
@@ -791,7 +797,8 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     dependency = cast(Mapping[str, object], dependency)
     dependency_material = {
         key: dependency[key]
-        for key in ("policy", "root_components", "components", "contracts", "edges")
+        for key in dependency
+        if key not in {"status", "closure_sha256"}
     }
     components = dependency.get("components")
     contracts = dependency.get("contracts")
@@ -876,6 +883,71 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             "Python runtime native dependency contract is invalid"
         )
     valid_contracts = set(contracts)
+    observed_components = dependency.get("observed_components")
+    observed_contracts = dependency.get("observed_contracts")
+    ordered_component_ids = [
+        f"native-component-{index}" for index in range(len(components))
+    ]
+    for observed, valid, ordered in (
+        (observed_components, component_ids, ordered_component_ids),
+        (observed_contracts, valid_contracts, contracts),
+    ):
+        if not isinstance(observed, list) or not all(
+            isinstance(value, str) and value in valid for value in observed
+        ):
+            raise PythonEnvironmentIdentityError(
+                "Python runtime native dependency observed census is invalid"
+            )
+        observed_set = set(observed)
+        if observed != [value for value in ordered if value in observed_set]:
+            raise PythonEnvironmentIdentityError(
+                "Python runtime native dependency observed census is not canonical"
+            )
+    deferred = dependency.get("deferred_imports")
+    if not isinstance(deferred, list):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime native dependency deferred declarations are invalid"
+        )
+    deferred_keys: list[tuple[int, str, str]] = []
+    operating_system = str(payload["operating_system"])
+    for declaration in deferred:
+        if not isinstance(declaration, Mapping) or set(declaration) != {
+            "from",
+            "name",
+            "kind",
+        }:
+            raise PythonEnvironmentIdentityError(
+                "Python runtime native dependency deferred declaration is invalid"
+            )
+        source, name, kind = (declaration.get(key) for key in ("from", "name", "kind"))
+        if (
+            not isinstance(source, str)
+            or source not in component_ids
+            or not isinstance(name, str)
+            or not name
+            or "\0" in name
+            or not isinstance(kind, str)
+            or kind not in DEFERRED_DEPENDENCY_KINDS[operating_system]
+            or (
+                operating_system == "windows"
+                and (
+                    name != name.casefold()
+                    or "/" in name
+                    or "\\" in name
+                    or not name.isascii()
+                )
+            )
+        ):
+            raise PythonEnvironmentIdentityError(
+                "Python runtime native dependency deferred declaration is invalid"
+            )
+        deferred_keys.append(
+            (int(source.removeprefix("native-component-")), name, kind)
+        )
+    if deferred_keys != sorted(set(deferred_keys)):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime native dependency deferred declarations are not canonical"
+        )
     edge_pairs: list[tuple[str, str]] = []
     seen_edge_pairs: set[tuple[str, str]] = set()
     for edge in edges:
@@ -917,8 +989,12 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     adjacency: dict[str, set[str]] = {}
     for source, target in edge_pairs:
         adjacency.setdefault(source, set()).add(target)
-    reachable = set(expected_roots)
-    pending = list(expected_roots)
+    reachable = (
+        set(expected_roots)
+        | set(cast(list[str], observed_components))
+        | set(cast(list[str], observed_contracts))
+    )
+    pending = list(reachable)
     while pending:
         for target in adjacency.get(pending.pop(), set()):
             if target not in reachable:

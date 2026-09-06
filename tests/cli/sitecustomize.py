@@ -4,14 +4,11 @@ from pathlib import Path
 import sys
 
 
-for _parent in Path(__file__).resolve().parents:
-    if (_parent / "_sitecustomize.py").is_file():
-        sys.path.insert(0, str(_parent))
-        break
-else:
-    raise RuntimeError("could not locate tests/_sitecustomize.py")
+_SOURCE_ROOT = str(Path(__file__).resolve().parents[2] / "src")
+if _SOURCE_ROOT not in sys.path:
+    sys.path.insert(0, _SOURCE_ROOT)
 
-from _sitecustomize import install_test_memory_guard_sitecustomize  # noqa: E402
+from molt.pytest_memory_guard_bootstrap import ensure_python_test_memory_guard  # noqa: E402
 
 
-install_test_memory_guard_sitecustomize(__file__)
+ensure_python_test_memory_guard()

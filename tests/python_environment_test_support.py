@@ -44,9 +44,9 @@ def _host_target() -> tuple[str, str, list[str], str]:
         "linux": ["base-lib-dynload", "platstdlib", "stdlib"],
     }[operating_system]
     dependency_policy = {
-        "windows": "pe-loaded-import-closure-v1",
-        "macos": "mach-o-loaded-dylib-closure-v1",
-        "linux": "elf-loaded-needed-closure-v1",
+        "windows": "pe-loaded-import-closure-v2",
+        "macos": "mach-o-loaded-dylib-closure-v2",
+        "linux": "elf-loaded-needed-closure-v2",
     }[operating_system]
     return operating_system, architecture, root_roles, dependency_policy
 
@@ -82,6 +82,9 @@ def runtime_identity_manifest() -> dict[str, object]:
     dependency_material = {
         "policy": dependency_policy,
         "root_components": ["native-component-0"],
+        "observed_components": ["native-component-0"],
+        "observed_contracts": [],
+        "deferred_imports": [],
         "components": [
             {
                 "id": "native-component-0",

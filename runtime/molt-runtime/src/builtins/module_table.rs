@@ -697,6 +697,31 @@ pub(crate) fn restore_module_execution(
 static ENSURE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 const ENSURE_MAX_DEPTH: usize = 4096;
 
+/// Whether this thread owns execution of this exact published module object.
+/// A reserved row has no published namespace yet; naming its prior cache entry
+/// does not grant the new execution's privileges to that displaced object.
+pub(crate) fn module_execution_owns_initializing_namespace(
+    _py: &PyToken<'_>,
+    name: &str,
+    module_bits: u64,
+) -> bool {
+    if module_bits == 0 || is_none_bits(module_bits) {
+        return false;
+    }
+    let Some(id) = module_id_of(name) else {
+        return false;
+    };
+    let Some(table) = module_table(_py) else {
+        return false;
+    };
+    let idx = id as usize;
+    matches!(
+        table.states[idx].load(Ordering::Acquire),
+        STATE_INITIALIZING | STATE_EXECUTION_RESERVED
+    ) && table.owners[idx].load(Ordering::Acquire) == crate::concurrency::current_thread_id()
+        && table.slots[idx].load(Ordering::Acquire) == module_bits
+}
+
 /// ABI entry: `ensure(const ModuleId)` — what compiled literal import sites
 /// call.  The argument is a NaN-boxed integer module id (runtime-call
 /// arguments are boxed values, the same convention as every other `call`
@@ -1426,13 +1451,14 @@ mod tests {
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| {
             // Ids are declaration positions (rows pre-sorted; the builder
-            // asserts the order): 0 g4_alias, 1 g4_cycle_a, 2 g4_cycle_b,
-            // 3 g4_fail, 4 g4_noinit, 5 g4_pkg, 6 g4_pkg.sub, 7 g4_src,
-            // 8 g4_target, 9 g4_tomb, 10 g4_tomb_ext,
-            // 11 g4_z_static_ext_fail.
+            // asserts the order): 0 builtins, 1 g4_alias, 2 g4_cycle_a,
+            // 3 g4_cycle_b, 4 g4_fail, 5 g4_noinit, 6 g4_pkg,
+            // 7 g4_pkg.sub, 8 g4_src, 9 g4_target, 10 g4_tomb,
+            // 11 g4_tomb_ext, 12 g4_z_static_ext_fail.
             let mut builder = BlobBuilder::new();
             builder
-                .row("g4_alias", 0, None, Some(8), MODULE_KIND_ALIAS, 0)
+                .row("builtins", 0, None, None, MODULE_KIND_RUNTIME_BUILTIN, 0)
+                .row("g4_alias", 0, None, Some(9), MODULE_KIND_ALIAS, 0)
                 .row(
                     "g4_cycle_a",
                     init_g4_cycle_a as *const () as usize as u64,
@@ -1469,7 +1495,7 @@ mod tests {
                 .row(
                     "g4_pkg.sub",
                     init_g4_pkg_sub as *const () as usize as u64,
-                    Some(5),
+                    Some(6),
                     None,
                     MODULE_KIND_SOURCE,
                     0,
@@ -1529,6 +1555,209 @@ mod tests {
         dec_ref_bits(_py, exc_bits);
         let _ = crate::molt_exception_clear();
         text
+    }
+
+    fn lookup_test_global(
+        _py: &PyToken<'_>,
+        module_bits: u64,
+        name_bits: u64,
+        through_frame: bool,
+    ) -> u64 {
+        if !through_frame {
+            return crate::builtins::modules::molt_module_get_global(module_bits, name_bits);
+        }
+        let module_ptr = obj_from_bits(module_bits).as_ptr().expect("test module");
+        let globals_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
+        let function = crate::object::builders::alloc_function_obj(_py, 0, 0);
+        assert!(!function.is_null());
+        unsafe {
+            crate::object::layout::function_set_globals_bits(_py, function, globals_bits);
+            crate::object::layout::function_set_globals_override_enabled(function, true);
+        }
+        crate::builtins::frames::frame_stack_push_function(_py, 0, function);
+        // A conflicting module argument proves the active-frame dictionary is
+        // the authority for this sibling of the direct-module lookup path.
+        let result = crate::builtins::modules::molt_module_get_global(none_bits(), name_bits);
+        crate::builtins::frames::frame_stack_pop(_py);
+        dec_ref_bits(_py, MoltObject::from_ptr(function).bits());
+        result
+    }
+
+    #[test]
+    fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins_id = test_registry_id("builtins");
+            let table = module_table(_py).expect("table");
+            let idx = builtins_id as usize;
+            legacy_cache_del(_py, "builtins");
+            assert!(!exception_pending(_py));
+            let builtins_bits = publish_test_module("builtins");
+            let builtins_ptr = obj_from_bits(builtins_bits).as_ptr().expect("builtins");
+            // A same-named module is still a distinct namespace: spelling is
+            // not sufficient to obtain bootstrap execution privileges.
+            let unrelated_ptr = crate::object::builders::alloc_module_obj(_py, unsafe {
+                crate::object::layout::module_name_bits(builtins_ptr)
+            });
+            assert!(!unrelated_ptr.is_null());
+            let unrelated_bits = MoltObject::from_ptr(unrelated_ptr).bits();
+            let dict_bits = unsafe { crate::object::layout::module_dict_bits(builtins_ptr) };
+            let dict_ptr = obj_from_bits(dict_bits).as_ptr().expect("builtins dict");
+            let name = alloc_string(_py, b"len");
+            assert!(!name.is_null());
+            let name_bits = MoltObject::from_ptr(name).bits();
+            assert!(!module_execution_owns_initializing_namespace(
+                _py,
+                "builtins",
+                builtins_bits
+            ));
+            assert!(!module_execution_owns_initializing_namespace(
+                _py,
+                "absent_row",
+                builtins_bits
+            ));
+
+            // Adopt the published namespace, then reserve a real re-execution
+            // transaction. Reservation alone owns no namespace; publication
+            // while initializing grants privilege to exactly that slot object.
+            let ready_bits = module_ensure(_py, builtins_id);
+            assert_eq!(ready_bits, builtins_bits);
+            dec_ref_bits(_py, ready_bits);
+            let snapshot = begin_module_execution(_py, "builtins")
+                .expect("reserve builtins execution")
+                .expect("builtins registry row");
+            let owner = crate::concurrency::current_thread_id();
+            for state in [STATE_EXECUTION_RESERVED, STATE_INITIALIZING] {
+                table.states[idx].store(state, Ordering::Release);
+                let namespace_published = state == STATE_INITIALIZING;
+                if namespace_published {
+                    publish_from_cache_set(_py, "builtins", builtins_bits);
+                }
+                assert_eq!(
+                    module_execution_owns_initializing_namespace(_py, "builtins", builtins_bits),
+                    namespace_published
+                );
+                for through_frame in [false, true] {
+                    let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
+                    if namespace_published {
+                        assert!(!exception_pending(_py));
+                        let value_ptr = obj_from_bits(value).as_ptr().expect("lazy builtin len");
+                        assert_eq!(
+                            unsafe { crate::object_type_id(value_ptr) },
+                            crate::TYPE_ID_FUNCTION
+                        );
+                        dec_ref_bits(_py, value);
+                    } else {
+                        assert!(is_none_bits(value));
+                        assert!(pending_exception_text(_py).contains("NameError"));
+                    }
+
+                    let unrelated =
+                        lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
+                    assert!(is_none_bits(unrelated));
+                    assert!(pending_exception_text(_py).contains("NameError"));
+
+                    // Published values win even during bootstrap; the resolver
+                    // must never replace a real binding with its intrinsic.
+                    let override_bits = MoltObject::from_int(42).bits();
+                    unsafe {
+                        crate::object::ops::dict_set_in_place(
+                            _py,
+                            dict_ptr,
+                            name_bits,
+                            override_bits,
+                        )
+                    };
+                    let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
+                    assert_eq!(value, override_bits);
+                    assert!(!exception_pending(_py));
+                    let cached = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
+                    assert_eq!(cached, override_bits);
+                    assert!(!exception_pending(_py));
+                    unsafe {
+                        assert!(crate::object::ops::dict_del_in_place(
+                            _py, dict_ptr, name_bits
+                        ))
+                    };
+
+                    table.owners[idx].store(
+                        owner.checked_add(1).expect("foreign thread id"),
+                        Ordering::Release,
+                    );
+                    assert!(!module_execution_owns_initializing_namespace(
+                        _py,
+                        "builtins",
+                        builtins_bits
+                    ));
+                    let foreign = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
+                    table.owners[idx].store(owner, Ordering::Release);
+                    assert!(is_none_bits(foreign));
+                    assert!(pending_exception_text(_py).contains("NameError"));
+                }
+            }
+            // A replaced visible cache entry cannot borrow the old table
+            // initializer's ownership, even on its thread and under its name.
+            {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let mut guard = cache.lock().unwrap();
+                inc_ref_bits(_py, unrelated_bits);
+                let displaced = guard
+                    .insert("builtins".to_string(), unrelated_bits)
+                    .expect("cached builtins");
+                dec_ref_bits(_py, displaced);
+            }
+            assert!(module_execution_owns_initializing_namespace(
+                _py,
+                "builtins",
+                builtins_bits
+            ));
+            assert!(!module_execution_owns_initializing_namespace(
+                _py,
+                "builtins",
+                unrelated_bits
+            ));
+            for through_frame in [false, true] {
+                let replacement = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
+                assert!(is_none_bits(replacement));
+                assert!(pending_exception_text(_py).contains("NameError"));
+            }
+            {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let mut guard = cache.lock().unwrap();
+                inc_ref_bits(_py, builtins_bits);
+                let displaced = guard
+                    .insert("builtins".to_string(), builtins_bits)
+                    .expect("replacement builtins");
+                dec_ref_bits(_py, displaced);
+            }
+            restore_module_execution(_py, Some(snapshot));
+            assert_eq!(table.states[idx].load(Ordering::Acquire), STATE_READY);
+            for state in [STATE_READY, STATE_TOMBSTONE] {
+                if state == STATE_TOMBSTONE {
+                    module_table_view_tombstone(_py, builtins_id);
+                    // Keep a held namespace visible to exercise revocation,
+                    // without redefining absent-cache lazy startup policy.
+                    legacy_cache_set(_py, "builtins", builtins_bits);
+                }
+                // Even a stale owner field must not reopen a closed state.
+                table.owners[idx].store(owner, Ordering::Release);
+                assert!(!module_execution_owns_initializing_namespace(
+                    _py,
+                    "builtins",
+                    builtins_bits
+                ));
+                for through_frame in [false, true] {
+                    let missing = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
+                    assert!(is_none_bits(missing));
+                    assert!(pending_exception_text(_py).contains("NameError"));
+                }
+                table.owners[idx].store(0, Ordering::Release);
+            }
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, builtins_bits);
+            dec_ref_bits(_py, unrelated_bits);
+        });
     }
 
     #[test]

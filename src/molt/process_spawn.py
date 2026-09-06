@@ -1,3 +1,5 @@
+"""Portable process-launch options shared by packaged and repository guards."""
+
 from __future__ import annotations
 
 import os

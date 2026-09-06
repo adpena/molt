@@ -83,7 +83,7 @@ fn trace_module_attrs_verbose() -> bool {
 
 enum BuiltinsGlobalLookup {
     Found(u64),
-    Missing,
+    Missing { module_bits: u64, globals_bits: u64 },
     Unavailable,
 }
 
@@ -109,7 +109,10 @@ fn cached_builtins_global_lookup(_py: &PyToken<'_>, name_bits: u64) -> BuiltinsG
         inc_ref_bits(_py, val);
         BuiltinsGlobalLookup::Found(val)
     } else {
-        BuiltinsGlobalLookup::Missing
+        BuiltinsGlobalLookup::Missing {
+            module_bits: builtins_bits,
+            globals_bits: builtins_dict_bits,
+        }
     }
 }
 
@@ -766,10 +769,30 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-fn lookup_builtin_global(_py: &PyToken<'_>, name_bits: u64, name: &str) -> Option<u64> {
+fn lookup_builtin_global(
+    _py: &PyToken<'_>,
+    name_bits: u64,
+    name: &str,
+    active_globals_bits: u64,
+) -> Option<u64> {
     match cached_builtins_global_lookup(_py, name_bits) {
         BuiltinsGlobalLookup::Found(bits) => Some(bits),
-        BuiltinsGlobalLookup::Missing => None,
+        BuiltinsGlobalLookup::Missing {
+            module_bits,
+            globals_bits,
+        } if globals_bits == active_globals_bits
+            && crate::builtins::module_table::module_execution_owns_initializing_namespace(
+                _py,
+                "builtins",
+                module_bits,
+            ) =>
+        {
+            // The builtins body needs intrinsic names before it has published
+            // them into its own dictionary. A completed namespace miss remains
+            // authoritative: deletion must not resurrect the original builtin.
+            runtime_builtins_global_lookup(_py, name)
+        }
+        BuiltinsGlobalLookup::Missing { .. } => None,
         BuiltinsGlobalLookup::Unavailable => runtime_builtins_global_lookup(_py, name),
     }
 }
@@ -2677,7 +2700,9 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     return val;
                 }
             }
-            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name) {
+            if let Some(val) =
+                lookup_builtin_global(_py, name_bits, &trace_name, active_globals_bits)
+            {
                 return val;
             }
             if trace_name == "exec" || trace_name == "eval" {
@@ -2776,11 +2801,10 @@ Use static modules or pre-generated code paths instead."
                 );
             }
             // Mirror CPython LOAD_GLOBAL: fall back to the builtins namespace.
-            // Native keeps builtins lazy for startup and binary-size reasons, so
-            // the fallback also asks the intrinsic registry for builtin spellings
-            // when the builtins module dict is absent or does not yet hold the
-            // name.
-            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name) {
+            // Lazy startup may use the intrinsic registry while builtins is
+            // absent, or inside its exact initialization-owned namespace.
+            // Published dictionaries otherwise own both hits and misses.
+            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name, dict_bits) {
                 return val;
             }
             if trace_name == "exec" || trace_name == "eval" {

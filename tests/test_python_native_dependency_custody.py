@@ -11,6 +11,7 @@ from molt import python_native_dependency_custody as native
 from molt.python_file_node_custody import _FileNodePool
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_native_locations import _native_contract_valid
+from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 
 
 def _pe_image(
@@ -56,14 +57,17 @@ def _elf_image(name: bytes = b"libc.so") -> bytearray:
 
 
 def _macho_image(
-    *, cpu: int = 0x01000007, name: bytes = b"/usr/lib/libSystem.B.dylib"
+    *,
+    cpu: int = 0x01000007,
+    name: bytes = b"/usr/lib/libSystem.B.dylib",
+    command: int = 0x80000018,
 ) -> bytearray:
     command_size = (24 + len(name) + 1 + 7) & ~7
     image = bytearray(32 + command_size)
     image[:4] = b"\xcf\xfa\xed\xfe"
     struct.pack_into("<I", image, 4, cpu)
     struct.pack_into("<II", image, 16, 1, command_size)
-    struct.pack_into("<III", image, 32, 0x80000018, command_size, 24)
+    struct.pack_into("<III", image, 32, command, command_size, 24)
     image[56 : 56 + len(name)] = name
     return image
 
@@ -88,8 +92,8 @@ def _fat_macho(*, endian: str = ">", fat64: bool = False) -> bytearray:
 @pytest.mark.parametrize("delay,va", [(False, False), (True, False), (True, True)])
 def test_pe_import_and_delay_import_address_modes(delay: bool, va: bool) -> None:
     image = bytes(_pe_image(delay=delay, va=va))
-    assert native._native_dependency_names(image, "windows", architecture="x86_64") == (
-        "kernel32.dll",
+    assert native._native_dependencies(image, "windows", architecture="x86_64") == (
+        native.NativeDependency("kernel32.dll", "delay" if delay else "required"),
     )
 
 
@@ -110,14 +114,14 @@ def test_pe_rejects_malformed_extents(
     image = _pe_image()
     struct.pack_into(fmt, image, offset, value)
     with pytest.raises(PythonEnvironmentIdentityError, match=reason):
-        native._pe_dependency_names(bytes(image))
+        native._pe_dependencies(bytes(image))
 
 
 def test_pe_name_cannot_use_zero_fill_or_terminate_outside_raw_section() -> None:
     image = _pe_image()
     image[0x280:0x500] = b"x" * (0x500 - 0x280)
     with pytest.raises(PythonEnvironmentIdentityError, match="name is unterminated"):
-        native._pe_dependency_names(bytes(image))
+        native._pe_dependencies(bytes(image))
 
 
 @pytest.mark.parametrize("attributes", [2, 3, 0xFFFFFFFF])
@@ -125,16 +129,16 @@ def test_pe_rejects_unknown_delay_import_attributes(attributes: int) -> None:
     image = _pe_image(delay=True)
     struct.pack_into("<I", image, 0x240, attributes)
     with pytest.raises(PythonEnvironmentIdentityError, match="attributes are invalid"):
-        native._pe_dependency_names(bytes(image))
+        native._pe_dependencies(bytes(image))
 
 
 @pytest.mark.parametrize(
     "name", [b"libc.so", b"/loader/bound/lib.so", b"relative/lib.so"]
 )
 def test_elf_preserves_loader_name_including_path_qualified_needed(name: bytes) -> None:
-    assert native._native_dependency_names(
+    assert native._native_dependencies(
         bytes(_elf_image(name)), "linux", architecture="x86_64"
-    ) == (name.decode(),)
+    ) == (native.NativeDependency(name.decode(), "required"),)
 
 
 @pytest.mark.parametrize(
@@ -154,14 +158,14 @@ def test_elf_rejects_malformed_dynamic_metadata(
     image = _elf_image()
     struct.pack_into(fmt, image, offset, value)
     with pytest.raises(PythonEnvironmentIdentityError, match=reason):
-        native._elf_dependency_names(bytes(image))
+        native._elf_dependencies(bytes(image))
 
 
 def test_elf_requires_name_termination_inside_string_table() -> None:
     image = _elf_image()
     image[0x308] = ord("x")
     with pytest.raises(PythonEnvironmentIdentityError, match="name is invalid"):
-        native._elf_dependency_names(bytes(image))
+        native._elf_dependencies(bytes(image))
 
 
 @pytest.mark.parametrize("endian", ["<", ">"])
@@ -172,11 +176,11 @@ def test_elf_requires_name_termination_inside_string_table() -> None:
 def test_macho_universal_selects_only_explicit_architecture(
     endian: str, fat64: bool, architecture: str, name: str
 ) -> None:
-    assert native._native_dependency_names(
+    assert native._native_dependencies(
         bytes(_fat_macho(endian=endian, fat64=fat64)),
         "macos",
         architecture=architecture,
-    ) == (name,)
+    ) == (native.NativeDependency(name, "weak"),)
 
 
 @pytest.mark.parametrize(
@@ -194,14 +198,14 @@ def test_macho_rejects_malformed_commands(
     image = _macho_image()
     struct.pack_into(fmt, image, offset, value)
     with pytest.raises(PythonEnvironmentIdentityError, match=reason):
-        native._macho_dependency_names(bytes(image), architecture="x86_64")
+        native._macho_dependencies(bytes(image), architecture="x86_64")
 
 
 def test_macho_universal_rejects_overlapping_slices() -> None:
     image = _fat_macho()
     struct.pack_into(">I", image, 28 + 8, 0x100)
     with pytest.raises(PythonEnvironmentIdentityError, match="slice extent"):
-        native._macho_dependency_names(bytes(image), architecture="arm64")
+        native._macho_dependencies(bytes(image), architecture="arm64")
 
 
 def test_macho_universal_rejects_slice_header_architecture_disagreement() -> None:
@@ -210,14 +214,14 @@ def test_macho_universal_rejects_slice_header_architecture_disagreement() -> Non
     with pytest.raises(
         PythonEnvironmentIdentityError, match="does not match runtime architecture"
     ):
-        native._macho_dependency_names(bytes(image), architecture="x86_64")
+        native._macho_dependencies(bytes(image), architecture="x86_64")
 
 
 def test_macho_universal_never_guesses_host_architecture() -> None:
     with pytest.raises(
         PythonEnvironmentIdentityError, match="explicit runtime architecture"
     ):
-        native._macho_dependency_names(bytes(_fat_macho()))
+        native._macho_dependencies(bytes(_fat_macho()))
 
 
 @pytest.mark.parametrize(
@@ -234,7 +238,7 @@ def test_native_images_reject_wrong_runtime_architecture(
     with pytest.raises(
         PythonEnvironmentIdentityError, match="does not match runtime architecture"
     ):
-        native._native_dependency_names(image, operating_system, architecture="arm64")
+        native._native_dependencies(image, operating_system, architecture="arm64")
 
 
 @pytest.mark.parametrize(
@@ -245,7 +249,7 @@ def test_truncated_headers_raise_custody_error_not_struct_error(
     operating_system: str, data: bytes
 ) -> None:
     with pytest.raises(PythonEnvironmentIdentityError):
-        native._native_dependency_names(data, operating_system, architecture="x86_64")
+        native._native_dependencies(data, operating_system, architecture="x86_64")
 
 
 @pytest.mark.parametrize(
@@ -294,7 +298,7 @@ def test_closure_never_turns_arbitrary_missing_dll_into_system_contract(
                 {"base-executable": executable},
                 operating_system="windows",
                 architecture="x86_64",
-                policy="pe-loaded-import-closure-v1",
+                policy=_NATIVE_DEPENDENCY_POLICIES["windows"],
                 pool=_FileNodePool(),
             )
         return
@@ -302,10 +306,346 @@ def test_closure_never_turns_arbitrary_missing_dll_into_system_contract(
         {"base-executable": executable},
         operating_system="windows",
         architecture="x86_64",
-        policy="pe-loaded-import-closure-v1",
+        policy=_NATIVE_DEPENDENCY_POLICIES["windows"],
         pool=_FileNodePool(),
     )
     contract = "windows-api-set:" + name.decode()
     assert closure["contracts"] == [contract]
     assert closure["edges"] == [{"from": "native-component-0", "to": contract}]
+    assert closure["deferred_imports"] == []
+    assert closure["observed_components"] == ["native-component-0"]
     assert closure["status"] == "closed"
+
+
+def _empty_pe_image() -> bytearray:
+    image = _pe_image()
+    struct.pack_into("<II", image, 0x98 + 112 + 8, 0, 0)
+    return image
+
+
+def _capture_loaded_closure(
+    monkeypatch: pytest.MonkeyPatch,
+    executable: Path,
+    loaded: tuple[Path, ...],
+    *,
+    operating_system: str = "windows",
+    pool: _FileNodePool | None = None,
+) -> dict[str, object]:
+    monkeypatch.setattr(
+        native,
+        "_loaded_native_module_paths",
+        lambda _os: (loaded, {path.name: path for path in loaded}, ()),
+    )
+    return native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system=operating_system,
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES[operating_system],
+        pool=pool if pool is not None else _FileNodePool(),
+    )
+
+
+def test_pe_same_name_required_and_delay_declarations_are_not_collapsed() -> None:
+    image = _pe_image(b"SSPICLI.dll", delay=True)
+    struct.pack_into("<II", image, 0x98 + 112 + 8, 0x1000, 40)
+    struct.pack_into("<IIIII", image, 0x200, 0, 0, 0, 0x1080, 0)
+    assert native._pe_dependencies(bytes(image)) == (
+        native.NativeDependency("sspicli.dll", "delay"),
+        native.NativeDependency("sspicli.dll", "required"),
+    )
+
+
+@pytest.mark.parametrize(
+    "loaded_target,on_disk", [(False, False), (False, True), (True, True)]
+)
+def test_delay_declaration_never_fabricates_importer_specific_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, loaded_target: bool, on_disk: bool
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(_pe_image(b"sspicli.dll", delay=True))
+    target = tmp_path / "sspicli.dll"
+    # File existence is not loader evidence, and a loaded same-basename image
+    # still cannot prove this importer's delay hook selected that image.
+    if on_disk:
+        target.write_bytes(_empty_pe_image())
+    loaded = (executable, target) if loaded_target else (executable,)
+    closure = _capture_loaded_closure(monkeypatch, executable, loaded)
+    assert closure["edges"] == []
+    assert closure["contracts"] == []
+    assert closure["deferred_imports"] == [
+        {"from": "native-component-0", "name": "sspicli.dll", "kind": "delay"}
+    ]
+    assert closure["root_components"] == ["native-component-0"]
+    expected_observed = [f"native-component-{index}" for index in range(len(loaded))]
+    assert closure["observed_components"] == expected_observed
+    assert [row["filename"] for row in closure["components"]] == [
+        path.name for path in loaded
+    ]
+
+
+def test_mixed_required_and_delay_closure_retains_both_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "python.exe"
+    image = _pe_image(b"sspicli.dll", delay=True)
+    struct.pack_into("<II", image, 0x98 + 112 + 8, 0x1000, 40)
+    struct.pack_into("<IIIII", image, 0x200, 0, 0, 0, 0x1080, 0)
+    executable.write_bytes(image)
+    target = tmp_path / "sspicli.dll"
+    target.write_bytes(_empty_pe_image())
+    closure = _capture_loaded_closure(monkeypatch, executable, (executable, target))
+    assert closure["edges"] == [
+        {"from": "native-component-0", "to": "native-component-1"}
+    ]
+    assert closure["deferred_imports"] == [
+        {"from": "native-component-0", "name": "sspicli.dll", "kind": "delay"}
+    ]
+
+
+def test_loaded_census_closes_unrelated_images_required_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(_empty_pe_image())
+    unrelated = tmp_path / "unrelated.dll"
+    unrelated.write_bytes(_pe_image(b"missing-required.dll"))
+    with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+        _capture_loaded_closure(monkeypatch, executable, (executable, unrelated))
+
+
+def test_deferred_census_order_is_numeric_and_independent_of_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = tuple(tmp_path / f"component-{index:02}.dll" for index in range(12))
+    for index, path in enumerate(paths):
+        path.write_bytes(_pe_image(f"future-{index:02}.dll".encode(), delay=True))
+    closure = _capture_loaded_closure(monkeypatch, paths[0], tuple(reversed(paths)))
+    assert closure["observed_components"] == [
+        f"native-component-{index}" for index in range(12)
+    ]
+    assert closure["deferred_imports"] == [
+        {
+            "from": f"native-component-{index}",
+            "name": f"future-{index:02}.dll",
+            "kind": "delay",
+        }
+        for index in range(12)
+    ]
+
+
+def test_native_census_file_nodes_are_invariant_under_directory_order_relocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    images = {
+        "python.exe": bytes(_pe_image(b"system.dll")),
+        "system.dll": bytes(_empty_pe_image()),
+        "extra.dll": bytes(_pe_image(b"future.dll", delay=True)),
+    }
+    captures: list[dict[str, object]] = []
+    host_orders: list[list[str]] = []
+    for layout, directories in (
+        ("first", ("a-runtime", "m-system", "z-extra")),
+        ("relocated", ("z-runtime", "m-system", "a-extra")),
+    ):
+        paths: list[Path] = []
+        for (filename, image), directory in zip(
+            images.items(), directories, strict=True
+        ):
+            path = tmp_path / layout / directory / filename
+            path.parent.mkdir(parents=True)
+            path.write_bytes(image)
+            paths.append(path)
+        host_orders.append([path.name for path in sorted(paths)])
+        pool = _FileNodePool()
+        closure = _capture_loaded_closure(
+            monkeypatch, paths[0], tuple(paths), pool=pool
+        )
+        pool.capture_context.verify()
+        assert len(closure["components"]) == 3
+        assert len(closure["observed_components"]) == 3
+        captures.append({"closure": closure, "file_nodes": pool.nodes})
+    # The fixture crosses filesystem sort boundaries, not merely a shared
+    # prefix relocation that would accidentally preserve node encounter order.
+    assert host_orders[0] != host_orders[1]
+    assert captures[0] == captures[1]
+
+
+@pytest.mark.parametrize(
+    "command,kind",
+    [
+        (0xC, "required"),
+        (0x80000018, "weak"),
+        (0x8000001F, "reexport"),
+        (0x20, "lazy"),
+        (0x80000023, "upward"),
+    ],
+)
+def test_macho_load_command_semantics_survive_parser_and_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: int, kind: str
+) -> None:
+    name = "@rpath/optional.dylib"
+    image = _macho_image(command=command, name=name.encode())
+    assert native._macho_dependencies(bytes(image), architecture="x86_64") == (
+        native.NativeDependency(name, kind),
+    )
+    executable = tmp_path / "python"
+    executable.write_bytes(image)
+    if kind not in {"weak", "lazy"}:
+        with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+            _capture_loaded_closure(
+                monkeypatch, executable, (executable,), operating_system="macos"
+            )
+        return
+    closure = _capture_loaded_closure(
+        monkeypatch, executable, (executable,), operating_system="macos"
+    )
+    assert closure["edges"] == []
+    assert closure["contracts"] == []
+    assert closure["deferred_imports"] == [
+        {"from": "native-component-0", "name": name, "kind": kind}
+    ]
+
+
+def test_elf_needed_is_required_not_a_delayed_symbol_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "python"
+    executable.write_bytes(_elf_image(b"unloaded.so"))
+    with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+        _capture_loaded_closure(
+            monkeypatch, executable, (executable,), operating_system="linux"
+        )
+
+
+@pytest.mark.parametrize("change", ["paths", "aliases", "contracts"])
+def test_loaded_census_change_rejects_closure_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(_empty_pe_image())
+    extra = tmp_path / "extra.dll"
+    extra.write_bytes(_empty_pe_image())
+    snapshots = 0
+
+    def inventory(_os):
+        nonlocal snapshots
+        snapshots += 1
+        if snapshots == 1:
+            return (executable,), {"python.exe": executable}, ()
+        paths = (executable, extra) if change == "paths" else (executable,)
+        aliases = {"python.exe": executable}
+        if change == "aliases":
+            aliases["another-name.exe"] = executable
+        contracts = (
+            ("windows-api-set:api-ms-win-core-file-l1-1-0.dll",)
+            if change == "contracts"
+            else ()
+        )
+        return paths, aliases, contracts
+
+    monkeypatch.setattr(native, "_loaded_native_module_paths", inventory)
+    with pytest.raises(PythonEnvironmentIdentityError, match="changed"):
+        native._native_dependency_closure(
+            {"base-executable": executable},
+            operating_system="windows",
+            architecture="x86_64",
+            policy=_NATIVE_DEPENDENCY_POLICIES["windows"],
+            pool=_FileNodePool(),
+        )
+    assert snapshots == 2
+
+
+@pytest.mark.parametrize("change", ["paths", "aliases", "contracts"])
+def test_outer_capture_verification_rechecks_native_census_after_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(_empty_pe_image())
+    extra = tmp_path / "extra.dll"
+    extra.write_bytes(_empty_pe_image())
+    inventory_finished = False
+    snapshots = 0
+
+    def inventory(_os: str):
+        nonlocal snapshots
+        snapshots += 1
+        paths = (executable,)
+        aliases = {"python.exe": executable}
+        contracts: tuple[str, ...] = ()
+        if inventory_finished:
+            if change == "paths":
+                paths = (executable, extra)
+            elif change == "aliases":
+                aliases["another-name.exe"] = executable
+            else:
+                contracts = ("windows-api-set:api-ms-win-core-file-l1-1-0.dll",)
+        return paths, aliases, contracts
+
+    monkeypatch.setattr(native, "_loaded_native_module_paths", inventory)
+    pool = _FileNodePool()
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="windows",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["windows"],
+        pool=pool,
+    )
+    assert closure["status"] == "closed"
+    assert snapshots == 2
+    # Prove the registered fence accepts a stable outer publication before
+    # modeling a loader change during subsequent runtime/environment inventory.
+    pool.capture_context.verify()
+    assert snapshots == 3
+    inventory_finished = True
+    with pytest.raises(PythonEnvironmentIdentityError, match="census changed"):
+        pool.capture_context.verify()
+    assert snapshots == 4
+
+
+@pytest.mark.parametrize(
+    "operating_system,contract",
+    [
+        ("macos", "macos-dyld-cache-image:libSystem.B.dylib"),
+        ("linux", "linux-loader-image:linux-vdso.so.1"),
+    ],
+)
+def test_observed_virtual_images_are_census_roots_not_invented_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operating_system: str,
+    contract: str,
+) -> None:
+    executable = tmp_path / "python"
+    if operating_system == "macos":
+        image = _macho_image()
+    else:
+        image = _elf_image()
+        struct.pack_into("<q", image, 0x200, 0)
+    executable.write_bytes(image)
+    monkeypatch.setattr(
+        native,
+        "_loaded_native_module_paths",
+        lambda _os: ((executable,), {"python": executable}, (contract,)),
+    )
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system=operating_system,
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES[operating_system],
+        pool=_FileNodePool(),
+    )
+    assert closure["observed_contracts"] == [contract]
+    assert closure["contracts"] == [contract]
+    assert closure["edges"] == []
+    assert len(closure["components"]) == 1
+    assert closure["deferred_imports"] == (
+        [
+            {
+                "from": "native-component-0",
+                "name": "/usr/lib/libSystem.B.dylib",
+                "kind": "weak",
+            }
+        ]
+        if operating_system == "macos"
+        else []
+    )

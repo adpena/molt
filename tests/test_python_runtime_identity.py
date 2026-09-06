@@ -16,7 +16,8 @@ def _reseal(payload: dict[str, Any]) -> None:
     dependency["closure_sha256"] = canonical_json_sha256(
         {
             key: dependency[key]
-            for key in ("policy", "root_components", "components", "contracts", "edges")
+            for key in dependency
+            if key not in {"status", "closure_sha256"}
         }
     )
     payload["runtime_closure_sha256"] = canonical_json_sha256(
@@ -37,9 +38,9 @@ def _runtime_payload(
     """The donor's fixture topology, with distinct executable/library/Unicode nodes."""
     windows = operating_system == "windows"
     policy = {
-        "windows": "pe-loaded-import-closure-v1",
-        "linux": "elf-loaded-needed-closure-v1",
-        "macos": "mach-o-loaded-dylib-closure-v1",
+        "windows": "pe-loaded-import-closure-v2",
+        "linux": "elf-loaded-needed-closure-v2",
+        "macos": "mach-o-loaded-dylib-closure-v2",
     }[operating_system]
     root_roles = [
         "base-dlls" if windows else "base-lib-dynload",
@@ -102,6 +103,9 @@ def _runtime_payload(
             "status": "closed",
             "policy": policy,
             "root_components": [f"native-component-{index}" for index in range(3)],
+            "observed_components": [f"native-component-{index}" for index in range(3)],
+            "observed_contracts": [],
+            "deferred_imports": [],
             "components": [
                 {
                     "id": f"native-component-{component_index}",
@@ -370,6 +374,119 @@ def test_runtime_rejects_duplicate_edges() -> None:
     edges.insert(0, dict(edges[0]))
     _reseal(payload)
     with pytest.raises(PythonEnvironmentIdentityError, match="native dependency edge"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+@pytest.mark.parametrize("field", ["observed_components", "observed_contracts"])
+@pytest.mark.parametrize(
+    "value", [None, [None], ["unknown"], ["native-component-0", "native-component-0"]]
+)
+def test_runtime_rejects_forged_observed_census(field: str, value: object) -> None:
+    payload = _runtime_payload()
+    payload["native_dependency_closure"][field] = value
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="observed census"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_runtime_observed_image_does_not_require_invented_import_edge() -> None:
+    payload = _runtime_payload(operating_system="windows")
+    dependency = payload["native_dependency_closure"]
+    dependency["components"].append(
+        {
+            "id": "native-component-3",
+            "filename": "z-optional.dll",
+            "node": "file-node-0",
+            "roles": [],
+        }
+    )
+    dependency["observed_components"].append("native-component-3")
+    dependency["deferred_imports"] = [
+        {
+            "from": "native-component-0",
+            "name": "z-optional.dll",
+            "kind": "delay",
+        }
+    ]
+    _reseal(payload)
+    assert runtime.validate_python_runtime_identity(payload) == payload
+    dependency["observed_components"].pop()
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="unreachable"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+@pytest.mark.parametrize(
+    "operating_system,kind",
+    [("windows", "delay"), ("macos", "weak"), ("macos", "lazy")],
+)
+def test_runtime_records_unbound_optional_declarations(
+    operating_system: str, kind: str
+) -> None:
+    payload = _runtime_payload(operating_system=operating_system)
+    payload["native_dependency_closure"]["deferred_imports"] = [
+        {
+            "from": "native-component-0",
+            "name": "unloaded-library",
+            "kind": kind,
+        }
+    ]
+    _reseal(payload)
+    assert runtime.validate_python_runtime_identity(payload) == payload
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        {},
+        {"from": [], "name": "x.dll", "kind": "delay"},
+        {"from": "native-component-99", "name": "x.dll", "kind": "delay"},
+        {"from": "native-component-0", "name": "X.dll", "kind": "delay"},
+        {"from": "native-component-0", "name": "path/x.dll", "kind": "delay"},
+        {"from": "native-component-0", "name": "x\0.dll", "kind": "delay"},
+        {"from": "native-component-0", "name": "x.dll", "kind": "required"},
+        {"from": "native-component-0", "name": "x.dll", "kind": "weak"},
+        {
+            "from": "native-component-0",
+            "name": "x.dll",
+            "kind": "delay",
+            "to": "native-component-1",
+        },
+    ],
+)
+def test_runtime_rejects_resealed_malformed_or_falsely_bound_deferred_import(
+    declaration: object,
+) -> None:
+    payload = _runtime_payload(operating_system="windows")
+    payload["native_dependency_closure"]["deferred_imports"] = [declaration]
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="deferred declaration"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_runtime_elf_needed_cannot_be_deferred() -> None:
+    payload = _runtime_payload()
+    payload["native_dependency_closure"]["deferred_imports"] = [
+        {
+            "from": "native-component-0",
+            "name": "libc.so",
+            "kind": "lazy",
+        }
+    ]
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="deferred declaration"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_runtime_rejects_duplicate_deferred_imports() -> None:
+    payload = _runtime_payload(operating_system="windows")
+    declaration = {"from": "native-component-0", "name": "x.dll", "kind": "delay"}
+    payload["native_dependency_closure"]["deferred_imports"] = [
+        declaration,
+        dict(declaration),
+    ]
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="not canonical"):
         runtime.validate_python_runtime_identity(payload)
 
 

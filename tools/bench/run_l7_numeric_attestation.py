@@ -34,7 +34,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
-from memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution

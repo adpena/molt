@@ -1,4 +1,4 @@
-"""Canonical paths for memory-guard control-plane state."""
+"""Canonical paths for packaged and repository memory-guard control-plane state."""
 
 from __future__ import annotations
 

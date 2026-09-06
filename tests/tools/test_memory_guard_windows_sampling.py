@@ -33,7 +33,7 @@ def _load_memory_guard():
 
 
 def _windows_guard_creationflags(module) -> int:
-    from tools.process_spawn import hidden_windows_process_group_creationflags
+    from molt.process_spawn import hidden_windows_process_group_creationflags
 
     return hidden_windows_process_group_creationflags(
         subprocess_module=module.subprocess
@@ -571,7 +571,7 @@ def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) ->
 
 
 def test_process_spawn_is_single_windows_hidden_group_authority(monkeypatch) -> None:
-    import tools.process_spawn as process_spawn
+    import molt.process_spawn as process_spawn
 
     monkeypatch.setattr(
         process_spawn.subprocess,
@@ -600,7 +600,7 @@ def test_process_spawn_is_single_windows_hidden_group_authority(monkeypatch) -> 
 def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
     monkeypatch,
 ) -> None:
-    import tools.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
+    import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap.subprocess,
@@ -623,7 +623,7 @@ def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
 def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
     monkeypatch,
 ) -> None:
-    import tools.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
+    import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 
     calls: dict[str, object] = {}
     stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
