@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, TypedDict
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.file_publication import staged_file_path
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
@@ -212,7 +213,7 @@ def _write_external_static_packages_bundle(
 
     files: list[_ExternalStaticBundleFile] = []
     seen: set[str] = set()
-    tmp_output = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    tmp_output = staged_file_path(output, purpose="bundle")
     try:
         with tarfile.open(tmp_output, "w") as tar:
             for root in sorted(roots, key=lambda path: str(path)):
@@ -1036,9 +1037,8 @@ def _prepare_non_native_build_result(
                 linked_tmp_output: Path | None = None
                 link_run_cmd = list(link_cmd)
                 if not _split_runtime:
-                    linked_tmp_output = resolved_linked_output.with_name(
-                        f".{resolved_linked_output.name}."
-                        f"{os.getpid()}.{uuid.uuid4().hex}.tmp"
+                    linked_tmp_output = staged_file_path(
+                        resolved_linked_output, purpose="wasm-link"
                     )
                     output_arg_index = link_run_cmd.index("--output") + 1
                     link_run_cmd[output_arg_index] = str(linked_tmp_output)

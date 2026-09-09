@@ -788,6 +788,7 @@ inputs = [
   "tests/cli/test_native_artifact_contract.py",
   "tests/test_python_environment_identity.py",
   "tests/test_python_native_dependency_custody.py",
+  "tests/test_python_native_locations.py",
   "tests/test_python_runtime_identity.py",
   "src/molt/cli/source_extension_*.py",
   "src/molt/cli/source_extensions.py",
@@ -1865,7 +1866,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
 toolchains = ["python", "uv"]
 
 [[command]]

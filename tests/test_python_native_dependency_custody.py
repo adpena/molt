@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ def _loader_snapshot(
     macho_identities: dict[Path, tuple[int, int]] | None = None,
 ) -> LoadedNativeModuleSnapshot:
     return LoadedNativeModuleSnapshot(
+        executable=paths[0],
         paths=paths,
         aliases=aliases,
         contracts=contracts,
@@ -62,6 +64,57 @@ def test_loader_snapshot_freezes_mapping_inputs(tmp_path: Path) -> None:
 
     assert snapshot.aliases == {"Python": executable}
     assert snapshot.macho_identities == {executable: (0x01000007, 3)}
+
+
+def test_framework_launcher_retains_file_custody_but_not_executable_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = tmp_path / "bin" / "python3.12"
+    executable = tmp_path / "Python.app" / "Contents" / "MacOS" / "Python"
+    dependency = executable.parent / "libdependency.dylib"
+    decoy = launcher.parent / dependency.name
+    for path in (launcher, executable, dependency, decoy):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_macho_image())
+    executable.write_bytes(
+        _macho_image(name=b"@executable_path/libdependency.dylib", command=0xC)
+    )
+    launcher.write_bytes(
+        _macho_image(name=b"@loader_path/launcher-only-unloaded.dylib", command=0xC)
+    )
+    snapshot = _macos_loader_snapshot(
+        (executable, dependency, decoy),
+        {str(path.resolve()): path for path in (executable, dependency, decoy)},
+    )
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+    pool = _FileNodePool()
+    closure = native._native_dependency_closure(
+        {"base-executable": launcher},
+        operating_system="macos",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=pool,
+    )
+    components = {row["node"]: row for row in closure["components"]}
+    launcher_component = components[
+        pool.bind(launcher, launcher.lstat(), label="launcher")
+    ]
+    executable_component = components[
+        pool.bind(executable, executable.lstat(), label="image")
+    ]
+    dependency_component = components[
+        pool.bind(dependency, dependency.lstat(), label="dependency")
+    ]
+    assert launcher_component["id"] in closure["root_components"]
+    assert launcher_component["id"] not in closure["observed_components"]
+    assert executable_component["id"] in closure["observed_components"]
+    assert closure["edges"] == [
+        {"from": executable_component["id"], "to": dependency_component["id"]}
+    ]
+    pool.capture_context.verify()
+    snapshot = replace(snapshot, executable=decoy)
+    with pytest.raises(PythonEnvironmentIdentityError, match="census changed"):
+        pool.capture_context.verify()
 
 
 def _pe_image(
@@ -443,6 +496,100 @@ def _empty_pe_image() -> bytearray:
     return image
 
 
+@pytest.mark.parametrize("operating_system", ["windows", "linux", "macos"])
+def test_configured_launcher_and_loaded_image_share_no_component_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operating_system: str
+) -> None:
+    launcher = tmp_path / "configured" / "python"
+    executable = tmp_path / "loaded" / "python"
+    for path in (launcher, executable):
+        path.parent.mkdir()
+    launcher.write_bytes(b"content-bound launcher, not a loaded image")
+    if operating_system == "windows":
+        image = _empty_pe_image()
+    elif operating_system == "linux":
+        image = _elf_image()
+        struct.pack_into("<q", image, 0x200, 0)
+    else:
+        image = _macho_image()
+    executable.write_bytes(image)
+    snapshot = (
+        _macos_loader_snapshot((executable,), {})
+        if operating_system == "macos"
+        else _loader_snapshot((executable,), {"python": executable})
+    )
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+    closure = native._native_dependency_closure(
+        {"base-executable": launcher},
+        operating_system=operating_system,
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES[operating_system],
+        pool=_FileNodePool(),
+    )
+    assert len(closure["components"]) == 2
+    assert len({row["node"] for row in closure["components"]}) == 2
+    assert set(closure["root_components"]).isdisjoint(closure["observed_components"])
+    assert closure["executable_component"] == closure["observed_components"][0]
+
+
+@pytest.mark.parametrize("operating_system", ["windows", "linux", "macos"])
+def test_unloaded_configured_root_cannot_provide_a_loaded_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operating_system: str
+) -> None:
+    executable = tmp_path / "actual"
+    launcher = tmp_path / "configured"
+    launcher.write_bytes(b"launcher bytes are not a loaded provider")
+    if operating_system == "windows":
+        executable.write_bytes(_pe_image(b"configured"))
+    elif operating_system == "linux":
+        executable.write_bytes(_elf_image(b"configured"))
+    else:
+        executable.write_bytes(
+            _macho_image(name=b"@executable_path/configured", command=0xC)
+        )
+    snapshot = (
+        _macos_loader_snapshot((executable,), {})
+        if operating_system == "macos"
+        else _loader_snapshot((executable,), {"actual": executable})
+    )
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+    with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+        native._native_dependency_closure(
+            {"base-executable": launcher},
+            operating_system=operating_system,
+            architecture="x86_64",
+            policy=_NATIVE_DEPENDENCY_POLICIES[operating_system],
+            pool=_FileNodePool(),
+        )
+
+
+def test_main_image_designation_changes_persisted_closure_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    for path in (first, second):
+        path.write_bytes(_macho_image())
+    snapshot = _macos_loader_snapshot((first, second), {})
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+
+    def capture():
+        return native._native_dependency_closure(
+            {"base-executable": first},
+            operating_system="macos",
+            architecture="x86_64",
+            policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+            pool=_FileNodePool(),
+        )
+
+    before = capture()
+    snapshot = replace(snapshot, executable=second)
+    after = capture()
+    assert before["components"] == after["components"]
+    assert before["edges"] == after["edges"]
+    assert before["executable_component"] != after["executable_component"]
+    assert before["closure_sha256"] != after["closure_sha256"]
+
+
 def _capture_loaded_closure(
     monkeypatch: pytest.MonkeyPatch,
     executable: Path,
@@ -791,6 +938,7 @@ def test_observed_virtual_images_are_census_roots_not_invented_bindings(
         native,
         "_loaded_native_module_snapshot",
         lambda _os: LoadedNativeModuleSnapshot(
+            executable=loader_snapshot.executable,
             paths=loader_snapshot.paths,
             aliases=loader_snapshot.aliases,
             contracts=(contract,),

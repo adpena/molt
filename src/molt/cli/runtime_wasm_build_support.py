@@ -6,7 +6,6 @@ import os
 import shlex
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 from dataclasses import dataclass
 from typing import (
@@ -58,7 +57,7 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from molt.file_publication import durable_replace
+from molt.file_publication import durable_replace, staged_file_path
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
     _refresh_runtime_fingerprint_metadata,
@@ -773,9 +772,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     libc_archive = libc_archive.resolve(strict=False)
     output_path = output_path.resolve(strict=False)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_output_path = output_path.with_name(
-        f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    tmp_output_path = staged_file_path(output_path, purpose="wasm-reloc")
     # All runtime families capture the complete mandatory archive closure.
     long_double_argv = wasm_link_inputs.long_double_whole_archive_link_argv(
         wasm_link_inputs.LongDoubleLinkPolicy(
