@@ -9,6 +9,7 @@ import sys
 import traceback
 from typing import Mapping
 
+from molt.cli import native_symbol_inspection
 import pytest
 
 import molt.cli as cli
@@ -49,13 +50,15 @@ def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
         yield path, identity
 
     monkeypatch.setattr(
-        BACKEND_CACHE,
+        native_symbol_inspection,
         "_native_symbol_reader_candidate",
-        lambda command: BACKEND_CACHE._NativeSymbolReaderCandidate(
+        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
             tuple(command), executable_identity=identity
         ),
     )
-    monkeypatch.setattr(BACKEND_CACHE, "stable_executable_probe", admitted_reader)
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_executable_probe", admitted_reader
+    )
 
 
 @pytest.mark.parametrize(
@@ -124,7 +127,7 @@ def _shared_stdlib_cleanup_paths(artifact: Path) -> tuple[Path, ...]:
         BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path(artifact),
         BACKEND_CACHE._stdlib_object_digest_sidecar_path(artifact),
         BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(artifact),
-        BACKEND_CACHE._native_object_symbol_facts_sidecar_path(artifact),
+        native_symbol_inspection._native_object_symbol_facts_sidecar_path(artifact),
     )
 
 
@@ -2486,10 +2489,12 @@ def test_native_object_symbol_sets_use_nm_candidate_ladder(
         )
 
     monkeypatch.setattr(
-        BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"]
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["broken-nm", "llvm-nm"],
     )
     monkeypatch.setattr(
-        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
     )
 
     symbols = cli._native_object_global_symbol_sets(obj)
@@ -2513,9 +2518,11 @@ def test_native_object_symbol_sets_accept_empty_objects(
         del kwargs
         return subprocess.CompletedProcess(cmd, 1, "", f"{obj}: no symbols\n")
 
-    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
     monkeypatch.setattr(
-        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
     )
 
     assert cli._native_object_global_symbol_sets(obj) == (set(), set())
@@ -2543,9 +2550,11 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
             "",
         )
 
-    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
     monkeypatch.setattr(
-        BACKEND_CACHE,
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
         "_run_completed_command",
         fake_run_completed_command,
     )
@@ -2599,7 +2608,9 @@ def test_native_archive_chunk_closure_resolves_all_included_members(
         assert stdlib_providers is not None
         return chunk_symbols(stdlib_providers), set()
 
-    monkeypatch.setattr(BACKEND_CACHE, "_native_object_global_symbol_sets", symbols)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_native_object_global_symbol_sets", symbols
+    )
     assert (
         BACKEND_CACHE._native_object_has_unresolved_module_chunks(application, stdlib)
         is unresolved
@@ -2627,23 +2638,27 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
             "",
         )
 
-    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
     monkeypatch.setattr(
-        BACKEND_CACHE,
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
         "_run_completed_command",
         fake_run_completed_command,
     )
 
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 1
-    assert BACKEND_CACHE._native_object_symbol_facts_sidecar_path(obj).exists()
+    assert native_symbol_inspection._native_object_symbol_facts_sidecar_path(
+        obj
+    ).exists()
 
-    BACKEND_CACHE._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 1
 
     obj.write_bytes(b"coff-changed")
-    BACKEND_CACHE._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 2
 
@@ -2676,12 +2691,12 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
 
     assert err is None
     assert output_artifact.exists()
-    reader_identity = BACKEND_CACHE._native_symbol_reader(
+    reader_identity = native_symbol_inspection._native_symbol_reader(
         nm_command=None,
         target_triple=target_triple,
     ).cache_identity
     for path in (cache_path, function_cache_path):
-        facts = BACKEND_CACHE._read_native_object_symbol_facts(
+        facts = native_symbol_inspection._read_native_object_symbol_facts(
             path,
             object_digest=cli._sha256_file(path),
             target_triple=target_triple,
@@ -2724,10 +2739,12 @@ def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
         return subprocess.CompletedProcess(cmd, 0, "00000000 T molt_main\n", "")
 
     monkeypatch.setattr(
-        BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"]
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["broken-nm", "llvm-nm"],
     )
     monkeypatch.setattr(
-        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
     )
 
     assert cli._is_valid_cached_backend_artifact(

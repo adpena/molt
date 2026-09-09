@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import backend_cache
+from molt.cli import native_symbol_inspection
 from molt.cli import dependency_files, source_extensions
 from molt.cli.source_extension_language import SourceExtensionLanguage
 
@@ -45,9 +45,9 @@ def test_object_closure_identity_includes_checksummed_headers(
     header.write_text("int exported(void);\n", encoding="utf-8")
     object_path.write_bytes(b"object")
     monkeypatch.setattr(
-        backend_cache,
+        native_symbol_inspection,
         "_native_object_global_symbol_facts",
-        lambda _path, **_kwargs: backend_cache._NativeGlobalSymbolFacts(
+        lambda _path, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=frozenset({"PyInit_module"}),
             undefined=frozenset(),
             defined_functions=frozenset({"PyInit_module"}),

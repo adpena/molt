@@ -72,11 +72,9 @@ def _build_fake_molt_tree(root: Path) -> Path:
 def fake_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     molt = _build_fake_molt_tree(tmp_path)
     monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
-    # The broad path helper and the reachability closure are lru-cached per root; a
-    # fresh tmp_path is a new key so neither serves a stale set. Clear the
-    # content-digest memo so each recompute reads the freshly edited bytes.
+    # Only the broad static path helper is root-cached. Dependency discovery
+    # observes current bytes/topology without manual invalidation.
     CF._frontend_tooling_source_paths_cached.cache_clear()
-    CF._lowering_scope_source_files_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
     return molt
 
@@ -211,10 +209,12 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
         "module_dependencies.py",
         "module_registry.py",
         "module_stdlib_policy.py",
-        "target_python.py",
         "cache_fingerprints.py",
         "models.py",
     }
+    assert root / "src" / "molt" / "target_python.py" in (
+        CF._frontend_semantic_tooling_source_paths(root)
+    )
     missing_drivers = sorted(frontend_drivers - scoped)
     assert not missing_drivers, (
         f"frontend drivers fell out of the lowering scope: {missing_drivers}"
@@ -279,13 +279,7 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
         # backend helper that nothing in scope imports
         _write(cli / "backend_orphan.py", "MARKER = 1\n")
 
-        CF._lowering_scope_source_files_cached.cache_clear()
-        try:
-            reached = {
-                Path(p).name for p in CF._lowering_scope_source_files_cached(str(root))
-            }
-        finally:
-            CF._lowering_scope_source_files_cached.cache_clear()
+        reached = {path.name for path in CF._lowering_scope_source_files(root)}
 
     assert "module_resolution.py" in reached  # seed
     assert "helper_a.py" in reached  # imported by seed
@@ -439,6 +433,10 @@ _LOWERING_RELEVANT_IN = (
     "_wasm_runtime_exports.py",
     "_wasm_abi_generated.py",
     "type_facts.py",
+    "target_python.py",
+    "cli/native_symbol_inspection.py",
+    "cli/wasm_link_inputs.py",
+    "cli/compiler_target.py",
     "compat.py",
 )
 
@@ -499,13 +497,12 @@ def test_cli_package_init_command_layer_leak_is_cut(
     molt = _build_leak_tree(tmp_path)
     monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
     CF._frontend_tooling_source_paths_cached.cache_clear()
-    CF._lowering_scope_source_files_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
 
     molt_root = (tmp_path / "src" / "molt").resolve()
     reached = {
         Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_files_cached(str(tmp_path))
+        for p in CF._lowering_scope_source_files(tmp_path)
     }
     assert "cli/frontend_execution.py" in reached  # the named submodule is in scope
     assert "cli/__init__.py" not in reached  # the package aggregate is NOT dragged
@@ -529,6 +526,37 @@ def test_cli_package_init_command_layer_leak_is_cut(
     assert broad_after != broad_before, (
         "broad fingerprint did not move -> the test edit did not land, no teeth"
     )
+
+
+def test_lowering_graph_reresolves_new_named_submodule_without_cache_clear(
+    tmp_path: Path,
+) -> None:
+    molt = _build_leak_tree(tmp_path)
+    seed = molt / "cli" / "frontend_pipeline.py"
+    seed.write_text("from molt.cli import newly_added\n", encoding="utf-8")
+    before = set(CF._lowering_scope_source_files(tmp_path))
+    assert molt / "cli" / "__init__.py" in before
+    added = molt / "cli" / "newly_added.py"
+    added.write_text("VALUE = 1\n", encoding="utf-8")
+    after = set(CF._lowering_scope_source_files(tmp_path))
+    assert added in after
+    assert molt / "cli" / "__init__.py" not in after
+    assert molt / "cli" / "orchestration_only.py" not in after
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_lowering_graph_does_not_swallow_transitive_source_errors(
+    tmp_path: Path, malformed: bool
+) -> None:
+    molt = _build_leak_tree(tmp_path)
+    helper = molt / "cli" / "frontend_execution.py"
+    helper.write_text(
+        "if :\n" if malformed else "__package__ = unknown\nfrom .child import item\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as exc:
+        CF._lowering_scope_source_files(tmp_path)
+    assert str(helper) in str(exc.value)
 
 
 def _build_analysis_tree(root: Path) -> Path:
@@ -561,20 +589,18 @@ def test_kept_analysis_and_intrinsic_edits_still_invalidate(
     molt = _build_analysis_tree(tmp_path)
     monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
     CF._frontend_tooling_source_paths_cached.cache_clear()
-    CF._lowering_scope_source_files_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
 
     molt_root = (tmp_path / "src" / "molt").resolve()
     reached = {
         Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_files_cached(str(tmp_path))
+        for p in CF._lowering_scope_source_files(tmp_path)
     }
     assert "compiler_analysis/backend_ir.py" in reached  # analysis package seeded
 
     scoped_before = CF._frontend_semantic_tooling_fingerprint()
     target = molt / Path(edit_relpath)
     target.write_text("thing = 2\nMARKER = 2\n", encoding="utf-8")
-    CF._lowering_scope_source_files_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
     scoped_after = CF._frontend_semantic_tooling_fingerprint()
 

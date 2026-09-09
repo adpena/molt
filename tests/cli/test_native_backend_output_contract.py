@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli import native_symbol_inspection
+
 from molt.cli import backend_cache, backend_execution, build_output_layout, factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import NativeArtifactKind
@@ -271,7 +273,7 @@ def test_object_request_keeps_complete_stdlib_in_compilation_unit():
 def test_archive_internal_references_resolve_against_included_members(monkeypatch):
     definitions = {"molt_init_sys", "molt_sys_helper"}
     monkeypatch.setattr(
-        backend_cache,
+        native_symbol_inspection,
         "_native_object_global_symbol_sets",
         lambda path, *, target_triple=None: (
             definitions,
@@ -293,7 +295,7 @@ def test_archive_internal_references_resolve_against_included_members(monkeypatc
 
 def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
     monkeypatch.setattr(
-        backend_cache,
+        native_symbol_inspection,
         "_native_object_global_symbol_sets",
         lambda path, *, target_triple=None: ({"molt_init_sys"}, {"molt_sys_helper"}),
     )

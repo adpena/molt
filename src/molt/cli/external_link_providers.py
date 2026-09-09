@@ -6,8 +6,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
-from molt.cli import wasm_toolchain
-from molt.cli.backend_cache import (
+from molt.cli import wasm_link_inputs
+from molt.cli.native_symbol_inspection import (
     _native_archive_global_symbol_facts,
     _native_symbol_artifact_identity,
     _require_unchanged_symbol_artifact,
@@ -44,13 +44,13 @@ def _resolved_provider_archives(
     target_triple: str,
 ) -> tuple[tuple[str, tuple[Path, ...]], ...]:
     if target_triple == "wasm32-wasip1":
-        libc = wasm_toolchain.wasm_wasi_libc_archive()
-        compiler_rt = wasm_toolchain.wasm_compiler_builtins_archive()
-        libcxx = wasm_toolchain.wasm_cxx_runtime_archives()
+        libc = wasm_link_inputs.wasm_wasi_libc_archive()
+        compiler_rt = wasm_link_inputs.wasm_compiler_builtins_archive()
+        libcxx = wasm_link_inputs.wasm_cxx_runtime_archives()
     else:
-        libc = wasm_toolchain.wasm_wasi_libc_archive(target_triple)
-        compiler_rt = wasm_toolchain.wasm_compiler_builtins_archive(target_triple)
-        libcxx = wasm_toolchain.wasm_cxx_runtime_archives(target_triple)
+        libc = wasm_link_inputs.wasm_wasi_libc_archive(target_triple)
+        compiler_rt = wasm_link_inputs.wasm_compiler_builtins_archive(target_triple)
+        libcxx = wasm_link_inputs.wasm_cxx_runtime_archives(target_triple)
     return (
         (
             WASM_LIBC_LINK_IMPORT_CLASS,

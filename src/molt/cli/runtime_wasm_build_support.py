@@ -15,6 +15,7 @@ from typing import (
     Mapping,
 )
 
+from molt.cli import wasm_link_inputs
 from molt.cli import wasm_toolchain
 from molt.cli.artifact_state import (
     _build_state_root,
@@ -105,12 +106,12 @@ def _configure_wasm_cc_env(env: dict[str, str]) -> None:
 def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
     explicit_sysroot = env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT")
     if explicit_sysroot:
-        normalized = wasm_toolchain.normalize_wasi_sysroot(explicit_sysroot)
+        normalized = wasm_link_inputs.normalize_wasi_sysroot(explicit_sysroot)
         sysroot = str(normalized if normalized is not None else Path(explicit_sysroot))
         env.setdefault("WASI_SYSROOT", sysroot)
         env.setdefault("MOLT_WASI_SYSROOT", sysroot)
         return
-    wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot(env=env)
+    wasi_sysroot = wasm_link_inputs.resolve_wasi_sysroot(env=env)
     if wasi_sysroot is not None:
         sysroot = str(wasi_sysroot)
         env["WASI_SYSROOT"] = sysroot
@@ -133,7 +134,7 @@ def _configure_wasm_long_double_env(env: dict[str, str]) -> None:
     the sibling staticlib crate-type: ``rustc-link-lib`` is metadata there, and
     the reloc link whole-archives its own printscan copy.)
     """
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=False, env=env)
+    policy = wasm_link_inputs.resolve_long_double_link_policy(required=False, env=env)
     if policy.printscan is not None:
         env["MOLT_WASM_LONGDOUBLE_ARCHIVE"] = str(
             policy.printscan.resolve(strict=False)
@@ -698,9 +699,9 @@ def resolve_runtime_wasm_link_inputs(
 ) -> RuntimeWasmLinkInputs:
     sysroot = env.get("MOLT_WASI_SYSROOT") or env.get("WASI_SYSROOT")
     linker = wasm_toolchain.resolve_wasm_linker(env=env, cwd=project_root)
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=True, env=env)
-    libc = wasm_toolchain.wasm_wasi_libc_archive(target_libdir=target_libdir)
-    rust_builtins = wasm_toolchain.wasm_compiler_builtins_archive(
+    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True, env=env)
+    libc = wasm_link_inputs.wasm_wasi_libc_archive(target_libdir=target_libdir)
+    rust_builtins = wasm_link_inputs.wasm_compiler_builtins_archive(
         target_libdir=target_libdir
     )
     _record_runtime_wasm_longdouble_archives(
@@ -776,8 +777,8 @@ def _link_runtime_staticlib_to_reloc_wasm(
         f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
     # All runtime families capture the complete mandatory archive closure.
-    long_double_argv = wasm_toolchain.long_double_whole_archive_link_argv(
-        wasm_toolchain.LongDoubleLinkPolicy(
+    long_double_argv = wasm_link_inputs.long_double_whole_archive_link_argv(
+        wasm_link_inputs.LongDoubleLinkPolicy(
             link_inputs.long_double.path, link_inputs.clang_builtins.path, None, ()
         ),
         whole_archive=[str(staticlib_path)],

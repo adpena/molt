@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from molt.cli import wasm_link_inputs
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
@@ -116,7 +117,7 @@ def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
     linker.parent.mkdir()
     linker.write_bytes(b"linker")
     monkeypatch.setattr(
-        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
     )
     monkeypatch.setattr(cli_wasm_toolchain.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
@@ -141,7 +142,7 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     linker.write_bytes(b"linker")
     monkeypatch.setenv("MOLT_WASM_LD", str(linker))
     monkeypatch.setattr(
-        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
     )
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "21.1.8"
@@ -168,7 +169,7 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
         os.link(driver, alias)
     monkeypatch.setenv("MOLT_WASM_LD", str(alias))
     monkeypatch.setattr(
-        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: None
+        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: None
     )
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.8"
@@ -189,7 +190,7 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
     driver.write_bytes(b"generic lld")
     monkeypatch.setenv("MOLT_WASM_LD", str(driver))
     monkeypatch.setattr(
-        cli_wasm_toolchain, "resolve_wasi_sysroot", lambda **_kwargs: None
+        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: None
     )
 
     with pytest.raises(
@@ -1701,7 +1702,7 @@ def test_extension_build_emits_wheel_and_manifest(
     )
 
     if inspection_failure is not None:
-        from molt.cli.backend_cache import NativeSymbolInspectionError
+        from molt.cli.native_symbol_inspection import NativeSymbolInspectionError
 
         original_inspection = (
             cli_source_extensions._inspect_source_extension_artifact_symbols
@@ -3757,7 +3758,7 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     include_dir = sysroot / "include" / "wasm32-wasip1"
     include_dir.mkdir(parents=True)
     (include_dir / "errno.h").write_text("#define EINVAL 28\n")
-    cli_wasm_toolchain._resolve_wasi_sysroot_cached.cache_clear()
+    wasm_link_inputs._resolve_wasi_sysroot_cached.cache_clear()
     monkeypatch.setenv("WASI_SYSROOT", str(sysroot))
     monkeypatch.delenv("MOLT_WASM_CC", raising=False)
     monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
@@ -3834,12 +3835,12 @@ def test_wasm_cxx_runtime_archives_resolve_matching_exception_variant(
     libcxxabi.write_bytes(b"!<arch>\nlibcxxabi")
     libunwind.write_bytes(b"!<arch>\nlibunwind")
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "resolve_wasi_sysroot",
         lambda: sysroot,
     )
 
-    assert cli_wasm_toolchain.wasm_cxx_runtime_archives() == (
+    assert wasm_link_inputs.wasm_cxx_runtime_archives() == (
         libcxx.resolve(strict=False),
         libcxxabi.resolve(strict=False),
         libunwind.resolve(strict=False),
@@ -3858,12 +3859,12 @@ def test_wasm_cxx_runtime_archives_resolve_matching_no_exception_variant(
     libcxx.write_bytes(b"!<arch>\nlibcxx")
     libcxxabi.write_bytes(b"!<arch>\nlibcxxabi")
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "resolve_wasi_sysroot",
         lambda: sysroot,
     )
 
-    assert cli_wasm_toolchain.wasm_cxx_runtime_archives(exceptions=False) == (
+    assert wasm_link_inputs.wasm_cxx_runtime_archives(exceptions=False) == (
         libcxx.resolve(strict=False),
         libcxxabi.resolve(strict=False),
     )
@@ -4308,10 +4309,10 @@ def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
     include_dir.mkdir(parents=True)
     (include_dir / "errno.h").write_text("#define EINVAL 28\n")
 
-    assert cli_wasm_toolchain.normalize_wasi_sysroot(sysroot) == sysroot.resolve(
+    assert wasm_link_inputs.normalize_wasi_sysroot(sysroot) == sysroot.resolve(
         strict=False
     )
-    assert cli_wasm_toolchain.normalize_wasi_sysroot(include_dir) == sysroot.resolve(
+    assert wasm_link_inputs.normalize_wasi_sysroot(include_dir) == sysroot.resolve(
         strict=False
     )
 

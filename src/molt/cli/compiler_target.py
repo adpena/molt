@@ -1,11 +1,154 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 from molt.cli.native_link_plan import _normalize_arch
-from molt.cli.native_toolchain import _zig_target_query
 from molt.llvm_linker_roles import executable_entrypoint_name
+
+
+def _zig_target_query(target_triple: str) -> str:
+    triple = target_triple.strip()
+    if not triple:
+        return target_triple
+    parts = [part for part in triple.split("-") if part]
+    if len(parts) < 2:
+        return target_triple
+
+    arch_aliases = {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "arm64": "aarch64",
+        "armv7l": "armv7",
+        "i386": "x86",
+        "i486": "x86",
+        "i586": "x86",
+        "i686": "x86",
+    }
+    os_aliases = {
+        "darwin": "macos",
+        "macosx": "macos",
+        "win32": "windows",
+        "mingw32": "windows",
+        "mingw64": "windows",
+        "cygwin": "windows",
+        # Zig names the WASI OS "wasi" regardless of the preview revision
+        # encoded in LLVM triples (wasip1/wasip2).
+        "wasip1": "wasi",
+        "wasip2": "wasi",
+    }
+    abi_aliases = {
+        "sim": "simulator",
+        "androideabi": "android",
+    }
+    abi_tokens = {
+        "gnu",
+        "gnueabi",
+        "gnueabihf",
+        "gnuabi64",
+        "gnux32",
+        "musl",
+        "musleabi",
+        "musleabihf",
+        "msvc",
+        "eabi",
+        "eabihf",
+        "android",
+        "simulator",
+        "sim",
+        "ilp32",
+        "uclibc",
+        "ohos",
+        "macabi",
+        "androideabi",
+    }
+    os_tokens = {
+        "linux",
+        "windows",
+        "darwin",
+        "macos",
+        "macosx",
+        "ios",
+        "tvos",
+        "watchos",
+        "freebsd",
+        "netbsd",
+        "openbsd",
+        "dragonfly",
+        "solaris",
+        "haiku",
+        "hurd",
+        "android",
+        "wasi",
+        "emscripten",
+        "fuchsia",
+        "uefi",
+        "mingw32",
+        "mingw64",
+        "cygwin",
+        "illumos",
+        "aix",
+    }
+
+    def is_os_token(token: str) -> bool:
+        lowered = token.lower()
+        return lowered in os_tokens or lowered in os_aliases
+
+    arch = arch_aliases.get(parts[0].lower(), parts[0].lower())
+    remainder = [part.lower() for part in parts[1:]]
+    abi = None
+    if remainder:
+        last = remainder[-1]
+        if len(remainder) >= 2 and last in abi_tokens and is_os_token(remainder[-2]):
+            abi = abi_aliases.get(last, last)
+            remainder = remainder[:-1]
+        elif last in abi_tokens and last not in os_tokens:
+            abi = abi_aliases.get(last, last)
+            remainder = remainder[:-1]
+    os_part = remainder[-1] if remainder else None
+    vendor_parts = remainder[:-1] if len(remainder) > 1 else []
+    if os_part is None:
+        return f"{arch}-{abi}" if abi else arch
+    os_token = os_part.lower()
+    match = re.match(r"^(darwin|macosx|macos|ios|tvos|watchos)([0-9].*)$", os_token)
+    if match:
+        os_token = match.group(1)
+    os_name = os_aliases.get(os_token, os_token)
+    if os_name in {"unknown", "none"}:
+        os_name = "freestanding"
+    if os_name == "windows" and abi is None:
+        if any(token in {"w64", "mingw32", "mingw64"} for token in vendor_parts):
+            abi = "gnu"
+    if os_name in {"mingw32", "mingw64"}:
+        os_name = "windows"
+        if abi is None:
+            abi = "gnu"
+    if os_name in {"macos", "ios", "tvos", "watchos"}:
+        if abi == "sim":
+            abi = "simulator"
+        elif os_name == "macos":
+            abi = None
+        elif abi in {
+            "gnu",
+            "gnueabi",
+            "gnueabihf",
+            "gnuabi64",
+            "gnux32",
+            "musl",
+            "musleabi",
+            "musleabihf",
+            "msvc",
+            "android",
+            "eabi",
+            "eabihf",
+            "uclibc",
+        }:
+            abi = None
+
+    if abi:
+        return f"{arch}-{os_name}-{abi}"
+    return f"{arch}-{os_name}"
 
 
 def is_zig_compiler_command(command: Sequence[str]) -> bool:

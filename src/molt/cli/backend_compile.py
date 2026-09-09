@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from molt.cli.backend_cache import NativeSymbolInspectionError
+from molt.cli.native_symbol_inspection import (
+    NativeSymbolInspectionError,
+)
 
 import os
 import subprocess

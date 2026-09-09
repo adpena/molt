@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
+import os
+
+import pytest
 
 import molt.cli as cli
-from molt.cli import runtime_callable_symbols
+from molt.cli import runtime_callable_symbols, native_symbol_inspection
 
 _RUNTIME_CALLABLE_SYMBOL_NAMES = (
     "_runtime_callable_symbols_digest",
@@ -28,32 +30,93 @@ def test_native_callable_symbol_stage_excludes_raw_borrowed_intrinsics(
 ) -> None:
     runtime_lib = tmp_path / "molt_runtime.lib"
     runtime_lib.write_bytes(b"runtime")
+
+    def inspect_archive(path, *, target_triple, identity, requirement):
+        assert path == runtime_lib
+        assert target_triple == "x86_64-pc-windows-msvc"
+        assert identity.sha256
+        assert requirement.function_prefix == "molt_"
+        assert "molt_type_of_borrowed" in requirement.excluded_functions
+        symbols = frozenset(
+            {
+                "molt_len",
+                "molt_type_of_borrowed",
+                "molt_dict_getitem_borrowed",
+                "molt_list_getitem_borrowed",
+                "molt_tuple_getitem_borrowed",
+            }
+        )
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
+            symbols, frozenset(), symbols, artifact_digest=identity.sha256
+        )
+
     monkeypatch.setattr(
-        runtime_callable_symbols, "_nm_candidate_binaries", lambda: ["nm"]
-    )
-    monkeypatch.setattr(
-        runtime_callable_symbols,
-        "_run_completed_command",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="\n".join(
-                [
-                    "00000000 T molt_len",
-                    "00000001 T molt_type_of_borrowed",
-                    "00000002 T molt_dict_getitem_borrowed",
-                    "00000003 T molt_list_getitem_borrowed",
-                    "00000004 T molt_tuple_getitem_borrowed",
-                ]
-            ),
-            stderr="",
-        ),
+        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
     )
 
     symbols_file, failure = runtime_callable_symbols._runtime_callable_symbols_file(
-        runtime_lib
+        runtime_lib, target_triple="x86_64-pc-windows-msvc"
     )
 
     assert failure is None
     assert symbols_file is not None
-    assert ".callable_symbols.v2." in symbols_file.name
+    assert ".callable_symbols.v3." in symbols_file.name
     assert symbols_file.read_text(encoding="utf-8") == "molt_len\n"
+
+
+def test_callable_projection_cannot_reuse_same_size_restored_mtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime_lib = tmp_path / "runtime.a"
+    runtime_lib.write_bytes(b"first")
+    stamp = runtime_lib.stat()
+
+    def inspect_archive(path, *, target_triple, identity, requirement):
+        symbol = "molt_" + path.read_text()
+        symbols = frozenset({symbol})
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
+            symbols, frozenset(), symbols, artifact_digest=identity.sha256
+        )
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
+    )
+    first, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        runtime_lib
+    )
+    assert failure is None and first is not None
+    runtime_lib.write_bytes(b"later")
+    os.utime(runtime_lib, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    second, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        runtime_lib
+    )
+    assert failure is None and second is not None
+    assert second != first
+    assert second.read_text() == "molt_later\n"
+    second.write_text("corrupt\n")
+    repaired, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        runtime_lib
+    )
+    assert failure is None and repaired == second
+    assert second.read_text() == "molt_later\n"
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "changed"])
+def test_callable_projection_preserves_shared_reader_failures(
+    monkeypatch, tmp_path: Path, failure: str
+) -> None:
+    runtime_lib = tmp_path / "runtime.a"
+    runtime_lib.write_bytes(b"runtime")
+
+    def inspect_archive(path, **kwargs):
+        raise native_symbol_inspection.NativeSymbolInspectionError(path, [failure])
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
+    )
+    path, diagnostic = runtime_callable_symbols._runtime_callable_symbols_file(
+        runtime_lib
+    )
+    assert path is None
+    assert diagnostic is not None and failure in diagnostic
+    assert not list(tmp_path.glob("*.callable_symbols.*"))

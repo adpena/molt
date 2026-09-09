@@ -6,7 +6,7 @@ import os
 import pytest
 
 from molt.cli import external_link_providers as providers
-from molt.cli import backend_cache
+from molt.cli import native_symbol_inspection
 
 
 def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
@@ -22,29 +22,31 @@ def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
     def read_symbols(*_args, **_kwargs):
         nonlocal reads
         reads += 1
-        return backend_cache._NativeGlobalSymbolFacts(
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=frozenset({"exit"}),
             undefined=frozenset({"fd_write"}),
             defined_functions=frozenset({"exit"}),
         )
 
-    monkeypatch.setattr(backend_cache, "_default_molt_cache", lambda: cache_root)
     monkeypatch.setattr(
-        backend_cache,
+        native_symbol_inspection, "_default_molt_cache", lambda: cache_root
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
         "_read_native_global_symbol_facts",
         read_symbols,
     )
-    backend_cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
 
-    assert backend_cache._native_archive_global_symbol_sets(archive) == (
+    assert native_symbol_inspection._native_archive_global_symbol_sets(archive) == (
         {"exit"},
         {"fd_write"},
     )
     assert reads == 1
     assert not archive.with_suffix(".symbols.json").exists()
 
-    backend_cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    assert backend_cache._native_archive_global_symbol_sets(archive) == (
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    assert native_symbol_inspection._native_archive_global_symbol_sets(archive) == (
         {"exit"},
         {"fd_write"},
     )
@@ -89,7 +91,7 @@ def test_provider_surface_owns_complete_archive_symbol_families(
         reads.append(path)
         assert target_triple == "wasm32-wasip1"
         defined, undefined = facts[path]
-        return backend_cache._NativeGlobalSymbolFacts(
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=frozenset(defined),
             undefined=frozenset(undefined),
             defined_functions=frozenset(defined),
@@ -137,7 +139,9 @@ def test_unreadable_provider_family_fails_closed(
     )
 
     def unreadable(path: Path, *, target_triple: str, identity):
-        raise backend_cache.NativeSymbolInspectionError(path, ["provider unreadable"])
+        raise native_symbol_inspection.NativeSymbolInspectionError(
+            path, ["provider unreadable"]
+        )
 
     monkeypatch.setattr(providers, "_native_archive_global_symbol_facts", unreadable)
     providers._provider_surfaces_from_key.cache_clear()
@@ -146,7 +150,8 @@ def test_unreadable_provider_family_fails_closed(
 
     for _ in range(2):
         with pytest.raises(
-            backend_cache.NativeSymbolInspectionError, match="provider unreadable"
+            native_symbol_inspection.NativeSymbolInspectionError,
+            match="provider unreadable",
         ):
             providers.wasm_external_link_provider_symbol_classes()
         assert providers._provider_surfaces_from_key.cache_info().currsize == 0
@@ -156,15 +161,19 @@ def test_nm_symbol_normalization_uses_artifact_target_not_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = "00000000 T __molt_runtime\n         U _Py_None\n"
-    monkeypatch.setattr(backend_cache.sys, "platform", "darwin")
+    monkeypatch.setattr(native_symbol_inspection.sys, "platform", "darwin")
 
-    wasm_defined, wasm_undefined = backend_cache._parse_native_nm_global_symbol_sets(
-        output,
-        target_triple="wasm32-wasip1",
+    wasm_defined, wasm_undefined = (
+        native_symbol_inspection._parse_native_nm_global_symbol_sets(
+            output,
+            target_triple="wasm32-wasip1",
+        )
     )
-    macho_defined, macho_undefined = backend_cache._parse_native_nm_global_symbol_sets(
-        output,
-        target_triple="aarch64-apple-darwin",
+    macho_defined, macho_undefined = (
+        native_symbol_inspection._parse_native_nm_global_symbol_sets(
+            output,
+            target_triple="aarch64-apple-darwin",
+        )
     )
 
     assert wasm_defined == {"__molt_runtime"}
@@ -196,12 +205,12 @@ def test_outer_provider_cache_rechecks_generation_before_return(
         ),
     )
     monkeypatch.setattr(
-        backend_cache, "_default_molt_cache", lambda: tmp_path / "cache"
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
     monkeypatch.setattr(
-        backend_cache,
+        native_symbol_inspection,
         "_read_native_global_symbol_facts",
-        lambda *args, **kwargs: backend_cache._NativeGlobalSymbolFacts(
+        lambda *args, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=frozenset({"exit"}),
             undefined=frozenset(),
             defined_functions=frozenset({"exit"}),
@@ -224,5 +233,7 @@ def test_outer_provider_cache_rechecks_generation_before_return(
         return key
 
     monkeypatch.setattr(providers, "_provider_resolution_key", replace_after_key)
-    with pytest.raises(backend_cache.NativeSymbolInspectionError, match="changed"):
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="changed"
+    ):
         query()
