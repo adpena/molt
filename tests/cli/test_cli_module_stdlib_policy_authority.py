@@ -58,6 +58,7 @@ _SHARED_STDLIB_INTRINSIC_POLICY_DEFINITIONS = (
     "def same_package_intrinsic_import_closure(",
     "def stdlib_module_intrinsic_status(",
     "def stdlib_module_static_imports(",
+    "def stdlib_module_import_evidence(",
 )
 
 _LEGACY_LOCAL_STDLIB_INTRINSIC_POLICY_DEFINITIONS = (

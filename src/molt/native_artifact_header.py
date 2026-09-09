@@ -128,6 +128,8 @@ class NativeHeader:
             return False
         if exact_target:
             return self.metadata.subtype == shape.macho_subtype
+        # mach/machine.h reserves the high byte for CPU capability bits; family
+        # admission compares the base subtype without erasing its low 24 bits.
         return self.metadata.subtype & 0x00FFFFFF == shape.macho_subtype
 
 
@@ -154,7 +156,16 @@ class NativeArtifact:
         kinds: frozenset[NativeFileKind],
         shape: NativeArtifactShape | None = None,
         exact_target: bool = False,
+        loaded_macho_identity: tuple[int, int] | None = None,
     ) -> NativeHeader:
+        if loaded_macho_identity is not None and (
+            object_format is not NativeObjectFormat.MACHO
+            or shape is None
+            or exact_target
+        ):
+            raise NativeArtifactError(
+                "loaded Mach-O identity requires runtime-family Mach-O admission"
+            )
         if exact_target and self.universal:
             raise NativeArtifactError(
                 "exact target admission requires a thin artifact, not a universal container"
@@ -174,11 +185,22 @@ class NativeArtifact:
                     "Mach-O universal images require an explicit runtime architecture"
                 )
             return self.headers[0]
-        matches = tuple(
-            header
-            for header in self.headers
-            if header.matches(shape, exact_target=exact_target)
-        )
+        if loaded_macho_identity is not None:
+            loaded_machine, loaded_subtype = loaded_macho_identity
+            matches = tuple(
+                header
+                for header in self.headers
+                if isinstance(header.metadata, MachOHeader)
+                and header.machine == loaded_machine
+                and header.metadata.subtype == loaded_subtype
+                and header.matches(shape, exact_target=False)
+            )
+        else:
+            matches = tuple(
+                header
+                for header in self.headers
+                if header.matches(shape, exact_target=exact_target)
+            )
         if len(matches) != 1:
             actual = ", ".join(
                 f"machine=0x{header.machine:x}/{header.bits}/{header.byte_order}"

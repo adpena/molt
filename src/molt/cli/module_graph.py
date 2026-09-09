@@ -30,6 +30,7 @@ from molt.cli.models import (
     _ModuleGraphAugmentation,
     _ModuleGraphMetadata,
     _PreparedEntryModuleGraph,
+    _RuntimeImportScanCustody,
     _SupportModuleAugmentation,
 )
 from molt.cli.output import CliFailure as _CliFailure
@@ -1456,6 +1457,7 @@ def _materialize_import_plan(
         stub_parents=frozenset(stub_parents),
         spawn_enabled=prepared_module_graph.spawn_enabled,
         runtime_import_support_policy=prepared_module_graph.runtime_import_support_policy,
+        runtime_import_scan_custody=prepared_module_graph.runtime_import_scan_custody,
         namespace_module_names=namespace_module_names,
         generated_module_source_paths=MappingProxyType(generated_module_source_paths),
         known_modules=known_modules,
@@ -1790,8 +1792,14 @@ def _prepare_entry_module_graph(
             target_python=target_python,
         )
     )
+    runtime_import_custody: _RuntimeImportScanCustody | None = None
     if runtime_import_support_policy.needs_runtime_import_support:
+        # Use the same backend capability that publishes the compiled registry;
+        # textual emitters cannot promise this finite runtime dispatch surface.
+        from molt.cli.backend_ir import _module_registry_target_enabled
+
         import_support_paths: list[Path] = []
+        import_support_sources: dict[str, Path] = {}
         for module_name in _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
             module_path = _module_resolution._resolve_module_path(
                 module_name,
@@ -1804,6 +1812,56 @@ def _prepare_entry_module_graph(
                     command="build",
                 )
             import_support_paths.append(module_path)
+            import_support_sources[module_name] = module_path.resolve()
+            existing_path = module_graph.get(module_name)
+            if (
+                existing_path is not None
+                and existing_path.resolve() != module_path.resolve()
+            ):
+                return None, _fail(
+                    f"Runtime import support has conflicting source authority: {module_name}",
+                    json_output,
+                    command="build",
+                )
+        catalog_modules = (
+            runtime_import_dispatch_roots
+            | _runtime_import_parent_modules(
+                runtime_import_dispatch_roots, known_modules=set(module_graph)
+            )
+        )
+        runtime_import_custody = (
+            _RuntimeImportScanCustody(
+                owners=tuple(sorted(import_support_sources.items())),
+                owner_ast_digests=tuple(
+                    (
+                        name,
+                        _module_import_scanner.python_ast_digest(
+                            module_resolution_cache.parse_module_ast(
+                                path,
+                                module_resolution_cache.read_module_source(path),
+                                filename=str(path),
+                                target_python=target_python,
+                            )
+                        ),
+                    )
+                    for name, path in sorted(import_support_sources.items())
+                ),
+                catalog=tuple(
+                    sorted(
+                        {
+                            **{
+                                name: path.resolve()
+                                for name, path in module_graph.items()
+                                if name in catalog_modules
+                            },
+                            **import_support_sources,
+                        }.items()
+                    )
+                ),
+            )
+            if _module_registry_target_enabled(target)
+            else None
+        )
         before_support = set(module_graph)
         support_closure_modules = _graph_discovery._extend_module_graph_with_closure(
             module_graph,
@@ -1819,8 +1877,12 @@ def _prepare_entry_module_graph(
             reason="runtime_import_support",
             import_admission_policy=import_admission_policy,
             target_python=target_python,
+            runtime_import_custody=runtime_import_custody,
         )
         runtime_import_dispatch_roots.update(support_closure_modules)
+        if runtime_import_custody is not None:
+            runtime_import_custody.validate_graph(module_graph)
+            runtime_import_dispatch_roots.update(runtime_import_custody.modules)
         _graph_discovery._record_new_module_reasons(
             module_graph,
             before_support,
@@ -1856,6 +1918,7 @@ def _prepare_entry_module_graph(
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
         runtime_import_support_policy=runtime_import_support_policy,
+        runtime_import_scan_custody=runtime_import_custody,
         native_artifact_plan=(
             import_admission_policy.native_artifact_plan
             if import_admission_policy is not None

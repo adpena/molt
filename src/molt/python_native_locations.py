@@ -1,21 +1,45 @@
-"""Path-only loaded native-image custody shared by location and content probes.
+"""Loaded native-image custody shared by location and content probes.
 
-This module does not import the content scanner or parse native images.
+This module does not import the content scanner. On macOS its single loader
+snapshot reads the selected thin image headers needed to bind universal files
+to the exact slices already chosen by dyld.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import struct
 import sys
 import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 from molt.python_identity_common import PythonEnvironmentIdentityError
 
 
 _MACOS_DYLD_CACHE_CONTRACT_PREFIX = "macos-dyld-cache-image:"
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedNativeModuleSnapshot:
+    """One loader census shared by path, contract, and content custody."""
+
+    paths: tuple[Path, ...]
+    aliases: Mapping[str, Path]
+    contracts: tuple[str, ...]
+    macho_identities: Mapping[Path, tuple[int, int]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "aliases", MappingProxyType(dict(self.aliases)))
+        object.__setattr__(
+            self,
+            "macho_identities",
+            MappingProxyType(dict(self.macho_identities)),
+        )
 
 
 def _macos_dyld_cache_contract(path: str) -> str | None:
@@ -58,14 +82,16 @@ def _loader_name(name: str, operating_system: str) -> str:
     return name.casefold() if operating_system == "windows" else name
 
 
-def _loaded_native_module_paths(
+def _loaded_native_module_snapshot(
     operating_system: str,
-) -> tuple[tuple[Path, ...], dict[str, Path], tuple[str, ...]]:
-    """Return the current process' loader-bound native image paths."""
+) -> LoadedNativeModuleSnapshot:
+    """Capture one loader-bound image snapshot for all native custody fields."""
 
     import ctypes
 
     paths: list[Path] = []
+    raw_macho_identities: dict[str, tuple[int, int]] = {}
+    macos_shared_cache_contains: Any | None = None
     if operating_system == "windows":
         if os.name != "nt":
             raise PythonEnvironmentIdentityError(
@@ -119,6 +145,10 @@ def _loaded_native_module_paths(
                 )
             paths.append(Path(buffer.value))
     elif operating_system == "macos":
+        if sys.platform != "darwin":
+            raise PythonEnvironmentIdentityError(
+                "cannot enumerate macOS runtime dependencies on a non-macOS host"
+            )
         process = ctypes.CDLL(None)
         image_count = process._dyld_image_count
         image_count.argtypes = ()
@@ -126,13 +156,45 @@ def _loaded_native_module_paths(
         image_name = process._dyld_get_image_name
         image_name.argtypes = (ctypes.c_uint32,)
         image_name.restype = ctypes.c_char_p
+        image_header = process._dyld_get_image_header
+        image_header.argtypes = (ctypes.c_uint32,)
+        image_header.restype = ctypes.c_void_p
+        macos_shared_cache_contains = getattr(
+            process, "_dyld_shared_cache_contains_path", None
+        )
+        if macos_shared_cache_contains is not None:
+            macos_shared_cache_contains.argtypes = (ctypes.c_char_p,)
+            macos_shared_cache_contains.restype = ctypes.c_bool
+        magics = {
+            b"\xce\xfa\xed\xfe": "<",
+            b"\xcf\xfa\xed\xfe": "<",
+            b"\xfe\xed\xfa\xce": ">",
+            b"\xfe\xed\xfa\xcf": ">",
+        }
         for index in range(image_count()):
-            raw = image_name(index)
-            if not raw:
+            raw_name = image_name(index)
+            address = image_header(index)
+            if not raw_name or not address:
                 raise PythonEnvironmentIdentityError(
-                    "cannot identify an enumerated macOS native module"
+                    "cannot identify an enumerated macOS native module header"
                 )
-            paths.append(Path(os.fsdecode(raw)))
+            raw = Path(os.fsdecode(raw_name))
+            fixed = ctypes.string_at(address, 12)
+            try:
+                endian = magics[fixed[:4]]
+            except KeyError as exc:
+                raise PythonEnvironmentIdentityError(
+                    f"loaded macOS image has invalid thin Mach-O magic: {raw}"
+                ) from exc
+            identity = struct.unpack_from(endian + "II", fixed, 4)
+            key = str(raw)
+            prior = raw_macho_identities.get(key)
+            if prior is not None and prior != identity:
+                raise PythonEnvironmentIdentityError(
+                    f"loaded macOS image has conflicting dyld identities: {raw}"
+                )
+            raw_macho_identities[key] = identity
+            paths.append(raw)
     elif operating_system == "linux":
 
         class _DlPhdrInfo(ctypes.Structure):
@@ -180,6 +242,7 @@ def _loaded_native_module_paths(
     canonical: dict[str, Path] = {}
     aliases: dict[str, Path] = {}
     contracts: set[str] = set()
+    macho_identities: dict[Path, tuple[int, int]] = {}
     for raw in paths:
         try:
             resolved = raw.resolve(strict=True)
@@ -191,13 +254,8 @@ def _loaded_native_module_paths(
                 contracts.add(f"linux-loader-image:{raw.name}")
                 continue
             if operating_system == "macos" and raw.is_absolute():
-                contains = getattr(
-                    ctypes.CDLL(None), "_dyld_shared_cache_contains_path", None
-                )
-                if contains is not None:
-                    contains.argtypes = (ctypes.c_char_p,)
-                    contains.restype = ctypes.c_bool
-                    if contains(os.fsencode(raw)):
+                if macos_shared_cache_contains is not None:
+                    if macos_shared_cache_contains(os.fsencode(raw)):
                         contract = _macos_dyld_cache_contract(raw.as_posix())
                         if contract is None:
                             raise PythonEnvironmentIdentityError(
@@ -209,6 +267,20 @@ def _loaded_native_module_paths(
             raise PythonEnvironmentIdentityError(
                 f"loaded native runtime dependency has no file identity: {raw}"
             ) from exc
+        if operating_system == "macos":
+            identity = raw_macho_identities.get(str(raw))
+            prior_identity = macho_identities.get(resolved)
+            if identity is None:
+                if prior_identity is None:
+                    raise PythonEnvironmentIdentityError(
+                        f"loaded macOS file-backed image has no dyld identity: {raw}"
+                    )
+            elif prior_identity is not None and prior_identity != identity:
+                raise PythonEnvironmentIdentityError(
+                    f"loaded macOS image has conflicting dyld identities: {resolved}"
+                )
+            else:
+                macho_identities[resolved] = identity
         key = os.path.normcase(str(resolved))
         canonical[key] = resolved
         # dyld identifies loaded images by their install/resolved path, and can
@@ -228,7 +300,12 @@ def _loaded_native_module_paths(
     ordered = tuple(
         sorted(canonical.values(), key=lambda path: os.path.normcase(str(path)))
     )
-    return ordered, aliases, tuple(sorted(contracts))
+    return LoadedNativeModuleSnapshot(
+        paths=ordered,
+        aliases=aliases,
+        contracts=tuple(sorted(contracts)),
+        macho_identities=macho_identities,
+    )
 
 
 def loaded_native_module_paths(
@@ -249,5 +326,4 @@ def loaded_native_module_paths(
         raise PythonEnvironmentIdentityError(
             f"native dependency enumeration is unsupported on {sys.platform}"
         )
-    paths, _aliases, _contracts = _loaded_native_module_paths(operating_system)
-    return paths
+    return _loaded_native_module_snapshot(operating_system).paths

@@ -8,6 +8,7 @@ import subprocess
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import (
     Any,
     Callable,
@@ -767,6 +768,79 @@ class _RuntimeImportSupportPolicy:
 
 
 @dataclass(frozen=True)
+class _RuntimeImportScanCustody:
+    """Source-backed finite catalog for runtime protocol implementation scans.
+
+    Owners may defer dynamic package selection to the compiled registry. Every
+    catalog row must be retained as a dispatch root by the graph producer; this
+    is not permission to discover arbitrary modules through runtime metadata.
+    """
+
+    owners: tuple[tuple[str, Path], ...]
+    catalog: tuple[tuple[str, Path], ...]
+    owner_ast_digests: tuple[tuple[str, str], ...]
+    catalog_by_module: Mapping[str, Path] = field(init=False, compare=False, repr=False)
+    owners_by_module: Mapping[str, Path] = field(init=False, compare=False, repr=False)
+    owner_digests_by_module: Mapping[str, str] = field(
+        init=False, compare=False, repr=False
+    )
+    modules: tuple[str, ...] = field(init=False, compare=False)
+
+    def __post_init__(self) -> None:
+        catalog = dict(self.catalog)
+        if not catalog or len(catalog) != len(self.catalog):
+            raise ValueError(
+                "runtime import custody requires a nonempty unique catalog"
+            )
+        for name, path in self.catalog:
+            if not name or not path.is_absolute() or not path.is_file():
+                raise ValueError(f"runtime import custody requires a source: {name!r}")
+        if not self.owners or len(dict(self.owners)) != len(self.owners):
+            raise ValueError("runtime import custody requires unique source owners")
+        for name, path in self.owners:
+            if catalog.get(name) != path:
+                raise ValueError(f"runtime import owner is outside catalog: {name!r}")
+        digests = dict(self.owner_ast_digests)
+        if set(digests) != set(dict(self.owners)) or any(
+            not digest for digest in digests.values()
+        ):
+            raise ValueError(
+                "runtime import custody requires each owner's source AST digest"
+            )
+        object.__setattr__(self, "catalog_by_module", MappingProxyType(catalog))
+        object.__setattr__(
+            self, "owners_by_module", MappingProxyType(dict(self.owners))
+        )
+        object.__setattr__(self, "owner_digests_by_module", MappingProxyType(digests))
+        object.__setattr__(self, "modules", tuple(catalog))
+
+    def owns(self, module_name: str | None, source_path: Path | None) -> bool:
+        return (
+            source_path is not None
+            and self.owners_by_module.get(module_name) == source_path
+        )
+
+    def admits_scan(
+        self, module_name: str | None, source_path: Path | None, ast_digest: str | None
+    ) -> bool:
+        if not self.owns(module_name, source_path):
+            return False
+        if ast_digest != self.owner_digests_by_module.get(module_name):
+            raise ValueError(
+                f"runtime import custody source AST changed: {module_name!r}"
+            )
+        return True
+
+    def validate_graph(self, graph: Mapping[str, Path]) -> None:
+        for name, path in self.catalog:
+            actual = graph.get(name)
+            if actual is None or actual.resolve() != path:
+                raise ValueError(
+                    f"runtime import catalog lost source authority: {name!r}"
+                )
+
+
+@dataclass(frozen=True)
 class _ModuleRootResolution:
     roots: tuple[Path, ...]
     external_roots: tuple[Path, ...]
@@ -1505,6 +1579,7 @@ class _PreparedEntryModuleGraph:
     runtime_import_support_policy: _RuntimeImportSupportPolicy
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
     target_python: TargetPythonVersion
+    runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
 
 
 @dataclass(frozen=True)
@@ -1571,6 +1646,7 @@ class _ImportPlan:
     native_support_function_roots_by_module: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict
     )
+    runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
 
     def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
         compile_set = frozenset(compile_modules)
@@ -1593,6 +1669,7 @@ class _ImportPlan:
             stub_parents=self.stub_parents,
             spawn_enabled=self.spawn_enabled,
             runtime_import_support_policy=self.runtime_import_support_policy,
+            runtime_import_scan_custody=self.runtime_import_scan_custody,
             namespace_module_names=self.namespace_module_names,
             generated_module_source_paths=self.generated_module_source_paths,
             known_modules=self.known_modules,
@@ -1630,6 +1707,11 @@ class _ImportPlan:
             "namespace_module_names": sorted(self.namespace_module_names),
             "spawn_enabled": self.spawn_enabled,
             "runtime_import_support": {
+                "scan_owner_ast_digests": (
+                    dict(self.runtime_import_scan_custody.owner_ast_digests)
+                    if self.runtime_import_scan_custody is not None
+                    else {}
+                ),
                 "needs_generated_importer": (
                     self.runtime_import_support_policy.needs_generated_importer
                 ),

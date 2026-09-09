@@ -35,7 +35,7 @@ impl TirFunction {
         let ends = self.retired_loop_end_roles(headers);
         let mut roots = HashSet::new();
         roots.extend(self.loop_roles.iter().filter_map(|(&id, role)| {
-            (!headers.contains(&id) && !(role == &LoopRole::LoopEnd && ends.contains(&id)))
+            (!(headers.contains(&id) || role == &LoopRole::LoopEnd && ends.contains(&id)))
                 .then_some(id)
         }));
         roots.extend(

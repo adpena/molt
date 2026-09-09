@@ -45,14 +45,19 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import tokenize
 
-from molt.rust_source_scan import mask_rust_comments_and_strings, project_rust_source
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
 
-try:
-    from tools import release_criterion_receipt as release_receipt
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    import release_criterion_receipt as release_receipt  # type: ignore
+ROOT_DEFAULT = bind_repository_imports(__file__)
 
-ROOT_DEFAULT = Path(__file__).resolve().parents[1]
+from molt.rust_source_scan import (  # noqa: E402
+    mask_rust_comments_and_strings,
+    project_rust_source,
+)
+from tools import release_criterion_receipt as release_receipt  # noqa: E402
+
 BASELINE_PATH_REL = "tools/structural_audit_baseline.json"
 BOARD_PATH_REL = "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
 

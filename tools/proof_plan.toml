@@ -1964,8 +1964,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["python3", "tools/run_cargo_test_truth.py"]
-toolchains = ["python", "rustc", "cargo", "wasm-ld"]
+argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.test.compiler-authorities"

@@ -53,6 +53,31 @@ environment, tools, and ordered target library roots once; it does not rediscove
 ambient configuration. Inherited profile overrides use the same profile ancestry
 as debug policy.
 
+Cargo target predicates are parsed once by `cargo_target_cfg.py` against a shared
+typed rustc target-metadata query, never guessed from the host platform. The
+query reproduces Cargo's stdin/crate-name/crate-type/print envelope, including
+its marker-delimited output and unsupported-crate-type diagnostics. Implicit
+host queries omit `--target`; explicit target queries retain it.
+Host, cfg and resource probes share Cargo's nested wrapper order
+(`RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, rustc), with executable mutation
+fences around the whole chain and pre-probe custody retained through execution.
+The user-specific `proc_macro` marker is omitted from target facts, as in Cargo.
+File and CLI StringList arrays merge before target/build config environment
+flags are appended. Whole-vector `RUSTFLAGS`/`CARGO_ENCODED_RUSTFLAGS` overrides
+remain separate. Exact-target flags precede matching cfg flags in Cargo's
+deterministic key order; an empty target vector falls back to build flags.
+Exact-target linker selection wins over cfg selection; multiple matching
+cfg linkers fail before execution. Flags/cfg mutual dependencies must converge
+within Cargo's two-pass boundary; nonconvergence receives no runtime identity.
+The final transformed flags are pinned in the execution environment, and linker
+selection observes their cfg facts. This replaces the blanket cfg-table refusal.
+The same per-plan metadata results determine target resource roots. Both
+dependency and final-crate effective flag lanes are queried through wrappers,
+so wrapper-selected sysroots cannot disagree with the admitted cfg envelope.
+Unwrapped installed-compiler metadata separately preserves driver/codegen
+resource custody; it is never replaced by a wrapper's virtual target sysroot.
+Reference: [Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags).
+
 Final-link responses have separate live custody and member projections, so export
 changes do not invalidate the shared static-library compile identity. Their
 admitted language is the generated runtime response grammar in `wasm_link_args.py`:

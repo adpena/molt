@@ -10,7 +10,10 @@ import pytest
 from molt import python_native_dependency_custody as native
 from molt.python_file_node_custody import _FileNodePool
 from molt.python_identity_common import PythonEnvironmentIdentityError
-from molt.python_native_locations import _native_contract_valid
+from molt.python_native_locations import (
+    LoadedNativeModuleSnapshot,
+    _native_contract_valid,
+)
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from tests.native_artifact_fixtures import (
     elf_header,
@@ -18,6 +21,47 @@ from tests.native_artifact_fixtures import (
     macho_header,
     fat_macho,
 )
+
+
+def _loader_snapshot(
+    paths: tuple[Path, ...],
+    aliases: dict[str, Path],
+    contracts: tuple[str, ...] = (),
+    *,
+    macho_identities: dict[Path, tuple[int, int]] | None = None,
+) -> LoadedNativeModuleSnapshot:
+    return LoadedNativeModuleSnapshot(
+        paths=paths,
+        aliases=aliases,
+        contracts=contracts,
+        macho_identities=macho_identities or {},
+    )
+
+
+def _macos_loader_snapshot(
+    paths: tuple[Path, ...],
+    aliases: dict[str, Path],
+    contracts: tuple[str, ...] = (),
+) -> LoadedNativeModuleSnapshot:
+    return _loader_snapshot(
+        paths,
+        aliases,
+        contracts,
+        macho_identities={path.resolve(): (0x01000007, 3) for path in paths},
+    )
+
+
+def test_loader_snapshot_freezes_mapping_inputs(tmp_path: Path) -> None:
+    executable = tmp_path / "Python"
+    aliases = {"Python": executable}
+    identities = {executable: (0x01000007, 3)}
+    snapshot = _loader_snapshot((executable,), aliases, macho_identities=identities)
+
+    aliases.clear()
+    identities.clear()
+
+    assert snapshot.aliases == {"Python": executable}
+    assert snapshot.macho_identities == {executable: (0x01000007, 3)}
 
 
 def _pe_image(
@@ -193,6 +237,55 @@ def test_macho_universal_selects_only_explicit_architecture(
     ) == (native.NativeDependency(name, "weak"),)
 
 
+@pytest.mark.parametrize("arm64e_first", [False, True])
+def test_macho_universal_uses_loaded_dyld_slice_identity(
+    arm64e_first: bool,
+) -> None:
+    generic = _macho_image(cpu=0x0100000C, name=b"@rpath/generic.dylib")
+    arm64e = _macho_image(cpu=0x0100000C, name=b"@rpath/arm64e.dylib")
+    struct.pack_into("<I", arm64e, 8, 0x80000002)
+    slices = (arm64e, generic) if arm64e_first else (generic, arm64e)
+
+    assert native._native_dependencies(
+        bytes(fat_macho(slices)),
+        "macos",
+        architecture="arm64",
+        loaded_macho_identity=(0x0100000C, 0x80000002),
+    ) == (native.NativeDependency("@rpath/arm64e.dylib", "weak"),)
+
+
+def test_macos_closure_uses_injected_loader_snapshot_slice_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generic = _macho_image(cpu=0x0100000C, name=b"@rpath/generic.dylib")
+    arm64e = _macho_image(cpu=0x0100000C, name=b"@rpath/arm64e.dylib")
+    struct.pack_into("<I", arm64e, 8, 0x80000002)
+    executable = tmp_path / "Python"
+    executable.write_bytes(fat_macho((generic, arm64e)))
+    snapshot = _loader_snapshot(
+        (executable,),
+        {str(executable.resolve()): executable},
+        macho_identities={executable.resolve(): (0x0100000C, 0x80000002)},
+    )
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", lambda _os: snapshot)
+
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="macos",
+        architecture="arm64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=_FileNodePool(),
+    )
+
+    assert closure["deferred_imports"] == [
+        {
+            "from": "native-component-0",
+            "name": "@rpath/arm64e.dylib",
+            "kind": "weak",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "fmt,offset,value,reason",
     [
@@ -316,8 +409,8 @@ def test_closure_never_turns_arbitrary_missing_dll_into_system_contract(
     executable.write_bytes(_pe_image(name))
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: ((executable,), {"python.exe": executable}, ()),
+        "_loaded_native_module_snapshot",
+        lambda _os: _loader_snapshot((executable,), {"python.exe": executable}),
     )
     if not closed:
         with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
@@ -360,8 +453,8 @@ def _capture_loaded_closure(
 ) -> dict[str, object]:
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: (loaded, {path.name: path for path in loaded}, ()),
+        "_loaded_native_module_snapshot",
+        lambda _os: _loader_snapshot(loaded, {path.name: path for path in loaded}),
     )
     return native._native_dependency_closure(
         {"base-executable": executable},
@@ -561,7 +654,7 @@ def test_loaded_census_change_rejects_closure_publication(
         nonlocal snapshots
         snapshots += 1
         if snapshots == 1:
-            return (executable,), {"python.exe": executable}, ()
+            return _loader_snapshot((executable,), {"python.exe": executable})
         paths = (executable, extra) if change == "paths" else (executable,)
         aliases = {"python.exe": executable}
         if change == "aliases":
@@ -571,9 +664,9 @@ def test_loaded_census_change_rejects_closure_publication(
             if change == "contracts"
             else ()
         )
-        return paths, aliases, contracts
+        return _loader_snapshot(paths, aliases, contracts)
 
-    monkeypatch.setattr(native, "_loaded_native_module_paths", inventory)
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", inventory)
     with pytest.raises(PythonEnvironmentIdentityError, match="changed"):
         native._native_dependency_closure(
             {"base-executable": executable},
@@ -609,9 +702,9 @@ def test_outer_capture_verification_rechecks_native_census_after_inventory(
                 aliases["another-name.exe"] = executable
             else:
                 contracts = ("windows-api-set:api-ms-win-core-file-l1-1-0.dll",)
-        return paths, aliases, contracts
+        return _loader_snapshot(paths, aliases, contracts)
 
-    monkeypatch.setattr(native, "_loaded_native_module_paths", inventory)
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", inventory)
     pool = _FileNodePool()
     closure = native._native_dependency_closure(
         {"base-executable": executable},
@@ -624,6 +717,43 @@ def test_outer_capture_verification_rechecks_native_census_after_inventory(
     assert snapshots == 2
     # Prove the registered fence accepts a stable outer publication before
     # modeling a loader change during subsequent runtime/environment inventory.
+    pool.capture_context.verify()
+    assert snapshots == 3
+    inventory_finished = True
+    with pytest.raises(PythonEnvironmentIdentityError, match="census changed"):
+        pool.capture_context.verify()
+    assert snapshots == 4
+
+
+def test_outer_capture_verification_rechecks_dyld_slice_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "Python"
+    executable.write_bytes(_macho_image())
+    inventory_finished = False
+    snapshots = 0
+
+    def inventory(_os: str) -> LoadedNativeModuleSnapshot:
+        nonlocal snapshots
+        snapshots += 1
+        subtype = 8 if inventory_finished else 3
+        return _loader_snapshot(
+            (executable,),
+            {str(executable.resolve()): executable},
+            macho_identities={executable.resolve(): (0x01000007, subtype)},
+        )
+
+    monkeypatch.setattr(native, "_loaded_native_module_snapshot", inventory)
+    pool = _FileNodePool()
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="macos",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=pool,
+    )
+    assert closure["status"] == "closed"
+    assert snapshots == 2
     pool.capture_context.verify()
     assert snapshots == 3
     inventory_finished = True
@@ -652,10 +782,20 @@ def test_observed_virtual_images_are_census_roots_not_invented_bindings(
         image = _elf_image()
         struct.pack_into("<q", image, 0x200, 0)
     executable.write_bytes(image)
+    loader_snapshot = (
+        _macos_loader_snapshot((executable,), {str(executable.resolve()): executable})
+        if operating_system == "macos"
+        else _loader_snapshot((executable,), {"python": executable})
+    )
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: ((executable,), {"python": executable}, (contract,)),
+        "_loaded_native_module_snapshot",
+        lambda _os: LoadedNativeModuleSnapshot(
+            paths=loader_snapshot.paths,
+            aliases=loader_snapshot.aliases,
+            contracts=(contract,),
+            macho_identities=loader_snapshot.macho_identities,
+        ),
     )
     closure = native._native_dependency_closure(
         {"base-executable": executable},
@@ -699,8 +839,8 @@ def test_macos_cached_image_contract_requires_exact_install_path(
     contract = "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib"
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: (
+        "_loaded_native_module_snapshot",
+        lambda _os: _macos_loader_snapshot(
             (executable,),
             {str(executable.resolve()): executable},
             (contract,),
@@ -741,8 +881,8 @@ def test_macos_loaded_images_with_same_basename_remain_distinct_components(
     aliases = {str(path.resolve()): path for path in loaded}
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: (loaded, aliases, ()),
+        "_loaded_native_module_snapshot",
+        lambda _os: _macos_loader_snapshot(loaded, aliases),
     )
 
     closure = native._native_dependency_closure(
@@ -779,8 +919,8 @@ def test_macos_rpath_binding_uses_declared_loader_scope_not_basename(
     aliases = {str(path.resolve()): path for path in loaded}
     monkeypatch.setattr(
         native,
-        "_loaded_native_module_paths",
-        lambda _os: (loaded, aliases, ()),
+        "_loaded_native_module_snapshot",
+        lambda _os: _macos_loader_snapshot(loaded, aliases),
     )
 
     closure = native._native_dependency_closure(

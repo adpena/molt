@@ -1,14 +1,62 @@
 from __future__ import annotations
 
+import importlib
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 from tools.import_file import (
+    bind_repository_imports,
     load_module_from_path,
     load_sibling_package_module_from_path,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_top_level_import_reuses_loaded_canonical_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(ROOT / "tools"))
+    sys.modules.pop("import_file", None)
+    try:
+        direct = importlib.import_module("import_file")
+        canonical = sys.modules["tools.import_file"]
+        assert direct is canonical
+        assert sys.modules["import_file"] is canonical
+        assert getattr(direct, "bind_repository_imports") is bind_repository_imports
+    finally:
+        sys.modules.pop("import_file", None)
+
+
+def test_repository_binding_repositions_selected_roots_ahead_of_foreign_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [str(foreign), str(ROOT / "src"), "sentinel", str(ROOT)],
+    )
+
+    assert bind_repository_imports(ROOT / "tools" / "structural_audit.py") == ROOT
+
+    assert sys.path[:2] == [str(ROOT / "src"), str(ROOT)]
+    assert sys.path[2:] == [str(foreign), "sentinel"]
+
+
+def test_repository_binding_rejects_loaded_foreign_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    foreign = ModuleType("molt.foreign")
+    foreign.__file__ = str(tmp_path / "molt" / "foreign.py")
+    monkeypatch.setitem(sys.modules, "molt.foreign", foreign)
+
+    with pytest.raises(RuntimeError, match="repository import custody mismatch"):
+        bind_repository_imports(ROOT / "tools" / "structural_audit.py")
 
 
 def test_load_module_registers_identity_before_dataclass_execution(tmp_path) -> None:

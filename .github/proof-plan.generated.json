@@ -161,7 +161,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b000b0233ee13393167c6fe5326b84ae1c3e35068e5a37bcd54e11e7869ce3d8",
+  "authority_sha256": "8d92c3ce36fef8b2d097d233db2f9e088e45065b1d77af9f5795a7b56cc1cbe2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3309,6 +3309,9 @@
     },
     {
       "argv": [
+        "uv",
+        "run",
+        "--frozen",
         "python3",
         "tools/run_cargo_test_truth.py"
       ],
@@ -3327,6 +3330,7 @@
       "timeout_seconds": 1800,
       "toolchains": [
         "python",
+        "uv",
         "rustc",
         "cargo",
         "wasm-ld"
