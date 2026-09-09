@@ -170,9 +170,15 @@ pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
                 (slice_stop_bits(slice_ptr), slice_stop_bits(other_ptr)),
                 (slice_step_bits(slice_ptr), slice_step_bits(other_ptr)),
             ] {
-                match crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(left), obj_from_bits(right)) {
+                match crate::object::ops_compare::compare_object_eq_bool(
+                    _py,
+                    obj_from_bits(left),
+                    obj_from_bits(right),
+                ) {
                     crate::object::ops_compare::CompareBoolOutcome::True => {}
-                    crate::object::ops_compare::CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+                    crate::object::ops_compare::CompareBoolOutcome::False => {
+                        return MoltObject::from_bool(false).bits();
+                    }
                     _ => return MoltObject::none().bits(),
                 }
             }

@@ -241,6 +241,27 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     ]
 
 
+def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    core = commands["rust.test.ir-wasm-runtime-authorities"]
+    complement = commands["rust.test.compiler-authorities"]
+
+    def test_packages(command: proof_plan.ProofCommand) -> set[str]:
+        argv = command.argv
+        return {argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-p"}
+
+    assert test_packages(core) == {"molt-passes", "molt-backend-wasm", "molt-runtime"}
+    assert not test_packages(core) & test_packages(complement)
+    assert core.id in complement.data["dependencies"]
+    assert set(core.toolchains) == {"cargo", "node", "wasm-ld"}
+    assert "--lib" in core.argv
+    assert "--bins" not in core.argv
+    assert "--include-ignored" not in core.argv
+    assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
+    filters = core.argv[core.argv.index("--") + 1 :]
+    assert {"tir::", "wasm::", "call::", "object::"}.issubset(filters)
+
+
 def test_docs_only_change_skips_compiler_proofs() -> None:
     classes = _classes("docs/agent/INDEX.md")
     assert classes["repository_policy"] is True

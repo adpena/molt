@@ -2573,13 +2573,22 @@ pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
         let outcome = crate::object::ops_compare::rich_compare_method_value(
-            _py, obj_from_bits(self_bits), obj_from_bits(other_bits), name,
+            _py,
+            obj_from_bits(self_bits),
+            obj_from_bits(other_bits),
+            name,
         );
         match crate::object::ops_compare::comparison_value_to_bool(_py, outcome) {
-            crate::object::ops_compare::CompareBoolOutcome::True => MoltObject::from_bool(false).bits(),
-            crate::object::ops_compare::CompareBoolOutcome::False => MoltObject::from_bool(true).bits(),
+            crate::object::ops_compare::CompareBoolOutcome::True => {
+                MoltObject::from_bool(false).bits()
+            }
+            crate::object::ops_compare::CompareBoolOutcome::False => {
+                MoltObject::from_bool(true).bits()
+            }
             crate::object::ops_compare::CompareBoolOutcome::Error => MoltObject::none().bits(),
-            crate::object::ops_compare::CompareBoolOutcome::NotComparable => not_implemented_bits(_py),
+            crate::object::ops_compare::CompareBoolOutcome::NotComparable => {
+                not_implemented_bits(_py)
+            }
         }
     })
 }

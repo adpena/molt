@@ -161,7 +161,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bf4e1fe8b94a306dee39a039c04d760526b0c44445eda9d6b7fa369f4a27ebbc",
+  "authority_sha256": "0bc8c754052649c4c12ee7b76a4ea5951759b36bdf74acf86884e33348775eee",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -380,7 +380,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 70,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3348,15 +3348,11 @@
         "-p",
         "molt-ir",
         "-p",
-        "molt-passes",
-        "-p",
         "molt-tir",
         "-p",
         "molt-backend",
         "-p",
         "molt-backend-native",
-        "-p",
-        "molt-backend-wasm",
         "-p",
         "molt-backend-luau",
         "-p",
@@ -3373,7 +3369,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [
-        "rust.test.default-truth"
+        "rust.test.ir-wasm-runtime-authorities"
       ],
       "family": "rust",
       "id": "rust.test.compiler-authorities",
@@ -3388,6 +3384,60 @@
       "toolchains": [
         "cargo",
         "lune",
+        "node",
+        "wasm-ld"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--timings",
+        "--profile",
+        "dev-fast",
+        "--config",
+        "profile.dev-fast.package.molt-runtime.opt-level=0",
+        "--no-fail-fast",
+        "--lib",
+        "-p",
+        "molt-passes",
+        "-p",
+        "molt-backend-wasm",
+        "-p",
+        "molt-runtime",
+        "--no-default-features",
+        "--features",
+        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set",
+        "--",
+        "tir::",
+        "wasm::",
+        "call::",
+        "object::",
+        "builtins::frames::",
+        "builtins::types::",
+        "builtins::modules::",
+        "builtins::functions::function_abi::",
+        "builtins::attributes::",
+        "builtin_bootstrap_lookup",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [
+        "rust.test.default-truth"
+      ],
+      "family": "rust",
+      "id": "rust.test.ir-wasm-runtime-authorities",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "cargo",
         "node",
         "wasm-ld"
       ]
@@ -3945,12 +3995,12 @@
         }
       },
       "rust": {
-        "budget_seconds": 3600,
-        "critical_path_seconds": 2400,
+        "budget_seconds": 4200,
+        "critical_path_seconds": 3000,
         "headroom_seconds": 240,
-        "projected_makespan_seconds": 3360,
+        "projected_makespan_seconds": 3960,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 3360
+          "compiler-build-resource": 3960
         }
       },
       "rust_security": {
