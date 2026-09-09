@@ -282,8 +282,8 @@ class MidendDataflowMixin(_MixinBase):
                     local_defs.add(out_name)
         return failures
 
-    def _dead_op_lattice_class(self, op_kind: str) -> str:
-        effect = self._op_effect_class(op_kind)
+    def _dead_op_lattice_class(self, op: MoltOp | str) -> str:
+        effect = self._op_effect_class(op)
         if effect == "control":
             return "protected"
         if effect == "pure":
@@ -314,6 +314,9 @@ class MidendDataflowMixin(_MixinBase):
     def _op_instance_cannot_raise(
         self, op: MoltOp, const_by_name: dict[str, Any]
     ) -> bool:
+        comparison = self._predicate_primitive_facts(op)
+        if comparison is not None:
+            return comparison[1]
         if op.kind not in RAISING_KIND_NAMES:
             return True
         if op.kind not in FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS:
@@ -367,7 +370,7 @@ class MidendDataflowMixin(_MixinBase):
             out_name = op.result.name
             if out_name == "none":
                 return None
-            if self._dead_op_lattice_class(op.kind) != "pure":
+            if self._dead_op_lattice_class(op) != "pure":
                 return None
             return (op.kind, tuple(normalize_anchor_arg(arg) for arg in op.args))
 
@@ -406,7 +409,7 @@ class MidendDataflowMixin(_MixinBase):
                 self._collect_arg_value_names(arg, uses)
             uses_by_index[idx] = uses
 
-            lattice_class = self._dead_op_lattice_class(op.kind)
+            lattice_class = self._dead_op_lattice_class(op)
             if out_name != "none":
                 defs_by_name.setdefault(out_name, []).append(idx)
                 if lattice_class == "pure":
@@ -966,17 +969,13 @@ class MidendDataflowMixin(_MixinBase):
                 if owner is None or try_start_idx > owner:
                     check_exception_try_owner[op_idx] = try_start_idx
 
-        value_users: dict[str, set[int]] = {}
-        for op_idx, op in enumerate(ops):
-            block_id = cfg.index_to_block.get(op_idx)
-            if block_id is None:
-                continue
-            for arg in op.args:
-                if isinstance(arg, MoltValue):
-                    value_users.setdefault(arg.name, set()).add(block_id)
-
         iterations = 0
         ssa_defs = sum(1 for op in ops if op.result.name != "none")
+        if max_iters_override is None or max_iters_override <= 0:
+            # Direct solver consumers share the pipeline's environment refresh
+            # authority. Explicit policy budgets are already resolved by their
+            # caller and do not need another environment scan per solver round.
+            self._refresh_midend_env_config_if_needed()
         if max_iters_override is not None and max_iters_override > 0:
             max_iterations = max_iters_override
         elif self.midend_env.sccp_iter_cap_override is not None:
@@ -999,8 +998,6 @@ class MidendDataflowMixin(_MixinBase):
         queued_blocks: set[int] = set()
         edge_queue: deque[tuple[int, int]] = deque()
         queued_edges: set[tuple[int, int]] = set()
-        value_queue: deque[str] = deque()
-        queued_values: set[str] = set()
 
         def enqueue_block(block_id: int) -> None:
             if block_id in queued_blocks:
@@ -1015,16 +1012,15 @@ class MidendDataflowMixin(_MixinBase):
             queued_edges.add(edge)
             edge_queue.append(edge)
 
-        def enqueue_value(name: str) -> None:
-            if name in queued_values:
-                return
-            queued_values.add(name)
-            value_queue.append(name)
-
         if cfg.blocks:
             enqueue_block(0)
 
-        while block_queue or edge_queue or value_queue:
+        # Block transfers read predecessor states, not a global SSA lattice.
+        # Only a changed predecessor state or newly executable incoming edge can
+        # change a transfer. Broadcasting forwarded names to every historical
+        # user duplicates that dependency graph and schedules backward work even
+        # in acyclic CFGs. FIFO CFG traversal is deterministic without name order.
+        while block_queue or edge_queue:
             if edge_queue:
                 src, dst = edge_queue.popleft()
                 queued_edges.discard((src, dst))
@@ -1033,15 +1029,9 @@ class MidendDataflowMixin(_MixinBase):
                 executable_edges.add((src, dst))
                 if dst not in executable_blocks:
                     executable_blocks.add(dst)
+                # PHI evaluation also depends on the incoming executable-edge
+                # mask, even when all predecessor state dictionaries are equal.
                 enqueue_block(dst)
-                continue
-
-            if value_queue:
-                value_name = value_queue.popleft()
-                queued_values.discard(value_name)
-                for block_id in value_users.get(value_name, ()):
-                    if block_id in executable_blocks:
-                        enqueue_block(block_id)
                 continue
 
             iterations += 1
@@ -1193,30 +1183,8 @@ class MidendDataflowMixin(_MixinBase):
                                 known[type_fact_key(guarded_obj.name)] = tags[0]
 
             prior_out = out_values[block_id]
-            out_changed_keys: list[str] = []
-            if known != prior_out:
-                # DETERMINISM (#73, #34 bug class): `out_changed_keys` drives the
-                # order values are pushed onto the SCCP `value_queue` (see the
-                # `enqueue_value(key)` loop below), which in turn dictates the
-                # block-processing schedule of this worklist fixed point.  Built
-                # from a `set[str]` union, its iteration order is
-                # PYTHONHASHSEED-dependent — and while the SCCP lattice *result*
-                # is order-independent (monotone), the NUMBER of node re-visits
-                # to reach the fixed point is not.  For a function near the
-                # `max_iterations` cap, a worse schedule can exceed the cap and
-                # bail to the conservative empty-facts result, whereas a better
-                # schedule converges with full const facts.  That flips
-                # downstream CSE/const-dedup on or off, so the emitted IR
-                # silently diverged across hash seeds.  Sort the changed keys at
-                # this construction site so the worklist schedule — and thus the
-                # cap behaviour and the compiled IR — is byte-stable.
-                all_keys = set(prior_out.keys()) | set(known.keys())
-                out_changed_keys = sorted(
-                    key
-                    for key in all_keys
-                    if prior_out.get(key, _SCCP_UNKNOWN)
-                    != known.get(key, _SCCP_UNKNOWN)
-                )
+            out_changed = known != prior_out
+            if out_changed:
                 out_values[block_id] = known
 
             succs = cfg.successors.get(block_id, [])
@@ -1296,10 +1264,7 @@ class MidendDataflowMixin(_MixinBase):
             for succ in chosen_succs:
                 enqueue_edge(block_id, succ)
 
-            if out_changed_keys:
-                for key in out_changed_keys:
-                    if not key.startswith("__"):
-                        enqueue_value(key)
+            if out_changed:
                 for succ in cfg.successors.get(block_id, []):
                     if succ in executable_blocks:
                         enqueue_block(succ)

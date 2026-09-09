@@ -508,7 +508,7 @@ fn compute_dominators(
 
     // Use a reverse-post-order numbering for efficient iteration.
     // RPO traversal needs the *forward* (successor) edges.
-    let rpo = reverse_postorder(blocks.len(), entry, |b| &successors[b]);
+    let rpo = super::traversal::indexed_reverse_postorder(successors, entry);
     let mut rpo_order: Vec<usize> = Vec::with_capacity(n); // block-ids in RPO
     let mut rpo_number: Vec<usize> = vec![usize::MAX; n]; // block-id → RPO index
     for (rpo_idx, &bid) in rpo.iter().enumerate() {
@@ -575,39 +575,6 @@ fn intersect_dom(
         }
     }
     a
-}
-
-/// Compute reverse-post-order traversal of the graph starting from `entry`.
-fn reverse_postorder<'a, F>(n: usize, entry: usize, successors_of: F) -> Vec<usize>
-where
-    F: Fn(usize) -> &'a Vec<usize>,
-{
-    // Iterative DFS over the forward (successor) graph.
-    let mut visited = vec![false; n];
-    let mut postorder = Vec::with_capacity(n);
-
-    // Iterative post-order DFS.
-    let mut stack: Vec<(usize, bool)> = vec![(entry, false)];
-    while let Some((node, processed)) = stack.pop() {
-        if processed {
-            postorder.push(node);
-            continue;
-        }
-        if visited[node] {
-            continue;
-        }
-        visited[node] = true;
-        stack.push((node, true));
-        // Push successors in reverse so they're visited in forward order.
-        for &succ in successors_of(node).iter().rev() {
-            if !visited[succ] {
-                stack.push((succ, false));
-            }
-        }
-    }
-
-    postorder.reverse();
-    postorder
 }
 
 // ---------------------------------------------------------------------------

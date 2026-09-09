@@ -1,7 +1,6 @@
-//! Integration tests for the LLVM backend's reverse-post-order (RPO)
-//! computation over TIR CFGs.
+//! Shared executable-CFG order consumed by analysis and backend lowering.
 //!
-//! These tests target [`molt_backend::llvm_backend::lowering::compute_function_rpo`]
+//! These tests target [`crate::tir::dominators::executable_reverse_postorder`]
 //! directly. They construct synthetic TIR CFGs (no ops, just terminators) and
 //! assert the dominator-precedes-dominatee invariants that LLVM lowering
 //! relies on. We do not pin the result to a single canonical ordering: any
@@ -9,13 +8,11 @@
 //! valid RPO. Instead we assert the relational properties that callers
 //! actually depend on.
 
-#![cfg(feature = "llvm")]
-
-use molt_backend::llvm_backend::lowering::compute_function_rpo;
-use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
-use molt_backend::tir::function::TirFunction;
-use molt_backend::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
-use molt_backend::tir::types::TirType;
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::dominators::{build_pred_map, compute_idoms, executable_reverse_postorder};
+use crate::tir::function::TirFunction;
+use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::types::TirType;
 
 /// Build a function with `num_blocks` empty blocks (terminators initialized
 /// to `Unreachable`; tests overwrite them as needed).
@@ -47,7 +44,7 @@ fn position_of(rpo: &[BlockId], b: BlockId) -> usize {
 }
 
 #[test]
-fn llvm_rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
+fn rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
     // CFG:
     //   entry -> A, B   (cond branch)
     //   A     -> merge
@@ -91,7 +88,7 @@ fn llvm_rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
     );
     set_term(&mut func, merge, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(
         rpo.len(),
@@ -123,7 +120,7 @@ fn llvm_rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
 }
 
 #[test]
-fn llvm_rpo_simple_loop_orders_entry_before_header_before_body() {
+fn rpo_simple_loop_orders_entry_before_header_before_body() {
     // CFG:
     //   entry  -> header
     //   header -> body, exit  (cond branch)
@@ -168,7 +165,7 @@ fn llvm_rpo_simple_loop_orders_entry_before_header_before_body() {
     );
     set_term(&mut func, exit, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(
         rpo.len(),
@@ -201,7 +198,7 @@ fn llvm_rpo_simple_loop_orders_entry_before_header_before_body() {
 }
 
 #[test]
-fn llvm_rpo_unreachable_blocks_are_excluded() {
+fn rpo_unreachable_blocks_are_excluded() {
     // CFG:
     //   entry -> exit (return)
     //   dead  -> return  (no predecessor — unreachable from entry)
@@ -221,7 +218,7 @@ fn llvm_rpo_unreachable_blocks_are_excluded() {
     set_term(&mut func, exit, Terminator::Return { values: vec![] });
     set_term(&mut func, dead, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(rpo, vec![entry, exit]);
     assert!(
@@ -232,7 +229,7 @@ fn llvm_rpo_unreachable_blocks_are_excluded() {
 }
 
 #[test]
-fn llvm_rpo_switch_terminator_visits_all_cases_and_default() {
+fn rpo_switch_terminator_visits_all_cases_and_default() {
     // CFG:
     //   entry -> switch on v: case 0 -> A, case 1 -> B, default -> C
     //   A, B, C -> merge -> return
@@ -266,7 +263,7 @@ fn llvm_rpo_switch_terminator_visits_all_cases_and_default() {
     }
     set_term(&mut func, merge, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(rpo.len(), 5, "all five blocks must appear: {:?}", rpo);
     assert_eq!(rpo[0], entry);
@@ -279,7 +276,7 @@ fn llvm_rpo_switch_terminator_visits_all_cases_and_default() {
 }
 
 #[test]
-fn llvm_rpo_deeply_chained_cfg_does_not_overflow_stack() {
+fn rpo_deeply_chained_cfg_does_not_overflow_stack() {
     // Build a chain of 5,000 blocks: entry -> b1 -> b2 -> ... -> b4999 -> return.
     // A naive recursive DFS overflows the host stack at this depth on default
     // thread stack sizes; the iterative implementation must handle it.
@@ -301,9 +298,14 @@ fn llvm_rpo_deeply_chained_cfg_does_not_overflow_stack() {
         Terminator::Return { values: vec![] },
     );
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(rpo.len(), N as usize);
+    let idoms = compute_idoms(&func, &build_pred_map(&func));
+    assert_eq!(idoms.len(), N as usize);
+    for index in 1..N {
+        assert_eq!(idoms[&BlockId(index)], Some(BlockId(index - 1)));
+    }
     for (i, bid) in rpo.iter().enumerate() {
         assert_eq!(
             *bid,
@@ -314,7 +316,7 @@ fn llvm_rpo_deeply_chained_cfg_does_not_overflow_stack() {
 }
 
 #[test]
-fn llvm_rpo_self_loop_is_not_revisited() {
+fn rpo_self_loop_is_not_revisited() {
     // CFG:
     //   entry -> entry (self-loop) OR exit
     //   exit  -> return
@@ -339,7 +341,7 @@ fn llvm_rpo_self_loop_is_not_revisited() {
     );
     set_term(&mut func, exit, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
     assert_eq!(rpo, vec![entry, exit]);
 }
 
@@ -360,7 +362,7 @@ fn push_check_exception(func: &mut TirFunction, block: BlockId, handler_label: i
 }
 
 #[test]
-fn llvm_rpo_includes_exception_edge_only_reachable_handler() {
+fn rpo_includes_exception_edge_only_reachable_handler() {
     // CFG (regression for the LLVM exception-CFG bug):
     //   entry  --CheckException(handler)-->  handler   (mid-block exception edge)
     //   entry  --Branch-->                   exit
@@ -403,7 +405,7 @@ fn llvm_rpo_includes_exception_edge_only_reachable_handler() {
     );
     set_term(&mut func, exit, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(
         rpo.len(),
@@ -436,7 +438,7 @@ fn llvm_rpo_includes_exception_edge_only_reachable_handler() {
 }
 
 #[test]
-fn llvm_rpo_includes_handler_reachable_only_transitively_via_exception_edge() {
+fn rpo_includes_handler_reachable_only_transitively_via_exception_edge() {
     // CFG:
     //   entry  --CheckException(handler)-->  handler        (mid-block exc edge)
     //   entry  --Branch-->                   exit
@@ -482,7 +484,7 @@ fn llvm_rpo_includes_handler_reachable_only_transitively_via_exception_edge() {
     );
     set_term(&mut func, exit, Terminator::Return { values: vec![] });
 
-    let rpo = compute_function_rpo(&func);
+    let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(rpo.len(), 4, "all four blocks must appear: {:?}", rpo);
     for b in [entry, handler, handler_body, exit] {

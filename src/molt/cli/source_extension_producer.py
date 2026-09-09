@@ -50,7 +50,7 @@ from molt.cli.source_extensions import (
     _MESON_EXTENSION_TARGET_TYPES,
     _load_ninja_build_all_inputs,
     _load_meson_intro_targets_source_extension_plan,
-    _meson_linked_static_library_targets,
+    _meson_static_library_projection,
     _meson_target_filename_names,
     _meson_target_output_paths,
     canonicalize_source_extension_manifest_required_capsules,
@@ -65,7 +65,7 @@ from molt.cli.source_build_environment import (
     canonical_source_marker_environment,
     source_build_environment,
 )
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
     _canonical_extension_manifest_for_wheel,
     _canonicalize_location_string,
@@ -1996,19 +1996,6 @@ def _missing_extension_generated_inputs(
         names.update(_meson_target_filename_names(target.get("filename")))
         return names
 
-    def excluded_target(
-        target: Mapping[str, Any], excluded_libraries: Sequence[str]
-    ) -> bool:
-        normalized_exclusions = {
-            Path(name).name.lower().removeprefix("lib").removesuffix(".a")
-            for name in excluded_libraries
-        }
-        normalized_names = {
-            Path(name).name.lower().removeprefix("lib").removesuffix(".a")
-            for name in target_names(target)
-        }
-        return bool(normalized_exclusions.intersection(normalized_names))
-
     for spec in extension_set.extensions:
         matches = [
             target
@@ -2023,17 +2010,17 @@ def _missing_extension_generated_inputs(
                 f"{len(matches)} extension targets"
             )
         primary = matches[0]
-        linked = _meson_linked_static_library_targets(
-            primary_target=primary,
-            payload=payload,
-            build_root=build_root,
-        )
-        excluded = tuple(
-            target
-            for target in linked
-            if excluded_target(target, spec.exclude_linked_static_libraries)
-        )
-        targets = (primary, *(target for target in linked if target not in excluded))
+        try:
+            projection = _meson_static_library_projection(
+                primary_target=primary,
+                payload=payload,
+                build_root=build_root,
+                exclude_linked_static_libraries=spec.exclude_linked_static_libraries,
+            )
+        except ValueError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
+        excluded = projection.excluded_targets
+        targets = (primary, *projection.targets)
         excluded_outputs = {
             output
             for target in excluded

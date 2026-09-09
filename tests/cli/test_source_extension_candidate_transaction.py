@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli import source_extension_candidate_transaction as transaction_authority
 from molt.cli.source_package_seal import (
     SourcePackageInput,

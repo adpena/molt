@@ -37,6 +37,31 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
         values: vec![result_id],
     };
 
+    let annotated = lower_tir_to_wasm(&func).test_view();
+    assert!(
+        !annotated
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32And)),
+        "annotation-only operands cannot authorize raw boolean selection"
+    );
+    let left = func.fresh_value();
+    let right = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].operands = vec![left, right];
+    for (index, value) in [left, right].into_iter().enumerate() {
+        entry.ops.insert(
+            index,
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstBool,
+                operands: vec![],
+                results: vec![value],
+                attrs: AttrDict::from([("value".into(), AttrValue::Bool(index == 0))]),
+                source_span: None,
+            },
+        );
+    }
     let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output
@@ -143,13 +168,35 @@ fn f64_mod_declares_emission_scratch_locals() {
         values: vec![result_id],
     };
 
+    let annotated = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(
+        annotated.result_types,
+        vec![ValType::I64],
+        "annotation-only operands cannot prove a float return representation"
+    );
+    let left = func.fresh_value();
+    let right = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].operands = vec![left, right];
+    for (index, (value, number)) in [(left, 5.5), (right, 2.0)].into_iter().enumerate() {
+        entry.ops.insert(
+            index,
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstFloat,
+                operands: vec![],
+                results: vec![value],
+                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                source_span: None,
+            },
+        );
+    }
     let output = lower_tir_to_wasm(&func).test_view();
-
     assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
     assert_eq!(output.result_types, vec![ValType::F64]);
     assert_eq!(
         output.locals,
-        vec![ValType::F64, ValType::F64, ValType::F64],
-        "f64 modulo needs the result local plus two scratch locals declared"
+        vec![ValType::F64; 5],
+        "exact f64 modulo declares two producer locals, its result and two scratch locals"
     );
 }

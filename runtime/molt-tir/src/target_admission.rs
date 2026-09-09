@@ -8,7 +8,7 @@ pub use crate::tir::target_info::NumericTargetCapabilities;
 pub use numeric::{exact_integer_literal_value, validate_numeric_target_contract};
 pub use runtime::{
     ASYNC_RUNTIME_REQUIREMENT_REASON, PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON,
-    simpleir_op_runtime_requirements, validate_runtime_target_contract,
+    validate_runtime_target_contract,
 };
 
 use crate::representation_plan::ScalarRepresentationPlan;

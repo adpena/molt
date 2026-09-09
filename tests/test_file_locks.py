@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import threading
 
-from molt.cli import build_locks
+from molt import file_locks as build_locks
+from tests.process_guard_common import run_custody_subject_process
 
 
 def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """The in-process authority must not depend on OS same-process semantics."""
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: True)
@@ -26,7 +29,8 @@ def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
 
 
 def test_file_lock_releases_registry_reservation_when_platform_is_contended(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: False)
 
@@ -56,3 +60,21 @@ def test_file_lock_registry_is_reinitialized_after_fork() -> None:
     assert build_locks._IN_PROCESS_LOCK_REGISTRY == {}
     assert build_locks._IN_PROCESS_LOCK_REGISTRY is not prior_registry
     assert build_locks._IN_PROCESS_LOCK_REGISTRY_GUARD is not prior_guard
+
+
+def test_file_lock_and_proof_cache_imports_do_not_load_cli_or_frontend():
+    completed = run_custody_subject_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from molt import file_locks; "
+            "from tools.proof_queue_pkg import cargo_cache_custody; "
+            "assert not any(name == 'molt.cli' or name.startswith('molt.frontend') "
+            "for name in sys.modules), sorted(sys.modules)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stderr

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use super::super::super::blocks::BlockId;
 use super::super::super::function::TirFunction;
@@ -107,6 +107,19 @@ fn preflight_fusion(
     poll: &TirFunction,
     candidate: &FusionCandidate,
 ) -> Option<Vec<PlannedSlot>> {
+    let retired: HashSet<_> = std::iter::once(candidate.cond_block)
+        .chain(candidate.loop_header)
+        .collect();
+    let retired_loops = candidate.loop_header.into_iter().collect();
+    caller
+        .validate_block_retirement(
+            &retired,
+            &retired_loops,
+            &HashSet::from([candidate.loop_header.unwrap_or(candidate.cond_block)]),
+            false, // wire_fused_loop rewires edges but does not replace caller.entry_block.
+        )
+        .ok()?;
+
     // --- Phase-1 gate: exactly one yield site. ---
     let yield_count: usize = poll
         .blocks

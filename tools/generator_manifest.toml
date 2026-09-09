@@ -249,7 +249,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/generator_io.py"
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
 toolchains = ["rustfmt"]

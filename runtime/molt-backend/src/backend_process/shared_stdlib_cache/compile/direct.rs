@@ -3,7 +3,7 @@ use std::path::Path;
 
 use molt_backend::{SimpleBackend, SimpleIR};
 
-pub(super) fn compile_direct_stdlib_cache_object(
+pub(super) fn compile_direct_stdlib_cache_archive(
     stdlib_path: &Path,
     functions: Vec<molt_backend::FunctionIR>,
     profile: Option<molt_backend::PgoProfileIR>,
@@ -19,5 +19,8 @@ pub(super) fn compile_direct_stdlib_cache_object(
     stdlib_backend.emit_app_callable_resolver = false;
     stdlib_backend.set_module_context(module_context);
     let stdlib_output = stdlib_backend.compile(stdlib_ir);
-    std::fs::write(stdlib_path, &stdlib_output.bytes)
+    crate::backend_process::native_batch::write_native_archive_bytes(
+        stdlib_path,
+        &stdlib_output.bytes,
+    )
 }

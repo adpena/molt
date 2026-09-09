@@ -63,6 +63,39 @@ queue/bootstrap repair. For Rust, use `tools/dev.py fmt-check` or
 `tools/check_rustfmt.py --changed`; write mode compares `rustfmt --emit stdout`
 before touching files and keeps generated Rust under generator custody.
 
+The compiler-authorities shard records Cargo's built-in `--timings` report in
+its run-owned target under `cargo-timings/`. Use that unit timeline for compile
+critical-path attribution before changing crate boundaries or parallelism.
+Process-custody events prove process identity and lifecycle, not per-crate
+wall time; their sequence numbers must not be interpreted as timestamps.
+
+Receipt unit tests use `tests/proof_queue_custody_test_support.py`: real Python
+validation, CAS hashing and custody binding over synthetic test inputs, with
+only the exact native-verifier execution boundary replaced. They never build
+or launch a supervisor. The same substitution assertions run against the real
+supervisor in `tests/tools/test_proof_queue_native_receipts.py` (`slow`), selected
+by the existing warm native-integration batch in `tools/proof_plan.toml`.
+
+Execution receipts have one compact wire representation, capped at 64 KiB.
+`execution_receipt_details` publishes complete child-policy/event inventories,
+environment inventories (with their existing value-HMAC policy), and prelaunch
+custody-authority inventories into the existing `custody-cas` store. The
+`execution_details` reference binds the full detail to the run and execution
+nonce; each replaced inventory carries its exact type, count, and content hash.
+Nothing is sampled, clipped, or omitted to fit the cap. Toolchain and native
+supervisor custody keep their existing authorities.
+
+For an agent query, load the execution JSON and call
+`execution_receipt_details.expand_context(record["receipt_context"],
+cas_root=execution_path.parent / "custody-cas")`. This verifies the CAS bytes,
+run/nonce binding, and exact projection closure before returning full detail.
+Runner admission and Cargo candidate sealing use the same expansion authority;
+missing, substituted, or legacy inline detail fails closed. Custody digests
+cover the compact wire context, not a separately serialized expanded copy.
+Source eligibility decisions and live mutation evidence are unchanged: receipt
+compaction never converts dirty or transiently mutated inputs into reusable
+cache proof.
+
 Before queueing, always inspect live custody:
 
 ```powershell
@@ -137,6 +170,13 @@ shared mutex itself; do not bypass it with a hand-chosen key or a raw background
 command.
 
 ## Cargo Proof Lanes
+
+The canonical `rust.test.compiler-authorities` command is a correctness lane.
+Its inline `dev-fast` override builds the Cranelift codegen dependency at host
+optimization level zero; backend-generated program optimization is unchanged.
+Keep this exact command in proof-plan custody and measure total build-plus-test
+time. Its receipt does not prove optimized-host compiler performance; performance
+claims require the corresponding production profile.
 
 Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
 `cargo ...` through `exec`, the TOML DSL, shell backgrounding, or a Codex-held
@@ -656,6 +696,14 @@ current-test custody markers, non-final memory-guard summaries on terminal
 rows, and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
+
+Running command diagnostics also consume bounded stdout/stderr tails from the
+current execution's nonce-bound, opened-file identities. These provisional
+observations include paths, byte offsets and observed sizes; they are not
+terminal receipts and never authorize cancellation or another execution.
+Missing or changed stream custody emits `live-command-transcript-unavailable`
+instead of reading guessed paths. Complete transcript hashes remain owned by
+the quiescent execution receipt.
 
 Use `diagnose` before manual log spelunking or hand-written status notes:
 

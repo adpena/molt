@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sqlite3
 import time
@@ -11,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping
 
-from tools.proof_queue_pkg import custody, state
+from molt.exact_json import read_exact
+from tools.proof_queue_pkg import command_admission, command_identity, custody, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
     _format_duration,
@@ -50,13 +52,7 @@ class RunningGuardTimeoutEvidence:
 
 
 def _last_nonempty_log_line(path: Path) -> str | None:
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            handle.seek(max(0, size - 65536))
-            text = handle.read().decode("utf-8", errors="replace")
-    except OSError:
-        return None
+    text = _read_log_tail(path, limit=65536)
     for line in reversed(text.splitlines()):
         stripped = line.strip()
         if stripped:
@@ -73,12 +69,133 @@ def _first_log_line_containing(log_tail: str, needle: str) -> str | None:
 
 def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str:
     try:
-        size = path.stat().st_size
         with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
             handle.seek(max(0, size - limit))
-            return handle.read().decode("utf-8", errors="replace")
+            return handle.read(min(size, limit)).decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+@dataclass(frozen=True, slots=True)
+class LiveCommandEvidence:
+    text: str = ""
+    artifacts: tuple[str, ...] = ()
+    observations: tuple[dict[str, object], ...] = ()
+    unavailable_reason: str | None = None
+
+
+def _live_command_evidence(row: sqlite3.Row) -> LiveCommandEvidence:
+    """Read only nonce-bound opened streams for the current execution.
+
+    This is a bounded observation of mutable output, never terminal proof.
+    No process query, queue write, fallback path or retry is permitted here.
+    """
+    if row["status"] != "running":
+        return LiveCommandEvidence()
+    log_path = Path(str(row["log_path"]))
+    request_path, result_path = command_identity.execution_record_paths(log_path)
+    artifacts = (str(request_path), str(result_path))
+    if not result_path.exists():
+        # Identity capture/preflight can legitimately precede the first
+        # execution result. No command output is claimed at this stage.
+        return LiveCommandEvidence()
+    try:
+        request = read_exact(
+            request_path, max_bytes=16 * 1024 * 1024, label="execution request"
+        )
+        result = read_exact(
+            result_path, max_bytes=16 * 1024 * 1024, label="execution result"
+        )
+        if not isinstance(request, dict) or not isinstance(result, dict):
+            raise ValueError("execution authority is not an object")
+        nonce = request.get("execution_nonce")
+        if (
+            request.get("schema") != command_admission.EXECUTION_SCHEMA
+            or result.get("schema") != command_admission.EXECUTION_SCHEMA
+            or request.get("run_id") != row["run_id"]
+            or result.get("run_id") != row["run_id"]
+            or not isinstance(nonce, str)
+            or re.fullmatch(r"[0-9a-f]{64}", nonce) is None
+            or result.get("execution_nonce") != nonce
+            or request.get("result_path") != str(result_path)
+            or request.get("command") != json.loads(row["command_json"])
+            or request.get("envelope") != json.loads(row["command_envelope_json"])
+            or result.get("envelope") != request.get("envelope")
+        ):
+            raise ValueError("execution request/result/row identity mismatch")
+        if result.get("phase") != "command":
+            return LiveCommandEvidence()
+        opened = result.get("live_command_transcript")
+        if not isinstance(opened, dict) or set(opened) != {"stdout", "stderr"}:
+            raise ValueError("command phase has no opened transcript identity")
+        texts: list[str] = []
+        observations: list[dict[str, object]] = []
+        for stream, path in command_identity.execution_transcript_paths(
+            result_path
+        ).items():
+            identity = opened[stream]
+            if not isinstance(identity, dict) or identity.get("path") != str(path):
+                raise ValueError(f"{stream} transcript path substitution")
+            if not path.is_absolute() or path.is_symlink():
+                raise ValueError(
+                    f"{stream} transcript path is not an owned regular output"
+                )
+            with path.open("rb") as handle:
+                if (
+                    command_identity.opened_transcript_identity(path, handle)
+                    != identity
+                ):
+                    raise ValueError(f"{stream} transcript file identity changed")
+                metadata = os.fstat(handle.fileno())
+                offset = max(0, metadata.st_size - DIAGNOSTIC_LOG_TAIL_BYTES)
+                handle.seek(offset)
+                data = handle.read(min(metadata.st_size, DIAGNOSTIC_LOG_TAIL_BYTES))
+            texts.append(data.decode("utf-8", errors="replace"))
+            observations.append(
+                {
+                    "stream": stream,
+                    "path": str(path),
+                    "offset_bytes": offset,
+                    "read_bytes": len(data),
+                    "observed_size_bytes": metadata.st_size,
+                    "observed_mtime_ns": metadata.st_mtime_ns,
+                }
+            )
+        # Recheck launch ownership after reading. A replaced request/result
+        # cannot blend one execution's bytes into another row's diagnosis.
+        current_request = read_exact(
+            request_path, max_bytes=16 * 1024 * 1024, label="execution request"
+        )
+        current_result = read_exact(
+            result_path, max_bytes=16 * 1024 * 1024, label="execution result"
+        )
+        identity_keys = (
+            "schema",
+            "run_id",
+            "execution_nonce",
+            "envelope",
+            "live_command_transcript",
+        )
+        if (
+            current_request != request
+            or not isinstance(current_result, dict)
+            or any(current_result.get(key) != result.get(key) for key in identity_keys)
+        ):
+            raise ValueError(
+                "execution authority changed during transcript observation"
+            )
+        stream_artifacts = tuple(
+            str(path)
+            for path in command_identity.execution_transcript_paths(
+                result_path
+            ).values()
+        )
+        return LiveCommandEvidence(
+            "\n".join(texts), artifacts + stream_artifacts, tuple(observations)
+        )
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        return LiveCommandEvidence(artifacts=artifacts, unavailable_reason=str(exc))
 
 
 def _read_json_object(path: Path) -> dict[str, object]:

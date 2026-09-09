@@ -1088,55 +1088,28 @@ class CallAttributeDispatchMixin(_MixinBase):
             if method == "update" and self._has_exact_builtin_receiver(
                 attr_node.value, receiver, "dict"
             ):
-                if len(node.args) > 1:
-                    msg = f"update expected at most 1 argument, got {len(node.args)}"
-                    return self._emit_type_error_value(msg, "None")
+                if (
+                    node.keywords
+                    or len(node.args) > 1
+                    or any(isinstance(argument, ast.Starred) for argument in node.args)
+                ):
+                    callee = load_attr_callee()
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(
+                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
+                    )
+                    return res
                 res = MoltValue(self.next_var(), type_hint="None")
                 if node.args:
                     other = self.visit(node.args[0])
                     if other is None:
                         raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported dict.update input",
+                            Diagnostic.OPERAND_VALUE, "Unsupported dict.update input"
                         )
                     self.emit(
-                        MoltOp(
-                            kind="DICT_UPDATE",
-                            args=[receiver, other],
-                            result=res,
-                        )
+                        MoltOp(kind="DICT_UPDATE", args=[receiver, other], result=res)
                     )
-                for kw in node.keywords:
-                    if kw.arg is None:
-                        mapping = self.visit(kw.value)
-                        if mapping is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported dict.update ** input",
-                            )
-                        self.emit(
-                            MoltOp(
-                                kind="DICT_UPDATE_KWSTAR",
-                                args=[receiver, mapping],
-                                result=MoltValue("none"),
-                            )
-                        )
-                    else:
-                        key = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(MoltOp(kind="CONST_STR", args=[kw.arg], result=key))
-                        val = self.visit(kw.value)
-                        if val is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported dict.update kw value",
-                            )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[receiver, key, val],
-                                result=MoltValue("none"),
-                            )
-                        )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
             if method == "clear" and self._has_exact_builtin_receiver(

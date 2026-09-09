@@ -79,11 +79,12 @@ pub(crate) use ascii_bytes::{
 pub(in crate::object) use dict_set_tables::simd_contains_u64;
 pub(crate) use dict_set_tables::{
     checked_dict_table_capacity, dict_clear_in_place, dict_clear_in_place_shutdown,
-    dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry, dict_find_entry_fast,
-    dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
-    dict_get_str_bytes_borrowed, dict_inc_in_place, dict_inc_prehashed_string_key_in_place,
-    dict_items_method, dict_keys_method, dict_popitem_method, dict_rebuild, dict_set_in_place,
-    dict_set_inline_int_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
+    dict_clear_method, dict_commit_structure, dict_copy_method, dict_del_in_place, dict_find_entry,
+    dict_find_entry_kv_in_place, dict_find_entry_with_hash, dict_fromkeys_method,
+    dict_get_in_place, dict_get_method, dict_get_str_bytes_borrowed, dict_inc_in_place,
+    dict_inc_prehashed_string_key_in_place, dict_items_method, dict_keys_method,
+    dict_popitem_method, dict_rebuild, dict_set_in_place, dict_set_inline_int_in_place,
+    dict_set_with_hash_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
     dict_update_set_via_store, dict_values_method, set_add_in_place, set_del_in_place,
     set_find_entry, set_find_entry_fast, set_replace_entries, set_table_capacity,
 };
@@ -94,10 +95,7 @@ pub use dict_set_tables::{
     molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc, molt_taq_ingest_line,
 };
 pub(crate) use equality::obj_eq;
-pub(super) use equality::{
-    BinaryDunderOutcome, call_binary_dunder, call_dunder_raw, call_inplace_dunder,
-    eq_bool_from_bits,
-};
+pub(super) use equality::{call_binary_dunder, call_inplace_dunder, eq_bool_from_bits};
 pub use fast_compare::{molt_compare_int_fast, molt_string_eq_fast};
 pub use specialized_list::{
     molt_list_bool_getitem, molt_list_bool_setitem, molt_list_fill_new, molt_list_getitem_int_fast,
@@ -106,6 +104,7 @@ pub use specialized_list::{
     molt_list_int_getitem_truthy, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
     molt_list_int_setitem,
 };
+pub(crate) use subscript::molt_getitem_builtin;
 pub(crate) use subscript::value_supports_mp_subscript;
 pub use subscript::{
     molt_contains, molt_del_index, molt_delitem_method, molt_getitem_method,
@@ -1724,7 +1723,9 @@ pub(crate) unsafe fn list_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> 
 pub(crate) unsafe fn tuple_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
     unsafe {
         let obj = obj_from_bits(other_bits);
-        if let Some(ptr) = obj.as_ptr() {
+        if let Some(ptr) = obj.as_ptr()
+            && crate::object::iterable::builtin_receiver(_py, ptr)
+        {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_TUPLE {
                 inc_ref_bits(_py, other_bits);
@@ -1738,13 +1739,21 @@ pub(crate) unsafe fn tuple_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) ->
                 return Some(tuple_bits);
             }
         }
-        let list_bits = list_from_iter_bits(_py, other_bits)?;
-        let tuple_bits = molt_tuple_from_list(list_bits);
-        dec_ref_bits(_py, list_bits);
-        if obj_from_bits(tuple_bits).is_none() {
-            return None;
+        let policy = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+            crate::object::iterable::LengthHint::Skip
+        } else {
+            crate::object::iterable::LengthHint::Consult
+        };
+        let values = crate::object::iterable::collect(_py, other_bits, policy)?;
+        let tuple = alloc_tuple(_py, &values);
+        for value in values {
+            dec_ref_bits(_py, value);
         }
-        Some(tuple_bits)
+        if tuple.is_null() {
+            None
+        } else {
+            Some(MoltObject::from_ptr(tuple).bits())
+        }
     }
 }
 
@@ -2722,6 +2731,11 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if class_bits == none {
         return class_bits;
     }
+    let mut class_owner = crate::PtrDropGuard::new(
+        obj_from_bits(class_bits)
+            .as_ptr()
+            .expect("class allocator returns a class"),
+    );
     if (flags & 1) != 0 && nb > 0 {
         if nb == 1 {
             molt_class_set_base(class_bits, bases_vec[0]);
@@ -2738,12 +2752,12 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     }
 
     let namespace_ok = crate::with_gil_entry_nopanic!(_py, {
-        unsafe {
-            install_guarded_class_namespace(_py, class_bits, name_bits, &attrs_vec, layout_size)
-        }
+        !exception_pending(_py)
+            && unsafe {
+                install_guarded_class_namespace(_py, class_bits, name_bits, &attrs_vec, layout_size)
+            }
     });
     if !namespace_ok {
-        crate::with_gil_entry_nopanic!(_py, { crate::dec_ref_bits(_py, class_bits) });
         return MoltObject::none().bits();
     }
 
@@ -2751,6 +2765,9 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         eprintln!("molt class_def before apply_set_name");
     }
     molt_class_apply_set_name(class_bits);
+    if crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) }) {
+        return none;
+    }
     if debug_class_def {
         eprintln!("molt class_def after apply_set_name");
     }
@@ -2784,13 +2801,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
                 eprintln!("molt class_def before init_subclass dispatch");
             }
             let ok = unsafe {
-                crate::call::bind::dispatch_init_subclass_hooks(
-                    _py,
-                    &bases_vec,
-                    class_bits,
-                    &[],
-                    &[],
-                )
+                crate::call::bind::dispatch_init_subclass_hooks(_py, class_bits, &[], &[])
             };
             if debug_class_def {
                 eprintln!("molt class_def after init_subclass dispatch");
@@ -2808,6 +2819,10 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         crate::dec_ref_bits(_py, version_obj);
     });
 
+    if crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) }) {
+        return none;
+    }
+    class_owner.release();
     class_bits
 }
 

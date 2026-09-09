@@ -63,6 +63,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
     if forest.headers.is_empty() {
         return stats;
     }
+    let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Value-range proof, shared with BCE/SROA via the analysis manager. Used to
     // DISPROVE the throw condition of a `pure_may_throw` op (a shift whose count
@@ -159,7 +160,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
                 let mut to_hoist: Vec<usize> = Vec::new();
 
                 for (i, op) in block.ops.iter().enumerate() {
-                    if !is_hoistable(op, &vr) {
+                    if !is_hoistable(op, &vr, &value_types) {
                         continue;
                     }
                     if op.results.is_empty() {

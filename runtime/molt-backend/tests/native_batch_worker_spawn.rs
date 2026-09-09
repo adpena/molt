@@ -45,7 +45,7 @@ impl Drop for TestTempDir {
 fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     let tmp = TestTempDir::new();
     let ir_path = tmp.path.join("two_live_functions.json");
-    let output_path = tmp.path.join("out.o");
+    let output_path = tmp.path.join("out.a");
     std::fs::write(
         &ir_path,
         r#"{
@@ -80,6 +80,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     .expect("write native batch worker test IR");
 
     let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .args(["--native-output-kind", "archive"])
         .arg("--ir-file")
         .arg(&ir_path)
         .arg("--output")
@@ -119,8 +120,8 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
 fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     let tmp = TestTempDir::new();
     let ir_path = tmp.path.join("stdlib_split.json");
-    let output_path = tmp.path.join("out.o");
-    let stdlib_path = tmp.path.join("stdlib_shared.o");
+    let output_path = tmp.path.join("out.a");
+    let stdlib_path = tmp.path.join("stdlib_shared.a");
     let runtime_symbols_path = tmp.path.join("runtime_callable_symbols.txt");
     std::fs::write(
         &runtime_symbols_path,
@@ -229,6 +230,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
 
     let run_backend = |destination: &Path| {
         Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+            .args(["--native-output-kind", "archive"])
             .arg("--ir-file")
             .arg(&ir_path)
             .arg("--output")
@@ -315,7 +317,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "shared stdlib object digest sidecar must be populated"
     );
 
-    let warm_output_path = tmp.path.join("out-warm.o");
+    let warm_output_path = tmp.path.join("out-warm.a");
     let warm_output = run_backend(&warm_output_path);
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
     assert!(
@@ -349,7 +351,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
 fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     let tmp = TestTempDir::new();
     let ir_path = tmp.path.join("failing_batch.json");
-    let output_path = tmp.path.join("out.o");
+    let output_path = tmp.path.join("out.a");
     let debug_artifact_dir = tmp.path.join("debug-artifacts");
     std::fs::write(
         &ir_path,
@@ -385,6 +387,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     .expect("write failing native batch worker test IR");
 
     let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .args(["--native-output-kind", "archive"])
         .arg("--ir-file")
         .arg(&ir_path)
         .arg("--output")

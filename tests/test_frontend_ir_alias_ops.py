@@ -233,7 +233,9 @@ def _lowered_kinds(source: str, **kwargs: object) -> set[str]:
 
 
 def _lowered_ops(source: str, **kwargs: object) -> list[dict]:
-    ir = compile_to_tir(source, **kwargs)
+    gen = SimpleTIRGenerator(**kwargs)
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
     return [op for fn in ir["functions"] for op in fn["ops"]]
 
 
@@ -330,21 +332,27 @@ def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
 
 
 def test_raw_invoke_ffi_emitted_for_non_allowlisted_direct_module_call() -> None:
-    kinds = _raw_kinds("import os\nos.getcwd()\n", fallback_policy="bridge")
+    kinds = _raw_kinds(
+        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
+    )
     assert "INVOKE_FFI" in kinds
 
 
 def test_lowered_invoke_ffi_lane_is_used_for_non_allowlisted_direct_module_call() -> (
     None
 ):
-    kinds = _lowered_kinds("import os\nos.getcwd()\n", fallback_policy="bridge")
+    kinds = _lowered_kinds(
+        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
+    )
     assert "invoke_ffi" in kinds
 
 
 def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_call() -> (
     None
 ):
-    ops = _lowered_ops("import os\nos.getcwd()\n", fallback_policy="bridge")
+    ops = _lowered_ops(
+        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
+    )
     invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
     assert invoke_ops
     assert any(op.get("s_value") == "bridge" for op in invoke_ops)
@@ -352,9 +360,10 @@ def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_cal
 
 def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
     sources = (
-        "import nativepkg.ndimage as ndi\nvalue = ndi.distance_transform_edt(data)\n",
-        "from nativepkg.ndimage import distance_transform_edt\n"
-        "value = distance_transform_edt(data)\n",
+        "def f(data):\n    import nativepkg.ndimage as ndi\n"
+        "    return ndi.distance_transform_edt(data)\n",
+        "def f(data):\n    from nativepkg.ndimage import distance_transform_edt\n"
+        "    return distance_transform_edt(data)\n",
     )
     exports = {
         "nativepkg.ndimage.distance_transform_edt": {
@@ -393,11 +402,11 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
             invoke_op["native_callable_symbol"]
             == "molt_nativepkg_ndimage_distance_transform_edt"
         )
-        assert invoke_op["source_line"] == 2
+        assert invoke_op["source_line"] == 3
 
 
 @pytest.mark.parametrize("condition", ["flag is not None", "flag"])
-def test_conditional_native_callable_import_guards_global_then_invokes_ffi(
+def test_conditional_native_callable_import_calls_live_global(
     condition: str,
 ) -> None:
     gen = SimpleTIRGenerator(
@@ -425,50 +434,10 @@ def test_conditional_native_callable_import_guards_global_then_invokes_ffi(
         fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
     )
 
-    invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
-    if condition == "flag":
-        # An unconstrained __bool__ may publish a different callable and return
-        # false, bypassing the import. Mere global existence cannot authorize FFI.
-        assert not invoke_ops
-        consts = _const_str_map(ops)
-        reads = {
-            op["out"]
-            for op in ops
-            if op.get("kind") == "module_get_global"
-            and consts.get((op.get("args") or [None, None])[1])
-            == "distance_transform_edt"
-        }
-        assert reads
-        assert any(
-            op.get("kind") == "call_indirect" and (op.get("args") or [None])[0] in reads
-            for op in ops
-        )
-        return
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert invoke_op["native_callable_export"] == (
-        "nativepkg.ndimage.distance_transform_edt"
-    )
-    assert invoke_op["native_callable_binding"] == "direct_symbol"
-    assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
-    assert (
-        invoke_op["native_callable_symbol"]
-        == "molt_nativepkg_ndimage_distance_transform_edt"
-    )
-    assert len(invoke_op["args"]) == 1
-    assert [op for op in ops if op["kind"] == "call_bind"] == []
-    consts = _const_str_map(ops)
-    post_if_ops = ops[
-        next(i for i, op in enumerate(ops) if op["kind"] == "end_if") + 1 :
-    ]
-    guard_index = next(
-        i
-        for i, op in enumerate(post_if_ops)
-        if op["kind"] == "module_get_global"
-        and consts.get((op.get("args") or [None, None])[1]) == "distance_transform_edt"
-    )
-    invoke_index = next(i for i, op in enumerate(post_if_ops) if op is invoke_op)
-    assert guard_index < invoke_index
+    # __bool__ can replace the name on the bypass path; even the identity-test
+    # condition cannot prevent import STORE release callbacks on the taken path.
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
+    _assert_live_global_call(ops, "distance_transform_edt", argument="data")
 
 
 def test_rebound_native_callable_import_still_uses_module_global_call() -> None:
@@ -498,7 +467,7 @@ def test_rebound_native_callable_import_still_uses_module_global_call() -> None:
     )
 
     assert [op for op in ops if op["kind"] == "invoke_ffi"] == []
-    assert len([op for op in ops if op["kind"] == "call_bind"]) == 1
+    _assert_live_global_call(ops, "distance_transform_edt", argument="data")
 
 
 def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
@@ -520,8 +489,8 @@ def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
     with pytest.raises(CompatibilityError, match="known ABI tokens"):
         gen.visit(
             ast.parse(
-                "import nativepkg.ndimage as ndi\n"
-                "value = ndi.distance_transform_edt(data)\n"
+                "def f(data):\n    import nativepkg.ndimage as ndi\n"
+                "    return ndi.distance_transform_edt(data)\n"
             )
         )
 
@@ -547,8 +516,8 @@ def test_native_callable_fixed_arity_rejects_bad_payload_count_before_invoke_ffi
     with pytest.raises(CompatibilityError, match="expects 1 ABI payload"):
         gen.visit(
             ast.parse(
-                "import nativepkg.ndimage as ndi\n"
-                "value = ndi.distance_transform_edt(data, sampling)\n"
+                "def f(data, sampling):\n    import nativepkg.ndimage as ndi\n"
+                "    return ndi.distance_transform_edt(data, sampling)\n"
             )
         )
 
@@ -570,8 +539,8 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
 
     gen.visit(
         ast.parse(
-            "import nativepkg.ndimage as ndi\n"
-            "value = ndi.distance_transform_edt(data)\n"
+            "def f(data):\n    import nativepkg.ndimage as ndi\n"
+            "    return ndi.distance_transform_edt(data)\n"
         )
     )
     ir = gen.to_json()
@@ -588,7 +557,7 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     assert invoke_op["native_callable_binding"] == "module_attr"
     assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
     assert "native_callable_symbol" not in invoke_op
-    assert invoke_op["source_line"] == 2
+    assert invoke_op["source_line"] == 3
 
 
 def test_native_callable_dotted_import_export_lowers_to_runtime_ffi() -> None:
@@ -608,8 +577,8 @@ def test_native_callable_dotted_import_export_lowers_to_runtime_ffi() -> None:
 
     gen.visit(
         ast.parse(
-            "import nativepkg.ndimage\n"
-            "value = nativepkg.ndimage.distance_transform_edt(data)\n"
+            "def f(data):\n    import nativepkg.ndimage\n"
+            "    return nativepkg.ndimage.distance_transform_edt(data)\n"
         )
     )
     ir = gen.to_json()
@@ -650,7 +619,8 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
 
     gen.visit(
         ast.parse(
-            "import nativepkg\nvalue = nativepkg.ndimage.distance_transform_edt(data)\n"
+            "def f(data):\n    import nativepkg\n"
+            "    return nativepkg.ndimage.distance_transform_edt(data)\n"
         )
     )
     ir = gen.to_json()
@@ -666,17 +636,10 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
 def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_ffi() -> (
     None
 ):
-    """Pin the exact Pact Kernel A witness dispatch form.
+    """A private bare import uses the same sealed ABI as attribute dispatch.
 
-    ``collab/pact/pact_witness_kernel/field_solve.py`` imports the SciPy ndimage
-    entry points with ``from scipy.ndimage import distance_transform_edt`` and then
-    calls the *bare* name ``distance_transform_edt(inside)``. The sealed
-    ``scipy.ndimage`` extension publishes that entry as a ``module_attr`` callable
-    export with the ``molt.object_call_v1`` ABI (provider ``scipy.ndimage._morphology``).
-    The bare-import call form must route through the native callable export the same
-    way the ``ndi.distance_transform_edt(...)`` attribute form does; otherwise the
-    exit-criterion witness fails closed with a non-allowlisted-function diagnostic at
-    ``molt build``.
+    Module-global imports additionally need live binding custody: export metadata
+    alone cannot authorize specialization after an import STORE release callback.
     """
     gen = SimpleTIRGenerator(
         known_modules={"scipy", "scipy.ndimage"},
@@ -694,8 +657,8 @@ def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_f
 
     gen.visit(
         ast.parse(
-            "from scipy.ndimage import distance_transform_edt\n"
-            "value = distance_transform_edt(inside)\n"
+            "def f(inside):\n    from scipy.ndimage import distance_transform_edt\n"
+            "    return distance_transform_edt(inside)\n"
         )
     )
     ir = gen.to_json()
@@ -713,8 +676,8 @@ def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_f
     assert invoke_op["native_callable_binding"] == "module_attr"
     assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
     assert "native_callable_symbol" not in invoke_op
-    assert invoke_op["source_line"] == 2
-    # The witness call must never degrade to a dynamic bound/bridge call.
+    assert invoke_op["source_line"] == 3
+    # This private lexical binding remains eligible for native specialization.
     assert not any(
         op["kind"] == "call_bind" for fn in ir["functions"] for op in fn["ops"]
     )
@@ -732,6 +695,133 @@ def _const_str_map(ops: list[dict]) -> dict[str, str]:
         for op in ops
         if op.get("kind") == "const_str" and "out" in op
     }
+
+
+def _assert_live_global_call(
+    ops: list[dict],
+    name: str,
+    *,
+    attributes: tuple[str, ...] = (),
+    argument: str | None = None,
+) -> None:
+    """Prove namespace-to-callee-to-callargs custody after import callbacks."""
+    consts = _const_str_map(ops)
+    reads = [
+        op
+        for op in ops
+        if op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == name
+    ]
+    assert reads, f"missing live global read for {name}"
+    chain = reads
+    values = {op["out"] for op in reads}
+    for attribute in attributes:
+        loads = [
+            op
+            for op in ops
+            if op.get("kind") == "get_attr_generic_obj"
+            and op.get("s_value") == attribute
+            and (op.get("args") or [None])[0] in values
+        ]
+        assert loads, f"{attribute} must be loaded from the live receiver"
+        chain.extend(loads)
+        values = {op["out"] for op in loads}
+    calls = [
+        op
+        for op in ops
+        if op.get("kind") in {"call_indirect", "call_bind"}
+        and (op.get("args") or [None])[0] in values
+    ]
+    assert len(calls) == 1
+    call = calls[0]
+    callargs = call["args"][1]
+    builders = [
+        op for op in ops if op.get("kind") == "callargs_new" and op.get("out") == callargs
+    ]
+    assert len(builders) == 1
+    chain.extend(builders)
+    if argument is not None:
+        argument_reads = {
+            op["out"]
+            for op in ops
+            if op.get("kind") == "module_get_global"
+            and consts.get((op.get("args") or [None, None])[1]) == argument
+        }
+        pushes = [
+            op
+            for op in ops
+            if op.get("kind") == "callargs_push_pos"
+            and op["args"][0] == callargs
+            and op["args"][1] in argument_reads
+        ]
+        assert len(pushes) == 1
+        chain.extend(pushes)
+    for consumer in [*chain, call]:
+        assert set(consumer.get("args", ())) <= _defined_before(
+            ops, ops.index(consumer)
+        ), "branch-local SSA escaped into live dispatch"
+
+
+@pytest.mark.parametrize(
+    ("source", "name", "attributes"),
+    [
+        ("import os\nos.getcwd()\n", "os", ("getcwd",)),
+        ("from os import getcwd\ngetcwd()\n", "getcwd", ()),
+    ],
+)
+def test_module_import_store_callbacks_require_live_bridge_callee(
+    source: str, name: str, attributes: tuple[str, ...]
+) -> None:
+    ops = _lowered_ops(source, fallback_policy="bridge")
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
+    _assert_live_global_call(ops, name, attributes=attributes)
+
+
+@pytest.mark.parametrize("binding", ["direct_symbol", "module_attr"])
+@pytest.mark.parametrize(
+    ("source", "name", "attributes"),
+    [
+        (
+            "import nativepkg.ndimage as ndi\nndi.distance_transform_edt(data)\n",
+            "ndi",
+            ("distance_transform_edt",),
+        ),
+        (
+            "from nativepkg.ndimage import distance_transform_edt\n"
+            "distance_transform_edt(data)\n",
+            "distance_transform_edt",
+            (),
+        ),
+        (
+            "import nativepkg.ndimage\n"
+            "nativepkg.ndimage.distance_transform_edt(data)\n",
+            "nativepkg",
+            ("ndimage", "distance_transform_edt"),
+        ),
+    ],
+)
+def test_native_export_metadata_does_not_override_callback_exposed_binding(
+    binding: str, source: str, name: str, attributes: tuple[str, ...]
+) -> None:
+    ops = _lowered_ops(
+        source,
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": binding,
+                "abi": "molt.forward_f32_v1"
+                if binding == "direct_symbol"
+                else "molt.object_call_v1",
+                "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            }
+        },
+        fallback_policy="bridge",
+    )
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
+    _assert_live_global_call(ops, name, attributes=attributes, argument="data")
 
 
 def _defined_before(ops: list[dict], target_index: int) -> set[str]:
@@ -940,4 +1030,44 @@ def test_bound_builtin_calls_do_not_use_name_only_specialization(source: str) ->
     ir = compile_to_tir(source)
     assert not any(
         op.get("kind") == "abs" for fn in ir["functions"] for op in fn["ops"]
+    )
+
+
+@pytest.mark.parametrize(
+    "condition", ["[print('condition-effect')]", "[missing_condition]"]
+)
+def test_known_truth_retains_condition_ir_but_not_dead_successor(condition: str):
+    source = f"if {condition}:\n    print('live-successor')\nelse:\n    print('dead-successor')\n"
+    ops = _molt_main_ops(source)
+    strings = set(_const_str_map(ops).values())
+    assert "live-successor" in strings
+    assert "dead-successor" not in strings
+    if "print" in condition:
+        assert "condition-effect" in strings
+    else:
+        assert "missing_condition" in strings
+        assert any(op.get("kind") == "module_get_global" for op in ops)
+
+
+def test_bare_type_checking_name_has_runtime_nameerror_lookup():
+    ops = _molt_main_ops("print(TYPE_CHECKING)\n")
+    consts = _const_str_map(ops)
+    assert any(
+        op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "TYPE_CHECKING"
+        for op in ops
+    )
+
+
+def test_static_false_member_retains_walrus_owner_store():
+    ops = _molt_main_ops(
+        "import typing\nif (owner_alias := typing).TYPE_CHECKING:\n"
+        "    print('dead-successor')\n"
+    )
+    consts = _const_str_map(ops)
+    assert "dead-successor" not in consts.values()
+    assert any(
+        op.get("kind") == "module_set_attr"
+        and consts.get((op.get("args") or [None, None])[1]) == "owner_alias"
+        for op in ops
     )

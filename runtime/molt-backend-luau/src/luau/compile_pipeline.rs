@@ -15,14 +15,11 @@ impl LuauBackend {
             .filter(|func| matches!(func.execution_context, ExecutionContextPolicy::Inherited))
             .map(|func| func.name.clone())
             .collect();
-        let has_execution_frames = ir.functions.iter().flat_map(|func| &func.ops).any(|op| {
-            molt_tir::tir::op_kinds_generated::simpleir_runtime_requirements_table(op.kind.as_str())
-                .is_some_and(|requirements| {
-                    requirements.contains(
-                        molt_tir::tir::op_kinds_generated::SimpleIrRuntimeRequirements::EXECUTION_FRAME,
-                    )
-                })
-        });
+        let has_execution_frames = ir
+            .functions
+            .iter()
+            .flat_map(|func| &func.ops)
+            .any(OpIR::uses_execution_frame);
         // Phase 1: Emit all function bodies to a temporary buffer so we can
         // scan which runtime helpers are actually referenced.
         let emit_funcs: Vec<&FunctionIR> = ir.functions.iter().collect();

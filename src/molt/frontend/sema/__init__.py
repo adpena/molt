@@ -22,14 +22,10 @@ from molt.frontend.sema.classgraph import (
     build_class_facts,
     build_class_graph,
     c3_merge,
-    class_facts_with_super_fold_sound_methods,
     class_body_needs_block_exec,
     reachable_base_names,
     static_class_bases,
-    static_method_owner_after,
     static_mro_names,
-    super_fold_is_sound,
-    visible_subclasses_of,
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
@@ -78,7 +74,6 @@ __all__ = [
     "build_class_facts",
     "build_class_graph",
     "c3_merge",
-    "class_facts_with_super_fold_sound_methods",
     "class_body_needs_block_exec",
     "collect_module_class_names",
     "collect_module_const_dicts",
@@ -95,10 +90,7 @@ __all__ = [
     "stateful_function_tag",
     "stateful_function_task_kind",
     "static_class_bases",
-    "static_method_owner_after",
     "static_mro_names",
-    "super_fold_is_sound",
-    "visible_subclasses_of",
 ]
 
 

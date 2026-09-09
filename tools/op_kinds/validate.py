@@ -91,6 +91,37 @@ def load_table(table_path: Path = TABLE) -> dict:
     if not table_path.exists():
         raise OpKindTableError(f"op-kind table missing: {table_path}")
     data = tomllib.loads(table_path.read_text(encoding="utf-8"))
+    domains = data.get("comparison_scalar_domains")
+    if not isinstance(domains, list) or not domains:
+        raise OpKindTableError("comparison_scalar_domains must be a nonempty list")
+    seen_domains: set[str] = set()
+    seen_scalar_types: dict[str, set[str]] = {
+        "tir_types": set(),
+        "frontend_types": set(),
+    }
+    for domain in domains:
+        name = domain.get("name")
+        if not isinstance(name, str) or not name or name in seen_domains:
+            raise OpKindTableError(
+                "comparison scalar domain name missing or duplicated"
+            )
+        seen_domains.add(name)
+        if not isinstance(domain.get("ordering"), bool):
+            raise OpKindTableError(
+                f"comparison scalar domain {name}: ordering must be bool"
+            )
+        for key, seen in seen_scalar_types.items():
+            values = domain.get(key)
+            if not isinstance(values, list) or not values:
+                raise OpKindTableError(
+                    f"comparison scalar domain {name}: {key} must be nonempty"
+                )
+            for value in values:
+                if not isinstance(value, str) or not value or value in seen:
+                    raise OpKindTableError(
+                        f"comparison scalar domain {name}: duplicate/invalid {key}"
+                    )
+                seen.add(value)
     opcodes = data.get("opcode", [])
     if not opcodes:
         raise OpKindTableError("table has no [[opcode]] rows")
@@ -126,18 +157,66 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "audited context-dependent opcodes; use a fixed arity or add "
                 "the opcode to _VARIABLE_RESULT_ARITY_OPCODES with a rationale"
             )
-        result_type = row.get("operand_independent_result_type")
-        if result_type is not None:
-            if result_type not in _OPERAND_INDEPENDENT_RESULT_TYPES:
+        if "operand_independent_result_type" in row:
+            raise OpKindTableError(f"opcode {name}: use result-indexed operand_independent_result_types")
+        result_types = row.get("operand_independent_result_types")
+        if result_types is not None:
+            if not isinstance(result_types, list) or not result_types or any(
+                not isinstance(ty, str) or ty not in _OPERAND_INDEPENDENT_RESULT_TYPES
+                for ty in result_types
+            ):
                 raise OpKindTableError(
-                    f"opcode {name}: operand_independent_result_type must be one "
-                    f"of {sorted(_OPERAND_INDEPENDENT_RESULT_TYPES)}, got "
-                    f"{result_type!r}"
+                    f"opcode {name}: operand_independent_result_types must be a nonempty array "
+                    f"of {sorted(_OPERAND_INDEPENDENT_RESULT_TYPES)}"
                 )
-            if result_arity != "one":
+            expected_arity = {"zero": 0, "one": 1, "two": 2}.get(result_arity)
+            if expected_arity != len(result_types):
                 raise OpKindTableError(
-                    f"opcode {name}: operand_independent_result_type requires "
-                    "result_arity = 'one'"
+                    f"opcode {name}: operand_independent_result_types must match fixed result_arity"
+                )
+        result_type = result_types[0] if result_types is not None and len(result_types) == 1 else None
+        comparison = row.get("predicate_semantics")
+        exact_scalar = row.get("exact_scalar_result_type")
+        if exact_scalar is not None or result_type in {
+            "i64",
+            "f64",
+            "bool",
+            "str",
+            "bytes",
+            "none",
+        }:
+            arity = row.get("frontend_intrinsic_scalar_arity")
+            if type(arity) is not int or arity < 0:
+                raise OpKindTableError(
+                    f"opcode {name}: exact scalar requires frontend_intrinsic_scalar_arity"
+                )
+        if exact_scalar is not None and (
+            exact_scalar not in seen_scalar_types["tir_types"]
+            or result_arity != "one"
+            or comparison is not None
+        ):
+            raise OpKindTableError(f"opcode {name}: invalid exact_scalar_result_type")
+        if comparison is not None:
+            if comparison not in {"equality", "ordering", "truth", "containment"}:
+                raise OpKindTableError(f"opcode {name}: invalid predicate_semantics")
+            if (
+                result_type
+                != ("bool" if comparison in {"truth", "containment"} else None)
+                or result_arity != "one"
+                or not row["may_throw"]
+                or not row["side_effecting"]
+                or purity != "impure"
+            ):
+                raise OpKindTableError(
+                    f"opcode {name}: predicate requires its declared result contract "
+                    "and conservative throwing, side-effecting coarse effects"
+                )
+            if comparison in {"equality", "ordering"} and any(
+                item["opcode"] == name
+                for item in data.get("repr_projectable_bool_result_rules", [])
+            ):
+                raise OpKindTableError(
+                    f"opcode {name}: comparison bool representation derives from operands"
                 )
         # Cross-axis invariant: the `purity` class and `may_throw` bit are two
         # views of the same throw property and MUST agree. `OpEffects::PURE` has
@@ -219,40 +298,27 @@ def load_table(table_path: Path = TABLE) -> dict:
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 
-    runtime_symbols = data.get("simpleir_frame_introspection_runtime_symbols", [])
-    if not isinstance(runtime_symbols, list) or not all(
-        isinstance(symbol, str) and symbol for symbol in runtime_symbols
-    ):
-        raise OpKindTableError(
-            "simpleir_frame_introspection_runtime_symbols must be a list of non-empty strings"
-        )
-    if len(set(runtime_symbols)) != len(runtime_symbols):
-        raise OpKindTableError(
-            "simpleir_frame_introspection_runtime_symbols has duplicate members"
-        )
-    for symbol in runtime_symbols:
-        if symbol != symbol.strip() or re.fullmatch(r"molt_[a-z0-9_]+", symbol) is None:
-            raise OpKindTableError(
-                "simpleir_frame_introspection_runtime_symbols must use exact canonical molt_* spellings"
-            )
-
     requirement_storage_bits = data.get("simpleir_runtime_requirement_mask_bits")
     if requirement_storage_bits not in {8, 16, 32}:
         raise OpKindTableError(
             "simpleir_runtime_requirement_mask_bits must be one of 8, 16, or 32"
         )
     requirement_roles = data.get("simpleir_runtime_requirement_roles", [])
-    if not requirement_roles or not all(
-        isinstance(row, dict)
-        and isinstance(row.get("table"), str)
-        and row["table"]
-        and isinstance(row.get("constant"), str)
-        and row["constant"]
-        and isinstance(row.get("bit"), int)
-        and not isinstance(row["bit"], bool)
-        and isinstance(row.get("reason"), str)
-        and row["reason"]
-        for row in requirement_roles
+    if (
+        not isinstance(requirement_roles, list)
+        or not requirement_roles
+        or not all(
+            isinstance(row, dict)
+            and isinstance(row.get("table"), str)
+            and row["table"]
+            and isinstance(row.get("constant"), str)
+            and row["constant"]
+            and isinstance(row.get("bit"), int)
+            and not isinstance(row["bit"], bool)
+            and isinstance(row.get("reason"), str)
+            and row["reason"]
+            for row in requirement_roles
+        )
     ):
         raise OpKindTableError(
             "simpleir_runtime_requirement_roles requires table, constant, bit, and reason rows"
@@ -273,9 +339,19 @@ def load_table(table_path: Path = TABLE) -> dict:
             f"u{requirement_storage_bits} storage width"
         )
     for row in requirement_roles:
-        if set(row) != {"table", "constant", "bit", "reason"}:
+        runtime_symbols = row.get("runtime_symbols", [])
+        if not isinstance(runtime_symbols, list) or not all(
+            isinstance(symbol, str) and re.fullmatch(r"molt_[a-z0-9_]+", symbol)
+            for symbol in runtime_symbols
+        ):
             raise OpKindTableError(
-                "runtime requirement role rows require exactly table, constant, bit, and reason"
+                "runtime_symbols must use exact canonical molt_* spellings"
+            )
+        if len(set(runtime_symbols)) != len(runtime_symbols):
+            raise OpKindTableError("runtime_symbols has duplicate members")
+        if set(row) - {"runtime_symbols"} != {"table", "constant", "bit", "reason"}:
+            raise OpKindTableError(
+                "runtime requirement role rows require table, constant, bit, and reason with optional runtime_symbols"
             )
         if not 0 <= row["bit"] < requirement_storage_bits:
             raise OpKindTableError(
@@ -383,9 +459,14 @@ def load_table(table_path: Path = TABLE) -> dict:
             raise OpKindTableError(
                 "simpleir_runtime_qualified_callable must use exact canonical sys/inspect spellings, not source aliases"
             )
-    unknown_symbols = {row["symbol"] for row in qualified_callables} - set(
-        runtime_symbols
-    )
+    classified_symbols = {
+        symbol
+        for role in requirement_roles
+        for symbol in role.get("runtime_symbols", [])
+    }
+    unknown_symbols = {
+        row["symbol"] for row in qualified_callables
+    } - classified_symbols
     if unknown_symbols:
         raise OpKindTableError(
             "simpleir_runtime_qualified_callable references unclassified runtime symbols: "

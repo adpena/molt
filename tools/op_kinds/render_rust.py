@@ -18,6 +18,7 @@ from .schema import (
 )
 from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
 from .render_rust_analysis import (
+    _render_predicate_semantics,
     _render_counted_loop_comparison_roles,
     _render_lir_verify_rule,
     _render_module_slot_promotion_roles,
@@ -311,6 +312,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_fuzz_tir_opcode_shapes(opcodes, data))
     out.append("\n")
 
+    out.append(_render_predicate_semantics(opcodes, data))
     out.append(_render_operand_independent_result_type(opcodes))
     out.append("\n")
     out.append(_render_type_refine_attr_result_type_rule(opcodes, data))
@@ -1364,12 +1366,12 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "    match symbol {\n",
         ]
     )
-    frame_symbols = sorted(data.get("simpleir_frame_introspection_runtime_symbols", []))
-    if frame_symbols:
-        patterns = " | ".join(f'"{symbol}"' for symbol in frame_symbols)
-        lines.append(
-            f"        {patterns} => SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,\n"
-        )
+    symbol_masks: dict[str, int] = {}
+    for role in data["simpleir_runtime_requirement_roles"]:
+        for symbol in role.get("runtime_symbols", []):
+            symbol_masks[symbol] = symbol_masks.get(symbol, 0) | (1 << role["bit"])
+    for symbol, bits in sorted(symbol_masks.items()):
+        lines.append(f'        "{symbol}" => SimpleIrRuntimeRequirements({bits}),\n')
     lines.extend(
         [
             "        _ => SimpleIrRuntimeRequirements::NONE,\n",

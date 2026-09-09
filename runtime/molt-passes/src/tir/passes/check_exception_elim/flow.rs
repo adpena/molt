@@ -7,7 +7,7 @@ use crate::tir::ops::AttrValue;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::classify::{const_int_values, op_clears_pending_exception, op_may_raise};
+use super::classify::{op_clears_pending_exception, op_may_raise};
 
 fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let label_to_block: HashMap<i64, BlockId> = func
@@ -51,10 +51,12 @@ fn transfer_block_pending(
     pending
 }
 
-pub(super) fn compute_block_entry_pending(func: &TirFunction) -> HashMap<BlockId, bool> {
+pub(super) fn compute_block_entry_pending(
+    func: &TirFunction,
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+) -> HashMap<BlockId, bool> {
     let exception_targets = exception_target_blocks(func);
-    let const_ints = const_int_values(func);
-    let value_types = func.value_types.clone();
     let mut entry_pending: HashMap<BlockId, bool> = func
         .blocks
         .keys()

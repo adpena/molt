@@ -6,6 +6,131 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static PUBLICATION_NONCE: AtomicU64 = AtomicU64::new(0);
 
+/// Replacement and durability are separate state transitions. A failed parent
+/// directory sync cannot undo a successful replacement or restore its old bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PublicationState {
+    Unchanged,
+    Replaced,
+}
+
+#[derive(Debug)]
+pub(crate) struct AtomicPublicationError {
+    destination: PathBuf,
+    state: PublicationState,
+    source: io::Error,
+    cleanup_errors: Vec<String>,
+}
+
+impl AtomicPublicationError {
+    pub(crate) fn new(destination: &Path, state: PublicationState, source: io::Error) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            state,
+            source,
+            cleanup_errors: Vec::new(),
+        }
+    }
+
+    pub(crate) fn state(&self) -> PublicationState {
+        self.state
+    }
+
+    pub(crate) fn record_cleanup_error(&mut self, error: io::Error) {
+        self.cleanup_errors.push(error.to_string());
+    }
+
+    fn remove_temporary(&mut self, temporary: &Path) {
+        if let Err(error) = remove_publication_temporary(temporary) {
+            self.cleanup_errors.push(format!(
+                "temporary cleanup failed for '{}': {error}",
+                temporary.display()
+            ));
+        }
+    }
+}
+
+impl std::fmt::Display for AtomicPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = match self.state {
+            PublicationState::Unchanged => "destination unchanged",
+            PublicationState::Replaced => {
+                "destination replaced; prior generation no longer owns this path"
+            }
+        };
+        write!(
+            formatter,
+            "atomic publication of '{}' failed ({state}): {}",
+            self.destination.display(),
+            self.source
+        )?;
+        for error in &self.cleanup_errors {
+            write!(formatter, "; {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for AtomicPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl From<AtomicPublicationError> for io::Error {
+    fn from(error: AtomicPublicationError) -> Self {
+        io::Error::new(error.source.kind(), error)
+    }
+}
+
+/// Keep cleanup evidence without replacing the primary error or its source
+/// chain. Callers own the temporary; this helper never touches the destination.
+pub(crate) fn cleanup_temporary_after_error(temporary: &Path, error: io::Error) -> io::Error {
+    match remove_publication_temporary(temporary) {
+        Ok(()) => error,
+        Err(cleanup) => {
+            #[derive(Debug)]
+            struct CleanupError {
+                source: io::Error,
+                temporary: PathBuf,
+                cleanup: io::Error,
+            }
+            impl std::fmt::Display for CleanupError {
+                fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(
+                        formatter,
+                        "{}; temporary cleanup failed for '{}': {}",
+                        self.source,
+                        self.temporary.display(),
+                        self.cleanup
+                    )
+                }
+            }
+            impl std::error::Error for CleanupError {
+                fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                    Some(&self.source)
+                }
+            }
+            io::Error::new(
+                error.kind(),
+                CleanupError {
+                    source: error,
+                    temporary: temporary.to_path_buf(),
+                    cleanup,
+                },
+            )
+        }
+    }
+}
+
+fn remove_publication_temporary(temporary: &Path) -> io::Result<()> {
+    match std::fs::remove_file(temporary) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// A same-directory, crash-consistent file publication.
 ///
 /// Data and replacement metadata become visible as one commit: the temporary
@@ -39,28 +164,75 @@ impl AtomicFilePublication {
             .expect("atomic publication writer is unavailable after commit")
     }
 
-    pub(crate) fn commit(mut self) -> io::Result<()> {
-        let mut writer = self
-            .writer
-            .take()
-            .expect("atomic publication cannot be committed twice");
-        writer.flush()?;
-        if let Some(permissions) = self.inherited_permissions.take() {
-            writer.get_ref().set_permissions(permissions)?;
+    pub(crate) fn commit(self) -> Result<(), AtomicPublicationError> {
+        self.commit_with_sync(sync_parent_directory)
+    }
+
+    fn commit_with_sync(
+        mut self,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<(), AtomicPublicationError> {
+        let prepared = (|| -> io::Result<()> {
+            let mut writer = self
+                .writer
+                .take()
+                .expect("atomic publication cannot be committed twice");
+            let flushed = writer.flush();
+            // Always dismantle the buffer before propagating a write failure:
+            // BufWriter::drop otherwise retries buffered writes during abort.
+            let (file, _) = writer.into_parts();
+            flushed?;
+            if let Some(permissions) = self.inherited_permissions.take() {
+                file.set_permissions(permissions)?;
+            }
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            return Err(self.abort(error));
         }
-        writer.get_ref().sync_all()?;
-        drop(writer);
-        replace_file(&self.temporary, &self.destination)?;
-        sync_parent_directory(&self.destination)?;
+        let result = replace_and_sync(&self.temporary, &self.destination, sync_parent);
+        if let Err(mut error) = result {
+            if error.state() == PublicationState::Unchanged {
+                error.remove_temporary(&self.temporary);
+            }
+            self.temporary.clear();
+            return Err(error);
+        }
         self.temporary.clear();
         Ok(())
+    }
+
+    pub(crate) fn abort(mut self, source: io::Error) -> AtomicPublicationError {
+        // Close before unlinking (required on Windows); do not retry a buffered
+        // write while aborting. No failed payload may become a publication.
+        if let Some(writer) = self.writer.take() {
+            let (file, _) = writer.into_parts();
+            drop(file);
+        }
+        let mut error =
+            AtomicPublicationError::new(&self.destination, PublicationState::Unchanged, source);
+        error.remove_temporary(&self.temporary);
+        self.temporary.clear();
+        error
     }
 }
 
 impl Drop for AtomicFilePublication {
     fn drop(&mut self) {
         if !self.temporary.as_os_str().is_empty() {
-            let _ = std::fs::remove_file(&self.temporary);
+            if let Some(writer) = self.writer.take() {
+                let (file, _) = writer.into_parts();
+                drop(file);
+            }
+            if let Err(error) = remove_publication_temporary(&self.temporary) {
+                // Explicit error paths report through their Result. Drop also
+                // covers unwinding and abandonment, where no Result is possible.
+                eprintln!(
+                    "MOLT_BACKEND: abandoned publication temporary cleanup failed for '{}': {error}",
+                    self.temporary.display()
+                );
+            }
         }
     }
 }
@@ -74,7 +246,10 @@ pub(crate) fn write_atomically<T>(
     write: impl FnOnce(&mut BufWriter<File>) -> io::Result<T>,
 ) -> io::Result<T> {
     let mut publication = AtomicFilePublication::new(destination)?;
-    let value = write(publication.writer())?;
+    let value = match write(publication.writer()) {
+        Ok(value) => value,
+        Err(error) => return Err(publication.abort(error).into()),
+    };
     publication.commit()?;
     Ok(value)
 }
@@ -96,27 +271,54 @@ pub(crate) fn write_text_atomically(destination: &Path, contents: &str) -> io::R
 pub(crate) fn commit_existing_file_atomically(
     temporary: &Path,
     destination: &Path,
-) -> io::Result<()> {
-    let parent = publication_parent(destination);
-    std::fs::create_dir_all(parent)?;
-    if publication_parent(temporary) != publication_parent(destination) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "atomic publication requires a same-directory temporary file: {} -> {}",
-                temporary.display(),
-                destination.display()
-            ),
-        ));
-    }
-    let file = OpenOptions::new().read(true).write(true).open(temporary)?;
-    if let Some(permissions) = destination_permissions(destination)? {
-        file.set_permissions(permissions)?;
-    }
-    file.sync_all()?;
-    drop(file);
-    replace_file(temporary, destination)?;
-    sync_parent_directory(destination)
+) -> Result<(), AtomicPublicationError> {
+    commit_existing_file_with_sync(temporary, destination, sync_parent_directory)
+}
+
+#[cfg(any(feature = "native-backend", test))]
+fn commit_existing_file_with_sync(
+    temporary: &Path,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), AtomicPublicationError> {
+    let prepare = || -> io::Result<()> {
+        let parent = publication_parent(destination);
+        std::fs::create_dir_all(parent)?;
+        if publication_parent(temporary) != publication_parent(destination) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "atomic publication requires a same-directory temporary file: {} -> {}",
+                    temporary.display(),
+                    destination.display()
+                ),
+            ));
+        }
+        let file = OpenOptions::new().read(true).write(true).open(temporary)?;
+        if let Some(permissions) = destination_permissions(destination)? {
+            file.set_permissions(permissions)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        Ok(())
+    };
+    prepare().map_err(|error| {
+        AtomicPublicationError::new(destination, PublicationState::Unchanged, error)
+    })?;
+    replace_and_sync(temporary, destination, sync_parent)
+}
+
+fn replace_and_sync(
+    temporary: &Path,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), AtomicPublicationError> {
+    replace_file(temporary, destination).map_err(|error| {
+        AtomicPublicationError::new(destination, PublicationState::Unchanged, error)
+    })?;
+    sync_parent(destination).map_err(|error| {
+        AtomicPublicationError::new(destination, PublicationState::Replaced, error)
+    })
 }
 
 fn publication_parent(path: &Path) -> &Path {
@@ -148,6 +350,7 @@ fn reserve_temporary_file(destination: &Path) -> io::Result<(PathBuf, File)> {
         let nonce = PUBLICATION_NONCE.fetch_add(1, Ordering::Relaxed);
         let temporary = destination.with_file_name(temporary_name(file_name, pid, nonce));
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(&temporary)
@@ -298,5 +501,121 @@ mod tests {
             publication_parent(Path::new("producer.tmp")),
             publication_parent(Path::new("./artifact.bin"))
         );
+    }
+
+    #[test]
+    fn buffered_publication_reports_post_replacement_sync_failure() {
+        let directory = test_directory("buffered-sync-failure");
+        let output = directory.join("artifact.bin");
+        std::fs::write(&output, b"old").expect("seed old generation");
+        let mut publication = AtomicFilePublication::new(&output).expect("prepare publication");
+        publication
+            .writer()
+            .write_all(b"new")
+            .expect("write new generation");
+        let error = publication
+            .commit_with_sync(|_| Err(io::Error::other("injected directory sync failure")))
+            .expect_err("post-replacement durability failure");
+        assert_eq!(error.state(), PublicationState::Replaced);
+        assert!(
+            error
+                .to_string()
+                .contains("prior generation no longer owns this path")
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("replacement survives"),
+            b"new"
+        );
+        assert_eq!(
+            std::fs::read_dir(&directory).expect("list fixture").count(),
+            1
+        );
+        let error = io::Error::from(error);
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<AtomicPublicationError>())
+                .expect("typed state survives io conversion")
+                .state(),
+            PublicationState::Replaced
+        );
+        std::fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn existing_file_reports_both_sides_of_replacement_boundary() {
+        let directory = test_directory("existing-sync-failure");
+        let output = directory.join("artifact.bin");
+        let temporary = directory.join("producer.tmp");
+        std::fs::write(&output, b"old").expect("seed old generation");
+        let before = commit_existing_file_atomically(&temporary, &output)
+            .expect_err("missing producer fails before replacement");
+        assert_eq!(before.state(), PublicationState::Unchanged);
+        assert_eq!(
+            std::fs::read(&output).expect("old generation survives"),
+            b"old"
+        );
+        std::fs::write(&temporary, b"new").expect("write producer output");
+        let after = commit_existing_file_with_sync(&temporary, &output, |_| {
+            Err(io::Error::other("injected directory sync failure"))
+        })
+        .expect_err("replacement committed but directory sync failed");
+        assert_eq!(after.state(), PublicationState::Replaced);
+        assert_eq!(
+            std::fs::read(&output).expect("new generation survives"),
+            b"new"
+        );
+        assert!(!temporary.exists());
+        std::fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn failed_payload_write_aborts_without_publishing_or_silent_cleanup() {
+        let directory = test_directory("write-failure");
+        let output = directory.join("artifact.bin");
+        std::fs::write(&output, b"old").expect("seed old generation");
+        let error = write_atomically(&output, |writer| -> io::Result<()> {
+            writer.write_all(b"uncommitted payload")?;
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "injected producer failure",
+            ))
+        })
+        .expect_err("producer failure propagates");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("destination unchanged"));
+        assert_eq!(
+            std::fs::read(&output).expect("old generation survives"),
+            b"old"
+        );
+        assert_eq!(
+            std::fs::read_dir(&directory).expect("list fixture").count(),
+            1
+        );
+        std::fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn failed_temporary_cleanup_keeps_primary_state_and_evidence() {
+        let directory = test_directory("cleanup-failure");
+        let temporary = directory.join("blocked.tmp");
+        std::fs::create_dir(&temporary).expect("unremovable-as-file temporary");
+        let primary = AtomicPublicationError::new(
+            &directory.join("artifact.bin"),
+            PublicationState::Replaced,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "primary durability failure",
+            ),
+        );
+        let error = cleanup_temporary_after_error(&temporary, primary.into());
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        let detail = error.to_string();
+        assert!(detail.contains("primary durability failure"));
+        assert!(detail.contains("destination replaced"));
+        assert!(detail.contains("temporary cleanup failed"));
+        assert!(detail.contains("blocked.tmp"));
+        assert!(std::error::Error::source(error.get_ref().expect("cleanup error")).is_some());
+        std::fs::remove_dir_all(directory).expect("remove fixture");
     }
 }

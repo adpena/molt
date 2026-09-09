@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import sys
 import time
-from typing import Mapping, Sequence, cast
+from typing import Callable, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_sha256
+from molt import file_publication
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     validate_python_environment_location,
@@ -21,6 +23,7 @@ from molt.python_environment_identity import (
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
+from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg import process_image_capture
 from tools.proof_queue_pkg import supervisor_custody
 from tools.proof_queue_pkg import toolchain_capture
@@ -553,8 +556,15 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
 
 
 def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
+    return [path for path in _git_source_paths(cwd, env) if path.is_file()]
+
+
+def _git_source_paths(
+    cwd: Path, env: Mapping[str, str], *, include_untracked: bool = False
+) -> list[Path]:
+    options = ("--others", "--exclude-standard") if include_untracked else ()
     completed = command_identity._run_captured(
-        ("git", "ls-files", "--cached", "--full-name", "-z"),
+        ("git", "ls-files", "--cached", *options, "--full-name", "-z"),
         cwd=cwd,
         env=env,
         text=False,
@@ -573,9 +583,92 @@ def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
             continue
         relative = Path(os.fsdecode(raw))
         candidate = Path(os.path.abspath(root / relative))
-        if candidate.is_file():
-            paths.append(candidate)
-    return paths
+        if not candidate.is_relative_to(root):
+            raise ValueError("Git source input escaped its root")
+        paths.append(candidate)
+    return sorted(set(paths), key=lambda path: path.as_posix())
+
+
+SOURCE_CONTENT_KIND = "molt.proof-source-content.v1"
+
+
+def capture_source_content(
+    *,
+    source_root: Path,
+    env: Mapping[str, str],
+    overlays: Sequence[Path],
+    cas_root: Path,
+) -> tuple[dict[str, object], dict[str, object], Callable[[], None]]:
+    """Capture Git-admitted source and explicit overlays, never local caches."""
+    from molt.python_file_node_custody import PythonFileCaptureContext
+
+    started = time.perf_counter()
+    root = file_publication.resolve_owned_path(source_root)
+    selected = _git_source_paths(root, env, include_untracked=True)
+    paths = sorted(set(selected) | set(overlays), key=lambda path: path.as_posix())
+    regular: list[tuple[Path, os.stat_result]] = []
+    missing: list[Path] = []
+    hardlinks: dict[tuple[int, int], tuple[int, int]] = {}
+    for path in paths:
+        if not path.is_relative_to(root):
+            raise ValueError("source content overlay escaped admitted Git root")
+        file_publication.resolve_owned_path(path)
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            missing.append(path)
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                f"source content input is not a direct regular file: {path}"
+            )
+        regular.append((path, metadata))
+        key = metadata.st_dev, metadata.st_ino
+        count, links = hardlinks.get(key, (0, metadata.st_nlink))
+        hardlinks[key] = count + 1, links
+    if any(count != links for count, links in hardlinks.values()):
+        raise ValueError("source input has aliases outside admitted source content")
+    capture = PythonFileCaptureContext(hash_workers=1)
+    capture.prepare(regular, label="proof source input")
+    files: list[dict[str, object]] = []
+    for path, metadata in regular:
+        identity = capture.bind(path, metadata, label="proof source input")
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": identity.sha256,
+                "size": identity.size,
+                "mode": stat.S_IMODE(metadata.st_mode),
+            }
+        )
+
+    def verify_selection() -> None:
+        if selected != _git_source_paths(root, env, include_untracked=True):
+            raise ValueError("source content admission set changed during capture")
+        if any(path.exists() for path in missing):
+            raise ValueError("missing source input appeared during capture")
+
+    capture.register_verification_fence(verify_selection)
+    capture.verify()
+    payload = {
+        "schema": custody_cas.ARTIFACT_SCHEMA,
+        "kind": SOURCE_CONTENT_KIND,
+        "root": str(root),
+        "selection": "git-tracked-plus-nonignored-untracked-and-overlays",
+        "files": files,
+        "missing": [path.relative_to(root).as_posix() for path in missing],
+    }
+    reference = custody_cas.put_json(cas_root, payload).as_dict()
+    capture.verify()
+    return (
+        reference,
+        {
+            "file_count": len(files),
+            "bytes_hashed": sum(int(row["size"]) for row in files),
+            "capture_s": time.perf_counter() - started,
+        },
+        capture.verify,
+    )
 
 
 def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:

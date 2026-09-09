@@ -455,7 +455,7 @@ fn compute_dominators_from(
     }
 
     // RPO over forward (successor) edges from entry.
-    let rpo = rpo_from(n, entry, successors);
+    let rpo = crate::tir::traversal::indexed_reverse_postorder(successors, entry);
     let mut rpo_number: Vec<usize> = vec![usize::MAX; n];
     for (rpo_idx, &bid) in rpo.iter().enumerate() {
         rpo_number[bid] = rpo_idx;
@@ -515,28 +515,4 @@ fn intersect_dom_idx(
         }
     }
     a
-}
-
-fn rpo_from(n: usize, entry: usize, successors: &[Vec<usize>]) -> Vec<usize> {
-    let mut visited = vec![false; n];
-    let mut postorder = Vec::with_capacity(n);
-    let mut stack: Vec<(usize, bool)> = vec![(entry, false)];
-    while let Some((node, processed)) = stack.pop() {
-        if processed {
-            postorder.push(node);
-            continue;
-        }
-        if visited[node] {
-            continue;
-        }
-        visited[node] = true;
-        stack.push((node, true));
-        for &succ in successors[node].iter().rev() {
-            if !visited[succ] {
-                stack.push((succ, false));
-            }
-        }
-    }
-    postorder.reverse();
-    postorder
 }

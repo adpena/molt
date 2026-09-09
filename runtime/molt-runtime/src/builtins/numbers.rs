@@ -10,10 +10,9 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use crate::object::ops::{as_float_extended, is_float_extended};
 use crate::{
     INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
-    TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
-    class_name_for_error, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
-    obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
-    runtime_state_for_gil, type_of_bits,
+    TYPE_ID_OBJECT, alloc_object, call_callable0, class_mro_vec, class_name_for_error,
+    dec_ref_bits, exception_pending, maybe_ptr_from_bits, obj_from_bits, object_class_bits,
+    object_type_id, raise_exception, runtime_state_for_gil, type_of_bits,
 };
 
 #[repr(C)]
@@ -476,6 +475,9 @@ pub(crate) fn index_i64_integral_bits(bits: u64) -> Option<i64> {
     if obj.is_bool() {
         return Some(if (obj.bits() & 0x1) == 1 { 1 } else { 0 });
     }
+    if let Some(ptr) = bigint_ptr_from_bits(bits) {
+        return unsafe { bigint_ref(ptr) }.to_i64();
+    }
     if let Some(value_bits) = int_subclass_value_bits_raw(bits) {
         let value = obj_from_bits(value_bits);
         if let Some(i) = value.as_int() {
@@ -495,7 +497,7 @@ pub(crate) fn index_i64_integral_bits(bits: u64) -> Option<i64> {
     None
 }
 
-fn index_bigint_integral_bits(bits: u64) -> Option<BigInt> {
+pub(crate) fn index_bigint_integral_bits(bits: u64) -> Option<BigInt> {
     let obj = obj_from_bits(bits);
     if obj.is_int() {
         return Some(BigInt::from(obj.as_int_unchecked()));
@@ -526,36 +528,19 @@ fn index_bigint_integral_bits(bits: u64) -> Option<BigInt> {
 }
 
 pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> i64 {
-    if let Some(i) = index_i64_integral_bits(obj_bits) {
-        return i;
+    if let Some(value) = index_i64_integral_bits(obj_bits) {
+        return value;
     }
-    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        unsafe {
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return 0;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = index_i64_integral_bits(res_bits) {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return i;
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                raise_exception::<i64>(_py, "TypeError", &msg);
-            }
-        }
-    }
-    raise_exception::<i64>(_py, "TypeError", err)
+    let Some(value) = index_bigint_from_obj(_py, obj_bits, err) else {
+        return 0;
+    };
+    value.to_i64().unwrap_or_else(|| {
+        raise_exception::<i64>(
+            _py,
+            "OverflowError",
+            "Python int too large to convert to C ssize_t",
+        )
+    })
 }
 
 #[inline]
@@ -709,14 +694,15 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
     if let Some(value) = index_bigint_integral_bits(obj_bits) {
         return Some(value);
     }
-    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
+    if maybe_ptr_from_bits(obj_bits).is_some() {
         unsafe {
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+            if let Some(call_bits) =
+                crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__index__")
+            {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
+                    dec_ref_bits(_py, res_bits);
                     return None;
                 }
                 let res_obj = obj_from_bits(res_bits);

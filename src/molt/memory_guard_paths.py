@@ -63,3 +63,17 @@ def pytest_guard_summary_dir(
     """
 
     return memory_guard_state_root(repo_root, environ).parent / "pytest-memory-guard"
+
+
+def harness_guard_artifact_dir(
+    repo_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Keep command profiles and harness events beside canonical guard state.
+
+    Queue custody supplies an external state root. All default harness outputs
+    must follow that root too: an incident log inside source would invalidate
+    the proof whose failure it is recording.
+    """
+
+    return memory_guard_state_root(repo_root, environ).parent / "harness_memory_guard"

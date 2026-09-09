@@ -98,6 +98,7 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
             param_types: func.param_types,
             source_file: func.source_file,
             is_extern: func.is_extern,
+            codegen_partition: func.codegen_partition,
             execution_context: func.execution_context,
         }],
         profile: None,
@@ -255,6 +256,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -344,6 +346,7 @@ fn loop_body_if_join_then_continue_compiles() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -438,6 +441,7 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -595,6 +599,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

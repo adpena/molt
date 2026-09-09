@@ -5,6 +5,14 @@ from __future__ import annotations
 import ast
 from collections.abc import Collection
 
+from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+
+from molt.compiler_analysis.static_truth import (
+    ExpressionResultLookup,
+    StaticExpressionResult,
+    static_expression_result,
+)
+
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
     EXECUTES_ARBITRARY_PYTHON,
@@ -67,12 +75,87 @@ def _joined_child_effects(
     return mask
 
 
-def _constant_hash_is_closed(node: ast.expr) -> bool:
-    if isinstance(node, ast.Constant):
-        return isinstance(node.value, (str, bytes, int, float, complex, bool, type(None)))
-    if isinstance(node, ast.Tuple):
-        return all(_constant_hash_is_closed(element) for element in node.elts)
-    return False
+def _result_hash_effects(result: StaticExpressionResult) -> EffectMask:
+    if result.kind == "unknown":
+        return EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+    if result.kind in {"list", "set", "dict"}:
+        return RAISES  # Exact builtin containers are unhashable, not callbacks.
+    return _sequence_hash_effects(result) if result.kind == "tuple" else NO_EFFECTS
+
+
+def _sequence_hash_effects(result: StaticExpressionResult) -> EffectMask:
+    if result.items is None:
+        if result.kind in {"str", "bytes"}:
+            return NO_EFFECTS
+        return EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+    mask = NO_EFFECTS
+    for item in result.items:
+        mask |= (
+            _sequence_hash_effects(item.result)
+            if item.expanded
+            else _result_hash_effects(item.result)
+        )
+    return mask
+
+
+class AccumulatedKeyEffects:
+    """Insertion effects include equality on keys already in the destination.
+
+    Retain callback capability, not source ASTs: later evaluation may rebind a
+    key expression, but cannot replace the objects already held by the table.
+    The same authority governs keyword assembly and dict/set displays.
+    """
+
+    def __init__(self) -> None:
+        self._existing_callbacks = NO_EFFECTS
+
+    def _insert(self, incoming: EffectMask, *, empty: bool = False) -> EffectMask:
+        if empty:
+            return incoming
+        boundary = incoming | self._existing_callbacks
+        if incoming & INVOKES_COMPARISON_CALLBACK:
+            self._existing_callbacks = (
+                EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+            )
+        return boundary
+
+    def add(self, result: StaticExpressionResult) -> EffectMask:
+        return self._insert(_result_hash_effects(result))
+
+    def extend(self, result: StaticExpressionResult) -> EffectMask:
+        return self._insert(
+            _sequence_hash_effects(result),
+            empty=result.items == () or result.truth is False,
+        )
+
+
+def iterable_unpack_effects(
+    node: ast.expr,
+    *,
+    fact_result: ExpressionResultLookup | None = None,
+) -> EffectMask:
+    result = static_expression_result(node, fact_result=fact_result)
+    return (
+        NO_EFFECTS
+        if result.kind in {"tuple", "list", "set", "dict", "str", "bytes"}
+        else EXECUTES_ARBITRARY_PYTHON | INVOKES_ITERATION_CALLBACK | RAISES
+    )
+
+
+def mapping_unpack_effects(
+    node: ast.expr,
+    *,
+    fact_result: ExpressionResultLookup | None = None,
+) -> EffectMask:
+    result = static_expression_result(node, fact_result=fact_result)
+    if result.kind == "dict":
+        return _sequence_hash_effects(result)
+    return (
+        EXECUTES_ARBITRARY_PYTHON
+        | INVOKES_ITERATION_CALLBACK
+        | READS_OBJECT_STATE
+        | RAISES
+    )
 
 
 def expression_effect_mask(
@@ -96,39 +179,39 @@ def expression_effect_mask(
     if isinstance(node, ast.NamedExpr):
         return expression_effect_mask(node.value, proven_pure_calls=proven_pure_calls)
     if isinstance(node, ast.Starred):
-        return (
-            expression_effect_mask(node.value, proven_pure_calls=proven_pure_calls)
-            | INVOKES_ITERATION_CALLBACK
-            | EXECUTES_ARBITRARY_PYTHON
-            | RAISES
-        )
+        return expression_effect_mask(
+            node.value, proven_pure_calls=proven_pure_calls
+        ) | iterable_unpack_effects(node.value)
     if isinstance(node, (ast.Tuple, ast.List)):
         return ALLOCATES | _joined_child_effects(
             node, proven_pure_calls=proven_pure_calls
         )
     if isinstance(node, ast.Dict):
         mask = ALLOCATES
+        keys = AccumulatedKeyEffects()
         for key, value in zip(node.keys, node.values):
             if key is None:
                 mask |= (
                     expression_effect_mask(value, proven_pure_calls=proven_pure_calls)
-                    | EXECUTES_ARBITRARY_PYTHON
-                    | INVOKES_ITERATION_CALLBACK
-                    | READS_OBJECT_STATE
-                    | RAISES
+                    | mapping_unpack_effects(value)
+                    | keys.extend(static_expression_result(value))
                 )
                 continue
             mask |= expression_effect_mask(key, proven_pure_calls=proven_pure_calls)
             mask |= expression_effect_mask(value, proven_pure_calls=proven_pure_calls)
-            if not _constant_hash_is_closed(key):
-                mask |= EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+            mask |= keys.add(static_expression_result(key))
         return mask
     if isinstance(node, ast.Set):
+        keys = AccumulatedKeyEffects()
         mask = ALLOCATES | _joined_child_effects(
             node, proven_pure_calls=proven_pure_calls
         )
-        if any(not _constant_hash_is_closed(element) for element in node.elts):
-            mask |= EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+        for element in node.elts:
+            mask |= (
+                keys.extend(static_expression_result(element.value))
+                if isinstance(element, ast.Starred)
+                else keys.add(static_expression_result(element))
+            )
         return mask
     if isinstance(node, ast.Slice):
         return ALLOCATES | _joined_child_effects(
@@ -151,10 +234,19 @@ def expression_effect_mask(
         )
     if isinstance(node, ast.Call):
         arguments = NO_EFFECTS
-        for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
-            arguments |= expression_effect_mask(
-                argument, proven_pure_calls=proven_pure_calls
-            )
+        keys = AccumulatedKeyEffects()
+        for step in call_argument_schedule(node):
+            if step.action == "evaluate":
+                arguments |= expression_effect_mask(
+                    step.expression, proven_pure_calls=proven_pure_calls
+                )
+            elif step.action == "star":
+                arguments |= iterable_unpack_effects(step.expression)
+            elif step.action == "kw":
+                arguments |= keys.add(StaticExpressionResult.scalar(step.name))
+            elif step.action == "kwstar":
+                arguments |= mapping_unpack_effects(step.expression)
+                arguments |= keys.extend(static_expression_result(step.expression))
         name = dotted_expression_name(node.func)
         if name in proven_pure_calls:
             return arguments | ALLOCATES | RAISES

@@ -12,7 +12,120 @@ from pathlib import Path
 import pytest
 
 import molt.dx as molt_dx
+from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
+
+
+@pytest.mark.parametrize("root_kind", ["repo", "external", "external_forest", "queue"])
+def test_harness_default_outputs_follow_guard_state_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root_kind: str,
+) -> None:
+    repo = (tmp_path / "repo").resolve()
+    external = (tmp_path / "external").resolve()
+    queue_state = (tmp_path / "queue" / "tmp" / "memory_guard").resolve()
+    for name in (
+        "MOLT_EXT_ROOT",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_MEMORY_GUARD_STATE_ROOT",
+        "MOLT_GUARD_PROFILE_LOG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(harness_memory_guard, "_REPO_ROOT", repo)
+    env = {"MOLT_GUARD_PROFILE": "incident"}
+    expected = repo / "tmp" / "harness_memory_guard"
+    if root_kind == "external":
+        env["MOLT_EXT_ROOT"] = str(external)
+        expected = external / "tmp" / "harness_memory_guard"
+    elif root_kind == "external_forest":
+        env["MOLT_EXTERNAL_ARTIFACT_ROOTS"] = os.pathsep.join(
+            (str(external), str(tmp_path / "other")),
+        )
+        expected = external / "tmp" / "harness_memory_guard"
+    elif root_kind == "queue":
+        env["MOLT_EXT_ROOT"] = str(repo)
+        env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(queue_state)
+        expected = queue_state.parent / "harness_memory_guard"
+    assert harness_guard_artifact_dir(repo, env) == expected
+    assert harness_memory_guard._artifact_root_from_env(env) == expected
+    assert harness_memory_guard.command_profile_log_path(env, repo_root=repo) == (
+        expected / "commands.jsonl"
+    )
+    assert harness_memory_guard._command_profile_mode(env) == "incident"
+    if root_kind != "repo":
+        assert not expected.is_relative_to(repo)
+
+
+def test_harness_explicit_profile_path_preserves_selection_and_mode(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    selected = tmp_path / "selected" / "commands.jsonl"
+    env = {"MOLT_GUARD_PROFILE_LOG": str(selected)}
+    assert (
+        harness_memory_guard.command_profile_log_path(env, repo_root=repo) == selected
+    )
+    assert harness_memory_guard._command_profile_mode(env) == "all"
+
+
+def test_guarded_command_incident_writes_outside_armed_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = (tmp_path / "repo").resolve()
+    repo.mkdir()
+    state_root = (tmp_path / "proof-run" / "tmp" / "memory_guard").resolve()
+    monkeypatch.setattr(harness_memory_guard, "_REPO_ROOT", repo)
+    monkeypatch.delenv("MOLT_GUARD_PROFILE_LOG", raising=False)
+    env = {
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
+        "MOLT_GUARD_PROFILE": "incident",
+    }
+    command = [sys.executable, "-c", "raise SystemExit(1)"]
+
+    def fake_run_guarded(actual_command, **kwargs):
+        assert list(actual_command) == command
+        assert kwargs["env"]["MOLT_MEMORY_GUARD_STATE_ROOT"] == str(state_root)
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=1,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="fixture failure",
+            elapsed_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        command,
+        prefix="MOLT_TEST",
+        cwd=repo,
+        env=env,
+        limits=limits,
+        sampling_scope="owned_tree",
+    )
+    assert result.returncode == 1
+    profile = state_root.parent / "harness_memory_guard" / "commands.jsonl"
+    [event] = [
+        json.loads(line) for line in profile.read_text(encoding="utf-8").splitlines()
+    ]
+    assert event["returncode"] == 1
+    assert event["command"] == command
+    assert not list(repo.iterdir()), (
+        "recording the incident must not mutate proof source"
+    )
+    assert harness_memory_guard._command_profile_mode(env) == "incident"
 
 
 def _record_terminated_pgids(target: list[int]) -> Callable[..., None]:
@@ -1543,8 +1656,12 @@ def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
         timeout=7,
     )
 
-    assert text_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-    assert bytes_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    assert (
+        text_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    )
+    assert (
+        bytes_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    )
     for stderr in (text_result.stderr, bytes_result.stderr.decode()):
         assert "timeout; terminated the tracked process tree" in stderr
         assert '"schema":"molt.guard-repro-error.v1"' in stderr

@@ -68,7 +68,8 @@ fn async_work_marker_uses_precise_pending_call_eval_breaker_capability() {
     };
 
     for op in [&explicit_poll, &marked_observer] {
-        let requirements = simpleir_op_runtime_requirements(op)
+        let requirements = op
+            .runtime_requirements()
             .expect("every async-work carrier has generated runtime requirements");
         assert!(requirements.contains(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER));
         assert!(requirements.contains(SimpleIrRuntimeRequirements::EXCEPTION));
@@ -78,7 +79,8 @@ fn async_work_marker_uses_precise_pending_call_eval_breaker_capability() {
         );
     }
     assert!(
-        !simpleir_op_runtime_requirements(&unmarked_observer)
+        !unmarked_observer
+            .runtime_requirements()
             .unwrap()
             .contains(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER),
         "the ordinary pending observer must remain a non-polling exception read"
@@ -250,6 +252,44 @@ fn execution_frames_are_distinct_from_python_introspection() {
 }
 
 #[test]
+fn super_context_intrinsics_require_execution_frames_not_locals_introspection() {
+    for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
+        let carriers = [
+            OpIR {
+                kind: "call_internal".to_string(),
+                s_value: Some(symbol.to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "builtin_func".to_string(),
+                s_value: Some(symbol.to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_attr".to_string(),
+                runtime_symbol: Some(symbol.to_string()),
+                ..OpIR::default()
+            },
+        ];
+        for op in carriers {
+            let requirements = op.runtime_requirements().unwrap();
+            assert!(requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME));
+            assert!(!requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
+            let ir = function_ir(vec![op]);
+            validate_runtime_target_contract(&ir, &runtime_without_frame_introspection())
+                .expect("semantic frame context must not require a locals snapshot");
+            let without_frames = target_with_runtime(
+                SimpleIrRuntimeRequirements::ALL
+                    .difference(SimpleIrRuntimeRequirements::EXECUTION_FRAME),
+            );
+            let error = validate_runtime_target_contract(&ir, &without_frames)
+                .expect_err("frame context must not silently become a target no-op");
+            assert!(error.contains("execution-frame stack and source-location"));
+        }
+    }
+}
+
+#[test]
 fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
     let acquisition = OpIR {
         kind: "module_get_attr".to_string(),
@@ -257,8 +297,9 @@ fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
         out: Some("frame_callable".to_string()),
         ..OpIR::default()
     };
-    let requirements =
-        simpleir_op_runtime_requirements(&acquisition).expect("acquisition op must be classified");
+    let requirements = acquisition
+        .runtime_requirements()
+        .expect("acquisition op must be classified");
     assert!(requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
 
     let mut ir = function_ir(vec![
@@ -289,7 +330,8 @@ fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
         ..OpIR::default()
     };
     assert!(acquisition.runtime_symbol.is_none());
-    let requirements = simpleir_op_runtime_requirements(&acquisition)
+    let requirements = acquisition
+        .runtime_requirements()
         .expect("typed requirement bits must participate in target admission");
     assert!(requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
 
@@ -369,8 +411,9 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
                 ..OpIR::default()
             },
         ] {
-            let requirements =
-                simpleir_op_runtime_requirements(&op).expect("runtime-call op must be classified");
+            let requirements = op
+                .runtime_requirements()
+                .expect("runtime-call op must be classified");
             assert!(
                 requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION),
                 "{symbol} via {}",

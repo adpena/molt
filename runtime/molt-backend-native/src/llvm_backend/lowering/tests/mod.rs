@@ -241,6 +241,5 @@ mod calls_and_containers;
 mod control_flow;
 mod dynamic_attrs;
 mod preserved_ops;
-mod rpo;
 mod runtime_declarations;
 mod scalar_ops;

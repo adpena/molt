@@ -12,21 +12,19 @@ from molt.python_file_node_custody import _FileNodePool
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_native_locations import _native_contract_valid
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
+from tests.native_artifact_fixtures import (
+    elf_header,
+    pe_header,
+    macho_header,
+    fat_macho,
+)
 
 
 def _pe_image(
     name: bytes = b"KERNEL32.dll", *, delay: bool = False, va: bool = False
 ) -> bytearray:
-    image = bytearray(0x600)
-    image[:2] = b"MZ"
-    struct.pack_into("<I", image, 0x3C, 0x80)
-    image[0x80:0x84] = b"PE\0\0"
-    struct.pack_into("<HH", image, 0x84, 0x8664, 1)
-    struct.pack_into("<H", image, 0x94, 240)
+    image = pe_header()
     optional = 0x98
-    struct.pack_into("<H", image, optional, 0x20B)
-    struct.pack_into("<Q", image, optional + 24, 0x400000)
-    struct.pack_into("<I", image, optional + 108, 16)
     struct.pack_into("<IIII", image, optional + 240 + 8, 0x400, 0x1000, 0x300, 0x200)
     if delay:
         struct.pack_into("<II", image, optional + 112 + 13 * 8, 0x1040, 64)
@@ -41,9 +39,7 @@ def _pe_image(
 
 
 def _elf_image(name: bytes = b"libc.so") -> bytearray:
-    image = bytearray(0x400)
-    image[:6] = b"\x7fELF\x02\x01"
-    struct.pack_into("<H", image, 18, 62)
+    image = elf_header(kind=3, image_size=0x400)
     struct.pack_into("<Q", image, 32, 64)
     struct.pack_into("<HH", image, 54, 56, 2)
     struct.pack_into("<IIQQQQQQ", image, 64, 1, 0, 0, 0, 0, len(image), len(image), 1)
@@ -63,30 +59,21 @@ def _macho_image(
     command: int = 0x80000018,
 ) -> bytearray:
     command_size = (24 + len(name) + 1 + 7) & ~7
-    image = bytearray(32 + command_size)
-    image[:4] = b"\xcf\xfa\xed\xfe"
-    struct.pack_into("<I", image, 4, cpu)
-    struct.pack_into("<II", image, 16, 1, command_size)
+    image = macho_header(cpu=cpu, kind=6, command_count=1, command_bytes=command_size)
     struct.pack_into("<III", image, 32, command, command_size, 24)
     image[56 : 56 + len(name)] = name
     return image
 
 
 def _fat_macho(*, endian: str = ">", fat64: bool = False) -> bytearray:
-    image = bytearray(0x300)
-    struct.pack_into(endian + "II", image, 0, 0xCAFEBABF if fat64 else 0xCAFEBABE, 2)
-    row_format = endian + ("IIQQII" if fat64 else "IIIII")
-    for index, (cpu, name) in enumerate(
-        ((0x01000007, b"@rpath/x86.dylib"), (0x0100000C, b"@rpath/arm.dylib"))
-    ):
-        thin = _macho_image(cpu=cpu, name=name)
-        start = 0x100 * (index + 1)
-        values = (cpu, 0, start, len(thin), 8) + ((0,) if fat64 else ())
-        struct.pack_into(
-            row_format, image, 8 + index * struct.calcsize(row_format), *values
-        )
-        image[start : start + len(thin)] = thin
-    return image
+    return fat_macho(
+        (
+            _macho_image(cpu=0x01000007, name=b"@rpath/x86.dylib"),
+            _macho_image(cpu=0x0100000C, name=b"@rpath/arm.dylib"),
+        ),
+        endian=endian,
+        fat64=fat64,
+    )
 
 
 @pytest.mark.parametrize("delay,va", [(False, False), (True, False), (True, True)])
@@ -189,7 +176,7 @@ def test_macho_universal_selects_only_explicit_architecture(
         ("<I", 32 + 4, 8, "dylib command is truncated"),
         ("<I", 32 + 8, 23, "name is invalid"),
         ("<I", 16, 0, "count/extent disagree"),
-        ("<I", 20, 0x1000, "truncated load commands"),
+        ("<I", 20, 0x1000, "load commands.*truncated"),
     ],
 )
 def test_macho_rejects_malformed_commands(

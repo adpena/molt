@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 153 |
+| Hashed executable authority inputs | 1 | 159 |
 | Local path rules | 35 | 40 |
 | Unique local commands | 73 | 88 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -41,13 +41,13 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `wasm` | pr, main | yes | `github-job` | 125 min | 7200 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 7 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 10 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 15 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 3360 s | 240 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 69 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 77 |
 
 ## Scheduled families
 
@@ -97,6 +97,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
 | `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
 | `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `lune` | `^lune 0\.10\.5$` | `.` | `0.10.5` | 1 |
 | `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `git` | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
@@ -215,6 +216,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
+| `rust.test.compiler-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
 | `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |

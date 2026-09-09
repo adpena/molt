@@ -297,3 +297,33 @@ fn run_inliner_inlines_observation_callee_end_to_end() {
     sorted.dedup();
     assert_eq!(sorted.len(), labels.len(), "labels distinct: {labels:?}");
 }
+
+#[test]
+fn run_inliner_preserves_tiny_codegen_partitions_on_every_target() {
+    for tti in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::wasm_release_fast(),
+        TargetInfo::llvm_release_fast(),
+    ] {
+        for partitioned in [false, true] {
+            let mut callee = const_callee();
+            callee.attrs.insert(
+                crate::tir::function::CODEGEN_PARTITION_ATTR.into(),
+                AttrValue::Bool(partitioned),
+            );
+            let caller = caller_calling_const(&callee.name);
+            let mut m = module(vec![caller, callee]);
+            let (cg, summaries) = analysis(&m);
+            let stats = run_inliner(&mut m, &cg, &summaries, &tti, &HashSet::new());
+            assert_eq!(stats.sites_inlined, usize::from(!partitioned));
+            let calls = m.functions[0]
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::Call)
+                .count();
+            assert_eq!(calls, usize::from(partitioned));
+            crate::tir::verify::verify_function(&m.functions[0]).unwrap();
+        }
+    }
+}

@@ -199,6 +199,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_module_new",
             crate::molt_module_new as *const (),
         )),
+        "molt_namespace_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_namespace_get",
+            crate::molt_namespace_get as *const (),
+        )),
+        "molt_namespace_del" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_namespace_del",
+            crate::molt_namespace_del as *const (),
+        )),
         "molt_module_import" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_module_import",
             crate::molt_module_import as *const (),
@@ -270,6 +278,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_gen_locals" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gen_locals",
             crate::molt_gen_locals as *const (),
+        )),
+        "molt_frame_context_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_frame_context_set",
+            crate::molt_frame_context_set as *const (),
+        )),
+        "molt_super_from_frame" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_super_from_frame",
+            crate::molt_super_from_frame as *const (),
         )),
         "molt_function_init_metadata_packed" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_function_init_metadata_packed",

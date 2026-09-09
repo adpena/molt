@@ -70,10 +70,6 @@ class CallVisitorMixin(
         if user_method_fold is not None:
             return user_method_fold
 
-        super_fold = self._try_emit_super_static_call(node)
-        if super_fold is not None:
-            return super_fold
-
         importlib_literal = self._try_emit_importlib_import_module_literal_call(node)
         if importlib_literal is not None:
             return importlib_literal

@@ -29,14 +29,26 @@ pub(crate) fn compile_single_job(
     mut job: DaemonJobRequest,
     cache: &mut DaemonCache,
 ) -> DaemonJobResponse {
-    let cache_key = job.cache_key.trim().to_string();
-    let function_cache_key = job
-        .function_cache_key
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
-    let daemon_memory_cache_allowed = daemon_memory_cache_allowed_for_job(&job);
+    let cache_key = job.artifact_cache_key(&job.cache_key);
+    let stdlib_archive_path = if job.is_wasm {
+        None
+    } else {
+        match crate::backend_process::shared_stdlib_archive_path_from_env() {
+            Ok(path) => path,
+            Err(error) => return response::daemon_job_error_response(job.id, error.to_string()),
+        }
+    };
+    if !job.is_wasm
+        && let Err(error) = job
+            .native_output_kind
+            .validate_shared_stdlib(stdlib_archive_path.is_some())
+    {
+        return response::daemon_job_error_response(job.id, error);
+    }
+    let function_cache_key =
+        job.artifact_cache_key(job.function_cache_key.as_deref().unwrap_or(""));
+    let daemon_memory_cache_allowed =
+        daemon_memory_cache_allowed_for_job(&job, stdlib_archive_path.as_deref());
     if daemon_memory_cache_allowed
         && let Some(response) =
             try_write_cached_daemon_job_output(cache, &job, &cache_key, &function_cache_key)
@@ -54,12 +66,13 @@ pub(crate) fn compile_single_job(
     };
 
     let mut warnings = Vec::new();
-    let compiled_output = match compile_daemon_job_output(&job, document) {
-        Ok(output) => output,
-        Err(err) => {
-            return response::daemon_job_error_response(job.id, err);
-        }
-    };
+    let compiled_output =
+        match compile_daemon_job_output(&job, document, stdlib_archive_path.as_deref()) {
+            Ok(output) => output,
+            Err(err) => {
+                return response::daemon_job_error_response(job.id, err);
+            }
+        };
 
     if let Err(err) = output::write_daemon_compiled_output(
         cache,

@@ -1,4 +1,5 @@
-use crate::{SimpleIR, TrampolineKind, TrampolineTaskKind};
+use crate::{SimpleIR, TrampolineKind};
+use molt_tir::trampolines::CallableMetadata;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct WasmTrampolineAnalysis {
@@ -13,116 +14,22 @@ pub(super) struct WasmTrampolineAnalysis {
     pub(super) function_abi_returns_value: BTreeMap<String, bool>,
 }
 
+#[cfg(test)]
 pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis {
-    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-    let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
-    let mut escaped_callable_targets: BTreeSet<String> = BTreeSet::new();
-    let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
-    let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
-    for func_ir in &ir.functions {
-        if func_ir.is_extern {
-            continue;
-        }
-        let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
-        let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
-        let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
-        let mut pending_attrs: Vec<(String, String, String)> = Vec::new();
-        for op in &func_ir.ops {
-            match op.kind.as_str() {
-                "const" => {
-                    let Some(out) = op.out.as_ref() else {
-                        continue;
-                    };
-                    let val = op.value.unwrap_or(0);
-                    const_values.insert(out.clone(), val);
-                }
-                "const_bool" => {
-                    let Some(out) = op.out.as_ref() else {
-                        continue;
-                    };
-                    let val = op.value.unwrap_or(0) != 0;
-                    const_bools.insert(out.clone(), val);
-                }
-                "func_new" | "func_new_closure" => {
-                    let Some(name) = op.s_value.as_ref() else {
-                        continue;
-                    };
-                    let arity = op.value.unwrap_or(0) as usize;
-                    let has_closure = op.kind == "func_new_closure";
-                    escaped_callable_targets.insert(name.clone());
-                    if let Some(out) = op.out.as_ref() {
-                        func_obj_names.insert(out.clone(), name.clone());
-                    }
-                    if let Some((prev_arity, prev_closure)) = func_trampoline_spec.get(name) {
-                        if *prev_arity != arity || *prev_closure != has_closure {
-                            panic!("func_new arity mismatch for {name}");
-                        }
-                    } else {
-                        func_trampoline_spec.insert(name.clone(), (arity, has_closure));
-                    }
-                }
-                "builtin_func" => {
-                    let Some(name) = op.s_value.as_ref() else {
-                        continue;
-                    };
-                    escaped_callable_targets.insert(name.clone());
-                }
-                "set_attr_generic_obj" => {
-                    let Some(attr) = op.s_value.as_deref() else {
-                        continue;
-                    };
-                    if attr != "__molt_is_generator__"
-                        && attr != "__molt_is_coroutine__"
-                        && attr != "__molt_is_async_generator__"
-                        && attr != "__molt_closure_size__"
-                    {
-                        continue;
-                    }
-                    let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
-                    pending_attrs.push((args[0].clone(), args[1].clone(), attr.to_string()));
-                }
-                _ => {}
-            }
-        }
-        for (func_obj_name, val_name, attr) in pending_attrs {
-            let Some(func_name) = func_obj_names.get(&func_obj_name) else {
-                continue;
-            };
-            match attr.as_str() {
-                "__molt_is_generator__"
-                | "__molt_is_coroutine__"
-                | "__molt_is_async_generator__" => {
-                    let is_true = const_bools
-                        .get(&val_name)
-                        .copied()
-                        .or_else(|| const_values.get(&val_name).map(|val| *val != 0))
-                        .unwrap_or(false);
-                    if is_true {
-                        if !func_name.ends_with("_poll") {
-                            continue;
-                        }
-                        let kind = TrampolineTaskKind::from_marker_attr(attr.as_str())
-                            .expect("task marker was filtered above")
-                            .trampoline_kind();
-                        if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
-                            && prev != kind
-                        {
-                            panic!(
-                                "conflicting task kinds for {func_name}: {:?} vs {:?}",
-                                prev, kind
-                            );
-                        }
-                    }
-                }
-                "__molt_closure_size__" => {
-                    if let Some(size) = const_values.get(&val_name) {
-                        task_closure_sizes.insert(func_name.clone(), *size);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    analyze_wasm_trampolines_with_source(ir, CallableMetadata::from_functions(&ir.functions))
+}
+
+pub(super) fn analyze_wasm_trampolines_with_source(
+    ir: &SimpleIR,
+    mut source: CallableMetadata,
+) -> WasmTrampolineAnalysis {
+    source.merge(CallableMetadata::from_definitions(&ir.functions));
+    let CallableMetadata {
+        escaped_callable_targets,
+        trampoline_specs: func_trampoline_spec,
+        task_kinds,
+        task_closure_sizes,
+    } = source;
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     let mut default_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
     let mut function_abi_returns_value: BTreeMap<String, bool> = BTreeMap::new();
@@ -157,5 +64,58 @@ pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis 
         task_closure_sizes,
         default_trampoline_spec,
         function_abi_returns_value,
+    }
+}
+
+// The final ABI catalog must include generated partitions while source
+// callable marker facts survive removal/separation by body optimization.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_task_metadata_and_final_partition_abis_have_distinct_custody() {
+        let mut source = CallableMetadata::default();
+        source
+            .task_kinds
+            .insert("worker_poll".into(), TrampolineKind::Coroutine);
+        source.task_closure_sizes.insert("worker_poll".into(), 3);
+        source
+            .trampoline_specs
+            .insert("worker_poll".into(), (0, true));
+        source.escaped_callable_targets.insert("worker_poll".into());
+        let ir = SimpleIR {
+            functions: vec![
+                crate::FunctionIR {
+                    name: "worker_poll".into(),
+                    params: vec![crate::MOLT_CLOSURE_PARAM_NAME.into()],
+                    ..crate::FunctionIR::default()
+                },
+                crate::FunctionIR {
+                    name: "opaque_partition".into(),
+                    params: vec!["frame".into()],
+                    codegen_partition: true,
+                    ..crate::FunctionIR::default()
+                },
+            ],
+            profile: None,
+        };
+        let analysis = analyze_wasm_trampolines_with_source(&ir, source);
+        assert_eq!(
+            analysis.task_kinds["worker_poll"],
+            TrampolineKind::Coroutine
+        );
+        assert_eq!(analysis.task_closure_sizes["worker_poll"], 3);
+        assert_eq!(analysis.default_trampoline_spec["worker_poll"], (0, true));
+        assert_eq!(
+            analysis.default_trampoline_spec["opaque_partition"],
+            (1, false)
+        );
+        assert!(analysis.function_abi_returns_value["opaque_partition"]);
+        assert!(
+            !analysis
+                .escaped_callable_targets
+                .contains("opaque_partition")
+        );
     }
 }

@@ -117,6 +117,8 @@ def python_capture_authority_paths() -> tuple[Path, ...]:
         "python_runtime_identity",
         "python_file_node_custody",
         "python_native_dependency_custody",
+        "native_artifact_header",
+        "native_target_shape",
         "python_native_locations",
         "python_identity_common",
         "python_uv_lock_identity",

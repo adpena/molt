@@ -981,6 +981,24 @@ pub(crate) unsafe fn replace_range_with_projection(
 
 /// Append an already-materialized slice in one allocation-checked publication.
 /// Input values are borrowed; the list acquires its own runtime ownership.
+/// Reserve without publishing a content mutation or invalidating ABI views.
+pub(crate) unsafe fn reserve_additional(py: &PyToken<'_>, ptr: *mut u8, additional: usize) -> bool {
+    let base = unsafe { seq_vec_ptr(ptr) };
+    let _guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
+    let Some(required) = (unsafe { (&*base).len() }).checked_add(additional) else {
+        raise_exception::<()>(py, "MemoryError", "list is too large");
+        return false;
+    };
+    unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            py,
+            base,
+            required,
+            "list allocation failed",
+        )
+    }
+}
+
 pub(crate) unsafe fn extend_from_slice(py: &PyToken<'_>, ptr: *mut u8, items: &[u64]) -> bool {
     if items.is_empty() {
         return true;

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+
 import importlib
 import json
 import os
@@ -662,7 +664,15 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     assert WASM_TOOLCHAIN.rust_target_libdir("wasm32-wasip1") == Path(
         "/rust/target/lib"
     )
-    assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
+    assert (
+        cli._is_valid_cached_backend_artifact(
+            obj_path,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
+        )
+        is False
+    )
     assert cli._detect_macos_arch(obj_path) is None
     assert cli._resolve_macos_sdk_root() == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
 

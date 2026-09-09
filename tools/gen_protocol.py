@@ -114,9 +114,13 @@ _TYPE_CHECKING_IMPORTS = {
     "ModuleImportContext": "molt.compiler_analysis.python_imports",
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
     "PythonBindingIndex": "molt.compiler_analysis.python_binding_facts",
+    "PythonDependencyAuthority": "molt.compiler_analysis.python_lexical_scope",
     "SemaResult": "molt.frontend.sema",
     "SerializationContext": "molt.frontend.lowering.serialization_context",
-    "SysPlatformStaticTruthKwargs": "molt.compiler_analysis.static_truth",
+    "StaticTruthKwargs": "molt.compiler_analysis.static_truth",
+    "_ConditionMode": "molt.frontend.lowering.condition_flow",
+    "_ConditionMerge": "molt.frontend.lowering.condition_flow",
+    "_ConditionBindingState": "molt.frontend.lowering.condition_flow",
     "TypeFacts": "molt.type_facts",
 }
 

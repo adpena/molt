@@ -9,17 +9,17 @@ use crate::{
     molt_dict_pop_method, molt_frozenset_copy_method, molt_frozenset_difference_multi,
     molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
     molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
-    molt_getitem_method, molt_inplace_add, molt_inplace_mul, molt_iter, molt_len,
-    molt_list_add_method, molt_list_append, molt_list_clear, molt_list_copy, molt_list_count,
-    molt_list_extend, molt_list_index_range, molt_list_init_method, molt_list_insert,
-    molt_list_mul_method, molt_list_pop, molt_list_remove, molt_list_reverse, molt_list_sort,
-    molt_reversed_builtin, molt_set_add, molt_set_clear, molt_set_copy_method,
-    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_discard,
-    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
-    molt_set_issubset, molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
-    molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
-    molt_set_update_multi, molt_setitem_method, molt_tuple_count, molt_tuple_index_range,
-    molt_tuple_new_bound, obj_from_bits, object_type_id, runtime_state, set_add_in_place,
+    molt_inplace_add, molt_inplace_mul, molt_list_add_method, molt_list_append, molt_list_clear,
+    molt_list_copy, molt_list_count, molt_list_extend, molt_list_index_range,
+    molt_list_init_method, molt_list_insert, molt_list_mul_method, molt_list_pop, molt_list_remove,
+    molt_list_reverse, molt_list_sort, molt_reversed_builtin, molt_set_add, molt_set_clear,
+    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_discard, molt_set_intersection_multi, molt_set_intersection_update_multi,
+    molt_set_isdisjoint, molt_set_issubset, molt_set_issuperset, molt_set_new, molt_set_pop,
+    molt_set_remove, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_setitem_method, molt_tuple_count,
+    molt_tuple_index_range, molt_tuple_new_bound, obj_from_bits, object_type_id, runtime_state,
+    set_add_in_place,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
@@ -152,7 +152,7 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__getitem__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_getitem,
-            fn_addr!(molt_getitem_method),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
             2,
         )),
         "__setitem__" => Some(builtin_func_bits(
@@ -170,13 +170,13 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(
@@ -308,13 +308,13 @@ pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.set_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.set_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(
@@ -383,13 +383,13 @@ pub(crate) fn frozenset_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.frozenset_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.frozenset_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(
@@ -517,7 +517,7 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__getitem__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_getitem,
-            fn_addr!(molt_getitem_method),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
             2,
         )),
         "__setitem__" => Some(builtin_func_bits(
@@ -535,13 +535,13 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(

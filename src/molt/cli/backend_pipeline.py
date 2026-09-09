@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.backend_cache import NativeSymbolInspectionError
+
 import contextlib
 import time
 from pathlib import Path
@@ -380,6 +382,8 @@ def _run_backend_pipeline(
                 max(0.0, (time.perf_counter() - backend_compile_start) * 1000.0),
                 6,
             )
+    except NativeSymbolInspectionError as error:
+        return _fail(str(error), json_output, command="build")
     finally:
         if backend_ir_file_path is not None:
             with contextlib.suppress(OSError):

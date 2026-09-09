@@ -51,6 +51,7 @@ def _load_gen_wasm_abi():
 
 def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     input_files = {path.resolve() for path in manifest.generator_input_files()}
+    assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
@@ -195,6 +196,67 @@ def _manifest_cache_is_read_only():
         raise AssertionError(
             "tests must copy the cached WASM ABI manifest before mutating it"
         )
+
+
+def test_runtime_import_variants_are_fresh_immutable_render_inputs() -> None:
+    gen = _load_gen_wasm_abi()
+    data = {"import": [{"name": "first_import"}]}
+    first = gen._runtime_import_variants(data)
+    assert dict(first) == {"first_import": "FirstImport"}
+    with pytest.raises(TypeError):
+        first["first_import"] = "Wrong"
+    data["import"][0]["name"] = "second_import"
+    second = gen._runtime_import_variants(data)
+    assert dict(first) == {"first_import": "FirstImport"}
+    assert dict(second) == {"second_import": "SecondImport"}
+    assert gen._rust_runtime_import(second, "second_import") == (
+        "WasmRuntimeImport::SecondImport"
+    )
+    with pytest.raises(KeyError):
+        gen._rust_runtime_import(second, "first_import")
+
+
+@pytest.mark.parametrize("names", [("test_name", "test__name"), ("same", "same")])
+def test_runtime_import_variant_collisions_keep_exact_diagnostics(names) -> None:
+    gen = _load_gen_wasm_abi()
+    data = {"import": [{"name": names[0]}]}
+    gen._runtime_import_variants(data)
+    data["import"].append({"name": names[1]})
+    variant = gen._rust_pascal_variant(names[0])
+    with pytest.raises(manifest.WasmAbiManifestError) as raised:
+        gen._runtime_import_variants(data)
+    assert str(raised.value) == (
+        "runtime import enum variant collision: "
+        f"{names[0]!r} and {names[1]!r} both map to {variant!r}"
+    )
+
+
+def test_rust_render_derives_import_variants_once_per_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gen = _load_gen_wasm_abi()
+    data = copy.deepcopy(gen.load_manifest())
+    calls = 0
+    derive = gen._runtime_import_variants
+
+    def tracked(inputs):
+        nonlocal calls
+        calls += 1
+        assert inputs is data
+        return derive(inputs)
+
+    monkeypatch.setattr(gen, "_runtime_import_variants", tracked)
+    monkeypatch.setattr(gen, "_rustfmt_many", lambda modules: modules)
+    first = gen.render_rs_modules(data)
+    assert calls == 1
+    assert "WasmRuntimeImport" in first["import_tokens.rs"]
+    # A mutable manifest must not acquire a stale identity-keyed derived cache.
+    data["import"].append({"name": "render_transaction_extra_import", "type": 0})
+    second = gen.render_rs_modules(data)
+    assert calls == 2
+    assert "RenderTransactionExtraImport" not in first["import_tokens.rs"]
+    assert "RenderTransactionExtraImport" in second["import_tokens.rs"]
+    assert "RenderTransactionExtraImport" in second["import_metadata.rs"]
 
 
 def _raw_manifest() -> dict:

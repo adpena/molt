@@ -8,10 +8,11 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
+    _ClassNsScope,
     MoltOp,
     MoltValue,
     normalize_type_hint,
@@ -504,7 +505,6 @@ class TypeAnnotationMixin(_MixinBase):
         self,
         type_params: Sequence[ast.AST | ast.type_param] | None,
         *,
-        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
         module_override: str | None = None,
     ) -> tuple[list[MoltValue], dict[str, MoltValue]]:
         if not type_params:
@@ -561,35 +561,20 @@ class TypeAnnotationMixin(_MixinBase):
                 constraints_evaluator: MoltValue | None = None
                 default_evaluator: MoltValue | None = None
                 if isinstance(bound_expr, ast.Tuple):
-                    expression = (
-                        expression_rewriter(bound_expr)
-                        if expression_rewriter is not None
-                        else bound_expr
-                    )
                     constraints_evaluator = self._emit_lazy_type_value_evaluator(
-                        expression,
+                        bound_expr,
                         key="__constraints__",
                         module_override=module_override,
                     )
                 elif isinstance(bound_expr, ast.expr):
-                    expression = (
-                        expression_rewriter(bound_expr)
-                        if expression_rewriter is not None
-                        else bound_expr
-                    )
                     bound_evaluator = self._emit_lazy_type_value_evaluator(
-                        expression,
+                        bound_expr,
                         key="__bound__",
                         module_override=module_override,
                     )
                 if isinstance(default_expr, ast.expr):
-                    expression = (
-                        expression_rewriter(default_expr)
-                        if expression_rewriter is not None
-                        else default_expr
-                    )
                     default_evaluator = self._emit_lazy_type_value_evaluator(
-                        expression,
+                        default_expr,
                         key="__default__",
                         module_override=module_override,
                     )
@@ -635,7 +620,6 @@ class TypeAnnotationMixin(_MixinBase):
         self,
         node: ast.TypeAlias,
         *,
-        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
         module_override: str | None = None,
     ) -> MoltValue:
         if not isinstance(node.name, ast.Name):
@@ -645,13 +629,7 @@ class TypeAnnotationMixin(_MixinBase):
         alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
         type_param_values, type_param_map = self._emit_type_params_values(
             node.type_params,
-            expression_rewriter=expression_rewriter,
             module_override=module_override,
-        )
-        expression = (
-            expression_rewriter(node.value)
-            if expression_rewriter is not None
-            else node.value
         )
         previous_type_params = self.annotation_type_params
         merged = dict(previous_type_params)
@@ -659,7 +637,7 @@ class TypeAnnotationMixin(_MixinBase):
         self.annotation_type_params = merged
         try:
             evaluator = self._emit_lazy_type_value_evaluator(
-                expression,
+                node.value,
                 key="__value__",
                 module_override=module_override,
             )
@@ -701,45 +679,60 @@ class TypeAnnotationMixin(_MixinBase):
         exec_map_name: str | None,
         stringize: bool,
         module_override: str | None = None,
+        class_scope: _ClassNsScope | None = None,
+        exec_map: MoltValue | None = None,
     ) -> MoltValue:
+        if exec_map is not None and exec_map_name is not None:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                "Annotation execution storage must have one transport owner",
+            )
         func_symbol = self._function_symbol("__annotate__")
-        free_vars: set[str] = set()
-        for _name, expr, _exec_id in items:
-            free_vars.update(self._collect_annotation_free_vars(expr))
+        if class_scope is None and self._class_ns_stack:
+            class_scope = self._class_ns_stack[-1]
+        namespace_cell: MoltValue | None = None
+        if (
+            class_scope is not None
+            and not stringize
+            and self.python_binding_index is not None
+            and any(
+                isinstance(node, ast.Name)
+                and (fact := self.python_binding_index.expression_fact(node))
+                is not None
+                and fact.class_namespace_lookup
+                for _name, expr, _exec_id in items
+                for node in ast.walk(expr)
+            )
+        ):
+            namespace_cell = class_scope.annotation_namespace_cell
+            if namespace_cell is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    "Class annotation namespace was not allocated at body entry",
+                )
+        # Deferred evaluators use the same lexical-cell custody as functions,
+        # lambdas, and comprehensions; namespace/maps are explicit extra captures.
+        candidates = set(
+            self._lexical_dependencies()
+            .project(
+                tuple(expr for _name, expr, _exec_id in items),
+                implicit_class_cell=True,
+            )
+            .lexical
+        )
         if exec_map_name and self.current_func_name != "molt_main":
-            free_vars.add(exec_map_name)
-        free_vars_list = sorted(free_vars)
-        free_var_hints: dict[str, str] = {}
-        closure_val: MoltValue | None = None
-        has_closure = False
-        if free_vars_list:
-            self.unbound_check_names.update(free_vars_list)
-            closure_items: list[MoltValue] = []
-            for name in free_vars_list:
-                type_param_value = self.annotation_type_params.get(name)
-                if type_param_value is not None:
-                    cell = MoltValue(self.next_var(), type_hint="list")
-                    self.emit(
-                        MoltOp(kind="LIST_NEW", args=[type_param_value], result=cell)
-                    )
-                    closure_items.append(cell)
-                    free_var_hints[name] = type_param_value.type_hint or "Any"
-                    continue
-                self._box_local(name)
-                self.closure_locals.add(name)
-                hint = self.boxed_local_hints.get(name)
-                if hint is None:
-                    value = self.locals.get(name)
-                    if value is not None and value.type_hint:
-                        hint = value.type_hint
-                free_var_hints[name] = hint or "Any"
-                closure_cell = self._load_boxed_cell(name)
-                if closure_cell is None:
-                    closure_cell = self.boxed_locals[name]
-                closure_items.append(closure_cell)
-            closure_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
-            has_closure = True
+            candidates.add(exec_map_name)
+        extra_cells = [
+            value for value in (namespace_cell, exec_map) if value is not None
+        ]
+        free_vars_list, free_var_hints, closure_val, has_closure = (
+            self._capture_lexical_closure(
+                candidates,
+                value_captures=self.annotation_type_params,
+                extra_cells=extra_cells,
+                class_scope=class_scope,
+            )
+        )
         func_hint = f"Func:{func_symbol}"
         if has_closure:
             func_hint = f"ClosureFunc:{func_symbol}"
@@ -776,7 +769,19 @@ class TypeAnnotationMixin(_MixinBase):
             ["format"],
             has_closure=has_closure,
         )
-        self.start_function(func_symbol, params=params, type_facts_name="__annotate__")
+        self.start_function(
+            func_symbol,
+            params=params,
+            type_facts_name="__annotate__",
+            # PEP 649/749 makes the evaluator format an actual Python argument.
+            # Earlier lazy type evaluators have no source positional arguments,
+            # even though Molt uses format as an internal transport parameter.
+            python_first_arg=(
+                MoltValue(parameter_bindings["format"], type_hint="Any")
+                if self.target_python >= (3, 14)
+                else None
+            ),
+        )
         self.parameter_bindings = parameter_bindings
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars_list)}
@@ -784,24 +789,71 @@ class TypeAnnotationMixin(_MixinBase):
             self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
+        if namespace_cell is not None and class_scope is not None:
+            capture_index = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(kind="CONST", args=[len(free_vars_list)], result=capture_index)
+            )
+            captured_cell = MoltValue(self.next_var(), type_hint="list")
+            self.emit(
+                MoltOp(
+                    kind="INDEX",
+                    args=[self.compiler_bindings[_MOLT_CLOSURE_PARAM], capture_index],
+                    result=captured_cell,
+                )
+            )
+            self._class_ns_stack = [
+                _ClassNsScope(
+                    ns=None,
+                    attr_values={},
+                    names=set(),
+                    class_name=class_scope.class_name,
+                    module_name=class_scope.module_name,
+                    local_names=class_scope.local_names,
+                    global_names=class_scope.global_names,
+                    nonlocal_names=class_scope.nonlocal_names,
+                    annotation_namespace_cell=captured_cell,
+                )
+            ]
+            self._class_body_depth = 1
         self.global_decls = set()
         self.nonlocal_decls = set()
         self.scope_assigned = set()
         self.del_targets = set()
         self.unbound_check_names = set()
-        format_val = self._parameter_value("format", type_hint="int")
-        self.locals["format"] = format_val
+        format_val = self._parameter_value("format", type_hint="Any")
+        # Source annotations may independently capture or resolve "format".
+        # Only the explicit parameter SSA owns the evaluator's argument zero.
+        self._publish_python_frame_context()
 
-        one_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
-        is_one = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="EQ", args=[format_val, one_val], result=is_one))
+        # CPython 3.14's generated evaluator guard accepts only a rich
+        # `format > 2` result that is the singleton False. It does not invoke
+        # __bool__ on a non-bool comparison result (unlike a source-level if).
         two_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[2], result=two_val))
-        is_two = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="EQ", args=[format_val, two_val], result=is_two))
+        comparison = self._emit_compare_op(ast.Gt(), format_val, two_val)
+        false_val = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=false_val))
+        supported_format = self._emit_compare_op(ast.Is(), comparison, false_val)
         exec_map_val: MoltValue | None = None
-        if exec_map_name is not None:
+        if exec_map is not None:
+            capture_index = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="CONST",
+                    args=[len(free_vars_list) + int(namespace_cell is not None)],
+                    result=capture_index,
+                )
+            )
+            exec_map_val = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(
+                MoltOp(
+                    kind="INDEX",
+                    args=[self.compiler_bindings[_MOLT_CLOSURE_PARAM], capture_index],
+                    result=exec_map_val,
+                )
+            )
+        elif exec_map_name is not None:
             exec_map_val = self.visit(ast.Name(id=exec_map_name, ctx=ast.Load()))
         missing_val = MoltValue(self.next_var(), type_hint="missing")
         self.emit(MoltOp(kind="MISSING", args=[], result=missing_val))
@@ -847,17 +899,14 @@ class TypeAnnotationMixin(_MixinBase):
                     self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self._emit_normal_return_terminator(res_dict)
 
-        self.emit(MoltOp(kind="IF", args=[is_one], result=MoltValue("none")))
-        emit_annotation_body(stringize)
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="IF", args=[is_two], result=MoltValue("none")))
+        # Emit the value body once and only after the public format guard.
+        self.emit(MoltOp(kind="IF", args=[supported_format], result=MoltValue("none")))
         emit_annotation_body(stringize)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         msg_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[""], result=msg_val))
         err_val = self._emit_exception_new("NotImplementedError", msg_val)
         self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)

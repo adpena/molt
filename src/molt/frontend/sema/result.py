@@ -57,8 +57,6 @@ class ClassFacts:
     retained as ``ambiguous_class_names`` so consumers fail closed instead of
     merging incompatible bodies. ``block_exec_class_nodes`` records class bodies
     whose namespace must be executed through the mutable block path.
-    ``super_fold_sound_methods_by_class`` is the precomputed query result
-    consumed by lowering for zero-arg ``super()``.
     """
 
     method_names_by_class: dict[str, frozenset[str]]
@@ -66,7 +64,6 @@ class ClassFacts:
     opaque_member_class_names: frozenset[str]
     ambiguous_class_names: frozenset[str]
     block_exec_class_nodes: frozenset[int]
-    super_fold_sound_methods_by_class: dict[str, frozenset[str]]
 
 
 @dataclass(frozen=True)

@@ -26,7 +26,6 @@ from molt.frontend._types import (
     _ic_counter,
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
     _next_ic_index,
-    _InlineSuperFoldRequired,
     MoltValue,
     MoltOp,
     SCCPResult,
@@ -123,6 +122,7 @@ from molt.frontend.lowering.app_bindings import AppBindingAuthorityMixin
 from molt.frontend.lowering.attribute_access import AttributeAccessMixin
 from molt.frontend.lowering.class_resolution import ClassResolutionMixin
 from molt.frontend.lowering.compile_warnings import CompileWarningMixin
+from molt.frontend.lowering.condition_flow import ConditionFlowMixin
 from molt.frontend.lowering.emission_core import EmissionCoreMixin
 from molt.frontend.lowering.exception_lowering import ExceptionLoweringMixin
 from molt.frontend.lowering.expression_primitives import ExpressionPrimitivesMixin
@@ -162,7 +162,6 @@ __all__ = [
     "_ic_counter",
     "_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF",
     "_next_ic_index",
-    "_InlineSuperFoldRequired",
     "MoltValue",
     "MoltOp",
     "SCCPResult",
@@ -256,6 +255,7 @@ class SimpleTIRGenerator(
     CompileWarningMixin,
     EmissionCoreMixin,
     ExpressionPrimitivesMixin,
+    ConditionFlowMixin,
     ExceptionLoweringMixin,
     FunctionLifecycleMixin,
     FunctionMetadataMixin,

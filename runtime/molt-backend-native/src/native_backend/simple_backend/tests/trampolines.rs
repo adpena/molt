@@ -68,6 +68,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -89,6 +90,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -116,6 +118,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -194,7 +197,7 @@ fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
     .unwrap();
     let object = {
         let _guard = acquire_backend_env_lock();
-        let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", Some("1"));
+        let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", Some("0"));
         SimpleBackend::new()
             .compile(SimpleIR {
                 functions: functions.clone(),

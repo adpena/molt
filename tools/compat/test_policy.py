@@ -154,6 +154,16 @@ class TestMetadata:
             return f"architecture {sorted(self.architectures)}"
         if self.backends and (backend is None or backend not in self.backends):
             return f"backend {sorted(self.backends)}"
+        return self.python_exclusion_reason(python_version)
+
+    def python_exclusion_reason(
+        self, python_version: tuple[int, int] | None
+    ) -> str | None:
+        """Project version applicability without inventing a backend coordinate.
+
+        Static corpus consumers use this before parsing. Execution consumers
+        continue through exclusion_reason for the full coordinate policy.
+        """
         if python_version is not None:
             if self.min_python is not None and python_version < self.min_python:
                 return f"min_py {self.min_python[0]}.{self.min_python[1]}"

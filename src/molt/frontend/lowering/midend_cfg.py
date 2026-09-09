@@ -59,7 +59,7 @@ class MidendCFGMixin(_MixinBase):
     ) -> None:
         if not available:
             return
-        effect_class = self._op_effect_class(op.kind)
+        effect_class = self._op_effect_class(op)
         if self._is_uncertain_heap_boundary(op.kind):
             available.clear()
             return

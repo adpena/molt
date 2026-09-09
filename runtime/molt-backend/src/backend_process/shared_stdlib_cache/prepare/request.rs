@@ -1,6 +1,7 @@
 pub(crate) struct NativeStdlibCachePrepare<'a> {
+    pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
-    pub(crate) stdlib_obj_path: Option<&'a str>,
+    pub(crate) stdlib_archive_path: Option<&'a str>,
     pub(crate) expected_cache_key: Option<&'a str>,
     pub(crate) expected_cache_manifest: Option<&'a str>,
     pub(crate) have_entry_module: bool,

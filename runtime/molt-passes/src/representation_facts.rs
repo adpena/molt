@@ -28,9 +28,19 @@ fn value_ids_for(tir_func: &TirFunction) -> Vec<ValueId> {
 
 fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
     let mut types = tir_func.value_types.clone();
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(tir_func);
     for block in tir_func.blocks.values() {
         for arg in &block.args {
             types.entry(arg.id).or_insert_with(|| arg.ty.clone());
+        }
+        for op in &block.ops {
+            if let Some(comparison) =
+                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+            {
+                for &result in &op.results {
+                    types.insert(result, comparison.result_type.clone());
+                }
+            }
         }
     }
     types
@@ -437,6 +447,12 @@ fn native_projectable_bool_result(
                 .all(|operand| carrier_by_value.get(operand) == Some(&Repr::Bool))
     };
     match opcode_repr_projectable_bool_result_rule_table(op.opcode) {
+        ReprProjectableBoolResultRule::ComparisonOperands
+            if crate::tir::predicate_semantics::predicate_facts_for_op(op, value_types)
+                .is_some_and(|facts| facts.result_type == TirType::Bool) =>
+        {
+            Some(Repr::Bool)
+        }
         ReprProjectableBoolResultRule::Always => Some(Repr::Bool),
         ReprProjectableBoolResultRule::ResultOne if result_index == 1 => Some(Repr::Bool),
         ReprProjectableBoolResultRule::AllOperandsBool if operands_all_bool() => Some(Repr::Bool),

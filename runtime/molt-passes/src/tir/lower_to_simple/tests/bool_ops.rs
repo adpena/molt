@@ -50,6 +50,7 @@ fn bool_method_return_preserves_const_bool_value() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
 
@@ -126,6 +127,7 @@ fn not_true_roundtrip_preserves_operand() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

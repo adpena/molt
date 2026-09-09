@@ -22,13 +22,13 @@ impl NativeApplicationBatchPlan {
         module_context: Option<molt_backend::NativeBackendModuleContext>,
     ) -> Self {
         let profile = ir.profile;
-        let all_functions = ir.functions;
+        let mut all_functions = ir.functions;
+        let module_context = module_context
+            .unwrap_or_else(|| SimpleBackend::prepare_module_context(&mut all_functions));
         let all_function_names = all_functions.iter().map(|f| f.name.clone()).collect();
         let external_function_declarations = external_function_declarations(&all_functions);
         let app_callable_manifest =
             molt_backend::compute_app_callable_manifest_checked(&all_functions);
-        let module_context =
-            module_context.unwrap_or_else(|| SimpleBackend::build_module_context(&all_functions));
         let body_functions = all_functions
             .into_iter()
             .filter(|func| !func.is_extern)

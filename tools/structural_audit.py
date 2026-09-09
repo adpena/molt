@@ -45,6 +45,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import tokenize
 
+from molt.rust_source_scan import mask_rust_comments_and_strings, project_rust_source
+
 try:
     from tools import release_criterion_receipt as release_receipt
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -972,10 +974,6 @@ _COMMENT_DEBT_RE = re.compile(
 _CODE_DEBT_RE = re.compile(r"\b(unimplemented!|todo!)\s*\(")
 
 
-def _line_preserving_spaces(segment: str) -> str:
-    return "".join("\n" if ch == "\n" else " " for ch in segment)
-
-
 def _python_comment_segments(text: str) -> list[tuple[int, str]]:
     try:
         tokens = tokenize.generate_tokens(io.StringIO(text).readline)
@@ -990,149 +988,14 @@ def _python_comment_segments(text: str) -> list[tuple[int, str]]:
         ]
 
 
-def _rust_comment_segments(text: str) -> list[tuple[int, str]]:
-    comments: list[tuple[int, str]] = []
-    i = 0
-    line = 1
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "\n":
-            line += 1
-            i += 1
-            continue
-        if text.startswith("//", i):
-            start = i
-            start_line = line
-            end = text.find("\n", i)
-            if end < 0:
-                end = n
-            comments.append((start_line, text[start:end]))
-            i = end
-            continue
-        if text.startswith("/*", i):
-            start = i
-            start_line = line
-            end = text.find("*/", i + 2)
-            if end < 0:
-                end = n
-            else:
-                end += 2
-            segment = text[start:end]
-            comments.append((start_line, segment))
-            line += segment.count("\n")
-            i = end
-            continue
-        if ch == '"':
-            i += 1
-            while i < n:
-                if text[i] == "\n":
-                    line += 1
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if text[i] == '"':
-                    i += 1
-                    break
-                i += 1
-            continue
-        if ch == "r":
-            raw = re.match(r"r(#+)\"", text[i:])
-            if raw is not None:
-                hashes = raw.group(1)
-                end_pat = '"' + hashes
-                start = i
-                i += len(raw.group(0))
-                end = text.find(end_pat, i)
-                if end < 0:
-                    line += text[start:n].count("\n")
-                    i = n
-                else:
-                    end += len(end_pat)
-                    line += text[start:end].count("\n")
-                    i = end
-                continue
-            if text.startswith('r"', i):
-                start = i
-                i += 2
-                end = text.find('"', i)
-                if end < 0:
-                    line += text[start:n].count("\n")
-                    i = n
-                else:
-                    end += 1
-                    line += text[start:end].count("\n")
-                    i = end
-                continue
-        i += 1
-    return comments
-
-
-def _mask_rust_comments_and_strings(text: str) -> str:
-    out: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        if text.startswith("//", i):
-            end = text.find("\n", i)
-            if end < 0:
-                end = n
-            out.append(_line_preserving_spaces(text[i:end]))
-            i = end
-            continue
-        if text.startswith("/*", i):
-            end = text.find("*/", i + 2)
-            if end < 0:
-                end = n
-            else:
-                end += 2
-            out.append(_line_preserving_spaces(text[i:end]))
-            i = end
-            continue
-        ch = text[i]
-        if ch == '"':
-            start = i
-            i += 1
-            while i < n:
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if text[i] == '"':
-                    i += 1
-                    break
-                i += 1
-            out.append(_line_preserving_spaces(text[start:i]))
-            continue
-        if ch == "r":
-            raw = re.match(r"r(#+)\"", text[i:])
-            if raw is not None:
-                hashes = raw.group(1)
-                end_pat = '"' + hashes
-                start = i
-                i += len(raw.group(0))
-                end = text.find(end_pat, i)
-                i = n if end < 0 else end + len(end_pat)
-                out.append(_line_preserving_spaces(text[start:i]))
-                continue
-            if text.startswith('r"', i):
-                start = i
-                i += 2
-                end = text.find('"', i)
-                i = n if end < 0 else end + 1
-                out.append(_line_preserving_spaces(text[start:i]))
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
 def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
     if path.suffix == ".py":
         comment_segments = _python_comment_segments(text)
         code_text = ""
     elif path.suffix == ".rs":
-        comment_segments = _rust_comment_segments(text)
-        code_text = _mask_rust_comments_and_strings(text)
+        projection = project_rust_source(text)
+        comment_segments = projection.comments
+        code_text = projection.masked_code
     else:
         comment_segments = []
         code_text = ""
@@ -1429,7 +1292,7 @@ def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
     lines = text.splitlines()
     test_lines = _rust_cfg_test_line_numbers(text)
     live_text = _blank_lines(lines, test_lines)
-    code_without_comments_or_strings = _mask_rust_comments_and_strings(live_text)
+    code_without_comments_or_strings = mask_rust_comments_and_strings(live_text)
     for match in _CODE_DEBT_RE.finditer(code_without_comments_or_strings):
         hits.append(
             ImplementationGapHit(
@@ -1605,13 +1468,15 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
         for path in _iter_source_files(root, (".rs",)):
             rel = path.relative_to(root).as_posix()
             if (
-                rel == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
+                rel
+                == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
                 or rel.startswith(surface_prefix)
             ):
                 targets.append(path)
     else:
         targets = [
-            root / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+            root
+            / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
         ]
         base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
         if base.is_dir():
@@ -2367,9 +2232,7 @@ def main(argv: list[str] | None = None) -> int:
                     "findings_count": len(findings),
                     "improved_metrics": improved,
                     "metrics": metrics,
-                    "regressed_metrics": [
-                        key for key, _base, _cur in regressions
-                    ],
+                    "regressed_metrics": [key for key, _base, _cur in regressions],
                 },
                 input_paths=[baseline_path],
                 repo_root=root,

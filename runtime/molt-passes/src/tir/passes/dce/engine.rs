@@ -5,9 +5,10 @@ use crate::tir::op_kinds_generated::{
 };
 
 use super::super::PassStats;
-use super::super::effects::op_may_throw;
+use super::super::effects::{
+    op_has_observable_effect_when_dead_with_types, op_may_throw_with_types,
+};
 use super::super::reachability::metadata_preserving_reachable_blocks;
-use super::classify::op_is_side_effecting;
 use super::uses::build_use_counts;
 
 /// Remove dead operations (and unreachable blocks) from `func`.
@@ -28,19 +29,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     };
 
     let has_eh = func.has_exception_handling;
+    let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // --- Phase 1: remove unreachable blocks ---
     let reachable = metadata_preserving_reachable_blocks(func);
-    let unreachable: Vec<BlockId> = func
-        .blocks
-        .keys()
-        .copied()
-        .filter(|id| !reachable.contains(id))
-        .collect();
-    for id in &unreachable {
-        func.blocks.remove(id);
-        stats.ops_removed += 1; // count the block removal as one unit
-    }
+    stats.ops_removed += func
+        .retain_blocks(&reachable)
+        .expect("DCE reachability must preserve live block and metadata references");
 
     // --- Phase 2: iterative dead-op removal ---
 
@@ -86,13 +81,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             for i in (0..block.ops.len()).rev() {
                 let op = &block.ops[i];
-                if op_is_side_effecting(op) {
+                if op_has_observable_effect_when_dead_with_types(op, &value_types) {
                     continue;
                 }
 
                 // When inside a try region, conservatively keep ops that
                 // may throw: they represent implicit edges to the handler.
-                if has_eh && try_depth[i] > 0 && op_may_throw(op) {
+                if has_eh && try_depth[i] > 0 && op_may_throw_with_types(op, &value_types) {
                     continue;
                 }
 

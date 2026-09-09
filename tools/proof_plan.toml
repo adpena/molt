@@ -96,12 +96,16 @@ authority_inputs = [
   "src/molt/python_runtime_identity.py",
   "src/molt/python_file_node_custody.py",
   "src/molt/python_native_dependency_custody.py",
+  "src/molt/native_artifact_header.py",
+  "src/molt/native_target_shape.py",
   "src/molt/python_native_locations.py",
   "src/molt/python_identity_common.py",
   "src/molt/python_uv_lock_identity.py",
   "src/molt/python_capture.py",
   "tools/proof_queue_pkg/pact.py",
   "tools/proof_queue_pkg/runner.py",
+  "tools/proof_queue_pkg/execution_receipt_details.py",
+  "tools/proof_queue_pkg/cargo_cache_custody.py",
   "tools/proof_queue_pkg/scheduling.py",
   "tools/proof_queue_pkg/state.py",
   "tools/proof_supervisor/build.py",
@@ -156,6 +160,8 @@ authority_inputs = [
   "tests/tools/test_ci_gate.py",
   "tests/tools/test_guarded_exec.py",
   "tests/tools/test_proof_queue.py",
+  "tests/tools/test_proof_queue_execution_receipt_details.py",
+  "tests/tools/test_proof_queue_cargo_cache_custody.py",
   "tests/tools/test_proof_supervisor_inventory.py",
   "tests/tools/test_memory_guard_spawn_callback.py",
   "tests/tools/test_pytest_truth_plugin.py",
@@ -263,6 +269,14 @@ setup_evidence = [
   ".github/actions/setup-project/action.yml::rustup toolchain install",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
+
+[[toolchain_policy]]
+name = "lune"
+executable = "lune"
+version_args = ["--version"]
+version_pattern = '^lune 0\.10\.5$'
+setup_value = "0.10.5"
+setup_evidence = [".github/workflows/ci.yml::cargo install lune --version 0.10.5 --locked"]
 
 [[toolchain_policy]]
 name = "cargo"
@@ -643,8 +657,8 @@ dependencies = []
 
 [[ci_family]]
 name = "native_integration"
-description = "Native compiler/linker integration smoke isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "runtime/**"]
+description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -762,6 +776,14 @@ inputs = [
   "src/molt/cli/source_build_environment.py",
   "src/molt/cli/source_build_inventory.py",
   "src/molt/python_*.py",
+  "src/molt/native_artifact_header.py",
+  "src/molt/native_target_shape.py",
+  "src/molt/cli/native_binary.py",
+  "src/molt/cli/native_link_plan.py",
+  "tests/native_artifact_fixtures.py",
+  "tests/test_native_artifact_header.py",
+  "tests/cli/test_cli_native_binary_authority.py",
+  "tests/cli/test_native_artifact_contract.py",
   "tests/test_python_environment_identity.py",
   "tests/test_python_native_dependency_custody.py",
   "tests/test_python_runtime_identity.py",
@@ -1829,7 +1851,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1865,7 +1887,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1901,7 +1923,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest", "tests/tools/test_proof_queue_native_receipts.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
@@ -1942,6 +1964,23 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/run_cargo_test_truth.py"]
 toolchains = ["python", "rustc", "cargo", "wasm-ld"]
+
+[[command]]
+id = "rust.test.compiler-authorities"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = ["rust.test.default-truth"]
+# Correctness-only host build: cold dependency optimization dominated the proof
+# window. Keep generated-program optimization unchanged; measure total build and
+# test time separately from optimized-host compiler performance.
+# Retain Cargo unit timings in the run-owned target for critical-path profiling;
+# process-custody event sequence numbers are not wall-clock timestamps.
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-wasm", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--test-threads=1"]
+toolchains = ["cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.clippy.workspace-default"

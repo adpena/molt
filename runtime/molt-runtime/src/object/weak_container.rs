@@ -18,7 +18,7 @@ use crate::object::{
 };
 use crate::{
     MoltObject, PyToken, alloc_list, alloc_tuple, exception_pending, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, molt_eq, obj_from_bits, raise_exception, to_i64,
+    maybe_ptr_from_bits, obj_from_bits, raise_exception, to_i64,
 };
 
 use super::weakref::{
@@ -1063,18 +1063,11 @@ fn entry_slots_detach_owned_edges(
 }
 
 fn py_eq_checked(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Result<bool, u64> {
-    if lhs_bits == rhs_bits {
-        return Ok(true);
+    match crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(lhs_bits), obj_from_bits(rhs_bits)) {
+        crate::object::ops_compare::CompareBoolOutcome::True => Ok(true),
+        crate::object::ops_compare::CompareBoolOutcome::False => Ok(false),
+        _ => Err(MoltObject::none().bits()),
     }
-    let eq_bits = molt_eq(lhs_bits, rhs_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let equal = is_truthy(_py, obj_from_bits(eq_bits));
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    Ok(equal)
 }
 
 fn find_matching(

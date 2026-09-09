@@ -9,12 +9,14 @@ updates used by visitor mixins.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Sequence, TypeVar
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
     AsyncFrameSlotRole,
+    ComprehensionBinding,
     MoltOp,
     MoltValue,
     ScratchCell,
@@ -22,6 +24,9 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.lowering.generator_state import (
+    FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -30,6 +35,23 @@ if TYPE_CHECKING:
     _MixinBase = _GeneratorProtocol
 else:
     _MixinBase = object
+
+
+_ProjectionValue = TypeVar("_ProjectionValue")
+
+
+def _mask_binding_projection(
+    projection: dict[str, _ProjectionValue], names: set[str]
+) -> Callable[[], None]:
+    """Suspend only these source names, retaining unrelated flow updates."""
+    saved = {name: projection.pop(name) for name in names if name in projection}
+
+    def restore() -> None:
+        for name in names:
+            projection.pop(name, None)
+        projection.update(saved)
+
+    return restore
 
 
 class LocalBindingMixin(_MixinBase):
@@ -152,6 +174,11 @@ class LocalBindingMixin(_MixinBase):
         return self._emit_name_from_obj(type_val)
 
     def _box_local(self, name: str) -> None:
+        binding = self.comprehension_bindings.get(name)
+        if binding is not None:
+            if not binding.is_cell:
+                raise AssertionError("comprehension capture missing lexical cell fact")
+            return
         if name in self.global_decls:
             return
         if name in self.boxed_locals:
@@ -193,6 +220,7 @@ class LocalBindingMixin(_MixinBase):
             self.boxed_local_hints[name] = init.type_hint
         else:
             self.boxed_local_hints[name] = "Unknown"
+        self._update_python_argument_zero(name, cell, cell=True)
         self.locals[name] = cell
         if self.is_async():
             offset = self._async_local_offset(name)
@@ -250,6 +278,14 @@ class LocalBindingMixin(_MixinBase):
         self.emit(MoltOp(kind="INDEX", args=[cell.value, index], result=result))
         return result
 
+    def _consume_scratch_cell(self, cell: ScratchCell) -> MoltValue:
+        """Retain the loaded value before releasing compiler-owned storage."""
+        value = self._load_scratch_cell(cell)
+        cleared = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared))
+        self._store_scratch_cell(cell, cleared)
+        return value
+
     def _store_scratch_cell(self, cell: ScratchCell, value: MoltValue) -> None:
         if cell.async_slot is not None:
             self.emit(
@@ -273,9 +309,17 @@ class LocalBindingMixin(_MixinBase):
         )
 
     def _load_boxed_cell(self, name: str) -> MoltValue | None:
+        binding = self.comprehension_bindings.get(name)
+        if binding is not None:
+            return self._load_comprehension_slot(binding) if binding.is_cell else None
         cell = self.boxed_locals.get(name)
         if cell is None:
             return None
+        if name in self.free_vars:
+            # The closure tuple is the stable owner; a cached extraction may
+            # have been emitted in an untaken sibling branch. Reload transport
+            # in the consuming block, just like async frame-owned cells.
+            return self._load_free_var_cell(name)
         if not self.is_async():
             return cell
         if name not in self.async_locals:
@@ -289,6 +333,90 @@ class LocalBindingMixin(_MixinBase):
             )
         )
         return slot_val
+
+    def _capture_lexical_closure(
+        self,
+        candidates: Iterable[str],
+        *,
+        value_captures: dict[str, MoltValue] | None = None,
+        extra_cells: Sequence[MoltValue] = (),
+        class_scope: _ClassNsScope | None = None,
+    ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]:
+        """Capture one lexical owner for every function-like source region.
+
+        A class mapping is never an enclosing lexical frame. Its implicit
+        class cell is a separate input, consulted only during closure creation;
+        defaults and decorators retain the surrounding namespace/cell view.
+        Module globals remain globals, except actual comprehension locals.
+        """
+        names = set(candidates)
+        values = value_captures or {}
+        scope = class_scope or (
+            self._class_ns_stack[-1] if self._class_ns_stack else None
+        )
+        if scope is not None and scope.class_node is None:
+            scope = None
+        saved_scopes, saved_locals = self._class_ns_stack, self.locals
+        saved_cell = self.boxed_locals.get("__class__")
+        saved_hint = self.boxed_local_hints.get("__class__")
+        if scope is not None:
+            self._class_ns_stack, self.locals = [], scope.enclosing_locals
+            if scope.class_cell is not None:
+                self.boxed_locals["__class__"] = scope.class_cell
+                self.boxed_local_hints["__class__"] = "type"
+        try:
+            if self.current_func_name == "molt_main":
+                free_vars = sorted(names.intersection(self.comp_shadow_locals))
+                if (
+                    scope is not None
+                    and scope.class_cell is not None
+                    and "__class__" in names
+                ):
+                    free_vars = sorted({*free_vars, "__class__"})
+            else:
+                free_vars = self._free_vars_in_outer_scope(names)
+            free_vars = sorted(set(free_vars) | (names & values.keys()))
+            if not free_vars and not extra_cells:
+                return [], {}, None, False
+            self.unbound_check_names.update(free_vars)
+            hints: dict[str, str] = {}
+            cells: list[MoltValue] = []
+            for name in free_vars:
+                if name in values:
+                    value = values[name]
+                    cell = MoltValue(self.next_var(), type_hint="list")
+                    self.emit(MoltOp(kind="LIST_NEW", args=[value], result=cell))
+                    cells.append(cell)
+                    hints[name] = value.type_hint or "Any"
+                    continue
+                self._box_local(name)
+                binding = self.comprehension_bindings.get(name)
+                if binding is None:
+                    self.closure_locals.add(name)
+                hint = (
+                    binding.type_hint
+                    if binding is not None
+                    else self.boxed_local_hints.get(name)
+                )
+                if hint is None and (value := self.locals.get(name)) is not None:
+                    hint = value.type_hint
+                hints[name] = hint or "Any"
+                cells.extend(self._closure_cells_for([name]))
+            cells.extend(extra_cells)
+            closure = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=cells, result=closure))
+            return free_vars, hints, closure, True
+        finally:
+            self._class_ns_stack, self.locals = saved_scopes, saved_locals
+            if scope is not None:
+                if saved_cell is None:
+                    self.boxed_locals.pop("__class__", None)
+                else:
+                    self.boxed_locals["__class__"] = saved_cell
+                if saved_hint is None:
+                    self.boxed_local_hints.pop("__class__", None)
+                else:
+                    self.boxed_local_hints["__class__"] = saved_hint
 
     def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]:
         items: list[MoltValue] = []
@@ -420,22 +548,11 @@ class LocalBindingMixin(_MixinBase):
             self.loop_static_class_eager_refs.pop()
 
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool:
-        for child in ast.walk(node):
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id in {"globals", "vars"}
-                and not child.args
-                and not child.keywords
-            ):
-                return True
-            if (
-                isinstance(child, ast.Name)
-                and isinstance(child.ctx, ast.Load)
-                and child.id in {"globals", "vars"}
-            ):
-                return True
-        return False
+        """Use executed binding facts, including reflective aliases and callbacks."""
+        return (
+            self.python_binding_index is None
+            or self.python_binding_index.module_namespace_may_be_observed(node)
+        )
 
     def _class_id_from_call(self, node: ast.Call) -> str | None:
         if isinstance(node.func, ast.Name) and node.func.id in self.classes:
@@ -452,6 +569,12 @@ class LocalBindingMixin(_MixinBase):
         if isinstance(value, ast.Tuple):
             return "tuple"
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            index = self.python_binding_index
+            fact = index.expression_fact(value.func) if index is not None else None
+            if fact is None or fact.binding_invalidated or fact.binding_is_bound:
+                # A constructor spelling is not an exact-type proof when a
+                # lexical/module binding can select a user callable.
+                return None
             func_id = value.func.id
             if func_id in {"dict", "list", "set", "tuple"}:
                 return func_id
@@ -571,6 +694,8 @@ class LocalBindingMixin(_MixinBase):
         # temps are excluded so the SSA machinery handles them unchanged.
         if not self._class_ns_stack:
             return None
+        if name in self.comp_shadow_locals:
+            return None
         if not self._is_class_body_managed_name(name):
             return None
         return self._class_ns_stack[-1]
@@ -578,12 +703,24 @@ class LocalBindingMixin(_MixinBase):
     def _class_ns_store(
         self, scope: "_ClassNsScope", name: str, value: MoltValue
     ) -> None:
+        if name in scope.global_names:
+            self._emit_module_attr_set_runtime(name, value)
+            return
+        if name in scope.nonlocal_names:
+            saved_scopes, saved_locals = self._class_ns_stack, self.locals
+            self._class_ns_stack, self.locals = [], scope.enclosing_locals
+            try:
+                self._store_local_value(name, value)
+            finally:
+                self._class_ns_stack, self.locals = saved_scopes, saved_locals
+            return
         # Bind a class-body name: snapshot the SSA value for the static fast path
         # AND, when a runtime namespace dict exists, publish it there so the dict
         # is the loop-carried-correct mutable home (and so a custom mapping's
         # ``__setitem__`` observes the store, matching CPython's class body).
         scope.names.add(name)
         scope.attr_values[name] = value
+        scope.methods.pop(name, None)
         if scope.ns is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
@@ -596,45 +733,79 @@ class LocalBindingMixin(_MixinBase):
             )
 
     def _class_ns_load(self, scope: "_ClassNsScope", name: str) -> MoltValue | None:
-        # Read a class-body name.  When a runtime namespace dict backs the body
-        # the dict is authoritative (it survives loop back-edges and reflects
-        # mutations done through control flow), so read from it via INDEX.  With
-        # no dict (a straight-line static body that never entered this path under
-        # control flow) the SSA snapshot is exact.  A name this body never bound
-        # returns None so ``visit_Name`` falls through to global/builtin
-        # resolution — CPython's ``LOAD_NAME`` KeyError fallthrough.
-        if name not in scope.names:
-            return None
-        if scope.ns is not None:
-            hint = "Any"
-            cached = scope.attr_values.get(name)
-            if cached is not None and cached.type_hint:
-                hint = cached.type_hint
+        # Source binding invalidation does not change the storage owner. Probe
+        # the live mapping even for never-stored names: __prepare__ or callbacks
+        # may supply them. A missing class-local falls back to globals, whereas
+        # an unassigned free name may fall back to its enclosing lexical cell.
+        if name in scope.global_names:
+            return self._emit_global_get(name)
+        namespace = scope.ns
+        if namespace is None and scope.annotation_namespace_cell is not None:
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            namespace = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="INDEX",
+                    args=[scope.annotation_namespace_cell, zero],
+                    result=namespace,
+                )
+            )
+        if namespace is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-            res = MoltValue(self.next_var(), type_hint=hint)
-            self.emit(MoltOp(kind="INDEX", args=[scope.ns, key_val], result=res))
-            return res
+            missing = self._emit_missing_value()
+            value = self._emit_runtime_call(
+                "molt_namespace_get", [namespace, key_val, missing]
+            )
+            absent = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="IS", args=[value, missing], result=absent))
+            merge = self._new_condition_merge(1, ())
+            self.emit(MoltOp(kind="IF", args=[absent], result=MoltValue("none")))
+            fallback = None
+            if name not in scope.local_names or name in scope.nonlocal_names:
+                # Class bodies share the enclosing function's storage during
+                # lowering, but must never consult an enclosing class mapping.
+                saved_scopes, saved_locals = self._class_ns_stack, self.locals
+                self._class_ns_stack, self.locals = [], scope.enclosing_locals
+                try:
+                    fallback = self._emit_free_var_load(name)
+                    if fallback is None and self.current_func_name != "molt_main":
+                        fallback = self._load_local_value(name)
+                finally:
+                    self._class_ns_stack, self.locals = saved_scopes, saved_locals
+            if fallback is None:
+                fallback = self._emit_global_get(name)
+            absent_values = self._store_condition_branch(merge, (fallback,))
+            self._condition_else(merge)
+            present_values = self._store_condition_branch(merge, (value,))
+            return self._finish_condition_merge(merge, absent_values, present_values)[0]
         return scope.attr_values.get(name)
 
     def _class_ns_delete(self, scope: "_ClassNsScope", name: str) -> None:
+        if name in scope.global_names:
+            self._emit_module_global_del(name)
+            return
+        if name in scope.nonlocal_names:
+            saved_scopes, saved_locals = self._class_ns_stack, self.locals
+            self._class_ns_stack, self.locals = [], scope.enclosing_locals
+            try:
+                self._emit_delete_name(name)
+            finally:
+                self._class_ns_stack, self.locals = saved_scopes, saved_locals
+            return
         # ``del name`` in a class body removes the binding from the namespace.
-        # CPython raises NameError if the name is unbound; the binding-presence
-        # check is the namespace dict's own ``__delitem__`` (which raises
-        # KeyError -> NameError at the boundary).  Drop the SSA snapshot and,
-        # when a dict backs the body, DEL_INDEX it (routing a custom mapping's
-        # ``__delitem__``).
+        # DELETE_NAME normalizes every failed mapping deletion to NameError;
+        # unlike loads this is not restricted to KeyError. The runtime primitive
+        # owns that exception translation for all backend consumers.
         scope.names.discard(name)
         scope.attr_values.pop(name, None)
+        scope.methods.pop(name, None)
         if scope.ns is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-            self.emit(
-                MoltOp(
-                    kind="DEL_INDEX",
-                    args=[scope.ns, key_val],
-                    result=MoltValue("none"),
-                )
+            self._emit_runtime_call(
+                "molt_namespace_del", [scope.ns, key_val], type_hint="None"
             )
 
     def _load_local_value(
@@ -647,10 +818,22 @@ class LocalBindingMixin(_MixinBase):
         # when the active class scope actually owns ``name`` — otherwise continue
         # below so genuine locals/cells/globals still resolve.  (P0 #50.)
         class_scope = self._active_class_ns_scope(name)
-        if class_scope is not None and name in class_scope.names:
+        if class_scope is not None:
             return self._class_ns_load(class_scope, name)
         if name in self.comp_shadow_locals:
-            return self.locals.get(name)
+            binding = self.comprehension_bindings.get(name)
+            if binding is None:
+                return self.locals.get(name)
+            value = self._load_comprehension_slot(binding)
+            if binding.is_cell:
+                index = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=index))
+                result = MoltValue(self.next_var(), type_hint=binding.type_hint)
+                self.emit(MoltOp(kind="INDEX", args=[value, index], result=result))
+                value = result
+            if guard_unbound and not binding.definitely_bound:
+                self._emit_unbound_local_guard(value, name)
+            return value
         if self.current_func_name != "molt_main" and name in self.global_decls:
             return self._emit_global_get(name)
         cell = self._load_boxed_cell(name)
@@ -701,7 +884,7 @@ class LocalBindingMixin(_MixinBase):
             return res
         return cached
 
-    def _plain_local_del_boundary_value(
+    def _capture_plain_local_del_boundary(
         self, name: str, value: MoltValue | None
     ) -> MoltValue | None:
         if (
@@ -720,24 +903,12 @@ class LocalBindingMixin(_MixinBase):
         # boundary. Releasing Missing is a runtime no-op, while always reading
         # the current slot gives every plain STORE_VAR one canonical
         # STORE_FAST-style release boundary across loops and branches.
-        return value
-
-    def _plain_local_del_boundary_enabled(
-        self, name: str, value: MoltValue | None
-    ) -> bool:
-        return self._plain_local_del_boundary_value(name, value) is not None
-
-    def _emit_plain_local_del_boundary(
-        self, name: str, value: MoltValue | None
-    ) -> None:
-        boundary_source = self._plain_local_del_boundary_value(name, value)
-        if boundary_source is None:
-            return
         # `self.locals[name]` is the syntactic cached producer. Across loop
         # phis the current frame slot may be a block argument, so make the
-        # boundary read the slot at the release point instead of retaining a
-        # stale pre-loop SSA value.
-        boundary_value = MoltValue(self.next_var(), type_hint=boundary_source.type_hint)
+        # boundary capture the displaced slot before publication. The release
+        # itself must occur after the new slot and its locals-cache projection
+        # are visible, without reloading the newly published value.
+        boundary_value = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(
             MoltOp(
                 kind="LOAD_VAR",
@@ -746,6 +917,13 @@ class LocalBindingMixin(_MixinBase):
                 metadata={"var": name},
             )
         )
+        return boundary_value
+
+    def _emit_plain_local_del_boundary(
+        self, name: str, boundary_value: MoltValue | None
+    ) -> None:
+        if boundary_value is None:
+            return
         self.emit(
             MoltOp(
                 kind="DEL_BOUNDARY",
@@ -855,7 +1033,104 @@ class LocalBindingMixin(_MixinBase):
                 preserve, [(name, value)]
             ):
                 continue
-            self._emit_plain_local_del_boundary(name, value)
+            boundary_value = self._capture_plain_local_del_boundary(name, value)
+            self._emit_plain_local_del_boundary(name, boundary_value)
+
+    def _capture_class_import_state(self) -> dict[str, object]:
+        """Isolate lexical import projections while executing a class body."""
+        saved: dict[str, object] = {}
+        for attr in (*FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS, "_typing_import_aliases"):
+            value = getattr(self, attr)
+            saved[attr] = value
+            if attr == "_module_provenance_flow_stack":
+                # Class-local paths are not enclosing-function/module bindings.
+                # Explicit global publications are projected on restoration.
+                setattr(self, attr, [])
+            elif isinstance(value, (dict, set, list)):
+                setattr(self, attr, value.copy())
+            else:
+                raise AssertionError(f"unsupported lexical import state: {attr}")
+        return saved
+
+    def _restore_class_import_state(
+        self,
+        saved: dict[str, object],
+        global_names: frozenset[str],
+        nonlocal_names: frozenset[str] = frozenset(),
+    ) -> None:
+        """Restore lexical identity, retaining explicit class-global publications."""
+        for attr, value in saved.items():
+            setattr(self, attr, value)
+        for name in sorted(global_names):
+            if not self._binding_targets_module_namespace(name):
+                # A class global cannot replace an enclosing function's local.
+                continue
+            for lexical, module in (
+                (self.imported_modules, self.global_imported_modules),
+                (
+                    self.imported_module_provenance,
+                    self.global_imported_module_provenance,
+                ),
+                (self.imported_names, self.global_imported_names),
+                (self.imported_attr_names, self.global_imported_attr_names),
+            ):
+                lexical.pop(name, None)
+                if name in module:
+                    lexical[name] = module[name]
+            self.local_imported_modules.discard(name)
+            self.local_imported_names.discard(name)
+            self._typing_import_aliases.discard(name)
+            if self.global_imported_modules.get(name) in {
+                "typing",
+                "typing_extensions",
+            }:
+                self._typing_import_aliases.add(name)
+        for name in sorted(nonlocal_names):
+            # The body may replace the enclosing cell conditionally or through
+            # callbacks. Restoring its pre-class import origin would authorize
+            # dispatch through a stale module. Neither a last-visited body map
+            # nor the old outer map proves the post-class binding's identity.
+            self._clear_imported_module_binding(name)
+            self.imported_names.pop(name, None)
+            self.imported_attr_names.pop(name, None)
+            self.local_imported_names.discard(name)
+            self._typing_import_aliases.discard(name)
+        self._record_module_provenance_flow_state()
+
+    def _binding_targets_module_namespace(self, name: str) -> bool:
+        """Resolve publication ownership before consulting enclosing-frame flags."""
+        class_scope = self._active_class_ns_scope(name)
+        if class_scope is not None:
+            return name in class_scope.global_names
+        return self.current_func_name == "molt_main" or name in self.global_decls
+
+    def _publish_import_binding(self, name: str, value: MoltValue) -> None:
+        """Publish an imported value exactly once to its Python binding owner."""
+        self.exact_locals.pop(name, None)
+        self.exact_builtin_locals.pop(name, None)
+        module_owned = self._binding_targets_module_namespace(name)
+        if self._active_class_ns_scope(name) is not None:
+            self._store_local_value(name, value)
+            if module_owned:
+                self.module_global_mutations.add(name)
+                self.globals[name] = value
+            return
+        if module_owned and self.current_func_name == "molt_main":
+            self.module_global_mutations.add(name)
+            self.globals[name] = value
+        self._store_local_value(name, value, publish_module=True)
+
+    def _publish_definition_binding(self, name: str, value: MoltValue) -> None:
+        """Publish a definition once without inventing an unboxed local cache."""
+        if self._active_class_ns_scope(name) is not None:
+            self._store_local_value(name, value)
+            return
+        if self.current_func_name == "molt_main":
+            self.globals[name] = value
+            if name not in self.boxed_locals:
+                self._emit_module_attr_set(name, value)
+                return
+        self._store_local_value(name, value, publish_module=True)
 
     def _store_local_value(
         self,
@@ -863,6 +1138,7 @@ class LocalBindingMixin(_MixinBase):
         value: MoltValue,
         *,
         emit_rebind_boundary: bool = True,
+        publish_module: bool = False,
     ) -> None:
         def update_locals_cache() -> None:
             self._emit_locals_cache_update(name, value)
@@ -873,29 +1149,20 @@ class LocalBindingMixin(_MixinBase):
             self._class_ns_store(class_scope, name, value)
             return
         if name in self.comp_shadow_locals:
-            self.locals[name] = value
+            self._store_comprehension_local_value(name, value)
             return
         if self.current_func_name != "molt_main" and name in self.global_decls:
             self._emit_module_attr_set_runtime(name, value)
             return
-        if (
-            self.current_func_name == "molt_main"
-            and name in self.module_global_mutations
-            and hasattr(self, "module_obj")
-            and self.module_obj is not None
-        ):
-            self._emit_module_attr_set_on(self.module_obj, name, value)
-        # Module-level stores inside loops must sync to the module dict so that
-        # module_get_global bare-name reads see the updated value on each
-        # iteration while preserving NameError-on-miss semantics.
-        if (
-            self.current_func_name == "molt_main"
-            and self.control_flow_depth > 0
-            and hasattr(self, "module_obj")
-            and self.module_obj is not None
-            and name in self.scope_assigned
-        ):
-            self._emit_module_attr_set_on(self.module_obj, name, value)
+        if self.current_func_name == "molt_main":
+            live_module_binding = name in self.module_global_mutations or (
+                self.control_flow_depth > 0 and name in self.scope_assigned
+            )
+            if publish_module or live_module_binding:
+                # Statement publication and mutable storage are one replacement,
+                # not two writes. Compiler-private stores do not request public
+                # publication; live control-flow bindings must never defer it.
+                self._emit_module_attr_set(name, value, defer=not live_module_binding)
         if name in self.nonlocal_decls and name not in self.free_vars:
             raise FrontendRejection(
                 Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
@@ -903,6 +1170,7 @@ class LocalBindingMixin(_MixinBase):
         if name in self.free_vars or name in self.nonlocal_decls:
             if self._emit_free_var_store(name, value):
                 return
+        self._update_python_argument_zero(name, value)
         # Discard the name from the unbound-check set — at any flow
         # depth.  Within the current basic block, the assignment we're
         # about to emit dominates all subsequent loads of `name` until
@@ -968,15 +1236,12 @@ class LocalBindingMixin(_MixinBase):
             self.bytearray_len_hints[name] = self.bytearray_len_hints[value.name]
         else:
             self.bytearray_len_hints.pop(name, None)
+        boundary_value = None
         if emit_rebind_boundary:
             value = self._emit_plain_local_alias_retain(name, value)
             previous = self.locals.get(name)
-            if (
-                previous is not None
-                and previous.name != value.name
-                and self._plain_local_del_boundary_enabled(name, previous)
-            ):
-                self._emit_plain_local_del_boundary(name, previous)
+            if previous is not None and previous.name != value.name:
+                boundary_value = self._capture_plain_local_del_boundary(name, previous)
         self.locals[name] = value
         # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
         # op that PRODUCED the bound value. CPython holds a named local in the
@@ -1013,6 +1278,7 @@ class LocalBindingMixin(_MixinBase):
                 )
             )
         update_locals_cache()
+        self._emit_plain_local_del_boundary(name, boundary_value)
 
     def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None:
         # Compiler bindings have a separate typed origin and never enter
@@ -1046,6 +1312,7 @@ class LocalBindingMixin(_MixinBase):
     def _emit_delete_local_value(
         self, name: str, missing: MoltValue, old_value: MoltValue
     ) -> None:
+        self._update_python_argument_zero(name, missing)
         self._invalidate_loop_guard(name)
         self.bytearray_len_hints.pop(name, None)
         self.locals[name] = missing
@@ -1059,7 +1326,149 @@ class LocalBindingMixin(_MixinBase):
         )
         self._emit_locals_cache_update(name, missing)
 
+    def _load_comprehension_slot(self, binding: ComprehensionBinding) -> MoltValue:
+        value = MoltValue(
+            self.next_var(), type_hint="list" if binding.is_cell else binding.type_hint
+        )
+        if binding.async_slot is not None:
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", binding.async_slot.offset],
+                    result=value,
+                )
+            )
+        else:
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=value,
+                    metadata={"var": binding.variable_slot},
+                )
+            )
+        return value
+
+    def _store_comprehension_slot(
+        self, binding: ComprehensionBinding, value: MoltValue
+    ) -> None:
+        if binding.async_slot is not None:
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", binding.async_slot.offset, value],
+                    result=MoltValue("none"),
+                )
+            )
+        else:
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[value],
+                    result=MoltValue("none"),
+                    metadata={"var": binding.variable_slot},
+                )
+            )
+
+    @contextmanager
+    def _comprehension_scope(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> Iterator[None]:
+        """Fresh PEP 709 locals; caller storage survives normal and exceptional exit."""
+        names = {
+            name
+            for comp in node.generators
+            for name in self._collect_target_names(comp.target)
+        }
+        captured = set(self._collect_comprehension_cell_vars(node))
+        old_bindings = self.comprehension_bindings
+        old_shadow = self.comp_shadow_locals
+        old_locals = {name: self.locals.get(name) for name in names}
+        old_unbound = self.unbound_check_names & names
+        restore_projections = (
+            _mask_binding_projection(self.exact_locals, names),
+            _mask_binding_projection(self.exact_builtin_locals, names),
+            _mask_binding_projection(self.boxed_local_hints, names),
+            _mask_binding_projection(self.explicit_type_hints, names),
+            _mask_binding_projection(self.container_elem_hints, names),
+            _mask_binding_projection(self.dict_key_hints, names),
+            _mask_binding_projection(self.dict_value_hints, names),
+            _mask_binding_projection(self.bytearray_len_hints, names),
+            _mask_binding_projection(self.imported_names, names),
+            _mask_binding_projection(self.imported_attr_names, names),
+            _mask_binding_projection(self.imported_modules, names),
+            _mask_binding_projection(self.imported_module_provenance, names),
+        )
+        self.comprehension_bindings = dict(old_bindings)
+        self.comp_shadow_locals = old_shadow | names
+        frame_scope = None
+        try:
+            for name in sorted(names):
+                missing = self._emit_missing_value()
+                value = missing
+                is_cell = name in captured
+                if is_cell:
+                    value = MoltValue(self.next_var(), type_hint="list")
+                    self.emit(MoltOp(kind="LIST_NEW", args=[missing], result=value))
+                slot = (
+                    self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
+                    if self.is_async()
+                    else None
+                )
+                binding = ComprehensionBinding(
+                    variable_slot=self.next_var() if slot is None else None,
+                    async_slot=slot,
+                    is_cell=is_cell,
+                )
+                self.comprehension_bindings[name] = binding
+                self._store_comprehension_slot(binding, value)
+                # Lexical closure selection sees the source name, while every
+                # actual read/write uses the scoped transport above.
+                self.locals[name] = missing
+            if (
+                self.python_frame_context_active
+                and isinstance(self.current_python_first_arg, str)
+                and self.current_python_first_arg in names
+            ):
+                frame_scope = self._enter_python_frame_context_scope()
+            yield
+        finally:
+            self.comprehension_bindings = old_bindings
+            self.comp_shadow_locals = old_shadow
+            self.unbound_check_names.difference_update(names)
+            self.unbound_check_names.update(old_unbound)
+            for restore in reversed(restore_projections):
+                restore()
+            for name, value in old_locals.items():
+                if value is None:
+                    self.locals.pop(name, None)
+                else:
+                    self.locals[name] = value
+            if frame_scope is not None:
+                self._exit_python_frame_context_scope(frame_scope)
+
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None:
+        binding = self.comprehension_bindings.get(name)
+        if binding is not None:
+            self._invalidate_loop_guard(name)
+            binding.type_hint = value.type_hint or "Any"
+            binding.definitely_bound = True
+            self._update_python_argument_zero(name, value)
+            if binding.is_cell:
+                cell = self._load_comprehension_slot(binding)
+                index = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=index))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[cell, index, value],
+                        result=MoltValue("none"),
+                    )
+                )
+            else:
+                self._store_comprehension_slot(binding, value)
+            self.locals[name] = value
+            return
         self._invalidate_loop_guard(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:

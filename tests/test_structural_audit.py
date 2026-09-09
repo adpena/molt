@@ -77,6 +77,7 @@ def test_iter_source_files_prunes_excluded_directories_before_descent(
     assert files == ["runtime/live.rs"]
 
 
+@pytest.mark.slow
 def test_structural_debt_does_not_exceed_baseline():
     """The CI ratchet, as a pytest. Every metric may only go DOWN."""
     findings = SA.run_all(ROOT)
@@ -299,6 +300,38 @@ def test_debt_probe_counts_comments_and_rust_macros(tmp_path: Path):
         "runtime/molt-runtime/src/lib.rs:2",
         "src/molt/feature.py:1",
     }
+
+
+def test_rust_debt_consumer_preserves_exact_hits_with_one_lexical_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import rust_source_scan
+
+    source = (
+        'const TEXT: &str = r#"// TODO hidden; todo!()"#;\r\n'
+        "// TODO real\r\n"
+        "/* HACK outer /* FIXME nested */ tail */\r\n"
+        'fn missing() { todo!("FIXME literal"); }\r\n'
+    )
+    original_scan = rust_source_scan._non_code_spans
+    scans = 0
+
+    def counted_scan(text: str):
+        nonlocal scans
+        scans += 1
+        return original_scan(text)
+
+    # Instrument the shared lexical authority, not the projection API: a
+    # regression to two single projections must fail this consumer contract.
+    monkeypatch.setattr(rust_source_scan, "_non_code_spans", counted_scan)
+    hits = SA._debt_marker_hits(Path("runtime/sample.rs"), source)
+    assert [(hit.line, hit.marker) for hit in hits] == [
+        (2, "TODO"),
+        (3, "FIXME"),
+        (3, "HACK"),
+        (4, "todo!"),
+    ]
+    assert scans == 1
 
 
 def test_debt_probe_ignores_bare_upstream_stdlib_xxx_not_owned_debt(tmp_path: Path):

@@ -8,11 +8,54 @@ import re
 import sys
 from typing import Sequence
 
+from molt.llvm_linker_roles import LlvmLinkerRole
+from molt.native_artifact_header import (
+    NativeArtifactError,
+    OBJECT_KINDS,
+    read_native_artifact,
+)
+from molt.native_target_shape import (
+    NativeObjectFormat as NativeObjectFormat,
+    native_artifact_shape,
+    native_object_format_for_os,
+    normalize_native_architecture as _normalize_arch,
+)
 
-class NativeObjectFormat(str, Enum):
-    ELF = "elf"
+
+class LinkDialect(str, Enum):
+    ELF_GNU = "elf-gnu"
     MACHO = "macho"
-    COFF = "coff"
+    COFF_GNU = "coff-gnu"
+    COFF_MSVC = "coff-msvc"
+    WASM = "wasm"
+
+    @property
+    def llvm_linker_role(self) -> LlvmLinkerRole:
+        if self is LinkDialect.WASM:
+            return "wasm-ld"
+        if self is LinkDialect.MACHO:
+            return "ld64.lld"
+        if self is LinkDialect.COFF_MSVC:
+            return "lld-link"
+        return "ld.lld"
+
+
+class NativeArtifactKind(str, Enum):
+    OBJECT = "object"
+    ARCHIVE = "archive"
+
+    @classmethod
+    def for_emit_mode(cls, emit_mode: str) -> NativeArtifactKind:
+        if emit_mode == "obj":
+            return cls.OBJECT
+        if emit_mode == "bin":
+            return cls.ARCHIVE
+        raise ValueError(f"Native artifacts do not support emit mode {emit_mode!r}.")
+
+    def suffix(self, target: NativeTargetSpec) -> str:
+        if target.object_format is NativeObjectFormat.COFF:
+            return ".obj" if self is NativeArtifactKind.OBJECT else ".lib"
+        return ".o" if self is NativeArtifactKind.OBJECT else ".a"
 
 
 class NativeLinkerKind(str, Enum):
@@ -21,12 +64,6 @@ class NativeLinkerKind(str, Enum):
     MOLD = "mold"
 
 
-_ARCH_ALIASES = {
-    "amd64": "x86_64",
-    "x64": "x86_64",
-    "x86-64": "x86_64",
-    "arm64": "aarch64",
-}
 _BOLT_ARCHES = frozenset({"x86_64", "aarch64"})
 
 
@@ -36,6 +73,18 @@ class NativeTargetSpec:
     os: str
     arch: str
     object_format: NativeObjectFormat
+
+    @property
+    def link_dialect(self) -> LinkDialect:
+        if self.object_format is NativeObjectFormat.ELF:
+            return LinkDialect.ELF_GNU
+        if self.object_format is NativeObjectFormat.MACHO:
+            return LinkDialect.MACHO
+        return (
+            LinkDialect.COFF_GNU
+            if (self.triple or "").split("-")[-1] in {"gnu", "gnullvm"}
+            else LinkDialect.COFF_MSVC
+        )
 
     @property
     def bolt_support_error(self) -> str | None:
@@ -78,6 +127,84 @@ class NativeLinkPlan:
     normalized_target: str | None
 
 
+def native_artifact_link_arguments(
+    path: Path, *, kind: NativeArtifactKind, target: NativeTargetSpec
+) -> tuple[str, ...]:
+    """Keep every compiler partition, without affecting other archive inputs."""
+    if kind is NativeArtifactKind.OBJECT:
+        return (str(path),)
+    if kind is not NativeArtifactKind.ARCHIVE:
+        raise ValueError(f"Unknown native artifact kind: {kind!r}.")
+    return whole_archive_link_arguments(str(path), dialect=target.link_dialect)
+
+
+def whole_archive_link_arguments(
+    argument: str, *, dialect: LinkDialect
+) -> tuple[str, ...]:
+    """Force one archive through the selected driver without splitting its path."""
+    if dialect is LinkDialect.MACHO:
+        return ("-Xlinker", "-force_load", "-Xlinker", argument)
+    if dialect is LinkDialect.COFF_MSVC:
+        return ("-Xlinker", f"/WHOLEARCHIVE:{argument}")
+    if dialect is LinkDialect.WASM:
+        return ("--whole-archive", argument, "--no-whole-archive")
+    if dialect in {LinkDialect.ELF_GNU, LinkDialect.COFF_GNU}:
+        return (
+            "-Xlinker",
+            "--whole-archive",
+            argument,
+            "-Xlinker",
+            "--no-whole-archive",
+        )
+    raise ValueError(f"Unknown archive link dialect: {dialect!r}.")
+
+
+def target_is_wasm(target_triple: str) -> bool:
+    normalized = target_triple.strip().lower()
+    if normalized in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+        return True
+    if normalized.startswith("wasm"):
+        raise ValueError(f"Unsupported WASM target: {target_triple!r}")
+    try:
+        resolve_native_target_spec(normalized)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    return False
+
+
+def resolve_link_dialect(
+    target_triple: str | None,
+    *,
+    host_platform: str | None = None,
+    host_arch: str | None = None,
+) -> LinkDialect:
+    if target_triple is not None and target_is_wasm(target_triple):
+        return LinkDialect.WASM
+    return resolve_native_target_spec(
+        target_triple, host_platform=host_platform, host_arch=host_arch
+    ).link_dialect
+
+
+def validate_native_object_artifact(path: Path, target: NativeTargetSpec) -> None:
+    """Admit one relocatable header with the exact requested target shape."""
+    try:
+        shape = native_artifact_shape(
+            target.arch, target_triple=target.triple, object_format=target.object_format
+        )
+        read_native_artifact(path).admit(
+            object_format=target.object_format,
+            kinds=OBJECT_KINDS,
+            shape=shape,
+            exact_target=True,
+        )
+    except (NativeArtifactError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"Native object output {path} is not a relocatable {target.object_format.value} "
+            f"object for {target.arch}: {exc}; --emit obj must produce one actual object, "
+            "never an archive or image."
+        ) from exc
+
+
 def native_linker_name_from_driver_command(
     command: Sequence[str],
     *,
@@ -111,6 +238,15 @@ def native_link_policy_flags(
     dead_strip: bool = True,
 ) -> tuple[str, ...]:
     """Return one driver-ready deterministic and identity-preserving policy."""
+    if target.link_dialect is LinkDialect.COFF_GNU:
+        if msvc_driver:
+            raise RuntimeError("A COFF-GNU target cannot use the MSVC driver dialect.")
+        flags = ["-Wl,--no-insert-timestamp"]
+        if dead_strip:
+            flags.append("-Wl,--gc-sections")
+        if capabilities.explicit_no_icf_flag:
+            flags.append(capabilities.explicit_no_icf_flag)
+        return tuple(flags)
     if target.object_format is NativeObjectFormat.COFF:
         flags = ["/Brepro"]
         if dead_strip:
@@ -128,14 +264,6 @@ def native_link_policy_flags(
     if capabilities.explicit_no_icf_flag:
         flags.append(capabilities.explicit_no_icf_flag)
     return tuple(flags)
-
-
-def _normalize_arch(raw: str) -> str:
-    normalized = raw.strip().lower()
-    arch = _ARCH_ALIASES.get(normalized, normalized)
-    if not re.fullmatch(r"[a-z0-9_]+", arch) or arch == "unknown":
-        raise RuntimeError(f"Native target has no valid architecture: {raw!r}.")
-    return arch
 
 
 def _host_target_triple(
@@ -183,12 +311,16 @@ def resolve_native_target_spec(
             }
             if os_parts == {"windows"}:
                 return NativeTargetSpec(
-                    triple, "windows", arch, NativeObjectFormat.COFF
+                    triple, "windows", arch, native_object_format_for_os("windows")
                 )
             if os_parts in ({"darwin"}, {"macos"}):
-                return NativeTargetSpec(triple, "macos", arch, NativeObjectFormat.MACHO)
+                return NativeTargetSpec(
+                    triple, "macos", arch, native_object_format_for_os("macos")
+                )
             if os_parts == {"linux"} and not set(parts[1:]) & {"msvc", "mingw32"}:
-                return NativeTargetSpec(triple, "linux", arch, NativeObjectFormat.ELF)
+                return NativeTargetSpec(
+                    triple, "linux", arch, native_object_format_for_os("linux")
+                )
         raise RuntimeError(
             f"Native linking has no object-format policy for target {target_triple!r}."
         )
@@ -196,11 +328,17 @@ def resolve_native_target_spec(
     host_platform = sys.platform if host_platform is None else host_platform
     arch = _normalize_arch(platform.machine() if host_arch is None else host_arch)
     if host_platform == "win32":
-        return NativeTargetSpec(None, "windows", arch, NativeObjectFormat.COFF)
+        return NativeTargetSpec(
+            None, "windows", arch, native_object_format_for_os("windows")
+        )
     if host_platform == "darwin":
-        return NativeTargetSpec(None, "macos", arch, NativeObjectFormat.MACHO)
+        return NativeTargetSpec(
+            None, "macos", arch, native_object_format_for_os("macos")
+        )
     if host_platform.startswith("linux"):
-        return NativeTargetSpec(None, "linux", arch, NativeObjectFormat.ELF)
+        return NativeTargetSpec(
+            None, "linux", arch, native_object_format_for_os("linux")
+        )
     raise RuntimeError(
         f"Native linking is unsupported on host platform {host_platform!r}."
     )
@@ -217,7 +355,10 @@ def native_link_capabilities(
         else NativeLinkerKind.SYSTEM
     )
     no_icf: str | None = None
-    if target.object_format is NativeObjectFormat.COFF:
+    if target.link_dialect is LinkDialect.COFF_GNU:
+        # GNU PE ld has no ICF; LLD's MinGW driver can explicitly disable it.
+        no_icf = "-Wl,--icf=none" if linker is NativeLinkerKind.LLD else None
+    elif target.object_format is NativeObjectFormat.COFF:
         no_icf = "-Wl,/OPT:NOICF"
     elif target.object_format is NativeObjectFormat.MACHO:
         no_icf = "-Wl,-no_deduplicate"

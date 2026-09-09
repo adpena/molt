@@ -9,6 +9,7 @@ fn test_bool_arithmetic_coerces_bool_operands() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -70,6 +71,7 @@ fn test_result_type_hint_does_not_prove_luau_not_operand_bool() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -109,6 +111,7 @@ fn test_result_type_hint_does_not_prove_luau_and_or_operands_bool() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -159,6 +162,7 @@ fn test_result_type_hint_does_not_force_luau_numeric_add() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -198,6 +202,7 @@ fn test_transport_hints_do_not_force_luau_numeric_add() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -239,6 +244,7 @@ fn test_type_hint_int_does_not_force_luau_integer_index() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -279,6 +285,7 @@ fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -336,6 +343,7 @@ fn test_len_transport_hint_does_not_force_luau_raw_length() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -376,6 +384,7 @@ fn test_len_uses_tir_container_fact_for_packed_sequence_length() {
             param_types: Some(vec!["list[int]".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -415,6 +424,7 @@ fn test_typed_string_len_uses_unicode_codepoint_authority() {
             param_types: Some(vec!["str".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -449,6 +459,7 @@ fn test_typed_list_truthiness_uses_packed_sequence_length_for_not() {
             param_types: Some(vec!["list[int]".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -491,6 +502,7 @@ fn test_typed_dict_truthiness_uses_ordered_dict_size_authority() {
             ]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {

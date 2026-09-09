@@ -62,8 +62,41 @@ def python_pattern_capture_names(pattern: ast.pattern) -> tuple[str, ...]:
     return tuple(names)
 
 
+def python_pattern_irrefutable_reason(
+    pattern: ast.pattern,
+) -> tuple[str, str | None] | None:
+    if isinstance(pattern, ast.MatchAs):
+        if pattern.pattern is None:
+            if pattern.name is None:
+                return ("wildcard", None)
+            return ("capture", pattern.name)
+        inner = python_pattern_irrefutable_reason(pattern.pattern)
+        if inner is None:
+            return None
+        if inner[0] == "wildcard":
+            return ("wildcard", None)
+        return inner
+    if isinstance(pattern, ast.MatchOr):
+        for sub in pattern.patterns:
+            reason = python_pattern_irrefutable_reason(sub)
+            if reason is not None:
+                return reason
+    return None
+
+
+def python_pattern_is_capture_only(pattern: ast.pattern) -> bool:
+    """Whether matching only binds names, without a value/protocol test."""
+    while isinstance(pattern, ast.MatchAs):
+        if pattern.pattern is None:
+            return True
+        pattern = pattern.pattern
+    return False
+
+
 __all__ = [
     "PythonSourceKey",
     "python_node_source_key",
     "python_pattern_capture_names",
+    "python_pattern_irrefutable_reason",
+    "python_pattern_is_capture_only",
 ]

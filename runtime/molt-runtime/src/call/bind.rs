@@ -5,26 +5,22 @@ use crate::call::type_policy::{
     resolved_new_is_default_object_new,
 };
 use crate::object::layout::ensure_function_code_bits;
-use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, BIND_KIND_TYPE_NEW_INIT,
     CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
     HEADER_FLAG_FUNC_REQUIRES_BINDER, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader,
-    MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE,
-    TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
-    alloc_dict_with_pairs, alloc_instance_for_class, alloc_instance_for_default_object_new,
-    alloc_object, alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
+    MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT,
+    TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class,
+    alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
-    bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
-    call_callable1, call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup,
-    class_attr_lookup_raw_mro, class_dict_bits, class_layout_version_bits, class_name_bits,
-    class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
-    dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order,
-    dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
+    bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
+    call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup,
+    class_attr_lookup_raw_mro, class_layout_version_bits, class_name_bits, class_name_for_error,
+    code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place,
+    dict_get_method, dict_order, dict_setdefault_method, dict_update_method,
     dict_update_set_via_store, exception_pending, function_arity, function_arity_usize,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
@@ -37,31 +33,33 @@ use crate::{
     molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
     molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
     molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
-    molt_dict_pop_method, molt_file_reconfigure, molt_frozenset_copy_method,
-    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
-    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_generator_new, molt_int_from_bytes, molt_int_new,
-    molt_int_to_bytes, molt_iter, molt_iter_next, molt_list_append, molt_list_index_range,
-    molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
-    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
-    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
-    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
-    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
-    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
-    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
-    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
-    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
-    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
-    molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
-    object_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
-    raise_not_callable, raise_not_iterable, runtime_state, runtime_state_for_gil,
+    molt_bytes_startswith_slice, molt_dict_from_obj, molt_dict_new, molt_dict_pop_method,
+    molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
+    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
+    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
+    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_list_append,
+    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
+    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
+    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
+    molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
+    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
+    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
+    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
+    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
+    molt_string_startswith_slice, molt_tuple_index_range, molt_type_call, molt_type_init,
+    molt_type_new, obj_from_bits, object_class_bits, object_type_id, profile_hit_unchecked,
+    ptr_from_bits, raise_exception, raise_not_callable, runtime_state, runtime_state_for_gil,
     string_obj_to_owned, type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{MutexGuard, OnceLock};
 
 mod builtin_args;
+#[cfg(test)]
+#[path = "bind/class_constructor_tests.rs"]
+mod class_constructor_tests;
 mod inline_cache;
 use inline_cache::{call_bind_ic_entry_for_call, try_call_bind_ic_fast};
 pub(crate) use inline_cache::{
@@ -81,50 +79,226 @@ pub use inline_cache::{
 };
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
+    keywords: u64,
+}
+
+impl CallArgs {
+    /// Read the live dictionary, never a projection cached during expansion.
+    unsafe fn keyword_count(&self) -> usize {
+        obj_from_bits(self.keywords)
+            .as_ptr()
+            .map_or(0, |dict| unsafe { dict_order(dict).len() / 2 })
+    }
+}
+
+/// A call-boundary projection, not builder state. Keyword callbacks can replace
+/// dictionary values or expose the dictionary to foreign code. Pin every entry
+/// before binding runs any such callback, and release the pins on every exit.
+struct PreparedCallArgs<'a, 'py> {
+    py: &'a PyToken<'py>,
+    pos: &'a [u64],
     kw_names: Vec<u64>,
     kw_values: Vec<u64>,
-    kw_seen: HashSet<String>,
+}
+
+impl<'a, 'py> PreparedCallArgs<'a, 'py> {
+    unsafe fn new(py: &'a PyToken<'py>, args: &'a CallArgs) -> Result<Self, u64> {
+        let mut prepared = Self {
+            py,
+            pos: &args.pos,
+            kw_names: Vec::new(),
+            kw_values: Vec::new(),
+        };
+        if let Some(dict) = obj_from_bits(args.keywords).as_ptr() {
+            let order = unsafe { dict_order(dict) };
+            let count = order.len() / 2;
+            if prepared.kw_names.try_reserve_exact(count).is_err()
+                || prepared.kw_values.try_reserve_exact(count).is_err()
+            {
+                return Err(raise_exception::<_>(
+                    py,
+                    "MemoryError",
+                    "call keywords allocation failed",
+                ));
+            }
+            ALLOC_BYTES_CALLARGS.fetch_add(
+                ((prepared.kw_names.capacity() + prepared.kw_values.capacity())
+                    * std::mem::size_of::<u64>()) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            // No Python callback or dictionary mutation occurs during capture.
+            for pair in order.chunks_exact(2) {
+                inc_ref_bits(py, pair[0]);
+                inc_ref_bits(py, pair[1]);
+                prepared.kw_names.push(pair[0]);
+                prepared.kw_values.push(pair[1]);
+            }
+        }
+        Ok(prepared)
+    }
+}
+
+impl Drop for PreparedCallArgs<'_, '_> {
+    fn drop(&mut self) {
+        for bits in self.kw_names.drain(..).chain(self.kw_values.drain(..)) {
+            dec_ref_bits(self.py, bits);
+        }
+    }
+}
+
+/// The final call frame's argument owners. Builder projections stay separate:
+/// callbacks may mutate defaults while later parameters are being resolved.
+struct BoundCallSlots<'a, 'py> {
+    py: &'a PyToken<'py>,
+    values: Vec<Option<u64>>,
+}
+
+impl<'a, 'py> BoundCallSlots<'a, 'py> {
+    fn new(py: &'a PyToken<'py>, count: usize) -> Result<Self, u64> {
+        let mut values = Vec::new();
+        if values.try_reserve_exact(count).is_err() {
+            return Err(raise_exception::<_>(
+                py,
+                "MemoryError",
+                "bound arguments allocation failed",
+            ));
+        }
+        values.resize(count, None);
+        Ok(Self { py, values })
+    }
+
+    fn set_borrowed(&mut self, index: usize, bits: u64) {
+        inc_ref_bits(self.py, bits);
+        self.set_owned(index, bits);
+    }
+
+    fn set_owned(&mut self, index: usize, bits: u64) {
+        let previous = self.values[index].replace(bits);
+        if let Some(previous) = previous {
+            dec_ref_bits(self.py, previous);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+}
+
+impl std::ops::Index<usize> for BoundCallSlots<'_, '_> {
+    type Output = Option<u64>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.values[index]
+    }
+}
+
+impl Drop for BoundCallSlots<'_, '_> {
+    fn drop(&mut self) {
+        for value in self.values.drain(..).flatten() {
+            dec_ref_bits(self.py, value);
+        }
+    }
+}
+
+/// Read the current dictionary for this parameter, pin it across rich lookup,
+/// and immediately transfer an owned value to the binding frame.
+unsafe fn function_kwdefault_owned(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    name_bits: u64,
+) -> Result<Option<u64>, u64> {
+    unsafe {
+        let defaults_bits = function_attr_bits(
+            py,
+            func_ptr,
+            intern_static_name(
+                py,
+                &runtime_state(py).interned.kwdefaults_name,
+                b"__kwdefaults__",
+            ),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        if obj_from_bits(defaults_bits).is_none() {
+            return Ok(None);
+        }
+        let Some(defaults_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                py,
+                "TypeError",
+                "call expects function object",
+            ));
+        };
+        if object_type_id(defaults_ptr) != TYPE_ID_DICT {
+            return Err(raise_exception::<_>(
+                py,
+                "TypeError",
+                "call expects function object",
+            ));
+        }
+        inc_ref_bits(py, defaults_bits);
+        let _owner = PtrDropGuard::new(defaults_ptr);
+        let value = dict_get_in_place(py, defaults_ptr, name_bits);
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        if let Some(value) = value {
+            inc_ref_bits(py, value);
+        }
+        Ok(value)
+    }
 }
 
 pub(crate) unsafe fn dispatch_init_subclass_hooks(
     _py: &PyToken<'_>,
-    bases: &[u64],
     class_bits: u64,
     kw_names: &[u64],
     kw_values: &[u64],
 ) -> bool {
     unsafe {
+        // Own keyword values before descriptor resolution can run user code.
+        let builder_bits = molt_callargs_new(0, kw_names.len() as u64);
+        let Some(builder_ptr) = obj_from_bits(builder_bits).as_ptr() else {
+            return false;
+        };
+        let mut builder_owner = PtrDropGuard::new(builder_ptr);
+        for (&name_bits, &value_bits) in kw_names.iter().zip(kw_values.iter()) {
+            let _ = molt_callargs_push_kw(builder_bits, name_bits, value_bits);
+            if exception_pending(_py) {
+                return false;
+            }
+        }
         let init_name_bits = intern_static_name(
             _py,
             &runtime_state(_py).interned.init_subclass_name,
             b"__init_subclass__",
         );
-        for base_bits in bases.iter().copied() {
-            let Some(base_ptr) = obj_from_bits(base_bits).as_ptr() else {
-                continue;
-            };
-            let Some(init_bits) = attr_lookup_ptr_allow_missing(_py, base_ptr, init_name_bits)
-            else {
-                continue;
-            };
-            let builder_bits =
-                molt_callargs_new((1 + kw_names.len()) as u64, kw_names.len() as u64);
-            if builder_bits == 0 {
-                dec_ref_bits(_py, init_bits);
-                return false;
-            }
-            let _ = molt_callargs_push_pos(builder_bits, class_bits);
-            for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
-                let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
-            }
-            let init_result = molt_call_bind(init_bits, builder_bits);
-            crate::call::discard_owned_call_result(_py, init_result);
-            dec_ref_bits(_py, init_bits);
-            if exception_pending(_py) {
-                return false;
-            }
+        if exception_pending(_py) {
+            return false;
         }
-        true
+        // The constructor has proved both arguments are the same live type.
+        // Use the existing super/descriptor authority, not a second MRO walk:
+        // one inherited hook owns cooperative dispatch to the remaining bases.
+        let super_ptr =
+            crate::object::builders::alloc_super_obj(_py, class_bits, class_bits, class_bits);
+        if super_ptr.is_null() {
+            return false;
+        }
+        let _super_owner = PtrDropGuard::new(super_ptr);
+        let init_bits =
+            crate::molt_get_attr_name(MoltObject::from_ptr(super_ptr).bits(), init_name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, init_bits);
+            return false;
+        }
+        // Descriptor binding already supplied the new class receiver.
+        builder_owner.release();
+        let result = molt_call_bind(init_bits, builder_bits);
+        crate::call::discard_owned_call_result(_py, result);
+        dec_ref_bits(_py, init_bits);
+        !exception_pending(_py)
     }
 }
 
@@ -247,6 +421,7 @@ pub(crate) fn note_callargs_free(_py: &PyToken<'_>, builder_ptr: *mut u8, args_p
     state.callargs_storage_registry.remove(&(args_ptr as usize));
 }
 
+#[cfg(any(test, feature = "molt_gpu_primitives"))]
 pub(crate) unsafe fn clone_callargs_builder_bits(
     _py: &PyToken<'_>,
     builder_bits: u64,
@@ -270,9 +445,9 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
     let args = unsafe { &*args_ptr };
     let clone_bits = molt_callargs_new(
         MoltObject::from_int(args.pos.len() as i64).bits(),
-        MoltObject::from_int(args.kw_names.len() as i64).bits(),
+        MoltObject::from_int(0).bits(),
     );
-    if obj_from_bits(clone_bits).is_none() {
+    if clone_bits == 0 || obj_from_bits(clone_bits).is_none() {
         return Err(clone_bits);
     }
     for &value_bits in &args.pos {
@@ -282,12 +457,17 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
             return Err(pushed);
         }
     }
-    for (&name_bits, &value_bits) in args.kw_names.iter().zip(args.kw_values.iter()) {
-        let pushed = unsafe { molt_callargs_push_kw(clone_bits, name_bits, value_bits) };
-        if exception_pending(_py) {
+    if !obj_from_bits(args.keywords).is_none() {
+        let keywords = crate::molt_dict_copy(args.keywords);
+        if exception_pending(_py) || obj_from_bits(keywords).is_none() {
             dec_ref_bits(_py, clone_bits);
-            return Err(pushed);
+            return Err(if exception_pending(_py) {
+                keywords
+            } else {
+                raise_exception::<_>(_py, "MemoryError", "call keywords allocation failed")
+            });
         }
+        unsafe { (*callargs_ptr(ptr_from_bits(clone_bits))).keywords = keywords };
     }
     Ok(clone_bits)
 }
@@ -307,7 +487,7 @@ pub(crate) unsafe fn callargs_positional_snapshot(
     }
     let args_ptr = unsafe { require_callargs_ptr(_py, builder_ptr) }?;
     let args = unsafe { &*args_ptr };
-    if !args.kw_names.is_empty() {
+    if unsafe { args.keyword_count() } != 0 {
         return Err(raise_exception::<_>(
             _py,
             "RuntimeError",
@@ -374,10 +554,17 @@ unsafe fn call_type_with_builder(
                 Err(err) => return err,
             }
         };
-        if let Some(ptr) = args_ptr {
-            let pos_args = (*ptr).pos.as_slice();
-            let kw_names = (*ptr).kw_names.as_slice();
-            let kw_values = (*ptr).kw_values.as_slice();
+        let prepared = match args_ptr
+            .map(|ptr| PreparedCallArgs::new(_py, &*ptr))
+            .transpose()
+        {
+            Ok(args) => args,
+            Err(err) => return err,
+        };
+        if let Some(args) = &prepared {
+            let pos_args = args.pos;
+            let kw_names = args.kw_names.as_slice();
+            let kw_values = args.kw_values.as_slice();
             if class_bits == builtins.type_obj && pos_args.len() == 3 {
                 return build_class_from_args(
                     _py,
@@ -546,58 +733,22 @@ unsafe fn call_type_with_builder(
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if is_builtin_class_bits(_py, class_bits) {
-            let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
+            let (pos_args, kw_names, kw_values) = if let Some(args) = &prepared {
                 (
-                    (*ptr).pos.as_slice(),
-                    (*ptr).kw_names.as_slice(),
-                    (*ptr).kw_values.as_slice(),
+                    args.pos,
+                    args.kw_names.as_slice(),
+                    args.kw_values.as_slice(),
                 )
             } else {
                 (&[] as &[u64], &[] as &[u64], &[] as &[u64])
             };
 
-            // `super` is a builtin type (CPython parity). We must handle it here so that
-            // indirect/bound calls like `SYMBOL = builtins.super; SYMBOL()` use CPython-shaped
-            // RuntimeError/TypeError behavior instead of falling through to generic type-call.
             if class_bits == builtins.super_type {
-                if !kw_names.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "super() takes no keyword arguments",
-                    );
-                }
-                match pos_args.len() {
-                    0 => {
-                        // CPython distinguishes between calling from module scope (no args at all)
-                        // and calling from a function/method frame without a `__class__` cell.
-                        let has_pos_args = FRAME_STACK.with(|stack| {
-                            let frame = stack.borrow().last().copied();
-                            let Some(frame) = frame else {
-                                return false;
-                            };
-                            let Some(code_ptr) = obj_from_bits(frame.code_bits).as_ptr() else {
-                                return false;
-                            };
-                            if object_type_id(code_ptr) != TYPE_ID_CODE {
-                                return false;
-                            }
-                            code_argcount(code_ptr) > 0
-                        });
-                        let msg = if has_pos_args {
-                            "super(): __class__ cell not found"
-                        } else {
-                            "super(): no arguments"
-                        };
-                        return raise_exception::<_>(_py, "RuntimeError", msg);
-                    }
-                    1 => return molt_super_new(pos_args[0], MoltObject::none().bits()),
-                    2 => return molt_super_new(pos_args[0], pos_args[1]),
-                    n => {
-                        let msg = format!("super() expected at most 2 arguments, got {n}");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                }
+                return crate::builtins::types::descriptor_objects::super_call(
+                    _py,
+                    pos_args,
+                    !kw_names.is_empty(),
+                );
             }
 
             if class_bits == builtins.enumerate {
@@ -825,32 +976,32 @@ unsafe fn call_type_with_builder(
                 return dict_bits;
             }
             if class_bits == builtins.text_io_wrapper
-                && let Some(ptr) = args_ptr
-                && !(*ptr).kw_names.is_empty()
+                && let Some(args) = &prepared
+                && !args.kw_names.is_empty()
             {
                 if let Some(bound_args) =
-                    builtin_args::bind_builtin_class_text_io_wrapper(_py, &*ptr)
+                    builtin_args::bind_builtin_class_text_io_wrapper(_py, args)
                 {
                     return call_class_init_with_args(_py, call_ptr, &bound_args);
                 }
                 return MoltObject::none().bits();
             }
             if class_bits == builtins.string_io
-                && let Some(ptr) = args_ptr
-                && !(*ptr).kw_names.is_empty()
+                && let Some(args) = &prepared
+                && !args.kw_names.is_empty()
             {
-                if let Some(bound_args) = builtin_args::bind_builtin_class_string_io(_py, &*ptr) {
+                if let Some(bound_args) = builtin_args::bind_builtin_class_string_io(_py, args) {
                     return call_class_init_with_args(_py, call_ptr, &bound_args);
                 }
                 return MoltObject::none().bits();
             }
-            if let Some(ptr) = args_ptr {
-                if !(*ptr).kw_names.is_empty() {
+            if let Some(args) = &prepared {
+                if !args.kw_names.is_empty() {
                     let class_name = class_name_for_error(class_bits);
                     let msg = format!("{class_name}() takes no keyword arguments");
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
-                return call_class_init_with_args(_py, call_ptr, &(*ptr).pos);
+                return call_class_init_with_args(_py, call_ptr, args.pos);
             }
             return call_class_init_with_args(_py, call_ptr, &[]);
         }
@@ -863,15 +1014,11 @@ unsafe fn call_type_with_builder(
             );
         }
         if is_exc_subclass {
-            let args = if builder_ptr.is_null() {
-                None
-            } else {
-                callargs_ptr(builder_ptr).as_ref()
-            };
+            let args = prepared.as_ref();
             return crate::call::class_init::construct_exception_from_args(
                 _py,
                 call_ptr,
-                args.map_or(&[], |args| args.pos.as_slice()),
+                args.map_or(&[], |args| args.pos),
                 args.map_or(&[], |args| args.kw_names.as_slice()),
                 args.map_or(&[], |args| args.kw_values.as_slice()),
             );
@@ -912,35 +1059,22 @@ unsafe fn call_type_with_builder(
                     }
                     inst_bits
                 } else {
-                    let (pos_len, kw_len) = if builder_ptr.is_null() {
-                        (1usize, 0usize)
-                    } else {
-                        let args_ptr = callargs_ptr(builder_ptr);
-                        if args_ptr.is_null() {
-                            (1usize, 0usize)
-                        } else {
-                            (1 + (*args_ptr).pos.len(), (*args_ptr).kw_names.len())
-                        }
-                    };
+                    let (pos_len, kw_len) = prepared
+                        .as_ref()
+                        .map_or((1, 0), |args| (1 + args.pos.len(), args.kw_names.len()));
                     let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
                     if new_builder_bits == 0 {
                         return MoltObject::none().bits();
                     }
                     let _ = molt_callargs_push_pos(new_builder_bits, class_bits);
-                    if !builder_ptr.is_null() {
-                        let args_ptr = callargs_ptr(builder_ptr);
-                        if !args_ptr.is_null() {
-                            for &arg in (*args_ptr).pos.iter() {
-                                let _ = molt_callargs_push_pos(new_builder_bits, arg);
-                            }
-                            for (&name_bits, &val_bits) in (*args_ptr)
-                                .kw_names
-                                .iter()
-                                .zip((*args_ptr).kw_values.iter())
-                            {
-                                let _ =
-                                    molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
-                            }
+                    if let Some(args) = &prepared {
+                        for &arg in args.pos.iter() {
+                            let _ = molt_callargs_push_pos(new_builder_bits, arg);
+                        }
+                        for (&name_bits, &val_bits) in
+                            args.kw_names.iter().zip(args.kw_values.iter())
+                        {
+                            let _ = molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
                         }
                     }
                     let inst_bits = molt_call_bind(new_bits, new_builder_bits);
@@ -987,9 +1121,9 @@ unsafe fn call_type_with_builder(
         };
         match init_policy {
             InitArgPolicy::RejectConstructorArgs if !builder_ptr.is_null() => {
-                let args_ptr = callargs_ptr(builder_ptr);
-                if !args_ptr.is_null()
-                    && (!(*args_ptr).pos.is_empty() || !(*args_ptr).kw_names.is_empty())
+                if prepared
+                    .as_ref()
+                    .is_some_and(|args| !args.pos.is_empty() || !args.kw_names.is_empty())
                 {
                     let class_name = class_name_for_error(class_bits);
                     let msg = format!("{class_name}() takes no arguments");
@@ -1007,6 +1141,10 @@ unsafe fn call_type_with_builder(
             dec_ref_bits(_py, init_bits);
             return inst_bits;
         }
+        // End the positional borrow before injecting self or transferring the
+        // builder to the consuming __init__ call. That call prepares its own
+        // keyword snapshot from the then-current canonical dictionary.
+        drop(prepared);
         builder_guard.release();
         let args_ptr = callargs_ptr(builder_ptr);
         if !args_ptr.is_null() {
@@ -1038,27 +1176,6 @@ unsafe fn build_class_from_args(
     kw_values: &[u64],
 ) -> u64 {
     unsafe {
-        let strip_internal_namespace_keys = |namespace_bits: u64| -> Result<(), u64> {
-            let Some(namespace_ptr) = obj_from_bits(namespace_bits).as_ptr() else {
-                return Ok(());
-            };
-            if object_type_id(namespace_ptr) != TYPE_ID_DICT {
-                return Ok(());
-            }
-            {
-                let key = b"__classdictcell__".as_slice();
-                let Some(key_bits) = attr_name_bits_from_bytes(_py, key) else {
-                    return Err(MoltObject::none().bits());
-                };
-                dict_del_in_place(_py, namespace_ptr, key_bits);
-                dec_ref_bits(_py, key_bits);
-                if exception_pending(_py) {
-                    return Err(MoltObject::none().bits());
-                }
-            }
-            Ok(())
-        };
-
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "class name must be str");
@@ -1140,15 +1257,6 @@ unsafe fn build_class_from_args(
         }
 
         if winner_bits != metaclass_bits {
-            match strip_internal_namespace_keys(namespace_bits) {
-                Ok(()) => {}
-                Err(err) => {
-                    if bases_owned {
-                        dec_ref_bits(_py, bases_tuple_bits);
-                    }
-                    return err;
-                }
-            };
             let builder_bits =
                 molt_callargs_new((3 + kw_names.len()) as u64, kw_names.len() as u64);
             if builder_bits == 0 {
@@ -1170,71 +1278,40 @@ unsafe fn build_class_from_args(
             return class_bits;
         }
 
-        let class_ptr = alloc_class_obj(_py, name_bits);
-        if class_ptr.is_null() {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        if !object_init_class_edge_unpublished(
-            _py,
-            class_ptr,
-            metaclass_bits,
-            ClassEdgeOwnership::Owned,
-        ) {
-            dec_ref_bits(_py, class_bits);
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
-        }
-
-        match strip_internal_namespace_keys(namespace_bits) {
-            Ok(()) => {}
-            Err(err) => {
+        // Metaclass selection is the adapter's only construction policy.
+        // The canonical type constructor owns namespace copying, metadata cells,
+        // unpublished-class cleanup, slots, and the ordered callback phases.
+        let kwargs_bits = if kw_names.is_empty() {
+            MoltObject::none().bits()
+        } else {
+            let pairs: Vec<u64> = kw_names
+                .iter()
+                .zip(kw_values.iter())
+                .flat_map(|(&name, &value)| [name, value])
+                .collect();
+            let kwargs = alloc_dict_with_pairs(_py, &pairs);
+            if kwargs.is_null() {
                 if bases_owned {
                     dec_ref_bits(_py, bases_tuple_bits);
                 }
-                return err;
+                return MoltObject::none().bits();
             }
+            MoltObject::from_ptr(kwargs).bits()
         };
-        let dict_bits = class_dict_bits(class_ptr);
-        let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, namespace_bits);
-        if exception_pending(_py) {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
+        let result = molt_type_new(
+            metaclass_bits,
+            name_bits,
+            bases_tuple_bits,
+            namespace_bits,
+            kwargs_bits,
+        );
+        if !kw_names.is_empty() {
+            dec_ref_bits(_py, kwargs_bits);
         }
-
-        let _ = molt_class_set_base(class_bits, bases_tuple_bits);
-        if exception_pending(_py) {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        if !apply_class_slots_layout(_py, class_ptr) {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        crate::object::class_finish_definition(_py, class_ptr);
-
-        if !dispatch_init_subclass_hooks(_py, &bases_vec, class_bits, kw_names, kw_values) {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
-        }
-
         if bases_owned {
             dec_ref_bits(_py, bases_tuple_bits);
         }
-        class_bits
+        result
     }
 }
 
@@ -1300,12 +1377,7 @@ pub(crate) unsafe fn callargs_visit_owned(args_ptr: *mut CallArgs, mut visit: im
         for &bits in &args.pos {
             visit(bits);
         }
-        for &bits in &args.kw_names {
-            visit(bits);
-        }
-        for &bits in &args.kw_values {
-            visit(bits);
-        }
+        visit(args.keywords);
     }
 }
 
@@ -1326,13 +1398,10 @@ pub(crate) unsafe fn callargs_detach_owned(
         for bits in std::mem::take(&mut args.pos) {
             detach(bits);
         }
-        for bits in std::mem::take(&mut args.kw_names) {
-            detach(bits);
-        }
-        for bits in std::mem::take(&mut args.kw_values) {
-            detach(bits);
-        }
-        args.kw_seen.clear();
+        detach(std::mem::replace(
+            &mut args.keywords,
+            MoltObject::none().bits(),
+        ));
         drop(Box::from_raw(args_ptr));
     }
 }
@@ -1348,33 +1417,8 @@ unsafe fn call_capi_method_with_bound_args(
             return MoltObject::none().bits();
         }
         let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let mut kwargs_owned = false;
-        let kwargs_bits = if args.kw_names.is_empty() {
-            MoltObject::none().bits()
-        } else {
-            let mut pairs = Vec::with_capacity(args.kw_names.len().saturating_mul(2));
-            for (name_bits, val_bits) in args
-                .kw_names
-                .iter()
-                .copied()
-                .zip(args.kw_values.iter().copied())
-            {
-                pairs.push(name_bits);
-                pairs.push(val_bits);
-            }
-            let dict_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
-            if dict_ptr.is_null() {
-                dec_ref_bits(_py, tuple_bits);
-                return MoltObject::none().bits();
-            }
-            kwargs_owned = true;
-            MoltObject::from_ptr(dict_ptr).bits()
-        };
-        let result = call_function_obj_bound_vec(_py, func_bits, &[tuple_bits, kwargs_bits]);
+        let result = call_function_obj_bound_vec(_py, func_bits, &[tuple_bits, args.keywords]);
         dec_ref_bits(_py, tuple_bits);
-        if kwargs_owned {
-            dec_ref_bits(_py, kwargs_bits);
-        }
         result
     }
 }
@@ -1382,56 +1426,53 @@ unsafe fn call_capi_method_with_bound_args(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let decode_capacity = |bits: u64| -> Option<usize> {
+            let obj = MoltObject::from_bits(bits);
+            if let Some(value) = obj.as_int() {
+                return usize::try_from(value).ok();
+            }
+            if let Some(value) = obj.as_bool() {
+                return Some(usize::from(value));
+            }
+            if obj.is_ptr() || obj.is_none() || obj.is_pending() {
+                return None;
+            }
+            crate::provenance::abi::address(bits)
+        };
+        let (Some(pos_capacity), Some(kw_capacity)) = (
+            decode_capacity(pos_capacity_bits),
+            decode_capacity(kw_capacity_bits),
+        ) else {
+            raise_exception::<()>(_py, "TypeError", "callargs capacity expects an integer");
+            return 0;
+        };
+        let mut args = Box::new(CallArgs {
+            pos: Vec::new(),
+            keywords: MoltObject::none().bits(),
+        });
+        if args.pos.try_reserve_exact(pos_capacity).is_err() {
+            raise_exception::<()>(_py, "MemoryError", "call arguments allocation failed");
+            return 0;
+        }
+        if kw_capacity != 0 {
+            let dict =
+                crate::object::builders::alloc_dict_with_capacity_and_pairs(_py, kw_capacity, &[]);
+            if dict.is_null() {
+                raise_exception::<()>(_py, "MemoryError", "call keywords allocation failed");
+                return 0;
+            }
+            args.keywords = MoltObject::from_ptr(dict).bits();
+        }
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut CallArgs>();
         let ptr = alloc_object(_py, total, TYPE_ID_CALLARGS);
         if ptr.is_null() {
+            dec_ref_bits(_py, args.keywords);
             return 0;
         }
+        let callargs_bytes =
+            std::mem::size_of::<CallArgs>() + args.pos.capacity() * std::mem::size_of::<u64>();
+        ALLOC_BYTES_CALLARGS.fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
         unsafe {
-            let decode_capacity = |bits: u64| -> Option<usize> {
-                let obj = MoltObject::from_bits(bits);
-                if obj.is_int() {
-                    let val = obj.as_int().unwrap_or(0);
-                    return usize::try_from(val).ok();
-                }
-                if obj.is_bool() {
-                    return Some(if obj.as_bool().unwrap_or(false) { 1 } else { 0 });
-                }
-                if obj.is_ptr() || obj.is_none() || obj.is_pending() {
-                    return None;
-                }
-                crate::provenance::abi::address(bits)
-            };
-            let Some(pos_capacity) = decode_capacity(pos_capacity_bits) else {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "callargs capacity expects an integer",
-                );
-                return 0;
-            };
-            let Some(kw_capacity) = decode_capacity(kw_capacity_bits) else {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "callargs capacity expects an integer",
-                );
-                return 0;
-            };
-            let args = Box::new(CallArgs {
-                pos: Vec::with_capacity(pos_capacity),
-                kw_names: Vec::with_capacity(kw_capacity),
-                kw_values: Vec::with_capacity(kw_capacity),
-                kw_seen: HashSet::with_capacity(kw_capacity),
-            });
-            // Track heap bytes: the CallArgs struct itself plus the capacity
-            // reserved by each inner Vec/HashSet.
-            let callargs_bytes = std::mem::size_of::<CallArgs>()
-                + pos_capacity * std::mem::size_of::<u64>()
-                + kw_capacity * std::mem::size_of::<u64>() * 2
-                + kw_capacity * std::mem::size_of::<String>();
-            ALLOC_BYTES_CALLARGS
-                .fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
             let args_ptr = Box::into_raw(args);
             note_callargs_alloc(_py, ptr, args_ptr);
             *(ptr as *mut *mut CallArgs) = args_ptr;
@@ -1498,6 +1539,13 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             }
             // CallArgs must keep arguments alive even if the caller drops its temporaries before
             // `molt_call_bind` executes.
+            if args.pos.try_reserve(1).is_err() {
+                return raise_exception::<_>(
+                    _py,
+                    "MemoryError",
+                    "call arguments allocation failed",
+                );
+            }
             inc_ref_bits(_py, val);
             args.pos.push(val);
             if trace_callargs_enabled() {
@@ -1512,6 +1560,36 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
     }
 }
 
+/// Keywords have one owned dictionary authority throughout expansion.
+unsafe fn callargs_keyword_dict(_py: &PyToken<'_>, args_ptr: *mut CallArgs) -> Option<*mut u8> {
+    unsafe {
+        if obj_from_bits((*args_ptr).keywords).is_none() {
+            let ptr = alloc_dict_with_pairs(_py, &[]);
+            if ptr.is_null() {
+                return None;
+            }
+            (*args_ptr).keywords = MoltObject::from_ptr(ptr).bits();
+        }
+        obj_from_bits((*args_ptr).keywords).as_ptr()
+    }
+}
+
+unsafe fn callargs_validate_keywords(_py: &PyToken<'_>, builder: *mut u8) -> bool {
+    unsafe {
+        if builder.is_null() {
+            return true;
+        }
+        let args = match require_callargs_ptr(_py, builder) {
+            Ok(args) => args,
+            Err(_) => return false,
+        };
+        let Some(dict) = obj_from_bits((*args).keywords).as_ptr() else {
+            return true;
+        };
+        crate::object::mapping_merge::validate_keywords(_py, dict)
+    }
+}
+
 unsafe fn callargs_push_kw(
     _py: &PyToken<'_>,
     builder_ptr: *mut u8,
@@ -1519,30 +1597,18 @@ unsafe fn callargs_push_kw(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        let name_obj = obj_from_bits(name_bits);
-        let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-        };
-        if object_type_id(name_ptr) != TYPE_ID_STRING {
-            return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-        }
         let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
             Ok(ptr) => ptr,
             Err(err) => return err,
         };
-        let args = &mut *args_ptr;
-        let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        if args.kw_seen.contains(&name) {
-            let msg = format!("got multiple values for keyword argument '{name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        let Some(dict) = callargs_keyword_dict(_py, args_ptr) else {
+            return MoltObject::none().bits();
+        };
+        if !crate::object::mapping_merge::keyword_available(_py, dict, name_bits, None)
+            || !crate::object::mapping_merge::insert_dict(_py, dict, name_bits, val_bits, None)
+        {
+            return MoltObject::none().bits();
         }
-        // CallArgs must keep keyword arguments alive even if the caller drops its temporaries
-        // before `molt_call_bind` executes.
-        inc_ref_bits(_py, name_bits);
-        inc_ref_bits(_py, val_bits);
-        args.kw_seen.insert(name);
-        args.kw_names.push(name_bits);
-        args.kw_values.push(val_bits);
         MoltObject::none().bits()
     }
 }
@@ -1609,39 +1675,35 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                     iterable_bits,
                 );
             }
-            let iter_bits = molt_iter(iterable_bits);
-            if obj_from_bits(iter_bits).is_none() {
-                return raise_not_iterable(_py, iterable_bits);
+            let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, iterable_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let Some(hint) = crate::object::iterable::length_hint(_py, iterable_bits) else {
+                return MoltObject::none().bits();
+            };
+            if (*args_ptr).pos.try_reserve(hint).is_err() {
+                return raise_exception::<_>(
+                    _py,
+                    "MemoryError",
+                    "call arguments allocation failed",
+                );
             }
             loop {
-                let pair_bits = molt_iter_next(iter_bits);
-                let pair_obj = obj_from_bits(pair_bits);
-                let Some(pair_ptr) = pair_obj.as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                // Iterator result tuples are immutable and owned by pair_bits;
-                // copy their two borrowed handles without exporting backing.
-                let Some((val_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                if trace_callargs_enabled() {
-                    eprintln!(
-                        "[molt callargs] expand_star_item builder_bits=0x{:x} val_type={} val_bits=0x{:x}",
-                        builder_bits,
-                        type_name(_py, obj_from_bits(val_bits)),
-                        val_bits,
-                    );
-                }
-                let res = molt_callargs_push_pos(builder_bits, val_bits);
-                if obj_from_bits(res).is_none() && exception_pending(_py) {
-                    return res;
+                match iter.next() {
+                    Ok(Some(item)) => {
+                        if (*args_ptr).pos.try_reserve(1).is_err() {
+                            dec_ref_bits(_py, item);
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "call arguments allocation failed",
+                            );
+                        }
+                        (*args_ptr).pos.push(item);
+                    }
+                    Ok(None) => break,
+                    Err(()) => return MoltObject::none().bits(),
                 }
             }
             MoltObject::none().bits()
@@ -1662,100 +1724,14 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
             if !callargs_builder_is_live(_py, builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
-            let mapping_obj = obj_from_bits(mapping_bits);
-            let _args_ptr = match require_callargs_ptr(_py, builder_ptr) {
-                Ok(ptr) => ptr,
+            let args = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(args) => args,
                 Err(err) => return err,
             };
-            let Some(mapping_ptr) = mapping_obj.as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            if object_type_id(mapping_ptr) == TYPE_ID_DICT {
-                let order = dict_order(mapping_ptr);
-                for idx in (0..order.len()).step_by(2) {
-                    let key_bits = order[idx];
-                    let val_bits = order[idx + 1];
-                    let res = callargs_push_kw(_py, builder_ptr, key_bits, val_bits);
-                    if obj_from_bits(res).is_none() && exception_pending(_py) {
-                        return res;
-                    }
-                }
+            let Some(dict) = callargs_keyword_dict(_py, args) else {
                 return MoltObject::none().bits();
-            }
-            let Some(keys_bits) = attr_name_bits_from_bytes(_py, b"keys") else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
             };
-            let keys_method_bits = attr_lookup_ptr(_py, mapping_ptr, keys_bits);
-            dec_ref_bits(_py, keys_bits);
-            let Some(keys_method_bits) = keys_method_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            let keys_iterable = call_callable0(_py, keys_method_bits);
-            let iter_bits = molt_iter(keys_iterable);
-            if obj_from_bits(iter_bits).is_none() {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            }
-            let Some(getitem_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            let getitem_method_bits = attr_lookup_ptr(_py, mapping_ptr, getitem_bits);
-            dec_ref_bits(_py, getitem_bits);
-            let Some(getitem_method_bits) = getitem_method_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            loop {
-                let pair_bits = molt_iter_next(iter_bits);
-                let pair_obj = obj_from_bits(pair_bits);
-                let Some(pair_ptr) = pair_obj.as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let Some((key_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let key_obj = obj_from_bits(key_bits);
-                let Some(key_ptr) = key_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                };
-                if object_type_id(key_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                }
-                let val_bits = call_callable1(_py, getitem_method_bits, key_bits);
-                let res = callargs_push_kw(_py, builder_ptr, key_bits, val_bits);
-                if obj_from_bits(res).is_none() && exception_pending(_py) {
-                    return res;
-                }
-            }
+            crate::object::mapping_merge::merge_keywords(_py, dict, mapping_bits);
             MoltObject::none().bits()
         })
     }
@@ -2063,26 +2039,15 @@ unsafe fn call_foreign_with_builder(
             Ok(ptr) => ptr,
             Err(err) => return err,
         };
-        let pos = unsafe { (*args_ptr).pos.clone() };
-        let tuple_ptr = crate::alloc_tuple(_py, &pos);
+        let tuple_ptr = crate::alloc_tuple(_py, unsafe { &(*args_ptr).pos });
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }
         args_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let (kw_names, kw_values) =
-            unsafe { ((*args_ptr).kw_names.clone(), (*args_ptr).kw_values.clone()) };
-        if !kw_names.is_empty() {
-            let mut pairs: Vec<u64> = Vec::with_capacity(kw_names.len() * 2);
-            for (k, v) in kw_names.iter().copied().zip(kw_values.iter().copied()) {
-                pairs.push(k);
-                pairs.push(v);
-            }
-            let dict_ptr = crate::object::builders::alloc_dict_with_pairs(_py, &pairs);
-            if dict_ptr.is_null() {
-                dec_ref_bits(_py, args_bits);
-                return MoltObject::none().bits();
-            }
-            kwargs_bits = MoltObject::from_ptr(dict_ptr).bits();
+        let keywords = unsafe { (*args_ptr).keywords };
+        if !obj_from_bits(keywords).is_none() {
+            inc_ref_bits(_py, keywords);
+            kwargs_bits = keywords;
         }
     }
     let result =
@@ -2120,7 +2085,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     match require_callargs_ptr(_py, builder_ptr) {
                         Ok(args_ptr) => (
                             (*args_ptr).pos.len(),
-                            (*args_ptr).kw_names.len(),
+                            (*args_ptr).keyword_count(),
                             (*args_ptr).pos.first().copied(),
                         ),
                         Err(_) => (0, 0, None),
@@ -2166,9 +2131,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                         let args_ptr = callargs_ptr(builder_ptr);
                         if !args_ptr.is_null() {
                             let pos_slice = &(*args_ptr).pos;
-                            let kw_slice = &(*args_ptr).kw_names;
                             let pos_len = pos_slice.len();
-                            let kw_len = kw_slice.len();
+                            let kw_len = (*args_ptr).keyword_count();
                             let first_pos = pos_slice.first().copied();
                             let second_pos = pos_slice.get(1).copied();
                             eprintln!(
@@ -2198,6 +2162,13 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             };
             let mut func_bits = call_bits;
             let mut self_bits = None;
+            if matches!(
+                object_type_id(call_ptr),
+                TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_FOREIGN
+            ) && !callargs_validate_keywords(_py, builder_ptr)
+            {
+                return MoltObject::none().bits();
+            }
             match object_type_id(call_ptr) {
                 TYPE_ID_FUNCTION => {}
                 TYPE_ID_BOUND_METHOD => {
@@ -2341,7 +2312,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 args.pos.insert(0, self_bits);
             }
             if function_trampoline_ptr(func_ptr) != 0
-                && args.kw_names.is_empty()
+                && args.keyword_count() == 0
                 && !function_raw_positional_call_needs_binding(_py, func_ptr, args.pos.len())
             {
                 return call_function_obj_bound_vec(_py, func_bits, args.pos.as_slice());
@@ -2356,17 +2327,22 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 ),
             );
             if let Some(kind_bits) = bind_kind_bits
+                && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
+            {
+                return call_capi_method_with_bound_args(_py, func_bits, args);
+            }
+            let prepared = match PreparedCallArgs::new(_py, args) {
+                Ok(args) => args,
+                Err(err) => return err,
+            };
+            let args = &prepared;
+            if let Some(kind_bits) = bind_kind_bits
                 && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN)
             {
                 if let Some(bound_args) = builtin_args::bind_builtin_open(_py, args) {
                     return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
                 }
                 return MoltObject::none().bits();
-            }
-            if let Some(kind_bits) = bind_kind_bits
-                && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
-            {
-                return call_capi_method_with_bound_args(_py, func_bits, args);
             }
             if fn_ptr == fn_addr!(dict_update_method) {
                 return builtin_args::bind_builtin_dict_update(_py, args);
@@ -2490,6 +2466,189 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             let has_vararg = !obj_from_bits(vararg_bits).is_none();
             let has_varkw = !obj_from_bits(varkw_bits).is_none();
 
+            if trace_function_bind_meta_enabled() {
+                let func_name_bits = function_name_bits(_py, func_ptr);
+                let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
+                    "<unnamed>".to_string()
+                } else {
+                    string_obj_to_owned(obj_from_bits(func_name_bits))
+                        .unwrap_or_else(|| "<unnamed>".to_string())
+                };
+                eprintln!(
+                    "[molt bind_meta] name={} total_pos={} posonly={} kwonly={} has_vararg={} has_varkw={} defaults_phase=pending",
+                    func_name,
+                    arg_names.len(),
+                    posonly,
+                    kwonly_names.len(),
+                    has_vararg,
+                    has_varkw,
+                );
+            }
+
+            let total_pos = arg_names.len();
+            let kwonly_start = total_pos + if has_vararg { 1 } else { 0 };
+            let total_params = kwonly_start + kwonly_names.len() + if has_varkw { 1 } else { 0 };
+            let mut slots = match BoundCallSlots::new(_py, total_params) {
+                Ok(slots) => slots,
+                Err(error) => return error,
+            };
+            // Match initialize_locals: own **kwargs, positional slots, and
+            // *args before rich keyword matching can call Python.
+            let varkw_ptr = if has_varkw {
+                let dictionary = alloc_dict_with_pairs(_py, &[]);
+                if dictionary.is_null() {
+                    return MoltObject::none().bits();
+                }
+                slots.set_owned(
+                    kwonly_start + kwonly_names.len(),
+                    MoltObject::from_ptr(dictionary).bits(),
+                );
+                Some(dictionary)
+            } else {
+                None
+            };
+            let positional_count = args.pos.len().min(total_pos);
+            for (idx, val) in args.pos[..positional_count].iter().copied().enumerate() {
+                slots.set_borrowed(idx, val);
+            }
+            if has_vararg {
+                let tuple = alloc_tuple(_py, &args.pos[positional_count..]);
+                if tuple.is_null() {
+                    return MoltObject::none().bits();
+                }
+                slots.set_owned(total_pos, MoltObject::from_ptr(tuple).bits());
+            }
+
+            for (name, value) in args
+                .kw_names
+                .iter()
+                .copied()
+                .zip(args.kw_values.iter().copied())
+            {
+                // CPython checks all parameter identities before performing
+                // ordered rich equality. A str subclass can override equality;
+                // converting it to a Rust String would erase that callback.
+                let parameters = arg_names.iter().copied().enumerate().skip(posonly).chain(
+                    kwonly_names
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(i, name)| (kwonly_start + i, name)),
+                );
+                let mut matched = parameters
+                    .clone()
+                    .find(|(_, parameter)| *parameter == name)
+                    .map(|(slot, _)| slot);
+                if matched.is_none() {
+                    for (slot, parameter) in parameters {
+                        match crate::object::ops_compare::compare_object_eq_bool(
+                            _py,
+                            obj_from_bits(parameter),
+                            obj_from_bits(name),
+                        ) {
+                            crate::object::ops_compare::CompareBoolOutcome::True => {
+                                matched = Some(slot);
+                                break;
+                            }
+                            crate::object::ops_compare::CompareBoolOutcome::False => {}
+                            _ => return MoltObject::none().bits(),
+                        }
+                    }
+                }
+                if let Some(slot) = matched {
+                    if slots[slot].is_some() {
+                        let name = string_obj_to_owned(obj_from_bits(name))
+                            .expect("validated keyword string");
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            &format!("got multiple values for argument '{name}'"),
+                        );
+                    }
+                    slots.set_borrowed(slot, value);
+                } else if let Some(dictionary) = varkw_ptr {
+                    // Positional-only names are ordinary entries in **kwargs.
+                    // Insertion callbacks belong to keyword binding, before
+                    // positional arity checks and live default resolution.
+                    crate::dict_set_in_place(_py, dictionary, name, value);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                } else {
+                    let mut conflicts = Vec::new();
+                    for &parameter in arg_names.iter().take(posonly) {
+                        for &keyword in &args.kw_names {
+                            match crate::object::ops_compare::compare_object_eq_bool(
+                                _py,
+                                obj_from_bits(parameter),
+                                obj_from_bits(keyword),
+                            ) {
+                                crate::object::ops_compare::CompareBoolOutcome::True => {
+                                    conflicts.push(
+                                        string_obj_to_owned(obj_from_bits(parameter))
+                                            .expect("parameter name string"),
+                                    );
+                                    break;
+                                }
+                                crate::object::ops_compare::CompareBoolOutcome::False => {}
+                                _ => return MoltObject::none().bits(),
+                            }
+                        }
+                    }
+                    if !conflicts.is_empty() {
+                        let function = function_name_bits(_py, func_ptr);
+                        let function = string_obj_to_owned(obj_from_bits(function))
+                            .unwrap_or_else(|| "function".to_string());
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            &format!(
+                                "{function}() got some positional-only arguments passed as keyword arguments: '{}'",
+                                conflicts.join(", "),
+                            ),
+                        );
+                    }
+                    let name =
+                        string_obj_to_owned(obj_from_bits(name)).expect("validated keyword string");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!("got an unexpected keyword '{name}'"),
+                    );
+                }
+            }
+
+            // Keyword callbacks and their errors precede positional arity and
+            // default resolution, as in CPython initialize_locals.
+            if args.pos.len() > total_pos && !has_vararg {
+                let func_name_bits = function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__"),
+                );
+                let fname = func_name_bits
+                    .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
+                    .unwrap_or_else(|| "?".to_string());
+                let arg_names_strs: Vec<String> = arg_names
+                    .iter()
+                    .map(|&b| {
+                        string_obj_to_owned(obj_from_bits(b))
+                            .unwrap_or_else(|| format!("<raw:{:x}>", b))
+                    })
+                    .collect();
+                let msg = format!(
+                    "too many positional arguments for {}(): got {} positional, expected {} (arg_names={:?}, kwonly={}, vararg={}, varkw={})",
+                    fname,
+                    args.pos.len(),
+                    total_pos,
+                    arg_names_strs,
+                    kwonly_names.len(),
+                    has_vararg,
+                    has_varkw,
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+
             let defaults_bits = function_attr_bits(
                 _py,
                 func_ptr,
@@ -2500,6 +2659,9 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 ),
             )
             .unwrap_or_else(|| MoltObject::none().bits());
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let defaults_pin = if obj_from_bits(defaults_bits).is_none() {
                 None
             } else {
@@ -2516,186 +2678,15 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             };
             let defaults: &[u64] = defaults_pin.as_deref().unwrap_or(&[]);
 
-            let kwdefaults_bits = function_attr_bits(
-                _py,
-                func_ptr,
-                intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.kwdefaults_name,
-                    b"__kwdefaults__",
-                ),
-            )
-            .unwrap_or_else(|| MoltObject::none().bits());
-            let mut kwdefaults_ptr = None;
-            if !obj_from_bits(kwdefaults_bits).is_none() {
-                let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "call expects function object");
-                };
-                if object_type_id(ptr) != TYPE_ID_DICT {
-                    return raise_exception::<_>(_py, "TypeError", "call expects function object");
-                }
-                kwdefaults_ptr = Some(ptr);
-            }
-
-            if trace_function_bind_meta_enabled() {
-                let func_name_bits = function_name_bits(_py, func_ptr);
-                let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
-                    "<unnamed>".to_string()
-                } else {
-                    string_obj_to_owned(obj_from_bits(func_name_bits))
-                        .unwrap_or_else(|| "<unnamed>".to_string())
-                };
-                eprintln!(
-                    "[molt bind_meta] name={} total_pos={} posonly={} kwonly={} has_vararg={} has_varkw={} defaults={} kwdefaults={}",
-                    func_name,
-                    arg_names.len(),
-                    posonly,
-                    kwonly_names.len(),
-                    has_vararg,
-                    has_varkw,
-                    defaults.len(),
-                    kwdefaults_ptr.map(|ptr| dict_order(ptr).len()).unwrap_or(0),
-                );
-            }
-
-            let total_pos = arg_names.len();
-            let kwonly_start = total_pos + if has_vararg { 1 } else { 0 };
-            let total_params = kwonly_start + kwonly_names.len() + if has_varkw { 1 } else { 0 };
-            let mut slots: Vec<Option<u64>> = vec![None; total_params];
-            let mut extra_pos: Vec<u64> = Vec::new();
-            for (idx, val) in args.pos.iter().copied().enumerate() {
-                if idx < total_pos {
-                    slots[idx] = Some(val);
-                } else if has_vararg {
-                    extra_pos.push(val);
-                } else {
-                    let func_name_bits = function_attr_bits(
-                        _py,
-                        func_ptr,
-                        intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.name_name,
-                            b"__name__",
-                        ),
-                    );
-                    let fname = func_name_bits
-                        .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
-                        .unwrap_or_else(|| "?".to_string());
-                    let arg_names_strs: Vec<String> = arg_names
-                        .iter()
-                        .map(|&b| {
-                            string_obj_to_owned(obj_from_bits(b))
-                                .unwrap_or_else(|| format!("<raw:{:x}>", b))
-                        })
-                        .collect();
-                    let msg = format!(
-                        "too many positional arguments for {}(): got {} positional, expected {} (arg_names={:?}, kwonly={}, vararg={}, varkw={})",
-                        fname,
-                        args.pos.len(),
-                        total_pos,
-                        arg_names_strs,
-                        kwonly_names.len(),
-                        has_vararg,
-                        has_varkw,
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-
-            let mut extra_kwargs: Vec<u64> = Vec::new();
-            enum KeywordSlot {
-                PosOnly,
-                Slot(usize),
-            }
-            let mut keyword_slots: HashMap<String, KeywordSlot> =
-                HashMap::with_capacity(total_pos + kwonly_names.len());
-            for (idx, param_bits) in arg_names.iter().copied().enumerate() {
-                let key = string_obj_to_owned(obj_from_bits(param_bits))
-                    .unwrap_or_else(|| "?".to_string());
-                let slot = if idx < posonly {
-                    KeywordSlot::PosOnly
-                } else {
-                    KeywordSlot::Slot(idx)
-                };
-                keyword_slots.entry(key).or_insert(slot);
-            }
-            for (kw_idx, kw_name_bits) in kwonly_names.iter().copied().enumerate() {
-                let key = string_obj_to_owned(obj_from_bits(kw_name_bits))
-                    .unwrap_or_else(|| "?".to_string());
-                keyword_slots
-                    .entry(key)
-                    .or_insert(KeywordSlot::Slot(kwonly_start + kw_idx));
-            }
-            let mut posonly_kw_names: Vec<String> = Vec::new();
-            let mut posonly_kw_seen: HashSet<String> = HashSet::new();
-            let mut unexpected_kw: Option<String> = None;
-            for (name_bits, val_bits) in args
-                .kw_names
-                .iter()
-                .copied()
-                .zip(args.kw_values.iter().copied())
-            {
-                let name_obj = obj_from_bits(name_bits);
-                let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                if let Some(slot) = keyword_slots.get(&name) {
-                    match slot {
-                        KeywordSlot::PosOnly => {
-                            if posonly_kw_seen.insert(name.clone()) {
-                                posonly_kw_names.push(name);
-                            }
-                        }
-                        KeywordSlot::Slot(slot_idx) => {
-                            if slots[*slot_idx].is_some() {
-                                let msg = format!("got multiple values for argument '{name}'");
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
-                            slots[*slot_idx] = Some(val_bits);
-                        }
-                    }
-                    continue;
-                }
-                if has_varkw {
-                    extra_kwargs.push(name_bits);
-                    extra_kwargs.push(val_bits);
-                } else if unexpected_kw.is_none() {
-                    unexpected_kw = Some(name);
-                }
-            }
-
-            if !posonly_kw_names.is_empty() {
-                let func_name_bits = function_name_bits(_py, func_ptr);
-                let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
-                    "function".to_string()
-                } else {
-                    string_obj_to_owned(obj_from_bits(func_name_bits))
-                        .unwrap_or_else(|| "function".to_string())
-                };
-                if func_name == "islice" {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "islice() takes no keyword arguments",
-                    );
-                }
-                let name_list = posonly_kw_names.join(", ");
-                let msg = format!(
-                    "{func_name}() got some positional-only arguments passed as keyword arguments: '{name_list}'"
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            if let Some(name) = unexpected_kw {
-                let msg = format!("got an unexpected keyword '{name}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-
             let defaults_len = defaults.len();
             let default_start = total_pos.saturating_sub(defaults_len);
+            let defaults_offset = defaults_len.saturating_sub(total_pos);
             for idx in 0..total_pos {
                 if slots[idx].is_some() {
                     continue;
                 }
                 if idx >= default_start {
-                    slots[idx] = Some(defaults[idx - default_start]);
+                    slots.set_borrowed(idx, defaults[defaults_offset + idx - default_start]);
                     continue;
                 }
                 let name = string_obj_to_owned(obj_from_bits(arg_names[idx]))
@@ -2725,45 +2716,38 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
 
+            // Each bound slot now owns its default. Do not retain unrelated
+            // tuple elements across later keyword-default callbacks.
+            drop(defaults_pin);
+
+            let mut first_missing_kwonly = None;
             for (kw_idx, name_bits) in kwonly_names.iter().copied().enumerate() {
                 let slot_idx = kwonly_start + kw_idx;
                 if slots[slot_idx].is_some() {
                     continue;
                 }
-                let mut default = None;
-                if let Some(dict_ptr) = kwdefaults_ptr {
-                    default = dict_get_in_place(_py, dict_ptr, name_bits);
-                }
+                let default = match function_kwdefault_owned(_py, func_ptr, name_bits) {
+                    Ok(value) => value,
+                    Err(error) => return error,
+                };
                 if let Some(val) = default {
-                    slots[slot_idx] = Some(val);
+                    slots.set_owned(slot_idx, val);
                     continue;
                 }
+                first_missing_kwonly.get_or_insert(name_bits);
+            }
+            // Resolve every remaining keyword default before reporting missing
+            // parameters: later rich lookups can raise or mutate metadata.
+            if let Some(name_bits) = first_missing_kwonly {
                 let name = string_obj_to_owned(obj_from_bits(name_bits))
                     .unwrap_or_else(|| "?".to_string());
                 let msg = format!("missing required keyword-only argument '{name}'");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
 
-            if has_vararg {
-                let tuple_ptr = alloc_tuple(_py, extra_pos.as_slice());
-                if tuple_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                slots[total_pos] = Some(MoltObject::from_ptr(tuple_ptr).bits());
-            }
-
-            if has_varkw {
-                let dict_ptr = alloc_dict_with_pairs(_py, extra_kwargs.as_slice());
-                if dict_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let varkw_idx = kwonly_start + kwonly_names.len();
-                slots[varkw_idx] = Some(MoltObject::from_ptr(dict_ptr).bits());
-            }
-
             let mut final_args: Vec<u64> = Vec::with_capacity(slots.len());
-            for slot in slots {
-                let Some(val) = slot else {
+            for slot in &slots.values {
+                let Some(val) = *slot else {
                     return raise_exception::<_>(_py, "TypeError", "call binding failed");
                 };
                 final_args.push(val);
@@ -2833,6 +2817,314 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bound_call_slots_own_borrowed_values_and_transferred_containers() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let value = alloc_list(_py, &[]);
+                assert!(!value.is_null());
+                let value_bits = MoltObject::from_ptr(value).bits();
+                let refs = || (*crate::header_from_obj_ptr(value)).ref_count_snapshot();
+                let baseline = refs();
+                let mut slots = super::BoundCallSlots::new(_py, 2).unwrap();
+                slots.set_borrowed(0, value_bits);
+                assert_eq!(refs(), baseline + 1);
+                let tuple = alloc_tuple(_py, &[value_bits]);
+                assert!(!tuple.is_null());
+                slots.set_owned(1, MoltObject::from_ptr(tuple).bits());
+                assert_eq!(refs(), baseline + 2);
+                drop(slots);
+                assert_eq!(refs(), baseline);
+                dec_ref_bits(_py, value_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn keyword_default_lookup_returns_an_owner_independent_of_metadata_dictionary() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let function = crate::builtins::functions::alloc_runtime_function_obj(
+                    _py,
+                    crate::provenance::abi::expose_function_address(
+                        compiled_identity_returns_owned_arg as *const (),
+                    ),
+                    1,
+                );
+                assert!(!function.is_null());
+                let function_bits = MoltObject::from_ptr(function).bits();
+                let name = crate::alloc_string(_py, b"value");
+                let value = alloc_list(_py, &[]);
+                assert!(!name.is_null() && !value.is_null());
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let value_bits = MoltObject::from_ptr(value).bits();
+                let dictionary = crate::alloc_dict_with_pairs(_py, &[name_bits, value_bits]);
+                assert!(!dictionary.is_null());
+                let dictionary_bits = MoltObject::from_ptr(dictionary).bits();
+                let attribute = intern_metadata_name(_py, b"__kwdefaults__");
+                crate::call::class_init::function_set_attr_bits(
+                    _py,
+                    function,
+                    attribute,
+                    dictionary_bits,
+                );
+                dec_ref_bits(_py, dictionary_bits);
+                let value_before = (*crate::header_from_obj_ptr(value)).ref_count_snapshot();
+                let owned = super::function_kwdefault_owned(_py, function, name_bits)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(owned, value_bits);
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(value)).ref_count_snapshot(),
+                    value_before + 1,
+                );
+                crate::call::class_init::function_set_attr_bits(
+                    _py,
+                    function,
+                    attribute,
+                    MoltObject::none().bits(),
+                );
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(value)).ref_count_snapshot(),
+                    value_before,
+                    "the owned default survives metadata replacement",
+                );
+                dec_ref_bits(_py, owned);
+                for bits in [function_bits, name_bits, value_bits] {
+                    dec_ref_bits(_py, bits);
+                }
+                assert!(!crate::exception_pending(_py));
+            }
+        });
+    }
+
+    #[test]
+    fn callargs_expansion_has_one_keyword_owner_and_releases_iterator() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let key = crate::alloc_string(_py, b"key");
+                let value = crate::alloc_string(_py, b"value");
+                let key_bits = MoltObject::from_ptr(key).bits();
+                let value_bits = MoltObject::from_ptr(value).bits();
+                let list = crate::alloc_list(_py, &[value_bits]);
+                let list_bits = MoltObject::from_ptr(list).bits();
+                let refs = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
+                let key_before = refs(key);
+                let value_before = refs(value);
+                let list_before = refs(list);
+                let builder = super::molt_callargs_new(0, 0);
+                super::molt_callargs_push_kw(builder, key_bits, value_bits);
+                assert!(!crate::exception_pending(_py));
+                assert_eq!(
+                    refs(key),
+                    key_before + 1,
+                    "expansion must retain keywords only through their dictionary"
+                );
+                assert_eq!(refs(value), value_before + 1);
+                super::molt_callargs_expand_star(builder, list_bits);
+                assert!(!crate::exception_pending(_py));
+                assert_eq!(
+                    refs(list),
+                    list_before,
+                    "star expansion must release its iterator"
+                );
+                assert_eq!(refs(value), value_before + 2);
+                crate::dec_ref_bits(_py, builder);
+                assert_eq!(refs(key), key_before);
+                assert_eq!(refs(value), value_before);
+                crate::dec_ref_bits(_py, list_bits);
+                crate::dec_ref_bits(_py, key_bits);
+                crate::dec_ref_bits(_py, value_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn callargs_preparation_reads_replacements_and_pins_entries_across_mutation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let key = crate::alloc_string(_py, b"key");
+                let old = alloc_list(_py, &[]);
+                let replacement = alloc_list(_py, &[MoltObject::from_int(9).bits()]);
+                assert!(!key.is_null() && !old.is_null() && !replacement.is_null());
+                let key_bits = MoltObject::from_ptr(key).bits();
+                let old_bits = MoltObject::from_ptr(old).bits();
+                let replacement_bits = MoltObject::from_ptr(replacement).bits();
+                let refs = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
+                let key_before = refs(key);
+                let old_before = refs(old);
+                let replacement_before = refs(replacement);
+                let builder = super::molt_callargs_new(0, 1);
+                assert_ne!(builder, 0);
+                super::molt_callargs_push_kw(builder, key_bits, old_bits);
+                let args = super::callargs_ptr(ptr_from_bits(builder));
+                let dict = obj_from_bits((*args).keywords).as_ptr().unwrap();
+                // Both a stateful __eq__ during insertion and foreign mutation
+                // can replace an existing value without growing dictionary order.
+                crate::dict_set_in_place(_py, dict, key_bits, replacement_bits);
+                assert!(!crate::exception_pending(_py));
+                assert_eq!(
+                    refs(old),
+                    old_before,
+                    "no stale builder edge may retain the old value"
+                );
+                let prepared = super::PreparedCallArgs::new(_py, &*args).unwrap();
+                assert_eq!(prepared.kw_names, [key_bits]);
+                assert_eq!(prepared.kw_values, [replacement_bits]);
+                assert_eq!(refs(key), key_before + 2);
+                assert_eq!(refs(replacement), replacement_before + 2);
+                crate::dict_clear_in_place(_py, dict);
+                assert_eq!((*args).keyword_count(), 0);
+                assert_eq!(prepared.kw_values, [replacement_bits]);
+                assert_eq!(refs(key), key_before + 1);
+                assert_eq!(refs(replacement), replacement_before + 1);
+                let empty = super::PreparedCallArgs::new(_py, &*args).unwrap();
+                assert!(empty.kw_names.is_empty() && empty.kw_values.is_empty());
+                drop(empty);
+                drop(prepared);
+                assert_eq!(refs(key), key_before);
+                assert_eq!(refs(replacement), replacement_before);
+                dec_ref_bits(_py, builder);
+                for bits in [key_bits, old_bits, replacement_bits] {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn callargs_clone_and_ic_read_the_live_keyword_dictionary() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let key = crate::alloc_string(_py, b"key");
+                assert!(!key.is_null());
+                let key_bits = MoltObject::from_ptr(key).bits();
+                let builder = super::molt_callargs_new(1, 1);
+                assert_ne!(builder, 0);
+                let value = MoltObject::from_int(17).bits();
+                super::molt_callargs_push_pos(builder, value);
+                super::molt_callargs_push_kw(builder, key_bits, MoltObject::from_int(1).bits());
+                let args = super::callargs_ptr(ptr_from_bits(builder));
+                let dict = obj_from_bits((*args).keywords).as_ptr().unwrap();
+                crate::dict_set_in_place(_py, dict, key_bits, MoltObject::from_int(2).bits());
+                let clone = super::clone_callargs_builder_bits(_py, builder).unwrap();
+                let cloned_args = super::callargs_ptr(ptr_from_bits(clone));
+                assert_ne!((*args).keywords, (*cloned_args).keywords);
+                let prepared = super::PreparedCallArgs::new(_py, &*cloned_args).unwrap();
+                assert_eq!(prepared.kw_values, [MoltObject::from_int(2).bits()]);
+                drop(prepared);
+                crate::dict_clear_in_place(_py, dict);
+                assert_eq!((*args).keyword_count(), 0);
+                assert_eq!((*cloned_args).keyword_count(), 1);
+                assert_eq!(
+                    super::callargs_positional_snapshot(_py, builder).unwrap(),
+                    [value]
+                );
+                let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    _py,
+                    crate::provenance::abi::expose_function_address(
+                        compiled_identity_returns_owned_arg as *const (),
+                    ),
+                    1,
+                );
+                assert!(!func_ptr.is_null());
+                let func_bits = MoltObject::from_ptr(func_ptr).bits();
+                let entry = CallBindIcEntry {
+                    fn_ptr: crate::function_fn_ptr(func_ptr),
+                    target_bits: 0,
+                    class_bits: 0,
+                    class_version: 0,
+                    type_version: crate::global_type_version(),
+                    cached_alloc_size: 0,
+                    arity: 1,
+                    kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
+                };
+                assert_eq!(
+                    try_call_bind_ic_fast(_py, entry, func_bits, args),
+                    Some(value)
+                );
+                assert_eq!(
+                    try_call_bind_ic_fast(_py, entry, func_bits, cloned_args),
+                    None
+                );
+                for bits in [builder, clone, key_bits, func_bits] {
+                    dec_ref_bits(_py, bits);
+                }
+                assert!(!crate::exception_pending(_py));
+            }
+        });
+    }
+
+    #[test]
+    fn call_bind_uses_replaced_keyword_value_at_binding_boundary() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    _py,
+                    crate::provenance::abi::expose_function_address(
+                        compiled_identity_returns_owned_arg as *const (),
+                    ),
+                    1,
+                );
+                assert!(!func_ptr.is_null());
+                let func_bits = MoltObject::from_ptr(func_ptr).bits();
+                let key = crate::alloc_string(_py, b"key");
+                assert!(!key.is_null());
+                let key_bits = MoltObject::from_ptr(key).bits();
+                let names = alloc_tuple(_py, &[key_bits]);
+                assert!(!names.is_null());
+                let names_bits = MoltObject::from_ptr(names).bits();
+                crate::call::class_init::function_set_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_metadata_name(_py, b"__molt_arg_names__"),
+                    names_bits,
+                );
+                let builder = super::molt_callargs_new(0, 1);
+                assert_ne!(builder, 0);
+                super::molt_callargs_push_kw(builder, key_bits, MoltObject::from_int(1).bits());
+                let args = super::callargs_ptr(ptr_from_bits(builder));
+                let dict = obj_from_bits((*args).keywords).as_ptr().unwrap();
+                let expected = MoltObject::from_int(29).bits();
+                crate::dict_set_in_place(_py, dict, key_bits, expected);
+                assert_eq!(super::molt_call_bind(func_bits, builder), expected);
+                assert!(!crate::exception_pending(_py));
+                for bits in [names_bits, key_bits, func_bits] {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn callargs_nonstring_keywords_are_rejected_at_call_boundary() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let builder = super::molt_callargs_new(0, 0);
+                super::molt_callargs_push_kw(
+                    builder,
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                );
+                assert!(!crate::exception_pending(_py));
+                assert!(!super::callargs_validate_keywords(
+                    _py,
+                    super::ptr_from_bits(builder)
+                ));
+                assert!(crate::exception_pending(_py));
+                crate::molt_exception_clear();
+                crate::dec_ref_bits(_py, builder);
+            }
+        });
+    }
+
     use super::inline_cache::{
         CALL_BIND_IC_KIND_DIRECT_FUNC, CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
         CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry, cached_attr_matches_bytes,
@@ -3396,9 +3688,7 @@ mod tests {
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             let mut args = super::CallArgs {
                 pos: vec![MoltObject::from_int(17).bits()],
-                kw_names: Vec::new(),
-                kw_values: Vec::new(),
-                kw_seen: std::collections::HashSet::new(),
+                keywords: MoltObject::none().bits(),
             };
             let entry = CallBindIcEntry {
                 fn_ptr: crate::provenance::abi::expose_function_address(

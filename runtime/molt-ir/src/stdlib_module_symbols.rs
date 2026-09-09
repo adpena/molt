@@ -45,6 +45,53 @@ pub fn stdlib_module_symbols_from_env_or_panic() -> Option<BTreeSet<String>> {
     stdlib_module_symbols_from_env().unwrap_or_else(|err| panic!("{err}"))
 }
 
+/// Source ownership is classified once, before compiler-generated partitions.
+pub fn is_user_owned_symbol(
+    name: &str,
+    entry_module: &str,
+    stdlib_module_symbols: Option<&BTreeSet<String>>,
+) -> bool {
+    if matches!(
+        name,
+        "molt_main"
+            | "molt_host_init"
+            | "molt_init___main__"
+            | "molt_isolate_import"
+            | "molt_isolate_bootstrap"
+    ) || name.strip_prefix("molt_init_") == Some(entry_module)
+        || name
+            .strip_prefix(entry_module)
+            .is_some_and(|rest| rest.starts_with("__"))
+    {
+        return true;
+    }
+    let Some(symbols) = stdlib_module_symbols else {
+        return false;
+    };
+    if let Some(module) = name.strip_prefix("molt_init_") {
+        return !symbols.contains(module);
+    }
+    !symbols.iter().any(|module| {
+        name.strip_prefix(module.as_str())
+            .is_some_and(|rest| rest.starts_with("__"))
+    })
+}
+
+/// Resolve only provenance emitted by the splitter, never reserved-name syntax.
+pub fn original_partition_source<'a>(
+    name: &'a str,
+    sources: &'a std::collections::BTreeMap<String, String>,
+) -> &'a str {
+    let mut current = name;
+    for _ in 0..=sources.len() {
+        let Some(source) = sources.get(current) else {
+            return current;
+        };
+        current = source;
+    }
+    panic!("cyclic compiler partition provenance for {name:?}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +138,49 @@ mod tests {
             err,
             "MOLT_STDLIB_MODULE_SYMBOLS[0] must contain only ASCII letters, digits, or underscores"
         );
+    }
+    #[test]
+    fn ownership_uses_source_provenance_without_decoding_names() {
+        let stdlib = BTreeSet::from(["json".to_string(), "sys".to_string()]);
+        let sources = std::collections::BTreeMap::from([
+            ("opaque_a".to_string(), "app__work".to_string()),
+            ("opaque_b".to_string(), "json__encode".to_string()),
+            ("opaque_c".to_string(), "opaque_a".to_string()),
+        ]);
+        for (name, expected) in [
+            ("opaque_a", true),
+            ("opaque_b", false),
+            ("opaque_c", true),
+            ("molt_host_init", true),
+            ("molt_init_json", false),
+            ("molt_init_app", true),
+            ("jsonish__work", true),
+            ("__molt_chunk_v1_user_name", true),
+        ] {
+            assert_eq!(
+                is_user_owned_symbol(
+                    original_partition_source(name, &sources),
+                    "app",
+                    Some(&stdlib)
+                ),
+                expected,
+                "{name}"
+            );
+        }
+        assert!(!is_user_owned_symbol(
+            "__molt_chunk_v1_user_name",
+            "app",
+            None
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "cyclic compiler partition provenance")]
+    fn cyclic_partition_provenance_is_rejected() {
+        let sources = std::collections::BTreeMap::from([
+            ("a".to_string(), "b".to_string()),
+            ("b".to_string(), "a".to_string()),
+        ]);
+        original_partition_source("a", &sources);
     }
 }

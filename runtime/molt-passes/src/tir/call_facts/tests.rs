@@ -361,3 +361,33 @@ fn call_graph_is_defined_accessor() {
     assert!(cg.is_defined("b"));
     assert!(!cg.is_defined("nope"));
 }
+
+#[test]
+fn call_facts_reports_shared_partition_and_frame_inline_reasons() {
+    for (partitioned, context, reason) in [
+        (
+            true,
+            molt_ir::ExecutionContextPolicy::None,
+            InlineWhyNot::CodegenPartition,
+        ),
+        (
+            false,
+            molt_ir::ExecutionContextPolicy::Local,
+            InlineWhyNot::ExecutionContext,
+        ),
+    ] {
+        let (caller, result) = func_calling("a", TirType::None, &["b"], 0);
+        let mut callee = leaf_callee("b", TirType::None);
+        callee.execution_context = context;
+        callee.attrs.insert(
+            crate::tir::function::CODEGEN_PARTITION_ATTR.into(),
+            AttrValue::Bool(partitioned),
+        );
+        let m = module(vec![caller, callee]);
+        let table = module_table_for(&m, "a");
+        assert_eq!(
+            table.get(result.unwrap()).unwrap().inlinable,
+            InlineEligibility::WhyNot(reason)
+        );
+    }
+}

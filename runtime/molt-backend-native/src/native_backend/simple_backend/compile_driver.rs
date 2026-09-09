@@ -56,8 +56,7 @@ impl SimpleBackend {
         let native_target_info = prepared.native_target_info;
         let emit_resolver_here = prepared.emit_resolver_here;
         let app_callable_manifest = prepared.app_callable_manifest;
-        let pre_split_task_kinds = prepared.pre_split_task_kinds;
-        let pre_split_task_closure_sizes = prepared.pre_split_task_closure_sizes;
+        let source_callables = prepared.source_callables;
         // Extern bodies are discarded by both native backends. Capture and
         // validate their complete target-neutral ABI first so no backend can
         // reconstruct a declaration from a caller after the authority is gone.
@@ -366,26 +365,10 @@ impl SimpleBackend {
         // over this per-batch one (see `effective_leaf_functions` below), so
         // skip the redundant per-batch whole-program leaf lift here.
         let need_local_leaves = self.module_context.is_none();
-        let mut ir_analysis = analyze_native_backend_ir(&ir, need_local_leaves);
-        // Merge pre-split task annotations: megafunction splitting can
-        // separate `func_new` from `set_attr_generic_obj(__molt_is_generator__)`
-        // into different chunk functions, causing the post-split analysis to
-        // miss generator/coroutine annotations.  The pre-split analysis
-        // captured these correctly before the ops were split apart.
-        for (name, kind) in &pre_split_task_kinds {
-            ir_analysis.task_kinds.entry(name.clone()).or_insert(*kind);
-        }
-        for (name, size) in &pre_split_task_closure_sizes {
-            ir_analysis
-                .task_closure_sizes
-                .entry(name.clone())
-                .or_insert(*size);
-        }
-        // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
-        // when tracing is disabled. Each guarded call site emits 2 trace function calls
-        // (enter + exit); eliminating them saves codegen work on cache misses and
-        // keeps the default native backend lane focused on production semantics.
-        // Trace emission is opt-in via MOLT_BACKEND_EMIT_TRACES=1.
+        let ir_analysis = analyze_native_backend_ir(&ir, need_local_leaves, source_callables);
+        // Optional call-site tracing is separate from mandatory execution-frame
+        // ownership in FunctionIR. This switch may remove supplemental call traces,
+        // never the code-slot entry or owned exit needed by Python semantics.
         let emit_traces = env_setting("MOLT_BACKEND_EMIT_TRACES")
             .as_deref()
             .map(parse_truthy_env)

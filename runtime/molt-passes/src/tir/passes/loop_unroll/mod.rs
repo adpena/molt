@@ -190,6 +190,18 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
             continue;
         }
 
+        if func
+            .validate_block_retirement(
+                &counted_loop::region_blocks(&loop_info),
+                &HashSet::from([loop_info.header]),
+                &HashSet::from([loop_info.header]),
+                func.entry_block == loop_info.header,
+            )
+            .is_err()
+        {
+            continue;
+        }
+
         candidates.push(loop_info);
     }
     candidates
@@ -425,36 +437,21 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
     // this marker as an unreachable dead block (no terminator predecessor), so
     // we drop its role; if it is now wholly unreachable we remove the block too.
     let end_marker = c.loop_pairs_end;
-    if let Some(end_bid) = end_marker {
-        func.loop_roles.remove(&end_bid);
-        func.loop_pairs.remove(&end_bid);
-        func.loop_break_kinds.remove(&end_bid);
-        func.loop_cond_blocks.remove(&end_bid);
-    }
-
-    for &bid in &region {
-        func.blocks.remove(&bid);
-    }
-    func.loop_roles.remove(&c.header);
-    func.loop_pairs.remove(&c.header);
-    func.loop_break_kinds.remove(&c.header);
-    func.loop_cond_blocks.remove(&c.header);
-
-    // Drop the orphaned `LoopEnd` marker block if it is now unreachable through
-    // terminator edges from the entry — it is the dead frontend marker and would
-    // otherwise linger as a no-predecessor block. (A block that is still
-    // reachable is left intact; only its role was stripped above.)
-    if let Some(end_bid) = end_marker
-        && func.blocks.contains_key(&end_bid)
-    {
-        let reachable = crate::tir::dominators::reachable_blocks_with(
-            func,
-            crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-        );
-        if !reachable.contains(&end_bid) {
-            func.blocks.remove(&end_bid);
-        }
-    }
+    func.retire_loop_metadata(c.header);
+    // Retire an unreachable orphaned end marker in the same atomic removal as
+    // the loop region: its old backedge may still target the retired header.
+    // A marker still reachable or owned by another loop remains intact.
+    let reachable = super::reachability::metadata_preserving_reachable_blocks(func);
+    let retained = func
+        .blocks
+        .keys()
+        .copied()
+        .filter(|bid| {
+            !region.contains(bid) && (Some(*bid) != end_marker || reachable.contains(bid))
+        })
+        .collect();
+    func.retain_blocks(&retained)
+        .expect("loop unroll rewiring must retire the whole region without dangling edges");
 
     // GLOBAL header-arg fixup. A loop-carried header arg (the IV or an
     // accumulator) is an SSA value DEFINED by the now-deleted header block. Any

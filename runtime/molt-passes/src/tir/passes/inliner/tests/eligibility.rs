@@ -284,3 +284,54 @@ fn run_inliner_refuses_closure_call_site() {
 }
 
 // -- run_inliner end-to-end ----------------------------------------------
+
+#[test]
+fn inline_classification_owns_context_and_partition_restrictions() {
+    use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
+    for tti in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::wasm_release_fast(),
+        TargetInfo::llvm_release_fast(),
+    ] {
+        let mut ordinary = const_callee();
+        ordinary.name = "__molt_chunk_v1_not_a_partition".into();
+        let mut partition = ordinary.clone();
+        partition.attrs.insert(
+            crate::tir::function::CODEGEN_PARTITION_ATTR.into(),
+            AttrValue::Bool(true),
+        );
+        let mut framed = ordinary.clone();
+        framed.execution_context = molt_ir::ExecutionContextPolicy::Local;
+        for (callee, expected) in [
+            (ordinary, InlineEligibility::Eligible),
+            (
+                partition,
+                InlineEligibility::WhyNot(InlineWhyNot::CodegenPartition),
+            ),
+            (
+                framed,
+                InlineEligibility::WhyNot(InlineWhyNot::ExecutionContext),
+            ),
+        ] {
+            let m = module(vec![callee]);
+            let (cg, summaries) = analysis(&m);
+            assert_eq!(
+                super::super::eligibility::classify_inline_eligibility(
+                    &m.functions[0],
+                    &cg,
+                    &summaries,
+                    &tti
+                ),
+                expected
+            );
+            assert_eq!(
+                is_inlineable(&m.functions[0], &cg, &summaries, &tti),
+                expected.is_eligible()
+            );
+            assert_eq!(
+                super::super::eligibility::is_inline_safe(&m.functions[0], &cg),
+                expected.is_eligible()
+            );
+        }
+    }
+}

@@ -12,14 +12,13 @@ use crate::builtins::exceptions::{
 };
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
-    TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
-    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION,
-    TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
-    TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
-    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, attr_lookup_ptr,
-    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
-    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION,
+    TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER,
+    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY,
+    TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    TYPE_ID_ZIP, alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string,
+    attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
+    call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
     class_layout_version_bits, class_mro_pinned, class_mro_vec, class_mro_view, class_name_bits,
     class_name_for_error, classmethod_func_bits, clear_exception, dataclass_desc_ptr,
     dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
@@ -1472,6 +1471,44 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
     }
 }
 
+/// Probe a type slot without invoking its descriptor. Protocol admission must
+/// not bind a method that is only observed when the operation executes.
+pub(crate) unsafe fn has_special_method(py: &PyToken<'_>, bits: u64, name: &[u8]) -> bool {
+    unsafe {
+        let Some(class) = obj_from_bits(type_of_bits(py, bits)).as_ptr() else {
+            return false;
+        };
+        let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+            return false;
+        };
+        let present = class_attr_lookup_raw_mro(py, class, name_bits).is_some();
+        dec_ref_bits(py, name_bits);
+        present
+    }
+}
+
+/// Special methods bypass the instance dictionary and __getattribute__.
+pub(crate) unsafe fn lookup_special_method(
+    py: &PyToken<'_>,
+    bits: u64,
+    name: &[u8],
+) -> Option<u64> {
+    unsafe {
+        let instance = obj_from_bits(bits).as_ptr()?;
+        let class = obj_from_bits(type_of_bits(py, bits)).as_ptr()?;
+        let name = attr_name_bits_from_bytes(py, name)?;
+        let method = class_attr_lookup(py, class, class, Some(instance), name);
+        dec_ref_bits(py, name);
+        if exception_pending(py) {
+            if let Some(method) = method {
+                dec_ref_bits(py, method);
+            }
+            return None;
+        }
+        method
+    }
+}
+
 pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> bool {
     unsafe {
         crate::gil_assert();
@@ -1479,40 +1516,12 @@ pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> bool {
             return false;
         };
         match object_type_id(ptr) {
-            TYPE_ID_ITER
-            | TYPE_ID_GENERATOR
-            | TYPE_ID_ENUMERATE
-            | TYPE_ID_CALL_ITER
-            | TYPE_ID_REVERSED
-            | TYPE_ID_ZIP
-            | TYPE_ID_MAP
-            | TYPE_ID_FILTER
-            | TYPE_ID_DICT_KEYS_VIEW
-            | TYPE_ID_DICT_VALUES_VIEW
-            | TYPE_ID_DICT_ITEMS_VIEW
+            TYPE_ID_ITER | TYPE_ID_GENERATOR | TYPE_ID_ENUMERATE | TYPE_ID_CALL_ITER
+            | TYPE_ID_REVERSED | TYPE_ID_ZIP | TYPE_ID_MAP | TYPE_ID_FILTER | TYPE_ID_GLOB_ITER
             | TYPE_ID_FILE_HANDLE => return true,
             _ => {}
         }
-        let class_bits = if object_type_id(ptr) == TYPE_ID_TYPE {
-            type_of_bits(_py, MoltObject::from_ptr(ptr).bits())
-        } else {
-            object_class_bits(ptr)
-        };
-        if class_bits == 0 {
-            return false;
-        }
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return false;
-        };
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return false;
-        }
-        let Some(next_bits) = attr_name_bits_from_bytes(_py, b"__next__") else {
-            return false;
-        };
-        let has_next = class_attr_lookup_raw_mro(_py, class_ptr, next_bits).is_some();
-        dec_ref_bits(_py, next_bits);
-        has_next
+        has_special_method(_py, bits, b"__next__")
     }
 }
 

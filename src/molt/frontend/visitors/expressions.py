@@ -40,11 +40,48 @@ else:
 
 class ExpressionVisitorMixin(_MixinBase):
     def visit_Name(self, node: ast.Name) -> Any:
+        if (
+            isinstance(node.ctx, ast.Load)
+            and self._class_ns_stack
+            and self.python_binding_index is not None
+            and (fact := self.python_binding_index.expression_fact(node)) is not None
+            and not fact.class_namespace_lookup
+        ):
+            # Inlined code retains its Python lexical scope. In particular a
+            # comprehension's first iterable belongs to the class body, while
+            # its payload, filters and later iterables skip the class mapping.
+            scopes, locals_ = self._class_ns_stack, self.locals
+            if fact.binding_global_lookup:
+                return self._emit_global_get(node.id)
+            self._class_ns_stack = []
+            if node.id not in self.comp_shadow_locals:
+                self.locals = scopes[-1].enclosing_locals
+            try:
+                return self._load_name_expression(node)
+            finally:
+                self._class_ns_stack, self.locals = scopes, locals_
+        return self._load_name_expression(node)
+
+    def _load_name_expression(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
+            if (
+                self.in_annotation
+                and self.python_binding_index is not None
+                and (fact := self.python_binding_index.expression_fact(node)) is not None
+                and fact.binding_global_lookup
+            ):
+                # A deferred class-global annotation bypasses captured type
+                # parameters even when no class mapping needs to be captured.
+                return self._emit_global_get(node.id)
             if node.id == "__molt_missing__":
                 res = MoltValue(self.next_var(), type_hint="missing")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
                 return res
+            class_scope = self._active_class_ns_scope(node.id)
+            if class_scope is not None:
+                local = self._class_ns_load(class_scope, node.id)
+                if local is not None:
+                    return local
             if self._expression_has_invalidated_binding(node):
                 return self._emit_global_get(node.id)
             if node.id == "__name__":
@@ -111,10 +148,6 @@ class ExpressionVisitorMixin(_MixinBase):
                     return res
                 if node.id in self.module_chunk_globals:
                     return self._emit_global_get(node.id)
-                if node.id == "TYPE_CHECKING":
-                    res = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
-                    return res
                 if (
                     node.id in self.module_declared_funcs
                     or node.id in self.module_declared_classes
@@ -852,85 +885,7 @@ class ExpressionVisitorMixin(_MixinBase):
         return value_node
 
     def visit_Compare(self, node: ast.Compare) -> Any:
-        left = self.visit(node.left)
-        if left is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported compare left operand"
-            )
-        comp_yields = [self._expr_may_yield(comp) for comp in node.comparators]
-        left_slot: int | None = None
-        if self.is_async() and comp_yields[0]:
-            left_slot = self._spill_async_value(left)
-        right = self.visit(node.comparators[0])
-        if right is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported compare right operand"
-            )
-        if left_slot is not None:
-            left = self._reload_async_value(left_slot, left.type_hint)
-        if len(node.ops) == 1:
-            return self._emit_compare_op(node.ops[0], left, right)
-        first_cmp = self._emit_compare_op(node.ops[0], left, right)
-        result_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[first_cmp], result=result_cell))
-        prev_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[right], result=prev_cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-        res_slot: int | None = None
-        prev_slot: int | None = None
-        idx_slot: int | None = None
-        if self.is_async() and any(comp_yields[1:]):
-            res_slot = self._spill_async_value(result_cell)
-            prev_slot = self._spill_async_value(prev_cell)
-            idx_slot = self._spill_async_value(idx)
-        for op, comparator in zip(node.ops[1:], node.comparators[1:]):
-            may_yield = self._expr_may_yield(comparator)
-            current = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="INDEX", args=[result_cell, idx], result=current))
-            self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
-            prev_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[prev_cell, idx], result=prev_val))
-            right_val = self.visit(comparator)
-            if right_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported compare right operand",
-                )
-            idx_val = idx
-            if (
-                self.is_async()
-                and may_yield
-                and res_slot is not None
-                and prev_slot is not None
-                and idx_slot is not None
-            ):
-                result_cell = self._reload_async_value(res_slot, "list")
-                prev_cell = self._reload_async_value(prev_slot, "list")
-                idx_val = self._reload_async_value(idx_slot, "int")
-                prev_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(kind="INDEX", args=[prev_cell, idx_val], result=prev_val)
-                )
-            cmp_val = self._emit_compare_op(op, prev_val, right_val)
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[result_cell, idx_val, cmp_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[prev_cell, idx_val, right_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        final = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[result_cell, idx], result=final))
-        return final
+        return self._emit_expression_flow(node, "value")[0]
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         operand = self.visit(node.operand)
@@ -971,383 +926,7 @@ class ExpressionVisitorMixin(_MixinBase):
         raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unary operator not supported")
 
     def visit_IfExp(self, node: ast.IfExp) -> Any:
-        cond = self.visit(node.test)
-        if cond is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported if expression condition"
-            )
-        use_phi = self.enable_phi and not self.is_async()
-        if use_phi:
-            self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
-            true_val = self.visit(node.body)
-            if true_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported if expression true branch",
-                )
-            # Ensure an explicit op in the true branch so the backend sees a
-            # definition local to this branch (otherwise the PHI references a
-            # variable defined before the IF, and the backend can't tell which
-            # branch produced the value).
-            true_alias = MoltValue(self.next_var(), type_hint=true_val.type_hint)
-            self.emit(MoltOp(kind="IDENTITY_ALIAS", args=[true_val], result=true_alias))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            false_val = self.visit(node.orelse)
-            if false_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported if expression false branch",
-                )
-            false_alias = MoltValue(self.next_var(), type_hint=false_val.type_hint)
-            self.emit(
-                MoltOp(kind="IDENTITY_ALIAS", args=[false_val], result=false_alias)
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res_type = "Any"
-            if true_alias.type_hint == false_alias.type_hint:
-                res_type = true_alias.type_hint
-            merged = MoltValue(self.next_var(), type_hint=res_type)
-            self.emit(MoltOp(kind="PHI", args=[true_alias, false_alias], result=merged))
-            return merged
-
-        # Non-phi path. In poll-function bodies (async generators / coroutines)
-        # we must thread the result through a closure slot so it survives any
-        # state-machine yield points AND so the cell itself is not subject to
-        # Cranelift's loop-header phi resolver (which can merge the cell SSA
-        # value with the entry-block default and crash on store_index).
-        if self.is_async():
-            slot = self._new_async_internal_slot()
-            none_init = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, none_init],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
-            true_val = self.visit(node.body)
-            if true_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported if expression true branch",
-                )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, true_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            false_val = self.visit(node.orelse)
-            if false_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported if expression false branch",
-                )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, false_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res_type = "Any"
-            if true_val.type_hint == false_val.type_hint:
-                res_type = true_val.type_hint
-            result = MoltValue(self.next_var(), type_hint=res_type)
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=result))
-            return result
-
-        # Sync, non-phi path: a single SSA value updated in both branches.
-        new_result = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
-        self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
-        true_val = self.visit(node.body)
-        if true_val is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                "Unsupported if expression true branch",
-            )
-        self.emit(MoltOp(kind="COPY", args=[true_val], result=new_result))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        false_val = self.visit(node.orelse)
-        if false_val is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                "Unsupported if expression false branch",
-            )
-        self.emit(MoltOp(kind="COPY", args=[false_val], result=new_result))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        if true_val.type_hint == false_val.type_hint:
-            new_result.type_hint = true_val.type_hint
-        return new_result
+        return self._emit_expression_flow(node, "value")[0]
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
-        if not node.values:
-            raise FrontendRejection(
-                Diagnostic.INTERNAL_INVARIANT, "Empty bool op is not supported"
-            )
-        result = self.visit(node.values[0])
-        if result is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported bool op operand"
-            )
-        use_phi = self.enable_phi and not self.is_async()
-        for value in node.values[1:]:
-            if isinstance(node.op, ast.And):
-                # Short-circuit: only evaluate right if left is truthy
-                if use_phi:
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                    )
-                    right = self.visit(value)
-                    if right is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported bool op operand",
-                        )
-                    new_result_true = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="AND", args=[result, right], result=new_result_true)
-                    )
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    # Left was falsy — short-circuit, result stays as left
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    new_result = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="PHI",
-                            args=[new_result_true, result],
-                            result=new_result,
-                        )
-                    )
-                    result = new_result
-                else:
-                    # Non-phi path (e.g. async generator/coroutine poll bodies):
-                    # we need the result to survive across IF/ELSE branches
-                    # AND any yield points.  In poll functions, plain SSA
-                    # values are NOT preserved across state-machine boundaries
-                    # — only closure slots are.  Spill the merged result into
-                    # a closure slot inside both branches and reload after
-                    # END_IF.  An earlier implementation used LIST_NEW +
-                    # STORE_INDEX cell, but the cell itself was a plain SSA
-                    # value that Cranelift's loop-header phi resolver could
-                    # merge with the entry-block default (None) on the first
-                    # iteration, producing store_index(None, ...) crashes.
-                    if self.is_async():
-                        slot = self._new_async_internal_slot()
-                        none_init = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_CLOSURE",
-                                args=["self", slot, none_init],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                        )
-                        right = self.visit(value)
-                        if right is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported bool op operand",
-                            )
-                        and_val = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(kind="AND", args=[result, right], result=and_val)
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_CLOSURE",
-                                args=["self", slot, and_val],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        # Left was falsy — short-circuit, store left.
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_CLOSURE",
-                                args=["self", slot, result],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        final_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="LOAD_CLOSURE",
-                                args=["self", slot],
-                                result=final_result,
-                            )
-                        )
-                        result = final_result
-                    else:
-                        # Sync, non-phi: same single-SSA-value pattern as the
-                        # `use_phi` branch above without an explicit PHI op.
-                        new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
-                        self.emit(
-                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                        )
-                        right = self.visit(value)
-                        if right is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported bool op operand",
-                            )
-                        self.emit(
-                            MoltOp(kind="AND", args=[result, right], result=new_result)
-                        )
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        self.emit(MoltOp(kind="COPY", args=[result], result=new_result))
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        result = new_result
-            elif isinstance(node.op, ast.Or):
-                # Short-circuit: only evaluate right if left is falsy
-                if use_phi:
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                    )
-                    # Left was truthy — short-circuit, result stays as left
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    right = self.visit(value)
-                    if right is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported bool op operand",
-                        )
-                    new_result_false = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="OR", args=[result, right], result=new_result_false)
-                    )
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    new_result = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="PHI",
-                            args=[result, new_result_false],
-                            result=new_result,
-                        )
-                    )
-                    result = new_result
-                else:
-                    if not self.is_async():
-                        # Same rationale as the `and` case above: avoid the
-                        # placeholder-cell bridge in synchronous non-phi code.
-                        new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
-                        self.emit(
-                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                        )
-                        self.emit(MoltOp(kind="COPY", args=[result], result=new_result))
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        right = self.visit(value)
-                        if right is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported bool op operand",
-                            )
-                        self.emit(
-                            MoltOp(kind="OR", args=[result, right], result=new_result)
-                        )
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        result = new_result
-                    else:
-                        # Async/non-phi path: use cell to pass result across branches
-                        placeholder = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(
-                            MoltOp(kind="CONST_NONE", args=[], result=placeholder)
-                        )
-                        cell = MoltValue(self.next_var(), type_hint="list")
-                        self.emit(
-                            MoltOp(kind="LIST_NEW", args=[placeholder], result=cell)
-                        )
-                        idx = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                        cell_slot = None
-                        idx_slot = None
-                        if self._expr_may_yield(value):
-                            cell_slot = self._spill_async_value(cell)
-                            idx_slot = self._spill_async_value(idx)
-                        self.emit(
-                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                        )
-                        # Left was truthy — short-circuit
-                        store_cell = cell
-                        store_idx = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            store_cell = self._reload_async_value(cell_slot, "list")
-                            store_idx = self._reload_async_value(idx_slot, "int")
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[store_cell, store_idx, result],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        right = self.visit(value)
-                        if right is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported bool op operand",
-                            )
-                        or_val = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(kind="OR", args=[result, right], result=or_val)
-                        )
-                        store_cell2 = cell
-                        store_idx2 = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            store_cell2 = self._reload_async_value(cell_slot, "list")
-                            store_idx2 = self._reload_async_value(idx_slot, "int")
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[store_cell2, store_idx2, or_val],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        final_cell = cell
-                        final_idx = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            final_cell = self._reload_async_value(cell_slot, "list")
-                            final_idx = self._reload_async_value(idx_slot, "int")
-                        new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="INDEX",
-                                args=[final_cell, final_idx],
-                                result=new_result,
-                            )
-                        )
-                        result = new_result
-            else:
-                raise FrontendRejection(
-                    Diagnostic.SYNTAX_FORM, "Unsupported boolean operator"
-                )
-        return result
+        return self._emit_expression_flow(node, "value")[0]

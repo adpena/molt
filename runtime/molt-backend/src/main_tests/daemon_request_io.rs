@@ -59,9 +59,7 @@ fn request_bounded_read_rejects_streaming_read_past_limit() {
 
 #[test]
 fn daemon_request_parse_applies_boolean_defaults() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let request = DaemonRequest::from_json_bytes(
         br#"{
             "version": 1,
@@ -89,9 +87,7 @@ fn daemon_request_parse_applies_boolean_defaults() {
 
 #[test]
 fn daemon_request_parse_accepts_path_backed_ir_lease() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let request = DaemonRequest::from_json_bytes(
         br#"{
             "version": 1,
@@ -115,9 +111,7 @@ fn daemon_request_parse_accepts_path_backed_ir_lease() {
 
 #[test]
 fn daemon_request_parse_rejects_duplicate_ir_authority() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let err = DaemonRequest::from_json_bytes(
         br#"{
             "version": 1,
@@ -140,9 +134,7 @@ fn daemon_request_parse_rejects_duplicate_ir_authority() {
 
 #[test]
 fn daemon_request_parse_reads_split_runtime_app_table_base() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let request = DaemonRequest::from_json_bytes(
         br#"{
             "version": 1,

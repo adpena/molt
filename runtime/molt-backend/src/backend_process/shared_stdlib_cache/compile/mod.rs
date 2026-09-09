@@ -7,7 +7,7 @@ use std::path::Path;
 
 use plan::StdlibBatchPlan;
 
-pub(crate) fn compile_stdlib_cache_object(
+pub(crate) fn compile_stdlib_cache_archive(
     stdlib_path: &Path,
     stdlib_funcs: Vec<molt_backend::FunctionIR>,
     profile: Option<molt_backend::PgoProfileIR>,
@@ -18,7 +18,7 @@ pub(crate) fn compile_stdlib_cache_object(
     let stdlib_count = stdlib_funcs.len();
     if stdlib_count == 0 {
         eprintln!("{log_prefix}: stdlib cache is empty (0 reachable functions)");
-        return direct::compile_direct_stdlib_cache_object(
+        return direct::compile_direct_stdlib_cache_archive(
             stdlib_path,
             Vec::new(),
             profile,
@@ -38,7 +38,7 @@ pub(crate) fn compile_stdlib_cache_object(
             &batch_funcs,
             plan::stdlib_batch_ops_budget(),
         );
-        return direct::compile_direct_stdlib_cache_object(
+        return direct::compile_direct_stdlib_cache_archive(
             stdlib_path,
             batch_funcs,
             profile,
@@ -47,7 +47,7 @@ pub(crate) fn compile_stdlib_cache_object(
         );
     }
 
-    batched::compile_batched_stdlib_cache_object(
+    batched::compile_batched_stdlib_cache_archive(
         stdlib_path,
         plan,
         profile,

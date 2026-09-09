@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::extract_type_map;
+use super::extract_type_map_with_exact;
 use super::guards::propagate_guard_types;
 use super::result_inference::infer_result_types_with_attrs;
 use crate::tir::blocks::BlockId;
@@ -22,6 +22,7 @@ use crate::tir::values::ValueId;
 /// This map is a subset of the full type_map. The native backend can skip
 /// redundant guards for values in this map.
 pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let exact = super::extract_exact_scalar_map(func);
     // Start with constants — they are always proven.
     let mut proven: HashMap<ValueId, TirType> = HashMap::new();
 
@@ -31,24 +32,25 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     for &bid in &block_order {
         let block = &func.blocks[&bid];
         for op in &block.ops {
-            if op.results.is_empty() {
+            if !op.has_valid_result_arity() {
                 continue;
             }
-            if opcode_is_proven_result_type_seed_table(op.opcode)
-                && let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode)
-            {
-                for &r in &op.results {
-                    proven.insert(r, ty.clone());
+            for (index, &result) in op.results.iter().enumerate() {
+                if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode, index)
+                    && (opcode_is_proven_result_type_seed_table(op.opcode)
+                        || crate::tir::op_kinds_generated::comparison_scalar_domain(&ty).is_some())
+                {
+                    proven.insert(result, ty);
                 }
             }
         }
     }
 
     // Run the guard propagation to add TypeGuard-proven values.
-    let mut env = extract_type_map(func);
+    let mut env = extract_type_map_with_exact(func, &exact);
     let pred_map = dominators::build_pred_map(func);
     let idoms = dominators::compute_idoms(func, &pred_map);
-    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &idoms);
+    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &idoms, &exact);
     for (vid, ty) in guard_proven {
         proven.insert(vid, ty);
     }
@@ -70,12 +72,18 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| proven.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            let result_types = infer_result_types_with_attrs(
-                op.opcode,
-                &operand_types,
-                Some(&op.attrs),
-                op.results.len(),
-            );
+            let result_types = if let Some(facts) =
+                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+            {
+                vec![Some(facts.result_type); op.results.len()]
+            } else {
+                infer_result_types_with_attrs(
+                    op.opcode,
+                    &operand_types,
+                    Some(&op.attrs),
+                    op.results.len(),
+                )
+            };
             for (&result_id, result_ty) in op.results.iter().zip(result_types) {
                 if let Some(result_ty) = result_ty {
                     proven.insert(result_id, result_ty.clone());

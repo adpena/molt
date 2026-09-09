@@ -1,6 +1,6 @@
 use molt_backend::SimpleIR;
 
-use super::super::{NativeApplicationObjectOptions, deduplicate_functions_by_name};
+use super::super::{NativeApplicationArtifactOptions, deduplicate_functions_by_name};
 
 pub(crate) struct NativeApplicationStats {
     pub(crate) function_count: usize,
@@ -15,7 +15,7 @@ impl NativeApplicationStats {
 
 pub(crate) fn prepare_native_application_ir(
     ir: &mut SimpleIR,
-    options: &NativeApplicationObjectOptions<'_>,
+    options: &NativeApplicationArtifactOptions<'_>,
 ) {
     // Preserve the one-shot native application-object sequence as the single
     // authority for both direct backend runs and daemon requests.

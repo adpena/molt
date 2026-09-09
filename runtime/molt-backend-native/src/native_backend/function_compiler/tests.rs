@@ -43,6 +43,7 @@ fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     })
 }
@@ -59,6 +60,7 @@ fn representation_plan_for_typed_ops(
         param_types: param_types.map(|types| types.into_iter().map(|ty| ty.to_string()).collect()),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     })
 }

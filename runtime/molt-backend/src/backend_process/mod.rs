@@ -13,6 +13,7 @@ mod emit;
 mod input;
 mod io_limits;
 mod memory_guard;
+mod native_artifact;
 #[cfg(feature = "native-backend")]
 mod native_batch;
 #[cfg(feature = "native-backend")]
@@ -31,6 +32,7 @@ pub(crate) use input::*;
 #[cfg(test)]
 pub(crate) use io_limits::*;
 pub(crate) use memory_guard::*;
+pub(crate) use native_artifact::{NativeArtifactKind, shared_stdlib_archive_path_from_env};
 #[cfg(feature = "native-backend")]
 pub(crate) use native_batch::*;
 #[cfg(all(feature = "native-backend", test))]

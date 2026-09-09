@@ -244,7 +244,9 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 let other_obj = obj_from_bits(other_bits);
-                if let Some(other_ptr) = other_obj.as_ptr() {
+                if let Some(other_ptr) = other_obj.as_ptr()
+                    && crate::object::iterable::builtin_receiver(_py, other_ptr)
+                {
                     let other_type = object_type_id(other_ptr);
                     if other_type == TYPE_ID_LIST || other_type == TYPE_ID_TUPLE {
                         let Some(snapshot) = crate::object::seq_access::snapshot(
@@ -329,39 +331,31 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                 }
-                let iter_bits = molt_iter(other_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_not_iterable(_py, other_bits);
+                let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, other_bits)
+                else {
+                    return MoltObject::none().bits();
+                };
+                let Some(hint) = crate::object::iterable::length_hint(_py, other_bits) else {
+                    return MoltObject::none().bits();
+                };
+                if !crate::object::list_mutation::reserve_additional(_py, list_ptr, hint) {
+                    return MoltObject::none().bits();
                 }
                 loop {
-                    let pair_bits = molt_iter_next(iter_bits);
-                    let pair_obj = obj_from_bits(pair_bits);
-                    let Some(pair_ptr) = pair_obj.as_ptr() else {
-                        return MoltObject::none().bits();
-                    };
-                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                        return MoltObject::none().bits();
-                    }
-                    let Some((val_bits, done_bits)) =
-                        crate::object::seq_access::tuple_pair(pair_ptr)
-                    else {
-                        return MoltObject::none().bits();
-                    };
-                    if is_truthy(_py, obj_from_bits(done_bits)) {
-                        break;
-                    }
-                    inc_ref_bits(_py, val_bits);
-                    let extended = crate::object::list_mutation::extend_from_slice(
-                        _py,
-                        list_ptr,
-                        std::slice::from_ref(&val_bits),
-                    );
-                    dec_ref_bits(_py, val_bits);
-                    if !extended {
-                        return MoltObject::none().bits();
+                    match iter.next() {
+                        Ok(Some(item)) => {
+                            let extended = crate::object::list_mutation::extend_from_slice(
+                                _py,
+                                list_ptr,
+                                std::slice::from_ref(&item),
+                            );
+                            dec_ref_bits(_py, item);
+                            if !extended {
+                                return MoltObject::none().bits();
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(()) => return MoltObject::none().bits(),
                     }
                 }
                 return MoltObject::none().bits();

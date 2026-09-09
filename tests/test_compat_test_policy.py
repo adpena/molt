@@ -46,6 +46,28 @@ def test_metadata_is_one_frozen_typed_value(tmp_path: Path) -> None:
         metadata.stdout_mode = "exact"  # type: ignore[misc]
 
 
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "filename, minimum",
+    [("class_annotation_namespace.py", (3, 12)), ("class_annotation_namespace_313.py", (3, 13))],
+)
+def test_static_class_annotation_corpora_have_exact_version_admission(
+    filename: str, minimum: tuple[int, int], version: tuple[int, int]
+) -> None:
+    metadata = test_policy.parse_metadata(ROOT / "tests" / "differential" / "basic" / filename)
+    assert metadata.min_python == minimum
+    reason = metadata.python_exclusion_reason(version)
+    assert reason == (f"min_py {minimum[0]}.{minimum[1]}" if version < minimum else None)
+    assert not metadata.expect_molt_fail
+
+
+def test_version_projection_ignores_unselected_backend_coordinate() -> None:
+    metadata = test_policy.TestMetadata(min_python=(3, 13), max_python=(3, 14), backends=frozenset({"wasm"}))
+    assert metadata.python_exclusion_reason((3, 12)) == "min_py 3.13"
+    assert metadata.python_exclusion_reason((3, 13)) is None
+    assert metadata.python_exclusion_reason((3, 15)) == "max_py 3.14"
+
+
 @pytest.mark.parametrize(
     "metadata, message",
     [

@@ -7,6 +7,8 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from molt import rust_source_scan
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
@@ -20,7 +22,6 @@ from wasm_abi_gen.paths import (
     FRONTEND_TYPES,
     MANIFEST,
     OUT_RUNTIME_CALLABLES_RS,
-    ROOT,
     RUNTIME_ROOT,
 )
 from wasm_abi_gen.intrinsic_availability import (
@@ -278,46 +279,6 @@ def _is_cpython_abi_export_name(name: str) -> bool:
     return name.startswith(CPYTHON_ABI_EXPORT_PREFIXES)
 
 
-@lru_cache(maxsize=1)
-def _rust_comment_string_masker():
-    """Return the single canonical Rust comment/string masking function.
-
-    Loads it from ``tools/structural_audit.py`` — doc 46 rule #1 keeps exactly
-    ONE Rust-match parser authority in the tree, so we reuse it rather than
-    hand-rolling a second (drift-prone) scanner. The masker blanks the
-    *contents* of ``//``/``/* */`` comments and string/char literals while
-    preserving every character offset and newline.
-
-    Why the derivation below MUST run on masked text: a comment or string that
-    happens to contain a ``;``, ``(`` or ``)`` otherwise corrupts the structural
-    regexes. That is precisely the drift that silently dropped every
-    ``PyExc_*`` singleton from the generated link tables: the ``exc_singletons!``
-    invocation carries a doc comment containing ``…object itself; the ABI…`` and
-    ``// (an `except OSError` …)``, and the raw-text ``[^;]*`` arg capture in
-    ``CPYTHON_ABI_MACRO_INVOCATION_RE`` truncated at that comment semicolon, so
-    the invocation never matched and no ``PyExc_*`` name was derived — breaking
-    the numpy witness link, which references ``PyExc_*``.
-    """
-    import importlib.util
-    import sys
-
-    tool = ROOT / "tools" / "structural_audit.py"
-    spec = importlib.util.spec_from_file_location(
-        "molt_structural_audit_for_wasm_abi", tool
-    )
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
-        raise WasmAbiManifestError(f"cannot load Rust-scan authority {tool}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module._mask_rust_comments_and_strings
-
-
-def _mask_rust_source(text: str) -> str:
-    """Blank comment/string contents so structural regexes see code only."""
-    return _rust_comment_string_masker()(text)
-
-
 def _matching_brace_index(text: str, open_index: int) -> int:
     depth = 0
     for index in range(open_index, len(text)):
@@ -377,7 +338,7 @@ def _macro_generated_cpython_abi_export_kinds(source: str) -> dict[str, str]:
     function from a `pub static`. Masking preserves every character offset, so
     the brace indices found on masked text slice the unmasked source exactly.
     """
-    masked = _mask_rust_source(source)
+    masked = rust_source_scan.mask_rust_comments_and_strings(source)
     exported_macros = _no_mangle_macro_names(masked)
     if not exported_macros:
         return {}
@@ -2549,6 +2510,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
     """
     direct = {
         path,
+        Path(rust_source_scan.__file__).resolve(),
         INTRINSICS_MANIFEST,
         INTRINSIC_CATEGORIES,
         FRONTEND_TYPES,

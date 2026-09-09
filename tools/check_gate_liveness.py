@@ -37,7 +37,7 @@ from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
 from tools import gen_cpython_coverage  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
-    require_verified_target_python,
+    require_verified_subset_target,
 )
 
 _GB = 1024**3
@@ -70,10 +70,10 @@ def _canaries() -> list[Canary]:
     return [
         Canary(
             "cpython_version_boundary",
-            "unverified-version-platform-tuple-fires",
+            "unsupported-version-platform-tuple-fires",
             lambda: _raises_value_error(
-                lambda: require_verified_target_python(
-                    TargetPythonVersion(3, 13, 0), platform="windows"
+                lambda: require_verified_subset_target(
+                    TargetPythonVersion(3, 11, 0), platform="windows"
                 )
             ),
         ),

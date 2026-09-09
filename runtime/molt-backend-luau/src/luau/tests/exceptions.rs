@@ -10,6 +10,7 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
@@ -55,6 +56,7 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![op],
             }],
@@ -210,6 +212,7 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::Inherited,
             ops: vec![
                 OpIR {
@@ -489,6 +492,7 @@ fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -548,6 +552,7 @@ fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -596,6 +601,7 @@ fn test_pcall_try_except_compile() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -683,6 +689,7 @@ fn test_no_duplicate_local_declarations() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 // First definition of v0 — should get `local v0 = 1`

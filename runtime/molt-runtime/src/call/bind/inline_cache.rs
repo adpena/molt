@@ -2,6 +2,7 @@
 // fused super dispatch, C-ABI IC entry points, and cache lifecycle.
 
 use super::*;
+use crate::{attr_name_bits_from_bytes, molt_super_new};
 fn trace_call_bind_ic_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALL_BIND_IC").as_deref() == Ok("1"))
@@ -307,19 +308,61 @@ pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
     }
 }
 
-/// Per-site inline cache for fused `super().method(args)` dispatch.  Keyed on
-/// the call-site id (which fixes the defining `__class__`) and validated against
-/// `(type(self), version)`.  Super resolution bypasses the instance dict, so no
-/// shadow check is needed; the IC reuses the resolved class function and the
-/// pre-interned attribute name on hits.
+/// Per-site super dispatch cache. The start class is a live call operand,
+/// not a call-site constant; all lookup identities and the callable are retained.
 #[derive(Clone, Copy)]
 struct SuperIcEntry {
+    start_class_bits: u64,
     self_class_bits: u64,
     self_class_version: u64,
     type_version: u64,
     func_bits: u64,
     attr_bits: u64,
     valid: bool,
+}
+
+impl SuperIcEntry {
+    fn owned_edges(self) -> [u64; 4] {
+        [
+            self.start_class_bits,
+            self.self_class_bits,
+            self.func_bits,
+            self.attr_bits,
+        ]
+    }
+
+    fn retain(self, py: &PyToken<'_>) {
+        if self.valid {
+            for bits in self.owned_edges() {
+                inc_ref_bits(py, bits);
+            }
+        }
+    }
+
+    fn release(self, py: &PyToken<'_>) {
+        if self.valid {
+            for bits in self.owned_edges() {
+                dec_ref_bits(py, bits);
+            }
+        }
+    }
+
+    fn pin<'a, 'py>(self, py: &'a PyToken<'py>) -> PinnedSuperIcEntry<'a, 'py> {
+        self.retain(py);
+        PinnedSuperIcEntry { py, entry: self }
+    }
+}
+
+/// Pin the selected authority through cache replacement and arbitrary callee reentry.
+struct PinnedSuperIcEntry<'a, 'py> {
+    py: &'a PyToken<'py>,
+    entry: SuperIcEntry,
+}
+
+impl Drop for PinnedSuperIcEntry<'_, '_> {
+    fn drop(&mut self) {
+        self.entry.release(self.py);
+    }
 }
 
 const EMPTY_CALL_IC_ENTRY: CallBindIcEntry = CallBindIcEntry {
@@ -345,6 +388,7 @@ const EMPTY_METHOD_IC_ENTRY: MethodIcEntry = MethodIcEntry {
     valid: false,
 };
 const EMPTY_SUPER_IC_ENTRY: SuperIcEntry = SuperIcEntry {
+    start_class_bits: 0,
     self_class_bits: 0,
     self_class_version: 0,
     type_version: 0,
@@ -384,16 +428,15 @@ thread_local! {
 }
 
 #[inline]
-fn super_ic_lookup(site_id: u64) -> Option<SuperIcEntry> {
+fn super_ic_lookup<'a, 'py>(
+    py: &'a PyToken<'py>,
+    site_id: u64,
+) -> Option<PinnedSuperIcEntry<'a, 'py>> {
     REF_OWNING_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
         let (stored_id, entry) = cache.super_method[idx];
-        if stored_id == site_id && entry.valid {
-            Some(entry)
-        } else {
-            None
-        }
+        (stored_id == site_id && entry.valid).then(|| entry.pin(py))
     })
 }
 
@@ -413,51 +456,27 @@ pub(super) unsafe fn cached_attr_matches_bytes(attr_bits: u64, expected: &[u8]) 
 }
 
 #[inline]
-fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: SuperIcEntry) {
-    inc_ref_bits(_py, entry.func_bits);
-    let prev = REF_OWNING_IC_TLS.with(|cache| {
+fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, selected: &PinnedSuperIcEntry<'_, '_>) {
+    let entry = selected.entry;
+    entry.retain(_py);
+    let previous = REF_OWNING_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
-        let (_, prev) = cache.super_method[idx];
-        cache.super_method[idx] = (site_id, entry);
-        prev
+        std::mem::replace(&mut cache.super_method[idx], (site_id, entry)).1
     });
-    if prev.valid {
-        if prev.attr_bits != 0 {
-            dec_ref_bits(_py, prev.attr_bits);
-        }
-        if prev.func_bits != 0 {
-            dec_ref_bits(_py, prev.func_bits);
-        }
-    }
+    // Publish before release: weakref/finalizer callbacks can reenter this cache.
+    previous.release(_py);
 }
 
 pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().super_method,
-            [(
-                0u64,
-                SuperIcEntry {
-                    self_class_bits: 0,
-                    self_class_version: 0,
-                    type_version: 0,
-                    func_bits: 0,
-                    attr_bits: 0,
-                    valid: false,
-                },
-            ); METHOD_IC_TLS_SIZE],
+            [(0, EMPTY_SUPER_IC_ENTRY); METHOD_IC_TLS_SIZE],
         )
     });
     for (_, entry) in previous {
-        if entry.valid {
-            if entry.attr_bits != 0 {
-                dec_ref_bits(_py, entry.attr_bits);
-            }
-            if entry.func_bits != 0 {
-                dec_ref_bits(_py, entry.func_bits);
-            }
-        }
+        entry.release(_py);
     }
 }
 
@@ -727,7 +746,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             return None;
         }
         let args = &*args_ptr;
-        if !args.kw_names.is_empty() {
+        if args.keyword_count() != 0 {
             return None;
         }
 
@@ -1522,10 +1541,12 @@ unsafe fn call_super_method_ic_dispatch(
         // dispatch directly — no super object, no name interning, no MRO walk.
         if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr()
             && let Some(site_id) = ic_site_from_bits(site_bits)
-            && let Some(entry) = super_ic_lookup(site_id)
+            && let Some(selected) = super_ic_lookup(_py, site_id)
         {
+            let entry = selected.entry;
             let self_class_bits = type_of_bits(_py, self_bits);
-            if type_epoch_matches(entry.type_version)
+            if start_class_bits == entry.start_class_bits
+                && type_epoch_matches(entry.type_version)
                 && self_class_bits == entry.self_class_bits
                 && cached_attr_matches_bytes(entry.attr_bits, name)
                 && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
@@ -1547,25 +1568,21 @@ unsafe fn call_super_method_ic_dispatch(
             if let Some(info) = resolved
                 && type_resolution_epoch_is_stable(type_version)
             {
-                if let Some(site_id) = ic_site_from_bits(site_bits) {
-                    // Transfer the owned `attr_bits` ref into the IC.
-                    super_ic_insert(
-                        _py,
-                        site_id,
-                        SuperIcEntry {
-                            self_class_bits: info.self_class_bits,
-                            self_class_version: info.self_class_version,
-                            type_version,
-                            func_bits: info.func_bits,
-                            attr_bits,
-                            valid: true,
-                        },
-                    );
-                    return call_direct(_py, info.func_bits);
+                let selected = SuperIcEntry {
+                    start_class_bits,
+                    self_class_bits: info.self_class_bits,
+                    self_class_version: info.self_class_version,
+                    type_version,
+                    func_bits: info.func_bits,
+                    attr_bits,
+                    valid: true,
                 }
-                let res = call_direct(_py, info.func_bits);
+                .pin(_py);
                 dec_ref_bits(_py, attr_bits);
-                return res;
+                if let Some(site_id) = ic_site_from_bits(site_bits) {
+                    super_ic_insert(_py, site_id, &selected);
+                }
+                return call_direct(_py, selected.entry.func_bits);
             }
             dec_ref_bits(_py, attr_bits);
         }
@@ -1803,7 +1820,7 @@ unsafe fn call_bind_ic_dispatch(
             let call_type = type_name(_py, obj_from_bits(call_bits));
             let (pos_len, kw_len) = if !builder_ptr.is_null() {
                 match require_callargs_ptr(_py, builder_ptr) {
-                    Ok(args_ptr) => ((*args_ptr).pos.len(), (*args_ptr).kw_names.len()),
+                    Ok(args_ptr) => ((*args_ptr).pos.len(), (*args_ptr).keyword_count()),
                     Err(_) => (0, 0),
                 }
             } else {
@@ -1877,6 +1894,152 @@ pub extern "C" fn molt_invoke_ffi_ic(
         }
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
+}
+
+#[cfg(test)]
+mod super_cache_tests {
+    use super::*;
+
+    extern "C" fn base_value(_self_bits: u64) -> u64 {
+        MoltObject::from_int(1).bits()
+    }
+
+    extern "C" fn mid_value(_self_bits: u64) -> u64 {
+        MoltObject::from_int(2).bits()
+    }
+
+    fn make_class(py: &PyToken<'_>, name: &[u8], base: u64, method: Option<*const ()>) -> u64 {
+        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let bases = crate::alloc_tuple(py, &[base]);
+        let ns = crate::alloc_dict_with_pairs(py, &[]);
+        assert!(!bases.is_null() && !ns.is_null());
+        let bases_bits = MoltObject::from_ptr(bases).bits();
+        let ns_bits = MoltObject::from_ptr(ns).bits();
+        if let Some(method) = method {
+            let function = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(method),
+                1,
+            );
+            assert!(!function.is_null());
+            let function_bits = MoltObject::from_ptr(function).bits();
+            let method_name = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+            unsafe {
+                crate::dict_set_in_place(py, ns, method_name, function_bits);
+            }
+            dec_ref_bits(py, method_name);
+            dec_ref_bits(py, function_bits);
+        }
+        let result = crate::molt_type_new(
+            builtin_classes(py).type_obj,
+            name,
+            bases_bits,
+            ns_bits,
+            MoltObject::none().bits(),
+        );
+        for bits in [name, bases_bits, ns_bits] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+        result
+    }
+
+    #[test]
+    fn warm_super_site_rechecks_start_class_and_rejects_non_type() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            clear_super_ic_cache(py);
+            let base = make_class(
+                py,
+                b"SuperCacheBase",
+                builtin_classes(py).object,
+                Some(base_value as *const ()),
+            );
+            let mid = make_class(py, b"SuperCacheMid", base, Some(mid_value as *const ()));
+            let leaf = make_class(py, b"SuperCacheLeaf", mid, None);
+            let receiver = unsafe {
+                crate::call::class_init::alloc_instance_for_class(
+                    py,
+                    obj_from_bits(leaf).as_ptr().unwrap(),
+                )
+            };
+            assert!(!exception_pending(py));
+            let site = MoltObject::from_int(817).bits();
+            let name = b"value";
+            for (start, expected) in [(leaf, 2), (mid, 1), (leaf, 2)] {
+                let result = molt_call_super_method_ic0(
+                    site,
+                    start,
+                    receiver,
+                    name.as_ptr(),
+                    name.len() as u64,
+                );
+                assert!(!exception_pending(py));
+                assert_eq!(obj_from_bits(result).as_int(), Some(expected));
+                let cached = super_ic_lookup(py, 817).expect("regression must warm the IC");
+                assert_eq!(cached.entry.start_class_bits, start);
+                dec_ref_bits(py, result);
+            }
+            let result = molt_call_super_method_ic0(
+                site,
+                MoltObject::from_int(42).bits(),
+                receiver,
+                name.as_ptr(),
+                name.len() as u64,
+            );
+            assert!(obj_from_bits(result).is_none());
+            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            crate::molt_exception_clear();
+            dec_ref_bits(py, error);
+            dec_ref_bits(py, result);
+            clear_super_ic_cache(py);
+            for bits in [receiver, leaf, mid, base] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn super_cache_snapshot_pins_every_edge_across_replacement_and_clear() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            clear_super_ic_cache(py);
+            let pointer = crate::alloc_list(py, &[]);
+            assert!(!pointer.is_null());
+            let bits = MoltObject::from_ptr(pointer).bits();
+            let count =
+                || unsafe { (*crate::object::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+            let entry = SuperIcEntry {
+                start_class_bits: bits,
+                self_class_bits: bits,
+                self_class_version: 0,
+                type_version: 0,
+                func_bits: bits,
+                attr_bits: bits,
+                valid: true,
+            }
+            .pin(py);
+            assert_eq!(count(), 5);
+            super_ic_insert(py, 819, &entry);
+            assert_eq!(count(), 9);
+            let snapshot = super_ic_lookup(py, 819).unwrap();
+            assert_eq!(count(), 13);
+            super_ic_insert(py, 819, &entry);
+            assert_eq!(count(), 13, "replacement must balance every retained edge");
+            clear_super_ic_cache(py);
+            assert_eq!(count(), 9);
+            drop(entry);
+            assert_eq!(count(), 5);
+            drop(snapshot);
+            assert_eq!(count(), 1);
+            dec_ref_bits(py, bits);
+        });
+    }
 }
 
 #[unsafe(no_mangle)]

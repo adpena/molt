@@ -1562,13 +1562,24 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bit
             };
             let slot = self_ptr.add(offset) as *mut u64;
             let old_bits = *slot;
-            dec_ref_bits(_py, old_bits);
+            if old_bits == bits {
+                return MoltObject::none().bits();
+            }
+            // The incoming value may alias the displaced owner. Retain before
+            // publishing, then release only after reentrant Python can observe
+            // the new slot. Never rewrite the slot after a callback: it may
+            // have legitimately replaced this binding again.
             inc_ref_bits(_py, bits);
             *slot = bits;
+            dec_ref_bits(_py, old_bits);
             MoltObject::none().bits()
         })
     }
 }
+
+#[cfg(test)]
+#[path = "closure_storage_tests.rs"]
+mod closure_storage_tests;
 
 #[cfg(test)]
 mod wasm_runtime_callable_tests {

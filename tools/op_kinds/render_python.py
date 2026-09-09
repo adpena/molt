@@ -258,8 +258,102 @@ from __future__ import annotations
 def render_py(data: dict) -> str:
     kinds = data.get("kind", [])
     out: list[str] = [_PY_HEADER]
+    out.append(
+        _render_py_frozenset(
+            "FRONTEND_REPOLL_KINDS",
+            [
+                row["kind"].upper()
+                for row in data["simpleir_control_kind"]
+                if row["repoll"]
+            ],
+        )
+    )
+    comparison_by_opcode = {
+        row["name"]: row["predicate_semantics"]
+        for row in data.get("opcode", [])
+        if "predicate_semantics" in row
+    }
+    comparisons = {
+        spelling.upper(): comparison_by_opcode[row["mapper_opcode"]]
+        for row in kinds
+        if row.get("mapper_opcode") in comparison_by_opcode
+        for spelling in (row["canonical"], *row.get("aliases", []))
+    }
+    out.append("FRONTEND_PREDICATE_SEMANTICS: dict[str, str] = {\n")
+    for spelling, category in sorted(comparisons.items()):
+        out.append(f"    {spelling!r}: {category!r},\n")
+    out.append("}\n\n")
 
     # The canonical-spelling map: every spelling (canonical or alias) -> canonical.
+    out.append("COMPARISON_SCALAR_DOMAINS: dict[str, tuple[int, bool]] = {\n")
+    for index, domain in enumerate(data["comparison_scalar_domains"]):
+        for hint in domain["frontend_types"]:
+            out.append(f"    {hint!r}: ({index}, {domain['ordering']!r}),\n")
+    out.append("}\n\n")
+    out.append(
+        "def frontend_predicate_facts(kind: str, *operands: str | None) -> tuple[bool, bool] | None:\n"
+    )
+    out.append("    category = FRONTEND_PREDICATE_SEMANTICS.get(kind)\n")
+    out.append("    if category is None:\n        return None\n")
+    out.append(
+        "    if len(operands) != (1 if category == 'truth' else 2):\n        return False, False\n"
+    )
+    out.append(
+        "    if category == 'truth':\n        exact = operands[0] in COMPARISON_SCALAR_DOMAINS\n        return exact, exact\n"
+    )
+    out.append("    if category == 'containment':\n        return False, False\n")
+    out.append("    left, right = operands\n")
+    out.append(
+        "    lhs = COMPARISON_SCALAR_DOMAINS.get(left) if left is not None else None\n"
+    )
+    out.append(
+        "    rhs = COMPARISON_SCALAR_DOMAINS.get(right) if right is not None else None\n"
+    )
+    out.append("    if lhs is None or rhs is None:\n        return False, False\n")
+    out.append("    return True, category == 'equality' or (lhs == rhs and lhs[1])\n\n")
+    intrinsic_types = {
+        row["name"]: row["operand_independent_result_types"][0]
+        for row in data["opcode"]
+        if len(row.get("operand_independent_result_types", [])) == 1
+        and row["operand_independent_result_types"][0]
+        in {"i64", "f64", "bool", "str", "bytes", "none"}
+    }
+    exact_to_frontend = {
+        ty: domain["frontend_types"][0]
+        for domain in data["comparison_scalar_domains"]
+        for ty in domain["tir_types"]
+    }
+    intrinsic_types.update(
+        {
+            row["name"]: exact_to_frontend[row["exact_scalar_result_type"]]
+            for row in data["opcode"]
+            if "exact_scalar_result_type" in row
+        }
+    )
+    out.append("FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[str, str] = {\n")
+    for row in kinds:
+        if row.get("mapper_opcode") not in intrinsic_types:
+            continue
+        scalar = intrinsic_types[row["mapper_opcode"]]
+        hint = {"i64": "int", "f64": "float", "none": "None"}.get(scalar, scalar)
+        for spelling in (row["canonical"], *row.get("aliases", [])):
+            out.append(f"    {spelling.upper()!r}: {hint!r},\n")
+    out.append("}\n\n")
+
+    intrinsic_arities = {
+        row["name"]: row["frontend_intrinsic_scalar_arity"]
+        for row in data["opcode"]
+        if row["name"] in intrinsic_types
+    }
+    out.append("FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[str, int] = {\n")
+    for row in kinds:
+        if row.get("mapper_opcode") in intrinsic_arities:
+            for spelling in (row["canonical"], *row.get("aliases", [])):
+                out.append(
+                    f"    {spelling.upper()!r}: {intrinsic_arities[row['mapper_opcode']]},\n"
+                )
+    out.append("}\n\n")
+
     out.append("CANONICAL_KIND: dict[str, str] = {\n")
     for row in kinds:
         canon = row["canonical"]

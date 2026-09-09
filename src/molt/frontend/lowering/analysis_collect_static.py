@@ -22,12 +22,20 @@ from molt.frontend._types import (
     _canonical_intrinsic_runtime_name,
 )
 from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
+from molt.compiler_analysis.python_lexical_scope import (
+    PythonDependencyAuthority,
+    LexicalDefinitionNode,
+    PythonLexicalScopeVisitor,
+    ScopedNamedExprCollector,
+)
 from molt.compiler_analysis.static_truth import (
-    SysPlatformStaticTruthKwargs,
+    static_expression_result,
+    StaticTruthKwargs,
     static_if_live_branch,
 )
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.frontend._protocol import _GeneratorProtocol
 
 if TYPE_CHECKING:
@@ -37,25 +45,12 @@ else:
 
 
 class AnalysisCollectStaticMixin(_MixinBase):
-    def _sys_platform_static_truth_kwargs(
-        self, extra_sys_platform_module_aliases: Iterable[str] = ()
-    ) -> SysPlatformStaticTruthKwargs:
-        target_sys_platform = self.target_sys_platform
-        if target_sys_platform is None:
-            return {}
-        aliases = {
-            name
-            for imported in (self.imported_modules, self.global_imported_modules)
-            for name, module_name in imported.items()
-            if module_name == "sys"
-        }
-        aliases.update(extra_sys_platform_module_aliases)
-        if not aliases:
-            return {}
-        return {
-            "target_sys_platform": target_sys_platform,
-            "sys_platform_module_aliases": frozenset(aliases),
-        }
+    _lexical_dependency_cache: PythonDependencyAuthority | None = None
+    _lexical_dependency_index: PythonBindingIndex | None = None
+
+    def _static_truth_kwargs(self) -> StaticTruthKwargs:
+        index = self.python_binding_index
+        return {} if index is None else {"fact_result": index.expression_result}
 
     def _collect_module_annotation_items(
         self, node: ast.Module
@@ -65,9 +60,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         outer = self
 
         class Collector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.sys_platform_module_aliases: set[str] = set()
-
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
 
@@ -85,21 +77,17 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 # branch (`if False:`/`if TYPE_CHECKING:`) in `__annotations__`.
                 static_branch = static_if_live_branch(
                     node,
-                    **outer._sys_platform_static_truth_kwargs(
-                        self.sys_platform_module_aliases
-                    ),
+                    **outer._static_truth_kwargs(),
                 )
                 if static_branch is not None:
+                    if static_expression_result(
+                        node.test, **outer._static_truth_kwargs()
+                    ).evaluation_required:
+                        self.visit(node.test)
                     for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.generic_visit(node)
-
-            def visit_Import(self, node: ast.Import) -> None:
-                for alias in node.names:
-                    if alias.name == "sys":
-                        self.sys_platform_module_aliases.add(alias.asname or alias.name)
-                return None
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name):
@@ -138,42 +126,57 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     record_target(elt)
             elif isinstance(target, ast.Starred):
                 record_target(target.value)
+            else:
+                scoped_writes.visit(target)
 
         def record_pattern(pattern: ast.pattern) -> None:
             for name in python_pattern_capture_names(pattern):
                 record(name)
 
-        class Collector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.sys_platform_module_aliases: set[str] = set()
+        scoped_writes = ScopedNamedExprCollector(
+            record,
+            eager_annotations=self.eager_annotations and not self.future_annotations,
+        )
 
+        class Collector(PythonLexicalScopeVisitor):
             def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
                 func_defs.add(node.name)
                 record(node.name)
+                scoped_writes.visit(node)
                 return None
 
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
                 func_defs.add(node.name)
                 record(node.name)
+                scoped_writes.visit(node)
                 return None
 
             def visit_ClassDef(self, node: ast.ClassDef) -> Any:
                 record(node.name)
+                scoped_writes.visit(node)
                 return None
 
+            def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+                record_target(node.name)
+
             def visit_Lambda(self, node: ast.Lambda) -> Any:
+                scoped_writes.visit(node)
                 return None
 
             def visit_ListComp(self, node: ast.ListComp) -> Any:
+                scoped_writes.visit(node)
                 return None
 
             def visit_SetComp(self, node: ast.SetComp) -> Any:
+                scoped_writes.visit(node)
                 return None
 
             def visit_DictComp(self, node: ast.DictComp) -> Any:
+                scoped_writes.visit(node)
                 return None
 
             def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
+                scoped_writes.visit(node)
                 return None
 
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
@@ -186,9 +189,9 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 self.visit(node.value)
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                record_target(node.target)
-                if node.value is not None:
-                    self.visit(node.value)
+                if isinstance(node.target, ast.Name):
+                    record_target(node.target)
+                super().visit_AnnAssign(node)
 
             def visit_AugAssign(self, node: ast.AugAssign) -> None:
                 record_target(node.target)
@@ -220,11 +223,13 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_If(self, node: ast.If) -> None:
                 static_branch = static_if_live_branch(
                     node,
-                    **outer._sys_platform_static_truth_kwargs(
-                        self.sys_platform_module_aliases
-                    ),
+                    **outer._static_truth_kwargs(),
                 )
                 if static_branch is not None:
+                    if static_expression_result(
+                        node.test, **outer._static_truth_kwargs()
+                    ).evaluation_required:
+                        self.visit(node.test)
                     for stmt in static_branch:
                         self.visit(stmt)
                     return None
@@ -273,6 +278,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
                 if node.name:
                     record(node.name)
+                if node.type is not None:
+                    self.visit(node.type)
                 for stmt in node.body:
                     self.visit(stmt)
 
@@ -289,8 +296,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 for alias in node.names:
                     name = alias.asname or alias.name.split(".", 1)[0]
                     record(name)
-                    if alias.name == "sys":
-                        self.sys_platform_module_aliases.add(name)
 
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 nonlocal has_dynamic_bind
@@ -305,7 +310,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 for target in node.targets:
                     record_target(target)
 
-        collector = Collector()
+        collector = Collector(eager_annotations=scoped_writes.eager_annotations)
         for stmt in node.body:
             collector.visit(stmt)
         return counts, func_defs, has_dynamic_bind
@@ -365,43 +370,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         for stmt in node.body:
             collector.visit(stmt)
         return mutated
-
-    def _collect_annotation_free_vars(self, node: ast.AST) -> list[str]:
-        used: set[str] = set()
-
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> None:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        Collector().visit(node)
-        used -= self.global_decls
-        # Type parameters are runtime values created in the enclosing frame,
-        # not module-dict names. Every generated annotation/evaluator function
-        # must therefore capture the referenced subset even at module scope;
-        # retaining the parent's MoltValue would create a cross-FunctionIR SSA
-        # use with no child-frame definition.
-        type_param_names = used & self.annotation_type_params.keys()
-        if self.current_func_name == "molt_main":
-            return sorted(type_param_names)
-        outer_scope = set(self.locals) | set(self.boxed_locals)
-        if self.is_async():
-            outer_scope |= set(self.async_locals)
-        outer_scope |= set(self.free_vars) | self.scope_assigned
-        outer_scope |= type_param_names
-        return sorted(name for name in used if name in outer_scope)
 
     def _collect_module_optional_intrinsic_globals(
         self, node: ast.Module
@@ -473,141 +441,17 @@ class AnalysisCollectStaticMixin(_MixinBase):
         return list(python_pattern_capture_names(pattern))
 
     def _collect_assigned_names(self, nodes: list[ast.stmt]) -> set[str]:
-        outer = self
-
-        class AssignCollector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.names: set[str] = set()
-
-            def visit_Assign(self, node: ast.Assign) -> None:
-                for target in node.targets:
-                    self.names.update(outer._collect_target_names(target))
-                self.generic_visit(node.value)
-
-            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                self.names.update(outer._collect_target_names(node.target))
-                if node.value is not None:
-                    self.generic_visit(node.value)
-
-            def visit_AugAssign(self, node: ast.AugAssign) -> None:
-                self.names.update(outer._collect_target_names(node.target))
-                self.generic_visit(node.value)
-
-            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-                # Walrus (:=) binds its target in the ENCLOSING scope (outside any
-                # comprehension). Omitting it here diverged from CPython's symbol
-                # table: the local was mis-seen as global/free, corrupting
-                # unbound-checks, closure-cell boxing, and free-var classification.
-                # Mirrors _collect_assigned_names_ordered's NamedExpr handler.
-                if isinstance(node.target, ast.Name):
-                    self.names.add(node.target.id)
-                self.generic_visit(node.value)
-
-            def visit_For(self, node: ast.For) -> None:
-                self.names.update(outer._collect_target_names(node.target))
-                self.generic_visit(node)
-
-            def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-                self.names.update(outer._collect_target_names(node.target))
-                self.generic_visit(node)
-
-            def visit_With(self, node: ast.With) -> None:
-                for item in node.items:
-                    if item.optional_vars is not None:
-                        self.names.update(
-                            outer._collect_target_names(item.optional_vars)
-                        )
-                self.generic_visit(node)
-
-            def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-                for item in node.items:
-                    if item.optional_vars is not None:
-                        self.names.update(
-                            outer._collect_target_names(item.optional_vars)
-                        )
-                self.generic_visit(node)
-
-            def visit_If(self, node: ast.If) -> None:
-                # Binding analysis mirrors CPython's symbol table, which records
-                # every assignment target regardless of static reachability: a
-                # name bound only in a statically-dead branch (`if 0: x = 1`) is
-                # still a local of the enclosing scope, so reading it raises
-                # UnboundLocalError, not NameError. The static-if fold is a
-                # codegen/emission concern (drop dead-branch *code* and its
-                # const_str/intrinsic refs), handled in the emission `visit_If`
-                # via `_emit_static_if_live_branch`; pruning scope bindings here
-                # would diverge from CPython and is intentionally NOT done.
-                self.visit(node.test)
-                for stmt in node.body:
-                    self.visit(stmt)
-                for stmt in node.orelse:
-                    self.visit(stmt)
-
-            def visit_Match(self, node: ast.Match) -> None:
-                self.visit(node.subject)
-                for case in node.cases:
-                    self.names.update(
-                        outer._collect_pattern_capture_names(case.pattern)
-                    )
-                    if case.guard is not None:
-                        self.visit(case.guard)
-                    for stmt in case.body:
-                        self.visit(stmt)
-
-            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-                if node.name:
-                    self.names.add(node.name)
-                self.generic_visit(node)
-
-            def visit_Delete(self, node: ast.Delete) -> None:
-                for target in node.targets:
-                    self.names.update(outer._collect_target_names(target))
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                self.names.add(node.name)
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self.names.add(node.name)
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                self.names.add(node.name)
-                return
-
-            def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
-                if isinstance(node.name, ast.Name):
-                    self.names.add(node.name.id)
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_Import(self, node: ast.Import) -> None:
-                # CPython's symbol table binds the imported name in the current
-                # scope: `import a.b` binds `a`, `import a.b as x` binds `x`.
-                # A conditionally-executed import therefore makes the name a
-                # branch binding that the module-scope flush/evict in visit_If
-                # must reconcile, exactly like `x = ...`.
-                for alias in node.names:
-                    self.names.add(alias.asname or alias.name.split(".", 1)[0])
-
-            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-                for alias in node.names:
-                    if alias.name == "*":
-                        continue
-                    self.names.add(alias.asname or alias.name)
-
-        collector = AssignCollector()
-        for stmt in nodes:
-            collector.visit(stmt)
-        return collector.names
+        return set(self._collect_assigned_names_ordered(nodes))
 
     def _collect_assigned_names_ordered(self, nodes: list[ast.stmt]) -> list[str]:
         outer = self
 
-        class AssignCollector(ast.NodeVisitor):
+        class AssignCollector(PythonLexicalScopeVisitor):
             def __init__(self) -> None:
+                super().__init__(
+                    eager_annotations=outer.eager_annotations
+                    and not outer.future_annotations
+                )
                 self.names: list[str] = []
                 self.seen: set[str] = set()
 
@@ -617,22 +461,30 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     self.names.append(name)
 
             def _add_targets(self, target: ast.AST) -> None:
-                for name in outer._collect_target_names(target):
-                    self._add(name)
+                if isinstance(target, ast.Name):
+                    self._add(target.id)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for element in target.elts:
+                        self._add_targets(element)
+                elif isinstance(target, ast.Starred):
+                    self._add_targets(target.value)
+                else:
+                    for name in outer._collect_namedexpr_names(target):
+                        self._add(name)
 
             def visit_Assign(self, node: ast.Assign) -> None:
                 for target in node.targets:
                     self._add_targets(target)
-                self.generic_visit(node.value)
+                self.visit(node.value)
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                self._add_targets(node.target)
-                if node.value is not None:
-                    self.generic_visit(node.value)
+                if isinstance(node.target, ast.Name):
+                    self._add_targets(node.target)
+                super().visit_AnnAssign(node)
 
             def visit_AugAssign(self, node: ast.AugAssign) -> None:
                 self._add_targets(node.target)
-                self.generic_visit(node.value)
+                self.visit(node.value)
 
             def visit_For(self, node: ast.For) -> None:
                 self._add_targets(node.target)
@@ -655,7 +507,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                # Mirror CPython's symbol table (see `_collect_assigned_names`):
+                # Mirror CPython's symbol table:
                 # a name bound only in a statically-dead branch is still a local,
                 # so this binding walk does NOT apply the static-if fold. The
                 # fold is emission-only (`_emit_static_if_live_branch`).
@@ -687,22 +539,45 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
                 if isinstance(node.target, ast.Name):
                     self._add(node.target.id)
-                self.generic_visit(node.value)
+                self.visit(node.value)
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 self._add(node.name)
-                return
+                for name in outer._collect_namedexpr_names(node):
+                    self._add(name)
 
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
                 self._add(node.name)
-                return
+                for name in outer._collect_namedexpr_names(node):
+                    self._add(name)
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
                 self._add(node.name)
-                return
+                for name in outer._collect_namedexpr_names(node):
+                    self._add(name)
+
+            def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+                if isinstance(node.name, ast.Name):
+                    self._add(node.name.id)
 
             def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
+                for name in outer._collect_namedexpr_names(node):
+                    self._add(name)
+
+            def visit_ListComp(
+                self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+            ) -> None:
+                for name in outer._collect_namedexpr_names(node):
+                    self._add(name)
+
+            def visit_SetComp(self, node: ast.SetComp) -> None:
+                self.visit_ListComp(node)
+
+            def visit_DictComp(self, node: ast.DictComp) -> None:
+                self.visit_ListComp(node)
+
+            def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+                self.visit_ListComp(node)
 
             def visit_Import(self, node: ast.Import) -> None:
                 # See `_collect_assigned_names`: imports bind names in the
@@ -791,10 +666,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 return alias.asname
             return alias.name.split(".", 1)[0]
 
-        class CodeNamesCollector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.sys_platform_module_aliases: set[str] = set()
-
+        class CodeNamesCollector(PythonLexicalScopeVisitor):
             def visit_Name(self, node: ast.Name) -> None:
                 if module_scope:
                     add(node.id)
@@ -814,8 +686,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_Import(self, node: ast.Import) -> None:
                 for alias in node.names:
                     add(alias.name)
-                    if alias.name == "sys":
-                        self.sys_platform_module_aliases.add(alias.asname or alias.name)
                     if "." in alias.name:
                         if module_scope:
                             add(import_store_name(alias))
@@ -834,74 +704,39 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_If(self, node: ast.If) -> None:
                 static_branch = static_if_live_branch(
                     node,
-                    **outer._sys_platform_static_truth_kwargs(
-                        self.sys_platform_module_aliases
-                    ),
+                    **outer._static_truth_kwargs(),
                 )
                 if static_branch is not None:
+                    if static_expression_result(
+                        node.test, **outer._static_truth_kwargs()
+                    ).evaluation_required:
+                        self.visit(node.test)
                     for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.generic_visit(node)
 
-            def _visit_function_signature(
-                self, node: ast.FunctionDef | ast.AsyncFunctionDef
-            ) -> None:
-                for deco in node.decorator_list:
-                    self.visit(deco)
-                for default in node.args.defaults:
-                    self.visit(default)
-                for default in node.args.kw_defaults:
-                    if default is not None:
-                        self.visit(default)
-                for arg in (
-                    list(node.args.posonlyargs)
-                    + list(node.args.args)
-                    + list(node.args.kwonlyargs)
-                ):
-                    if arg.annotation is not None:
-                        self.visit(arg.annotation)
-                if (
-                    node.args.vararg is not None
-                    and node.args.vararg.annotation is not None
-                ):
-                    self.visit(node.args.vararg.annotation)
-                if (
-                    node.args.kwarg is not None
-                    and node.args.kwarg.annotation is not None
-                ):
-                    self.visit(node.args.kwarg.annotation)
-                if node.returns is not None:
-                    self.visit(node.returns)
-
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                self._visit_function_signature(node)
+                super().visit_FunctionDef(node)
                 if module_scope or node.name in global_decls:
                     add(node.name)
 
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self._visit_function_signature(node)
+                super().visit_AsyncFunctionDef(node)
                 if module_scope or node.name in global_decls:
                     add(node.name)
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                for default in node.args.defaults:
-                    self.visit(default)
-                for default in node.args.kw_defaults:
-                    if default is not None:
-                        self.visit(default)
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                for deco in node.decorator_list:
-                    self.visit(deco)
-                for base in node.bases:
-                    self.visit(base)
-                for keyword in node.keywords:
-                    self.visit(keyword.value)
+                super().visit_ClassDef(node)
                 if module_scope or node.name in global_decls:
                     add(node.name)
 
-        collector = CodeNamesCollector()
+        collector = CodeNamesCollector(
+            eager_annotations=self.eager_annotations and not self.future_annotations,
+            variable_annotations=(
+                module_scope and self.eager_annotations and not self.future_annotations
+            ),
+        )
         for node in nodes:
             collector.visit(node)
         return names
@@ -915,26 +750,15 @@ class AnalysisCollectStaticMixin(_MixinBase):
         names: list[str] = []
         seen: set[str] = set()
 
-        class NamedExprCollector(ast.NodeVisitor):
-            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-                if isinstance(node.target, ast.Name) and node.target.id not in seen:
-                    seen.add(node.target.id)
-                    names.append(node.target.id)
-                self.generic_visit(node.value)
+        def record(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
 
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        NamedExprCollector().visit(node)
+        ScopedNamedExprCollector(
+            record,
+            eager_annotations=self.eager_annotations and not self.future_annotations,
+        ).visit(node)
         return names
 
     def _collect_deleted_names(self, nodes: list[ast.stmt]) -> set[str]:
@@ -977,27 +801,36 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         return collector.names
 
-    def _free_var_analysis_cache(self) -> dict[ast.AST, frozenset[str]]:
-        cache: dict[ast.AST, frozenset[str]] | None = getattr(
-            self, "_free_var_analysis_cache_by_node", None
-        )
-        if cache is None:
-            cache = {}
-            self._free_var_analysis_cache_by_node = cache
-        return cache
+    def _lexical_dependencies(self) -> PythonDependencyAuthority:
+        authority = self._lexical_dependency_cache
+        if (
+            authority is None
+            or self._lexical_dependency_index is not self.python_binding_index
+            or authority.eager_annotations != self.eager_annotations
+            or authority.future_annotations != self.future_annotations
+        ):
+            index = self.python_binding_index
+
+            def include_lexical_read(node: ast.Name) -> bool:
+                fact = index.expression_fact(node) if index is not None else None
+                return fact is None or fact.name_lookup not in {
+                    "global",
+                    "class_global",
+                }
+
+            authority = PythonDependencyAuthority(
+                eager_annotations=self.eager_annotations,
+                future_annotations=self.future_annotations,
+                include_lexical_read=include_lexical_read,
+            )
+            self._lexical_dependency_cache = authority
+            self._lexical_dependency_index = self.python_binding_index
+        return authority
 
     def _cached_free_vars_raw(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ) -> frozenset[str]:
-        cache = self._free_var_analysis_cache()
-        cached = cache.get(node)
-        if cached is None:
-            if isinstance(node, ast.Lambda):
-                cached = self._compute_free_vars_expr_raw(node)
-            else:
-                cached = self._compute_free_vars_raw(node)
-            cache[node] = cached
-        return cached
+        return self._lexical_dependencies().summary(node).body.lexical
 
     def _free_vars_in_outer_scope(self, candidates: Iterable[str]) -> list[str]:
         outer_scope = set(self.locals) | set(self.boxed_locals)
@@ -1009,94 +842,15 @@ class AnalysisCollectStaticMixin(_MixinBase):
     def _collect_free_vars(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> list[str]:
-        candidates = set(self._cached_free_vars_raw(node))
-        # Implicit ``__class__`` closure variable: a method/nested function
-        # that references zero-arg ``super()`` or ``__class__`` closes over the
-        # enclosing class's ``__class__`` cell exactly as CPython does.  The
-        # cell lives in ``self.boxed_locals['__class__']`` (pre-created by
-        # visit_ClassDef), so adding ``__class__`` here threads it through the
-        # closure and lets ``super()``/``__class__`` read the finished class
-        # object from the cell rather than re-deriving it by module name.
-        if self._active_classcell_cell is not None and self._function_needs_classcell(
-            node
-        ):
-            candidates.add("__class__")
-        return self._free_vars_in_outer_scope(candidates)
+        return self._free_vars_in_outer_scope(self._cached_free_vars_raw(node))
 
     def _collect_free_vars_expr(self, node: ast.Lambda) -> list[str]:
         return self._free_vars_in_outer_scope(self._cached_free_vars_raw(node))
-
-    def _compute_free_vars_raw(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> frozenset[str]:
-        params = set(self._function_param_names(node.args))
-        assigned = self._collect_assigned_names(node.body)
-        comp_targets = self._collect_comprehension_target_names(node.body)
-        global_decls = self._collect_global_decls(node.body)
-        nonlocal_decls = self._collect_nonlocal_decls(node.body)
-        local_names = params | comp_targets | (assigned - nonlocal_decls)
-        used: set[str] = set()
-
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> Any:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        collector = Collector()
-        for stmt in node.body:
-            collector.visit(stmt)
-        used.update(nonlocal_decls)
-        used.update(self._collect_nested_free_vars_raw(node.body))
-        return frozenset(
-            name
-            for name in used
-            if name not in local_names and name not in global_decls
-        )
 
     def _collect_free_vars_raw(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> set[str]:
         return set(self._cached_free_vars_raw(node))
-
-    def _compute_free_vars_expr_raw(self, node: ast.Lambda) -> frozenset[str]:
-        params = set(self._function_param_names(node.args))
-        assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
-        comp_targets = self._collect_comprehension_target_names([node.body])
-        local_names = params | comp_targets | assigned
-        used: set[str] = set()
-
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> Any:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        Collector().visit(node.body)
-        used.update(self._collect_nested_free_vars_raw([node.body]))
-        return frozenset(name for name in used if name not in local_names)
 
     def _collect_free_vars_expr_raw(self, node: ast.Lambda) -> set[str]:
         return set(self._cached_free_vars_raw(node))
@@ -1104,194 +858,18 @@ class AnalysisCollectStaticMixin(_MixinBase):
     def _collect_free_vars_comprehension(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
     ) -> list[str]:
-        target_names: set[str] = set()
-        exprs: list[ast.expr] = []
-        for comp in node.generators:
-            target_names.update(self._collect_target_names(comp.target))
-            exprs.append(comp.iter)
-            exprs.extend(comp.ifs)
-        if isinstance(node, ast.DictComp):
-            exprs.append(node.key)
-            exprs.append(node.value)
-        else:
-            exprs.append(node.elt)
-        namedexpr_targets: set[str] = set()
-        for expr in exprs:
-            namedexpr_targets |= set(self._collect_namedexpr_names(expr))
-        assigned = self._collect_assigned_names(
-            [ast.Expr(value=expr) for expr in exprs]
-        )
-        local_names = target_names | assigned
-        used: set[str] = set()
-        # Capture the method's first param name so we can detect implicit
-        # super() references inside comprehensions.
-        _method_first_param = self.current_method_first_param
-        _current_class = self.current_class
-
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> Any:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-                    if (
-                        node.id == "super"
-                        and _method_first_param is not None
-                        and _current_class is not None
-                    ):
-                        used.add(_method_first_param)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        collector = Collector()
-        for expr in exprs:
-            collector.visit(expr)
-        used |= namedexpr_targets
-        used.update(self._collect_nested_free_vars(exprs))
-        candidates = {name for name in used if name not in local_names}
-        outer_scope = set(self.locals) | set(self.boxed_locals)
-        if self.is_async():
-            outer_scope |= set(self.async_locals)
-        outer_scope |= set(self.free_vars) | self.scope_assigned
-        return sorted(name for name in candidates if name in outer_scope)
-
-    def _collect_nested_free_vars(self, nodes: Sequence[ast.AST]) -> set[str]:
-        nested: set[str] = set()
-        outer = self
-
-        class NestedCollector(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                nested.update(outer._collect_free_vars(node))
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                nested.update(outer._collect_free_vars(node))
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                nested.update(outer._collect_free_vars_expr(node))
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        collector = NestedCollector()
-        for node in nodes:
-            collector.visit(node)
-        return nested
-
-    def _collect_nested_free_vars_raw(self, nodes: Sequence[ast.AST]) -> set[str]:
-        nested: set[str] = set()
-        outer = self
-
-        class NestedCollector(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                nested.update(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                nested.update(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                nested.update(outer._collect_free_vars_expr_raw(node))
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        collector = NestedCollector()
-        for node in nodes:
-            collector.visit(node)
-        return nested
+        authority = self._lexical_dependencies()
+        candidates = set(authority.summary(node).body.lexical)
+        return self._free_vars_in_outer_scope(candidates)
 
     def _collect_comprehension_cell_vars(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
     ) -> list[str]:
-        target_names: set[str] = set()
-        exprs: list[ast.expr] = []
-        for comp in node.generators:
-            target_names.update(self._collect_target_names(comp.target))
-            exprs.append(comp.iter)
-            exprs.extend(comp.ifs)
-        if isinstance(node, ast.DictComp):
-            exprs.append(node.key)
-            exprs.append(node.value)
-        else:
-            exprs.append(node.elt)
-        nested_free: set[str] = set()
-        outer = self
-
-        class Collector(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                nested_free.update(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                nested_free.update(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                nested_free.update(outer._collect_free_vars_expr_raw(node))
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        collector = Collector()
-        for expr in exprs:
-            collector.visit(expr)
-        return sorted(name for name in nested_free if name in target_names)
-
-    def _collect_comprehension_target_names(self, nodes: Sequence[ast.AST]) -> set[str]:
-        names: set[str] = set()
-        outer = self
-
-        class Collector(ast.NodeVisitor):
-            def visit_ListComp(self, node: ast.ListComp) -> None:
-                for comp in node.generators:
-                    names.update(outer._collect_target_names(comp.target))
-                self.generic_visit(node)
-
-            def visit_SetComp(self, node: ast.SetComp) -> None:
-                for comp in node.generators:
-                    names.update(outer._collect_target_names(comp.target))
-                self.generic_visit(node)
-
-            def visit_DictComp(self, node: ast.DictComp) -> None:
-                for comp in node.generators:
-                    names.update(outer._collect_target_names(comp.target))
-                self.generic_visit(node)
-
-            def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-                for comp in node.generators:
-                    names.update(outer._collect_target_names(comp.target))
-                self.generic_visit(node)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        collector = Collector()
-        for node in nodes:
-            collector.visit(node)
-        return names
+        authority = self._lexical_dependencies()
+        regions = authority.regions(node)
+        return sorted(
+            self._collect_scope_cell_vars(regions.body, set(regions.parameters))
+        )
 
     def _collect_namedexpr_targets_comprehension(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
@@ -1314,30 +892,37 @@ class AnalysisCollectStaticMixin(_MixinBase):
         return names
 
     def _collect_scope_cell_vars(
-        self, body: Sequence[ast.stmt], local_candidates: set[str]
+        self, body: Sequence[ast.AST], local_candidates: set[str]
     ) -> set[str]:
         if not local_candidates:
             return set()
         captured: set[str] = set()
         outer = self
 
-        class Collector(ast.NodeVisitor):
+        authority = self._lexical_dependencies()
+
+        class Collector(PythonLexicalScopeVisitor):
+            def __init__(self) -> None:
+                super().__init__(
+                    eager_annotations=outer.eager_annotations
+                    and not outer.future_annotations
+                )
+                self.shadowed: set[str] = set()
+
             def _record(self, names: Iterable[str]) -> None:
                 for name in names:
-                    if name in local_candidates:
+                    if name in local_candidates and name not in self.shadowed:
                         captured.add(name)
 
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                self._record(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self._record(outer._collect_free_vars_raw(node))
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                self._record(outer._collect_free_vars_expr_raw(node))
-                return
+            def _visit_definition_header(self, node: LexicalDefinitionNode) -> None:
+                regions = authority.regions(node)
+                summary = authority.summary(node)
+                self._record(
+                    (summary.body.lexical | summary.annotations.lexical)
+                    - regions.type_parameters
+                )
+                for expression in regions.enclosing:
+                    self.visit(expression)
 
             def visit_Call(self, node: ast.Call) -> None:
                 if (
@@ -1356,47 +941,43 @@ class AnalysisCollectStaticMixin(_MixinBase):
                         )
                     )
                 ):
-                    genexpr = node.args[0]
-                    for comp in genexpr.generators:
-                        self.visit(comp.iter)
-                        for if_node in comp.ifs:
-                            self.visit(if_node)
-                    self.visit(genexpr.elt)
+                    self._visit_inline_comprehension(node.args[0])
                     return
                 self.generic_visit(node)
 
             def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-                self._record(outer._collect_free_vars_comprehension(node))
-                self.generic_visit(node)
+                self._record(authority.summary(node).body.lexical)
+                for expression in authority.regions(node).enclosing:
+                    self.visit(expression)
+
+            def _visit_inline_comprehension(
+                self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+            ) -> None:
+                # PEP 709 has scoped bindings but no child code object. Only
+                # true nested closures capture cells. The first iterable is
+                # evaluated before targets hide the enclosing frame's names.
+                regions = authority.regions(node)
+                for expression in regions.enclosing:
+                    self.visit(expression)
+                previous = self.shadowed
+                self.shadowed = previous | set(regions.parameters)
+                try:
+                    for expression in regions.body:
+                        self.visit(expression)
+                finally:
+                    self.shadowed = previous
 
             def visit_ListComp(self, node: ast.ListComp) -> None:
-                if not (
-                    not outer._comprehension_requires_async(node.generators, [node.elt])
-                    and outer._can_inline_list_comp(node)
-                ):
-                    self._record(outer._collect_free_vars_comprehension(node))
-                self.generic_visit(node)
+                self._visit_inline_comprehension(node)
 
             def visit_SetComp(self, node: ast.SetComp) -> None:
-                if not (
-                    not outer._comprehension_requires_async(node.generators, [node.elt])
-                    and outer._can_inline_set_comp(node)
-                ):
-                    self._record(outer._collect_free_vars_comprehension(node))
-                self.generic_visit(node)
+                self._visit_inline_comprehension(node)
 
             def visit_DictComp(self, node: ast.DictComp) -> None:
-                if not (
-                    not outer._comprehension_requires_async(
-                        node.generators, [node.key, node.value]
-                    )
-                    and outer._can_inline_dict_comp(node)
-                ):
-                    self._record(outer._collect_free_vars_comprehension(node))
-                self.generic_visit(node)
+                self._visit_inline_comprehension(node)
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
+                self._visit_definition_header(node)
 
         collector = Collector()
         for stmt in body:

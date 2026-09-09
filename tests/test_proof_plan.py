@@ -206,58 +206,32 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         family.data for family in PLAN.scheduled_families
     ]
     timeout_envelopes = projection["executor"]["github_job_timeout_envelopes"]
-    assert timeout_envelopes["rust"] == {
-        "budget_seconds": 3600,
-        "projected_makespan_seconds": 2760,
-        "critical_path_seconds": 2280,
-        "resource_capacity_floor_seconds": {"compiler-build-resource": 2760},
-        "headroom_seconds": 840,
-    }
-    assert timeout_envelopes["repository_policy"] == {
-        "budget_seconds": 3600,
-        "projected_makespan_seconds": 3420,
-        "critical_path_seconds": 1500,
-        "resource_capacity_floor_seconds": {"repository-policy": 2955},
-        "headroom_seconds": 180,
-    }
-    assert timeout_envelopes["wasm"] == {
-        "budget_seconds": 7500,
-        "projected_makespan_seconds": 7200,
-        "critical_path_seconds": 3000,
-        "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 7200,
-            "wasm-runtime": 450,
-        },
-        "headroom_seconds": 300,
-    }
-    assert timeout_envelopes["llvm"] == {
-        "budget_seconds": 4500,
-        "projected_makespan_seconds": 4200,
-        "critical_path_seconds": 3300,
-        "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 4200,
-            "python-tests": 60,
-        },
-        "headroom_seconds": 300,
-    }
     scheduled_envelopes = projection["executor"]["scheduled_job_timeout_envelopes"]
-    assert scheduled_envelopes["nightly_regrtest"] == {
-        "budget_seconds": 900,
-        "projected_makespan_seconds": 600,
-        "critical_path_seconds": 600,
-        "resource_capacity_floor_seconds": {"scheduled-suite": 150},
-        "headroom_seconds": 300,
-    }
-    assert scheduled_envelopes["nightly_verification_t3"] == {
-        "budget_seconds": 5400,
-        "projected_makespan_seconds": 4800,
-        "critical_path_seconds": 4800,
-        "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 1200,
-            "scheduled-suite": 1800,
-        },
-        "headroom_seconds": 600,
-    }
+    # Projections follow the canonical topology. Exact scheduling arithmetic is
+    # covered by the synthetic dependency/resource tests, not a second copy of
+    # every production command's aggregate timeout here.
+    for families, projected_envelopes in (
+        (
+            tuple(
+                family
+                for family in PLAN.families
+                if family.data["executor"] == "github-job"
+            ),
+            timeout_envelopes,
+        ),
+        (PLAN.scheduled_families, scheduled_envelopes),
+    ):
+        assert set(projected_envelopes) == {family.name for family in families}
+        for family in families:
+            envelope = PLAN.timeout_envelope(family.name)
+            budget = int(family.data["timeout_minutes"]) * 60
+            assert projected_envelopes[family.name] == {
+                "budget_seconds": budget,
+                "projected_makespan_seconds": envelope.projected_makespan_seconds,
+                "critical_path_seconds": envelope.critical_path_seconds,
+                "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
+                "headroom_seconds": budget - envelope.projected_makespan_seconds,
+            }
     local = projection["local"]
     assert local["commands"]["local.always.0"] == PLAN.always[0]
     first = PLAN.local_rules[0]
@@ -286,6 +260,27 @@ def test_python_source_change_selects_split_proof_topology() -> None:
     assert classes["python_security"] is False
     assert classes["rust_security"] is False
     assert classes["formal"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/tools/test_proof_queue_native_receipts.py",
+        "tests/proof_queue_custody_test_support.py",
+        "tests/python_environment_test_support.py",
+        "tools/proof_queue_pkg/runner.py",
+        "tools/proof_supervisor/src/main.rs",
+    ],
+)
+def test_native_receipt_contract_selects_existing_integration_batch(path: str) -> None:
+    assert _classes(path)["native_integration"] is True
+    selector = "tests/tools/test_proof_queue_native_receipts.py"
+    owners = [command for command in PLAN.commands if selector in command.argv]
+    assert len(owners) == 1
+    command = owners[0]
+    assert command.family == "native_integration"
+    assert command.data["resource_class"] == "compiler-build-resource"
+    assert command.data["timeout_budget"] == "warm"
 
 
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
@@ -1043,6 +1038,7 @@ def _receipt_for(
         "rustc": "rustc 1.96.1",
         "cargo": "cargo 1.96.1",
         "git": "git version 2.53.0",
+        "lune": "lune 0.10.5",
         "clang": "clang version 22.1.8",
         "llvm-config": "22.1.8",
         "mlir-opt": "LLVM version 22.1.8",

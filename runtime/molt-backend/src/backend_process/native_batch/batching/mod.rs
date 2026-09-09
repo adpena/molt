@@ -11,6 +11,6 @@ pub(crate) use partition::{
     partition_functions_for_batches,
 };
 pub(crate) use types::{
-    NativeApplicationObjectOptions, NativeApplicationObjectResult, NativeBatchJobSpec,
+    NativeApplicationArtifactOptions, NativeApplicationArtifactResult, NativeBatchJobSpec,
     NativeBatchModuleMetadata, NativeBatchObjectJob,
 };

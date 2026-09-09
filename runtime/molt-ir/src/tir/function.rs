@@ -9,6 +9,11 @@ use super::types::TirType;
 use super::values::ValueId;
 use crate::ir::ExecutionContextPolicy;
 
+mod block_retention;
+
+/// Attribute projection of the typed SimpleIR physical partition fact.
+pub const CODEGEN_PARTITION_ATTR: &str = "codegen_partition";
+
 /// A function in TIR: a collection of basic blocks in SSA form.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirFunction {
@@ -67,6 +72,13 @@ pub struct TirFunction {
 }
 
 impl TirFunction {
+    pub fn is_codegen_partition(&self) -> bool {
+        matches!(
+            self.attrs.get(CODEGEN_PARTITION_ATTR),
+            Some(super::ops::AttrValue::Bool(true))
+        )
+    }
+
     /// Create a new function with a single empty entry block.
     pub fn new(name: String, param_types: Vec<TirType>, return_type: TirType) -> Self {
         use super::blocks::Terminator;

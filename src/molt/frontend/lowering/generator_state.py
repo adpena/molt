@@ -17,6 +17,7 @@ from molt.frontend._types import (
     AsyncFrameSlot,
     ClassInfo,
     CompatibilityReporter,
+    ComprehensionBinding,
     FallbackPolicy,
     FormatToken,
     FuncInfo,
@@ -46,6 +47,12 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "boxed_locals",
     "closure_locals",
     "comp_shadow_locals",
+    "comprehension_bindings",
+    "current_python_first_arg",
+    "python_frame_context_active",
+    "python_class_body_context",
+    "_class_ns_stack",
+    "_class_body_depth",
     "boxed_local_hints",
     "free_vars",
     "free_var_hints",
@@ -148,6 +155,9 @@ FUNCTION_STATE_SNAPSHOT_ATTRS = (
 
 
 class GeneratorStateMixin(_MixinBase):
+    comprehension_bindings: dict[str, ComprehensionBinding]
+    current_python_first_arg: str | MoltValue | None
+
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]:
         missing = [name for name in attrs if not hasattr(self, name)]
         if missing:
@@ -192,6 +202,15 @@ class GeneratorStateMixin(_MixinBase):
         self.boxed_locals = {}
         self.closure_locals = set()
         self.comp_shadow_locals = set()
+        self.comprehension_bindings: dict[str, ComprehensionBinding] = {}
+        self.current_python_first_arg: str | MoltValue | None = None
+        self.python_frame_context_active = False
+        self.python_class_body_context = False
+        # A real function/code-object boundary does not inherit class LOAD_NAME
+        # storage. Annotation evaluators capture their required owners through
+        # explicit closure inputs rather than retaining outer-function SSA.
+        self._class_ns_stack: list[_ClassNsScope] = []
+        self._class_body_depth: int = 0
         self.boxed_local_hints = {}
         self.free_vars = {}
         self.free_var_hints = {}
@@ -338,57 +357,13 @@ class GeneratorStateMixin(_MixinBase):
         self.known_classes: dict[str, ClassInfo] = dict(known_classes or {})
         self.classes: dict[str, ClassInfo] = dict(self.known_classes)
         self.local_class_names: set[str] = set()
-        # Depth of class-statement bodies currently being lowered.  A nested
-        # ``class`` statement (a class defined inside another class body) must
-        # bind into the *enclosing class namespace* — exactly like a method or
-        # a class-attribute assignment — never into module globals, even when
-        # the outermost enclosing class is at module scope (where
-        # ``current_func_name == "molt_main"``).  ``visit_ClassDef`` increments
-        # this around its body-statement loop and consults it when publishing
-        # the finished class so the nested class is bound as a class-body local
-        # that the enclosing loop harvests into ``class_attr_values``.
-        self._class_body_depth: int = 0
-        # Class-body block-execution scope stack (P0 #50).  When the body of a
-        # ``class`` statement is lowered as a NORMAL block (so arbitrary control
-        # flow / ``del`` "just work", exactly like CPython's class-body code
-        # object), the innermost entry on this stack describes the active class
-        # namespace.  ``_store_local_value`` / ``_load_local_value`` /
-        # ``_emit_delete_name`` consult it so a class-body name binds into the
-        # namespace mapping (STORE_INDEX) and reads back from it (INDEX) — the
-        # heap-backed dict IS the mutable store, so loop-carried mutation is
-        # correct without SSA phi participation (the same mechanism the module
-        # dict provides at module scope).  ``ns`` is the namespace MoltValue when
-        # the class is built dynamically (``dynamic_build``); ``attr_values`` is
-        # the name→MoltValue snapshot the static ``CLASS_DEF`` path consumes.
-        # ``names`` is the set of names that are class-body-scoped (a Name not in
-        # this set falls through to enclosing/global/builtin resolution, matching
-        # CPython LOAD_NAME).
-        self._class_ns_stack: list[_ClassNsScope] = []
         self._reset_local_binding_state(
             reset_locals_cache=True,
             reset_del_targets=True,
         )
-        # Cell list (1-element list MoltValue) backing the implicit
-        # ``__class__`` closure variable of the class currently having its
-        # methods compiled.  Set by visit_ClassDef before the method
-        # compilation loop when any method references ``super()``/``__class__``
-        # (see `_function_needs_classcell`), and cleared afterwards.  Zero-arg
-        # ``super()`` and bare ``__class__`` loads read the class object from
-        # this cell — exactly mirroring CPython's ``__class__`` closure cell —
-        # rather than re-deriving the class by module-attribute name (which is
-        # wrong for function-local / nested classes that are not module
-        # globals).  The same cell is stored as ``__classcell__`` in the class
-        # namespace and filled with the finished class object after the
-        # metaclass call.
-        self._active_classcell_cell: MoltValue | None = None
         self._expr_col: tuple[int, int] | None = (
             None  # expression-level col_offset for traceback carets
         )
-        # Set while inlining a method that closes over the implicit ``__class__``
-        # super cell: any ``super()`` in the inlined body that cannot fold
-        # statically raises ``_InlineSuperFoldRequired`` to abort the inline,
-        # because the caller's spliced scope has no ``__class__`` cell.
-        self._inline_super_must_fold: bool = False
         self.globals: dict[str, MoltValue] = {}
         # Final entry-module callable binding state.  Publication/import/delete
         # lowering updates this table in execution order; serialization carries
@@ -506,7 +481,6 @@ class GeneratorStateMixin(_MixinBase):
         self._init_midend_state(optimization_profile, pgo_hot_functions)
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []
         self.class_annotation_exec_map: MoltValue | None = None
-        self.class_annotation_exec_name: str | None = None
         self.class_annotation_exec_counter = 0
         self.annotation_name_counter = 0
         self.future_annotations = False

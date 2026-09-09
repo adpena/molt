@@ -23,6 +23,20 @@ def test_all_canaries_live():
     assert not dead, f"dead canaries: {dead}"
 
 
+def test_target_subset_canary_uses_live_admission_authority(monkeypatch):
+    canary = next(item for item in cgl._canaries() if item.gate == "cpython_version_boundary")
+    assert canary.fires()
+    admitted = []
+
+    def admit_every_tuple(target, *, platform=None):
+        admitted.append((target.short, platform))
+        return target
+
+    monkeypatch.setattr(cgl, "require_verified_subset_target", admit_every_tuple)
+    assert not canary.fires()
+    assert admitted == [("3.11", "windows")]
+
+
 def test_main_check_passes_when_healthy():
     assert cgl.main(["--check"]) == 0
 

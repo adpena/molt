@@ -20,6 +20,19 @@ CPython-vs-Luau smoke parity under the shared memory guard.
 
 ### 1.0 Modern Luau Target Baseline
 
+The executable Rust frame/container oracles belong to the proof-plan command
+`rust.test.compiler-authorities`, which declares Cargo, Lune 0.10.5, Node and
+wasm-ld for the combined native/WASM/Luau/Rust compiler unit batch. Ordinary
+compiler-only tests explicitly ignore these integration cases. The declared
+command includes them and requires its PATH-selected Lune image: no home-directory
+fallback or success-on-missing-runner path is permitted. Queue admission binds
+the executable path and content hash before execution and checks them afterward.
+CI installs the pinned runner; local operators must put that same version on
+PATH from the canonical toolchain root before submitting the command. Failed
+oracles retain their generated source path with stdout/stderr diagnostics.
+The batch runs IR, passes, TIR and backend consumers in one target directory
+with `--no-fail-fast`; it excludes only the capture-only arithmetic digest probe.
+
 Molt targets the current and forward Luau surface, relying on Luau's own broad
 backward compatibility instead of adding Molt-side legacy Lua shims. The backend
 may use modern Luau syntax and APIs when they improve correctness or performance:

@@ -23,7 +23,68 @@ pub(crate) fn validate_fact_graph_cli_contract(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_process::NativeArtifactKind;
+
+    #[test]
+    fn native_artifact_cli_kind_is_explicit_and_fail_closed() {
+        for (args, expected) in [
+            (vec![], Some(NativeArtifactKind::Object)),
+            (
+                vec!["--native-output-kind", "object"],
+                Some(NativeArtifactKind::Object),
+            ),
+            (
+                vec!["--native-output-kind", "archive"],
+                Some(NativeArtifactKind::Archive),
+            ),
+            (vec!["--native-output-kind"], None),
+            (vec!["--native-output-kind", "static-library"], None),
+            (
+                vec![
+                    "--native-output-kind",
+                    "object",
+                    "--native-output-kind",
+                    "archive",
+                ],
+                None,
+            ),
+            (
+                vec!["--target", "wasm", "--native-output-kind", "archive"],
+                None,
+            ),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                BackendCliArgs::parse(&args)
+                    .resolved_native_output_kind()
+                    .ok(),
+                expected,
+                "{args:?}"
+            );
+        }
+    }
+}
+
 impl<'a> BackendCliArgs<'a> {
+    pub(crate) fn resolved_native_output_kind(
+        &self,
+    ) -> io::Result<crate::backend_process::NativeArtifactKind> {
+        if self.native_output_kind.is_some() && (self.is_wasm || self.is_rust || self.is_luau) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--native-output-kind requires a native target",
+            ));
+        }
+        self.native_output_kind
+            .map(crate::backend_process::NativeArtifactKind::parse)
+            .transpose()
+            .map(|kind| kind.unwrap_or_default())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+    }
+
     pub(crate) fn daemon_socket_path(&self) -> io::Result<Option<&'a str>> {
         if !self.wants_daemon {
             return Ok(None);

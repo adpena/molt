@@ -275,6 +275,17 @@ def _resolve_output_path(
     return path
 
 
+def _backend_artifact_suffix(
+    *, target: str, emit_mode: str, target_triple: str | None
+) -> str:
+    """Name producer bytes consistently in user outputs and backend caches."""
+    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+
+    return resolve_backend_artifact_contract(
+        target=target, emit_mode=emit_mode, target_triple=target_triple
+    ).suffix
+
+
 def _resolve_build_output_layout(
     *,
     target: str,
@@ -338,6 +349,9 @@ def _resolve_build_output_layout(
     if not is_wasm and not is_transpile and not is_mlir_emit and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
 
+    artifact_suffix = _backend_artifact_suffix(
+        target=target, emit_mode=emit_mode, target_triple=target_triple
+    )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
     if is_luau_transpile and "MOLT_MODULE_CHUNK_OPS" not in os.environ:
@@ -345,28 +359,28 @@ def _resolve_build_output_layout(
     if is_mlir_emit:
         output_artifact = _resolve_output_path(
             output,
-            output_root / f"{output_base}.mlir",
+            output_root / f"{output_base}{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
         )
     elif is_luau_transpile:
         output_artifact = _resolve_output_path(
             output,
-            output_root / f"{output_base}.luau",
+            output_root / f"{output_base}{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
         )
     elif is_rust_transpile:
         output_artifact = _resolve_output_path(
             output,
-            output_root / f"{output_base}.rs",
+            output_root / f"{output_base}{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
         )
     elif is_wasm:
         output_wasm = _resolve_output_path(
             output,
-            output_root / "output.wasm",
+            output_root / f"output{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
         )
@@ -386,11 +400,11 @@ def _resolve_build_output_layout(
                     project_root=project_root,
                 )
     else:
-        output_obj = artifacts_root / "output.o"
+        output_obj = artifacts_root / f"output{artifact_suffix}"
         if emit_mode == "obj":
             output_obj = _resolve_output_path(
                 output,
-                output_root / "output.o",
+                output_root / f"output{artifact_suffix}",
                 out_dir=out_dir_path,
                 project_root=project_root,
             )

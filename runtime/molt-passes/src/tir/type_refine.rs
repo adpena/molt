@@ -8,6 +8,7 @@ use super::types::TirType;
 use super::values::ValueId;
 
 mod cfg_edges;
+mod exact;
 mod facts;
 mod guards;
 mod hints;
@@ -17,6 +18,8 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
+pub use self::exact::extract_exact_scalar_map;
+pub(crate) use self::facts::infer_return_type;
 use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,
     publish_fact_type,
@@ -26,7 +29,6 @@ use self::hints::parse_guard_type;
 #[cfg(test)]
 use self::hints::parse_return_type_str;
 pub use self::proven::extract_proven_map;
-pub use self::result_inference::infer_scalar_return_result_type;
 use self::result_inference::{
     attr_result_type_override, infer_result_facts_with_attrs, infer_result_types_with_attrs,
 };
@@ -44,6 +46,14 @@ const MAX_ROUNDS: usize = 20;
 /// After the forward inference pass, TypeGuard-proven types are propagated
 /// into dominated blocks via the dominator tree.
 pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let exact = extract_exact_scalar_map(func);
+    extract_type_map_with_exact(func, &exact)
+}
+
+fn extract_type_map_with_exact(
+    func: &TirFunction,
+    exact: &HashMap<ValueId, TirType>,
+) -> HashMap<ValueId, TirType> {
     let mut env: HashMap<ValueId, TirType> = func.value_types.clone();
 
     // Sorted block order for deterministic iteration.
@@ -64,6 +74,14 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
         // fixpoint has already converged so one pass is sufficient).
         for op in &block.ops {
             if op.results.is_empty() {
+                continue;
+            }
+            if let Some(comparison) =
+                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+            {
+                for &result in &op.results {
+                    env.insert(result, comparison.result_type.clone());
+                }
                 continue;
             }
             if op
@@ -112,6 +130,7 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// Iterates to fixpoint (max 20 rounds, fail-closed on timeout).
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
+    let exact = extract_exact_scalar_map(func);
     let mut all_value_ids: HashSet<ValueId> = HashSet::new();
     let mut defined_values: HashSet<ValueId> = HashSet::new();
     let mut produced_values: HashSet<ValueId> = HashSet::new();
@@ -240,7 +259,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //         unboxed fadd path).
                         //     Everything else (transparent aliases) propagates
                         //     operand 0's type.
-                        let result_type_override = attr_result_type_override(op.opcode, &op.attrs);
+                        let result_type_override =
+                            crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+                                .map(|facts| facts.result_type)
+                                .or_else(|| attr_result_type_override(op.opcode, &op.attrs));
                         (
                             op.opcode,
                             op.operands.clone(),
@@ -541,7 +563,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // existing fixpoint — it only strengthens types that were DynBox.
     // Reuse the dominator tree already computed above (the fixpoint loop only
     // refines types, never the CFG), instead of recomputing it.
-    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &idoms);
+    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &idoms, &exact);
 
     // Write refined types back into the function-owned map and mirror block
     // argument entries into their in-place `TirValue` records.
@@ -553,6 +575,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
     func.value_types = env.clone();
+    func.return_type = infer_return_type(func.blocks.values(), &exact);
 
     // Count refinements: values that started as DynBox and are now concrete.
     let fixpoint_refinements = initially_dynbox

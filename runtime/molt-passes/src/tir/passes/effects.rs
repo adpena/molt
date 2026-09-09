@@ -14,6 +14,36 @@
 
 use crate::tir::effect_proof::tir_has_static_module_class_binding_effect_proof;
 use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::types::TirType;
+use crate::tir::values::ValueId;
+use std::collections::HashMap;
+
+/// Operand maps passed to these instance oracles must come from
+/// `type_refine::extract_exact_scalar_map`, never annotation-derived types.
+pub(super) fn op_may_throw_with_types(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> bool {
+    crate::tir::predicate_semantics::predicate_facts_for_op(op, value_types)
+        .map_or_else(|| op_may_throw(op), |facts| !facts.effects.nothrow)
+}
+
+pub(super) fn op_has_observable_effect_when_dead_with_types(
+    op: &TirOp,
+    value_types: &HashMap<ValueId, TirType>,
+) -> bool {
+    crate::tir::predicate_semantics::predicate_facts_for_op(op, value_types).map_or_else(
+        || op_has_observable_effect_when_dead(op),
+        |facts| !facts.effects.effect_free || !facts.effects.nothrow,
+    )
+}
+
+pub(super) fn op_is_pure_movable_with_types(
+    op: &TirOp,
+    value_types: &HashMap<ValueId, TirType>,
+) -> bool {
+    crate::tir::predicate_semantics::predicate_facts_for_op(op, value_types).map_or_else(
+        || opcode_is_pure_movable(op.opcode),
+        |facts| facts.effects.consistent && facts.effects.effect_free && facts.effects.nothrow,
+    )
+}
 
 /// Whether `opcode` may raise — DCE must preserve it even when its result is
 /// dead. EXHAUSTIVE over the `OpCode` enum: the classification lives in the
@@ -108,16 +138,20 @@ pub(super) fn op_has_observable_effect_when_dead(op: &TirOp) -> bool {
 //                      dispatch that could mutate shared state).
 //   - `nothrow`     : never raises for the inputs it is applied to.
 //
-// PRECONDITION on the arithmetic/comparison/bitwise/boolean family (`Add`, …,
+// PRECONDITION on the arithmetic/bitwise/boolean family (`Add`, …,
 // `Div`, …): their purity holds only when operands are primitive (`int`/`float`
 // /`bool`/`None`). On `DynBox` operands these ops can dispatch a user dunder
-// (`__add__`, `__eq__`, …) with arbitrary side effects. By the point LICM and
+// (`__add__`, …) with arbitrary side effects. By the point LICM and
 // GVN run (after `unboxing` + `canonicalize_post` — see `passes::mod`), any op
 // still spelled as a bare arithmetic opcode operates on lowered/typed operands;
 // GVN additionally enforces the primitive-operand precondition explicitly via
 // `is_primitive_type` at its call site. This oracle classifies that family as
 // pure under that precondition — it does NOT relieve a caller of a type gate it
 // independently needs.
+// Rich comparisons are deliberately IMPURE at opcode scope. Their spelling
+// remains generic after unboxing: result identity and callbacks survive until
+// the shared operand-dependent oracle has exact scalar provenance. DCE, GVN,
+// LICM, exception elimination, and representation consume that instance fact.
 /// Per-opcode purity classification — the single source of truth from which the
 /// LICM (`opcode_is_pure_movable`) predicate and GVN's generated numbering-role
 /// purity invariant are derived.
@@ -132,7 +166,7 @@ pub(super) fn op_has_observable_effect_when_dead(op: &TirOp) -> bool {
 /// generated into [`crate::tir::op_kinds_generated`]; see
 /// `docs/design/foundation/25_op_kind_registry.md`). The registry maps each
 /// `OpCode` to the `(consistent, effect_free, nothrow)` triple this returns:
-///   - `"pure"`           => PURE — the type-gated arithmetic/comparison/bitwise/
+///   - `"pure"`           => PURE — the type-gated arithmetic/bitwise/
 ///     boolean family (on primitive operands, see the PRECONDITION above), the
 ///     box/unbox transforms, `TypeGuard`, the constant materializers (incl.
 ///     `ConstBigInt`, effect-free like `ConstStr`), and `BuildSlice`.
@@ -518,6 +552,30 @@ mod tests {
     fn generated_gvn_numbering_roles_are_backed_by_effect_core() {
         for op in all_opcodes() {
             let role = opcode_gvn_numbering_role_table(op);
+            let category = crate::tir::op_kinds_generated::opcode_predicate_semantics(op);
+            if category == Some(crate::tir::op_kinds_generated::PredicateSemantics::Containment) {
+                assert_eq!(role, GvnNumberingRole::Never);
+                assert!(
+                    !opcode_is_cse_safe(op),
+                    "{op:?}: generic predicate must not be CSE-safe"
+                );
+                continue;
+            }
+            let operands =
+                if category == Some(crate::tir::op_kinds_generated::PredicateSemantics::Truth) {
+                    vec![TirType::I64]
+                } else {
+                    vec![TirType::I64, TirType::F64]
+                };
+            if let Some(facts) = crate::tir::predicate_semantics::predicate_facts(op, &operands) {
+                assert_eq!(role, GvnNumberingRole::TypeGated);
+                assert!(
+                    !opcode_is_cse_safe(op),
+                    "{op:?}: generic predicate must not be CSE-safe"
+                );
+                assert!(facts.effects.consistent && facts.effects.effect_free);
+                continue;
+            }
             if role != GvnNumberingRole::Never {
                 assert!(
                     opcode_is_cse_safe(op),
@@ -535,6 +593,40 @@ mod tests {
                 opcode_is_pure_may_throw(op),
                 "{op:?}: CSE-extra-over-movable must equal generated pure_may_throw"
             );
+        }
+    }
+
+    #[test]
+    fn value_selection_requires_exact_left_operand_for_effect_elision() {
+        use crate::tir::ops::{AttrDict, Dialect};
+        for opcode in [OpCode::And, OpCode::Or] {
+            assert!(opcode_may_throw(opcode), "{opcode:?}: __bool__ can raise");
+            assert!(
+                opcode_is_side_effecting(opcode),
+                "{opcode:?}: __bool__ can mutate"
+            );
+            assert!(!opcode_is_cse_safe(opcode));
+            let op = TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![ValueId(0), ValueId(1)],
+                results: vec![ValueId(2)],
+                attrs: AttrDict::new(),
+                source_span: None,
+            };
+            assert!(op_may_throw_with_types(&op, &HashMap::new()));
+            assert!(op_has_observable_effect_when_dead_with_types(
+                &op,
+                &HashMap::new()
+            ));
+            assert!(!op_is_pure_movable_with_types(&op, &HashMap::new()));
+            let exact_left = HashMap::from([(ValueId(0), TirType::Bool)]);
+            assert!(!op_may_throw_with_types(&op, &exact_left));
+            assert!(!op_has_observable_effect_when_dead_with_types(
+                &op,
+                &exact_left
+            ));
+            assert!(op_is_pure_movable_with_types(&op, &exact_left));
         }
     }
 }

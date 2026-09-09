@@ -6,40 +6,52 @@ import functools
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
 from molt.cli.artifact_sync import (
-    _artifact_sync_state_matches_stat,
+    _artifact_sync_state_matches,
     _artifact_sync_state_path,
     _read_artifact_sync_state,
     _write_artifact_sync_state,
 )
 from molt.cli.atomic_io import (
-    _atomic_link_or_copy_file,
+    _atomic_copy_file,
     _atomic_write_json,
     _link_failure_wants_copy,
 )
-from molt.cli.build_locks import (
+from molt.file_locks import (
     _acquire_file_lock,
     _parse_lock_timeout,
     _release_file_lock,
 )
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
+    BackendArtifactKind,
+    BackendArtifactValidationError,
+)
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
-from molt.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file, content_change_time_ns
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
+)
 from molt.cli.llvm_wasi_tools import llvm_tool_candidates
 from molt.cli import function_references as _function_references
-from molt.cli.models import _ModuleGraphMetadata
-from molt.cli.runtime_wasm_validation import _is_reusable_wasm_artifact
+from molt.cli.models import (
+    _ModuleGraphMetadata,
+    _SharedStdlibCacheValidationToken,
+)
 
 
 _DEAD_FUNCTION_ELIM_REFERENCE_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
@@ -50,7 +62,6 @@ _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_ent
 _module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
 
-_SharedStdlibCacheValidationToken = tuple[str, tuple[tuple[str, int, int, int], ...]]
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
 
 
@@ -59,30 +70,71 @@ class _NativeGlobalSymbolFacts:
     defined: frozenset[str]
     undefined: frozenset[str]
     defined_functions: frozenset[str]
+    # Weak undefined references are neither providers nor required link inputs.
+    weak_undefined: frozenset[str] = frozenset()
+    artifact_digest: str | None = None
 
     def symbol_sets(self) -> _NativeObjectSymbolSets:
         return set(self.defined), set(self.undefined)
+
+
+class NativeSymbolInspectionError(OSError):
+    """Required symbol evidence was unavailable, never an empty symbol table."""
+
+    def __init__(self, path: Path, attempts: Sequence[str]) -> None:
+        self.path = path
+        self.attempts = tuple(attempts)
+        super().__init__(
+            f"Cannot inspect native symbols for {path}: " + "; ".join(self.attempts)
+        )
+
+
+def _native_symbol_artifact_identity(path: Path) -> StableRegularFileIdentity:
+    """Use the shared direct-file content and mutation identity authority."""
+    try:
+        return stable_regular_file_identity(
+            path.resolve(strict=True), label="native symbol artifact"
+        )
+    except (OSError, ValueError) as error:
+        raise NativeSymbolInspectionError(path, [str(error)]) from error
+
+
+def _require_unchanged_symbol_artifact(
+    path: Path, identity: StableRegularFileIdentity
+) -> None:
+    try:
+        if path.resolve(strict=True) != identity.path.resolve(strict=True):
+            raise ValueError("artifact path no longer names its captured generation")
+        verify_stable_regular_file_identity(identity, label="native symbol artifact")
+    except (OSError, ValueError) as error:
+        raise NativeSymbolInspectionError(
+            path,
+            [
+                "artifact changed during symbol inspection; no facts were published",
+                str(error),
+            ],
+        ) from error
 
 
 _NativeObjectSymbolCacheKey = tuple[
     str, int, int, int, str, str, str, str, str, tuple[str, ...]
 ]
 _NativeArchiveSymbolCacheKey = tuple[
-    str, int, int, int, str, str, str, str, tuple[str, ...]
+    str, int, int, int, str, str, str, str, tuple[str, ...], str
 ]
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
     _NativeObjectSymbolCacheKey,
-    _NativeGlobalSymbolFacts | None,
+    _NativeGlobalSymbolFacts,
 ] = {}
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
-_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 3
+_NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 4
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
-_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 3
+_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 4
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: dict[
     _NativeArchiveSymbolCacheKey,
-    _NativeGlobalSymbolFacts | None,
+    _NativeGlobalSymbolFacts,
 ] = {}
-_SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 1
+_SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 2
 
 
 def _record_backend_cache_stage_ms(
@@ -99,25 +151,66 @@ def _record_backend_cache_stage_ms(
     )
 
 
-def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
-    if is_wasm:
-        return _is_reusable_wasm_artifact(path)
+def _validate_backend_cache_artifact(
+    path: Path,
+    *,
+    artifact_contract: BackendArtifactContract,
+    identity: StableRegularFileIdentity | None = None,
+) -> StableRegularFileIdentity:
+    # Shape, symbol facts and the sync receipt must attest the same generation.
+    # Hash once, then retain the shared cheap mutation token through admission.
     try:
-        if path.stat().st_size <= 0:
-            return False
-    except OSError:
+        if identity is None:
+            identity = stable_regular_file_identity(
+                path, label="backend cache artifact"
+            )
+        else:
+            if identity.path != path.expanduser().absolute():
+                raise ValueError("Backend validation identity belongs to another path")
+            verify_stable_regular_file_identity(
+                identity, label="backend cache artifact"
+            )
+    except (OSError, ValueError) as error:
+        raise BackendArtifactValidationError(str(error)) from error
+    artifact_contract.validate(path)
+    if artifact_contract.is_native:
+        facts = _native_object_global_symbol_facts(
+            path, target_triple=artifact_contract.target_triple, identity=identity
+        )
+        # Empty symbol tables are valid reader results, not application hits.
+        if not (facts.defined or facts.undefined):
+            raise BackendArtifactValidationError(
+                f"Native application cache artifact has no symbol surface: {path}"
+            )
+    try:
+        verify_stable_regular_file_identity(identity, label="backend cache artifact")
+    except (OSError, ValueError) as error:
+        raise BackendArtifactValidationError(str(error)) from error
+    return identity
+
+
+def _is_valid_cached_backend_artifact(
+    path: Path, *, artifact_contract: BackendArtifactContract
+) -> bool:
+    try:
+        _validate_backend_cache_artifact(path, artifact_contract=artifact_contract)
+    except BackendArtifactValidationError:
         return False
-    symbol_sets = _native_object_global_symbol_sets(path)
-    return symbol_sets is None or bool(symbol_sets[0] or symbol_sets[1])
+    return True
 
 
 def _target_uses_macho_symbol_decoration(target_triple: str | None) -> bool:
-    if target_triple is None:
-        return sys.platform == "darwin"
-    normalized = target_triple.strip().lower()
-    return any(
-        token in normalized
-        for token in ("apple", "darwin", "macos", "ios", "tvos", "watchos")
+    from molt.cli.native_link_plan import (
+        NativeObjectFormat,
+        resolve_native_target_spec,
+        target_is_wasm,
+    )
+
+    if target_triple is not None and target_is_wasm(target_triple):
+        return False
+    return (
+        resolve_native_target_spec(target_triple).object_format
+        is NativeObjectFormat.MACHO
     )
 
 
@@ -132,20 +225,54 @@ def _normalize_native_symbol_name(
 
 
 def _symbol_normalization_target(target_triple: str | None) -> str:
-    return (
-        f"host:{sys.platform}"
+    from molt.cli.native_link_plan import resolve_native_target_spec
+
+    target = (
+        resolve_native_target_spec(None).triple
         if target_triple is None
-        else f"target:{target_triple.strip().lower()}"
+        else target_triple.strip().lower()
     )
+    return f"target:{target}"
 
 
 def _native_nm_command(nm_command: Sequence[str], path: Path) -> list[str]:
     return [*nm_command, "-g", str(path)]
 
 
+def _nm_line_reports_no_symbols(
+    line: str, result: subprocess.CompletedProcess[str]
+) -> bool:
+    argv = result.args
+    if isinstance(argv, str) or not argv:
+        return False
+    artifact = str(argv[-1])
+    tool = str(argv[0])
+    if line == "no symbols":
+        return True
+    for name in {tool, Path(tool).name}:
+        if line.startswith(f"{name}: "):
+            line = line[len(name) + 2 :]
+            break
+    if not line.endswith(": no symbols"):
+        return False
+    owner = line[: -len(": no symbols")]
+    return any(
+        owner == prefix or (owner.startswith(prefix + "(") and owner.endswith(")"))
+        for prefix in {artifact, Path(artifact).name}
+    )
+
+
 def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> bool:
-    text = f"{result.stdout}\n{result.stderr}".lower()
-    return "no symbols" in text
+    # rc=1 is accepted only for a wholly empty artifact; partial archive output
+    # plus a failed member must never be promoted into complete evidence.
+    lines = [
+        line.strip()
+        for line in f"{result.stdout}\n{result.stderr}".splitlines()
+        if line.strip()
+    ]
+    return bool(lines) and all(
+        _nm_line_reports_no_symbols(line, result) for line in lines
+    )
 
 
 def _nm_read_timeout(default: float) -> float:
@@ -168,21 +295,25 @@ def _nm_read_timeout(default: float) -> float:
     return default
 
 
-def _native_object_global_symbols_result(
+def _read_native_global_symbol_facts(
     path: Path,
     *,
     timeout: float,
     nm_command: Sequence[str] | None = None,
-) -> subprocess.CompletedProcess[str] | None:
+    target_triple: str | None = None,
+) -> _NativeGlobalSymbolFacts:
     candidates = (
         [tuple(nm_command)]
         if nm_command is not None
         else [(candidate,) for candidate in _nm_candidate_binaries()]
     )
     if not candidates:
-        return None
+        raise NativeSymbolInspectionError(
+            path, ["no nm/llvm-nm candidate is available"]
+        )
     read_timeout = _nm_read_timeout(timeout)
-    last_failure: subprocess.CompletedProcess[str] | None = None
+    failures: list[str] = []
+    primary: BaseException | None = None
     for candidate in candidates:
         try:
             # Reading a static object's global symbol table is a leaf,
@@ -200,17 +331,41 @@ def _native_object_global_symbols_result(
                 env=None,
                 cwd=path.parent,
                 memory_guard_prefix=None,
+                errors="strict",
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+            if primary is None:
+                primary = error
+            failures.append(f"{tuple(candidate)!r}: {type(error).__name__}: {error}")
             continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result
-        if _nm_result_reports_no_symbols(result):
-            return subprocess.CompletedProcess(result.args, 0, "", "")
-        last_failure = result
-    if last_failure is not None and last_failure.returncode == 0:
-        return last_failure
-    return None
+        if result.returncode in {0, 1} and _nm_result_reports_no_symbols(result):
+            return _NativeGlobalSymbolFacts(frozenset(), frozenset(), frozenset())
+        stderr_lines = [
+            line.strip() for line in result.stderr.splitlines() if line.strip()
+        ]
+        if result.returncode == 0 and all(
+            _nm_line_reports_no_symbols(line, result) for line in stderr_lines
+        ):
+            try:
+                facts = _parse_native_nm_global_symbol_facts(
+                    "\n".join(
+                        line
+                        for line in result.stdout.splitlines()
+                        if not _nm_line_reports_no_symbols(line.strip(), result)
+                    ),
+                    target_triple=target_triple,
+                )
+            except ValueError as error:
+                if primary is None:
+                    primary = error
+                failures.append(f"{tuple(candidate)!r}: {error}")
+                continue
+            return facts
+        failures.append(
+            f"{tuple(candidate)!r}: exit {result.returncode}; "
+            f"stdout={result.stdout[:2048]!r}; stderr={result.stderr[:2048]!r}"
+        )
+    raise NativeSymbolInspectionError(path, failures) from primary
 
 
 def _native_object_symbol_facts_sidecar_path(path: Path) -> Path:
@@ -257,6 +412,7 @@ def _native_object_symbol_facts_payload(
         "defined": sorted(facts.defined),
         "undefined": sorted(facts.undefined),
         "defined_functions": sorted(facts.defined_functions),
+        "weak_undefined": sorted(facts.weak_undefined),
     }
 
 
@@ -285,20 +441,25 @@ def _read_native_object_symbol_facts(
     defined = payload.get("defined")
     undefined = payload.get("undefined")
     defined_functions = payload.get("defined_functions")
+    weak_undefined = payload.get("weak_undefined")
     if not (
         isinstance(defined, list)
         and isinstance(undefined, list)
         and isinstance(defined_functions, list)
+        and isinstance(weak_undefined, list)
     ):
         return None
     if not all(
-        isinstance(symbol, str) for symbol in (*defined, *undefined, *defined_functions)
+        isinstance(symbol, str)
+        for symbol in (*defined, *undefined, *defined_functions, *weak_undefined)
     ):
         return None
     facts = _NativeGlobalSymbolFacts(
         defined=frozenset(cast(list[str], defined)),
         undefined=frozenset(cast(list[str], undefined)),
         defined_functions=frozenset(cast(list[str], defined_functions)),
+        weak_undefined=frozenset(cast(list[str], weak_undefined)),
+        artifact_digest=object_digest,
     )
     if not facts.defined_functions <= facts.defined:
         return None
@@ -324,25 +485,18 @@ def _write_native_object_symbol_facts(
     )
 
 
-def _ensure_native_object_symbol_facts(path: Path, *, is_wasm: bool) -> None:
-    if is_wasm:
-        return
-    # Best-effort cache warming: callers still validate fail-closed by reading
-    # facts back through `_native_object_global_symbol_sets`.
-    with contextlib.suppress(OSError):
-        _native_object_global_symbol_sets(path)
-
-
 def _native_object_global_symbol_facts(
     path: Path,
     *,
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
-) -> _NativeGlobalSymbolFacts | None:
-    try:
-        object_digest = _sha256_file(path)
-    except OSError:
-        object_digest = ""
+    identity: StableRegularFileIdentity | None = None,
+) -> _NativeGlobalSymbolFacts:
+    if identity is None:
+        identity = _native_symbol_artifact_identity(path)
+    else:
+        _require_unchanged_symbol_artifact(path, identity)
+    object_digest = identity.sha256
     cache_key = _native_object_symbol_cache_key(
         path,
         object_digest,
@@ -352,9 +506,8 @@ def _native_object_global_symbol_facts(
     if cache_key is not None:
         cached = _NATIVE_OBJECT_SYMBOL_SETS_CACHE.get(cache_key)
         if cached is not None:
+            _require_unchanged_symbol_artifact(path, identity)
             return cached
-        if cache_key in _NATIVE_OBJECT_SYMBOL_SETS_CACHE:
-            return None
     if object_digest:
         symbol_facts = _read_native_object_symbol_facts(
             path,
@@ -362,22 +515,18 @@ def _native_object_global_symbol_facts(
             target_triple=target_triple,
         )
         if symbol_facts is not None:
+            _require_unchanged_symbol_artifact(path, identity)
             if cache_key is not None:
                 _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = symbol_facts
             return symbol_facts
-    result = _native_object_global_symbols_result(
+    facts = _read_native_global_symbol_facts(
         path,
         timeout=5,
         nm_command=nm_command,
-    )
-    if result is None:
-        if cache_key is not None:
-            _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = None
-        return None
-    facts = _parse_native_nm_global_symbol_facts(
-        result.stdout,
         target_triple=target_triple,
     )
+    _require_unchanged_symbol_artifact(path, identity)
+    facts = replace(facts, artifact_digest=object_digest)
     if cache_key is not None:
         if (
             len(_NATIVE_OBJECT_SYMBOL_SETS_CACHE)
@@ -393,6 +542,7 @@ def _native_object_global_symbol_facts(
                 facts=facts,
                 target_triple=target_triple,
             )
+    _require_unchanged_symbol_artifact(path, identity)
     return facts
 
 
@@ -401,13 +551,15 @@ def _native_object_global_symbol_sets(
     *,
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
-) -> _NativeObjectSymbolSets | None:
+    identity: StableRegularFileIdentity | None = None,
+) -> _NativeObjectSymbolSets:
     facts = _native_object_global_symbol_facts(
         path,
         nm_command=nm_command,
         target_triple=target_triple,
+        identity=identity,
     )
-    return None if facts is None else facts.symbol_sets()
+    return facts.symbol_sets()
 
 
 def _parse_native_nm_global_symbol_facts(
@@ -426,32 +578,54 @@ def _parse_native_nm_global_symbol_facts(
     defined: set[str] = set()
     undefined: set[str] = set()
     defined_functions: set[str] = set()
+    weak_undefined: set[str] = set()
+    macho_decoration = _target_uses_macho_symbol_decoration(target_triple)
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if line.lower().endswith(": no symbols") or line.lower() == "no symbols":
+        if line.endswith(":"):
+            # nm's archive member/architecture label, not a symbol row.
+            if line.lower() in {"error:", "warning:", "fatal error:"}:
+                raise ValueError(f"nm diagnostic is not a symbol row: {line!r}")
             continue
+        indirect_target: str | None = None
+        indirect = re.fullmatch(r"(.*) \(indirect for ([^\s]+)\)", line)
+        if indirect:
+            line, indirect_target = indirect.groups()
         parts = line.split()
-        if len(parts) >= 2:
-            if len(parts) == 2:
-                kind, name = parts
-            else:
-                _, kind, name = parts[0], parts[1], parts[2]
-            symbol = _normalize_native_symbol_name(
-                name,
-                target_triple=target_triple,
+        if len(parts) == 2:
+            kind, name = parts
+        elif len(parts) == 3 and re.fullmatch(r"[0-9a-fA-F]+", parts[0]):
+            _, kind, name = parts
+        else:
+            raise ValueError(f"unrecognized nm symbol row: {line[:512]!r}")
+        if len(kind) != 1 or kind not in "AaBbCcDdGgIiRrSsTtUuVvWw":
+            raise ValueError(f"unsupported nm symbol type in row: {line[:512]!r}")
+        symbol = name[1:] if macho_decoration and name.startswith("_") else name
+        if indirect_target is not None:
+            if kind != "I":
+                raise ValueError(
+                    f"indirect target on a non-indirect nm row: {raw_line[:512]!r}"
+                )
+            undefined.add(
+                indirect_target[1:]
+                if macho_decoration and indirect_target.startswith("_")
+                else indirect_target
             )
-            if kind.upper() == "U":
-                undefined.add(symbol)
-            else:
-                defined.add(symbol)
-                if kind.upper() in {"T", "W"}:
-                    defined_functions.add(symbol)
+        if kind == "U":
+            undefined.add(symbol)
+        elif kind in {"w", "v"}:
+            weak_undefined.add(symbol)
+        else:
+            defined.add(symbol)
+            if kind in {"T", "t", "W", "i"}:
+                defined_functions.add(symbol)
     return _NativeGlobalSymbolFacts(
         defined=frozenset(defined),
         undefined=frozenset(undefined),
         defined_functions=frozenset(defined_functions),
+        weak_undefined=frozenset(weak_undefined),
     )
 
 
@@ -471,71 +645,74 @@ def _native_archive_global_symbol_facts(
     *,
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
-) -> _NativeGlobalSymbolFacts | None:
+    identity: StableRegularFileIdentity | None = None,
+) -> _NativeGlobalSymbolFacts:
     """Read one provider archive's globals without mutating the toolchain.
 
     Provider archives are immutable installation inputs, not build outputs.
     Their symbol facts therefore use bounded process caching plus one central,
-    stat-keyed cache under Molt's cache root; unlike object facts, this function
+    content-keyed cache under Molt's cache root; unlike object facts, this function
     never writes a ``*.symbols.json`` sibling into Rust or WASI SDK directories.
     """
 
-    try:
-        resolved = path.resolve(strict=True)
-        stat = resolved.stat()
-    except OSError:
-        return None
+    if identity is None:
+        identity = _native_symbol_artifact_identity(path)
+    else:
+        _require_unchanged_symbol_artifact(path, identity)
+    resolved = identity.path
+    stat = resolved.stat()
+    changed = content_change_time_ns(resolved, stat)
+    if changed is None:
+        raise NativeSymbolInspectionError(
+            path, ["content-change identity is unavailable"]
+        )
     symbol_target = _symbol_normalization_target(target_triple)
     cache_key: _NativeArchiveSymbolCacheKey = (
         os.fspath(resolved),
-        int(stat.st_size),
-        int(stat.st_mtime_ns),
-        int(getattr(stat, "st_ctime_ns", 0)),
+        identity.size,
+        stat.st_mtime_ns,
+        changed,
         os.environ.get("MOLT_TARGET_ROOT", ""),
         os.environ.get("PATH", ""),
         os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
         symbol_target,
         tuple(nm_command or ()),
+        identity.sha256,
     )
     cached = _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.get(cache_key)
     if cached is not None:
+        _require_unchanged_symbol_artifact(path, identity)
         return cached
-    if cache_key in _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE:
-        return None
     persistent_cache_path = _native_archive_symbol_cache_path(cache_key)
     persistent_facts = _read_native_archive_symbol_cache(
         persistent_cache_path,
         cache_key=cache_key,
     )
     if persistent_facts is not None:
+        _require_unchanged_symbol_artifact(path, identity)
         _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = persistent_facts
         return persistent_facts
-    result = _native_object_global_symbols_result(
+    facts = _read_native_global_symbol_facts(
         resolved,
         timeout=120,
         nm_command=nm_command,
+        target_triple=target_triple,
     )
-    if result is None:
-        facts = None
-    else:
-        facts = _parse_native_nm_global_symbol_facts(
-            result.stdout,
-            target_triple=target_triple,
-        )
+    _require_unchanged_symbol_artifact(path, identity)
+    facts = replace(facts, artifact_digest=identity.sha256)
     if (
         len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE)
         >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT
     ):
         _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = facts
-    if facts is None:
-        return None
     with contextlib.suppress(OSError):
         _write_native_archive_symbol_cache(
             persistent_cache_path,
             cache_key=cache_key,
             facts=facts,
         )
+    _require_unchanged_symbol_artifact(path, identity)
     return facts
 
 
@@ -544,13 +721,15 @@ def _native_archive_global_symbol_sets(
     *,
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
-) -> _NativeObjectSymbolSets | None:
+    identity: StableRegularFileIdentity | None = None,
+) -> _NativeObjectSymbolSets:
     facts = _native_archive_global_symbol_facts(
         path,
         nm_command=nm_command,
         target_triple=target_triple,
+        identity=identity,
     )
-    return None if facts is None else facts.symbol_sets()
+    return facts.symbol_sets()
 
 
 def _native_archive_symbol_cache_identity(
@@ -566,6 +745,7 @@ def _native_archive_symbol_cache_identity(
         "timeout_env": cache_key[6],
         "symbol_target": cache_key[7],
         "nm_command": list(cache_key[8]),
+        "artifact_digest": cache_key[9],
     }
 
 
@@ -602,14 +782,17 @@ def _read_native_archive_symbol_cache(
     defined = payload.get("defined")
     undefined = payload.get("undefined")
     defined_functions = payload.get("defined_functions")
+    weak_undefined = payload.get("weak_undefined")
     if not (
         isinstance(defined, list)
         and isinstance(undefined, list)
         and isinstance(defined_functions, list)
+        and isinstance(weak_undefined, list)
     ):
         return None
     if not all(
-        isinstance(symbol, str) for symbol in (*defined, *undefined, *defined_functions)
+        isinstance(symbol, str)
+        for symbol in (*defined, *undefined, *defined_functions, *weak_undefined)
     ):
         return None
     facts = _NativeGlobalSymbolFacts(
@@ -618,6 +801,8 @@ def _read_native_archive_symbol_cache(
         defined_functions=frozenset(
             symbol for symbol in defined_functions if isinstance(symbol, str)
         ),
+        weak_undefined=frozenset(cast(list[str], weak_undefined)),
+        artifact_digest=cache_key[9],
     )
     if not facts.defined_functions <= facts.defined:
         return None
@@ -638,6 +823,7 @@ def _write_native_archive_symbol_cache(
             "defined": sorted(facts.defined),
             "undefined": sorted(facts.undefined),
             "defined_functions": sorted(facts.defined_functions),
+            "weak_undefined": sorted(facts.weak_undefined),
         },
         indent=None,
         sort_keys=True,
@@ -647,21 +833,27 @@ def _write_native_archive_symbol_cache(
 def _native_object_has_unresolved_module_chunks(
     candidate: Path,
     stdlib_object_path: Path | None,
+    *,
+    target_triple: str | None = None,
+    identity: StableRegularFileIdentity | None = None,
 ) -> bool:
-    candidate_symbols = _native_object_global_symbol_sets(candidate)
-    if candidate_symbols is None:
-        return False
-    _, undefined = candidate_symbols
+    candidate_symbols = _native_object_global_symbol_sets(
+        candidate, target_triple=target_triple, identity=identity
+    )
+    defined, undefined = candidate_symbols
+    # Compiler archives whole-load all members. A reference and its provider
+    # can appear in different member symbol tables without being unresolved.
     unresolved_chunks = {
-        symbol for symbol in undefined if "__molt_module_chunk_" in symbol
+        symbol for symbol in undefined - defined if "__molt_module_chunk_" in symbol
     }
     if not unresolved_chunks:
         return False
     stdlib_defined: set[str] = set()
     if stdlib_object_path is not None:
-        stdlib_symbols = _native_object_global_symbol_sets(stdlib_object_path)
-        if stdlib_symbols is not None:
-            stdlib_defined, _ = stdlib_symbols
+        stdlib_symbols = _native_object_global_symbol_sets(
+            stdlib_object_path, target_triple=target_triple
+        )
+        stdlib_defined, _ = stdlib_symbols
     return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
 
 
@@ -714,11 +906,16 @@ def _shared_stdlib_native_symbol_closure_issue(
     stdlib_object_path: Path,
     *,
     stdlib_module_symbols: Collection[str] | None,
+    target_triple: str | None = None,
 ) -> str | None:
-    symbol_sets = _native_object_global_symbol_sets(stdlib_object_path)
-    if symbol_sets is None:
-        return None
+    symbol_sets = _native_object_global_symbol_sets(
+        stdlib_object_path, target_triple=target_triple
+    )
     defined, undefined = symbol_sets
+    # All members of a compiler archive are included by the final link plan.
+    # References between those members are resolved within this artifact, even
+    # though nm reports both their provider and consumer rows independently.
+    undefined = undefined - defined
     issues: list[str] = []
 
     partition_functions = _read_shared_stdlib_partition_functions(stdlib_object_path)
@@ -803,71 +1000,94 @@ def _immutable_publish_lock_name(dst: Path) -> str:
     return f"immutable-publish-{digest}"
 
 
+def _copy_verified_backend_artifact(
+    src: Path, dst: Path, *, identity: StableRegularFileIdentity
+) -> StableRegularFileIdentity:
+    """Publish attested bytes without aliasing mutable output to immutable cache."""
+    try:
+        if identity.path != src.expanduser().absolute():
+            raise ValueError("Backend copy identity belongs to another source path")
+        verify_stable_regular_file_identity(identity, label="backend copy source")
+        _atomic_copy_file(src, dst, expected_sha256=identity.sha256)
+        copied = stable_regular_file_identity(dst, label="backend copied artifact")
+        if copied.sha256 != identity.sha256 or copied.size != identity.size:
+            raise ValueError("Backend destination changed after verified publication")
+        return copied
+    except (OSError, ValueError) as error:
+        raise BackendArtifactValidationError(
+            f"Cannot publish attested backend artifact {src} to {dst}: {error}"
+        ) from error
+
+
+def _require_matching_backend_content(
+    expected: StableRegularFileIdentity, actual: StableRegularFileIdentity
+) -> None:
+    if actual.sha256 != expected.sha256 or actual.size != expected.size:
+        raise BackendArtifactValidationError(
+            f"Backend cache key has conflicting content: {actual.path}; "
+            f"expected {expected.sha256}, found {actual.sha256}"
+        )
+
+
 def _publish_immutable_backend_cache_artifact(
     src: Path,
     dst: Path,
     *,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
     warnings: list[str],
-) -> Path:
-    """Publish a key-addressed backend cache artifact without clobbering peers."""
+    identity: StableRegularFileIdentity | None = None,
+) -> StableRegularFileIdentity:
+    """Publish one admitted generation; a key cannot silently name other bytes."""
+    identity = _validate_backend_cache_artifact(
+        src, artifact_contract=artifact_contract, identity=identity
+    )
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
-            return dst
-        warnings.append(
-            "Ignoring invalid existing immutable cache artifact; "
-            f"cleanup owns removal: {dst}"
-        )
-        return src
 
+    def existing_generation() -> StableRegularFileIdentity:
+        try:
+            existing = _validate_backend_cache_artifact(
+                dst, artifact_contract=artifact_contract
+            )
+        except BackendArtifactValidationError:
+            warnings.append(
+                f"Ignoring invalid immutable cache artifact; cleanup owns removal: {dst}"
+            )
+            return identity
+        _require_matching_backend_content(identity, existing)
+        return existing
+
+    if dst.exists():
+        return existing_generation()
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        try:
-            os.link(src, tmp_path)
-        except OSError as exc:
-            if not _link_failure_wants_copy(exc):
-                raise
-            shutil.copyfile(src, tmp_path)
-            with contextlib.suppress(OSError):
-                shutil.copymode(src, tmp_path)
+        # Copy through the existing verified publication primitive. Linking the
+        # caller's writable source into a cache transfers neither ownership nor
+        # immutability; a later in-place write would poison every linked tier.
+        _copy_verified_backend_artifact(src, tmp_path, identity=identity)
         try:
             os.link(tmp_path, dst)
         except FileExistsError:
-            if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
-                return dst
-            warnings.append(
-                "Ignoring concurrently published invalid immutable cache artifact; "
-                f"cleanup owns removal: {dst}"
-            )
-            return src
+            return existing_generation()
         except OSError as exc:
             if not _link_failure_wants_copy(exc):
                 raise
-            # No hard links here (exFAT/FAT on the artifact SSD): publish via a
-            # lock-guarded atomic rename so the backend cache still POPULATES
-            # rather than silently disabling itself on the primary build volume.
-            # The immutable cache is key-addressed, so the lock + existence
-            # re-check preserves the no-clobber contract (a peer that already
-            # published wins) and os.replace of a fully-staged tmp is atomic for
-            # readers.
             with _shared_cache_lock(
                 _immutable_publish_lock_name(dst), cache_root=dst.parent
             ):
                 if dst.exists():
-                    if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
-                        return dst
-                    warnings.append(
-                        "Ignoring invalid existing immutable cache artifact; "
-                        f"cleanup owns removal: {dst}"
-                    )
-                    return src
+                    return existing_generation()
                 os.replace(tmp_path, dst)
-        return dst
     finally:
-        with contextlib.suppress(OSError):
-            if tmp_path.exists():
-                tmp_path.unlink()
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError as error:
+            warnings.append(
+                f"Backend cache publication temporary cleanup failed: {error}"
+            )
+    # Removing the last private hard link changes the published inode's change
+    # time. Capture the returned generation only after that owned mutation, not
+    # before finally runs; peers and consumers must see the final identity.
+    return existing_generation()
 
 
 def _materialize_cached_backend_artifact(
@@ -883,8 +1103,16 @@ def _materialize_cached_backend_artifact(
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
+    artifact_contract: BackendArtifactContract,
+    candidate_identity: StableRegularFileIdentity | None = None,
 ) -> bool:
-    is_wasm_output = output_artifact.suffix == ".wasm"
+    try:
+        candidate_identity = _validate_backend_cache_artifact(
+            candidate, artifact_contract=artifact_contract, identity=candidate_identity
+        )
+    except OSError as exc:
+        warnings.append(f"Cache candidate admission failed: {exc}")
+        return False
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
@@ -892,34 +1120,47 @@ def _materialize_cached_backend_artifact(
         with contextlib.suppress(OSError):
             output_stat = output_artifact.stat()
     if output_stat is not None:
-        synced = _artifact_sync_state_matches_stat(
+        synced_identity = _backend_artifact_sync_identity(
             state,
             source_key=source_key,
             tier=tier,
-            stat=output_stat,
+            artifact=output_artifact,
+            artifact_contract=artifact_contract,
         )
-        if synced and (
-            not is_wasm_output or _is_reusable_wasm_artifact(output_artifact)
-        ):
+        if synced_identity is not None:
+            try:
+                _require_matching_backend_content(candidate_identity, synced_identity)
+            except BackendArtifactValidationError as exc:
+                warnings.append(str(exc))
+                return False
             return True
     sync_tier = tier
     sync_source_key = source_key
     try:
-        _atomic_link_or_copy_file(candidate, output_artifact)
+        output_identity = _copy_verified_backend_artifact(
+            candidate, output_artifact, identity=candidate_identity
+        )
         if tier == "function" and cache_path is not None and candidate != cache_path:
-            with contextlib.suppress(OSError):
+            try:
                 published_module_cache = _publish_immutable_backend_cache_artifact(
                     candidate,
                     cache_path,
-                    is_wasm=is_wasm_output,
+                    artifact_contract=artifact_contract,
                     warnings=warnings,
+                    identity=candidate_identity,
                 )
-                if module_cache_key and published_module_cache == cache_path:
+                if (
+                    module_cache_key
+                    and published_module_cache.path
+                    == cache_path.expanduser().absolute()
+                ):
                     # Once the canonical module cache path is valid, future
                     # daemon sync checks should treat output.o as module-synced
                     # rather than function-only.
                     sync_tier = "module"
                     sync_source_key = module_cache_key
+            except OSError as exc:
+                warnings.append(f"Module cache promotion failed: {exc}")
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _write_artifact_sync_state(
@@ -927,53 +1168,91 @@ def _materialize_cached_backend_artifact(
                 source_key=sync_source_key,
                 tier=sync_tier,
                 artifact=output_artifact,
+                identity=output_identity,
             )
-        except OSError:
-            pass
+        except OSError as exc:
+            warnings.append(f"Backend cache sync receipt write failed: {exc}")
         return True
     except OSError as exc:
         warnings.append(f"Cache copy failed: {exc}")
         return False
 
 
-def _synced_backend_output_cache_hit_tier(
+def _backend_artifact_sync_identity(
+    state: dict[str, Any] | None,
+    *,
+    source_key: str,
+    tier: str,
+    artifact: Path,
+    artifact_contract: BackendArtifactContract,
+) -> StableRegularFileIdentity | None:
+    # Reject nonmatching source/tier before any byte inspection. A receipt owns
+    # exactly one tier, so checking module and function reuse never hashes twice.
+    if (
+        not source_key
+        or state is None
+        or state.get("source_key") != source_key
+        or state.get("tier") != tier
+    ):
+        return None
+    try:
+        identity = _validate_backend_cache_artifact(
+            artifact, artifact_contract=artifact_contract
+        )
+    except BackendArtifactValidationError:
+        return None
+    if not _artifact_sync_state_matches(
+        state,
+        source_key=source_key,
+        tier=tier,
+        artifact=artifact,
+        identity=identity,
+    ):
+        return None
+    return identity
+
+
+@dataclass(frozen=True, slots=True)
+class _SyncedBackendOutput:
+    tier: str
+    identity: StableRegularFileIdentity
+
+
+def _synced_backend_output_cache_hit(
     state: dict[str, Any] | None,
     output_artifact: Path,
     output_stat: os.stat_result | None,
     *,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
     cache_key: str | None,
     function_cache_key: str | None,
     stdlib_object_cache_key: str | None,
-) -> str | None:
+    stdlib_object_path: Path | None = None,
+) -> _SyncedBackendOutput | None:
     if output_stat is None:
         return None
-    module_source_key = _native_artifact_source_key(
-        cache_key,
-        stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
-    )
-    if module_source_key and _artifact_sync_state_matches_stat(
-        state,
-        source_key=module_source_key,
-        tier="module",
-        stat=output_stat,
-    ):
-        if not is_wasm or _is_reusable_wasm_artifact(output_artifact):
-            return "module"
-    function_source_key = _native_artifact_source_key(
-        function_cache_key,
-        stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
-    )
-    if function_source_key and _artifact_sync_state_matches_stat(
-        state,
-        source_key=function_source_key,
-        tier="function",
-        stat=output_stat,
-    ):
-        if not is_wasm or _is_reusable_wasm_artifact(output_artifact):
-            return "function"
+    for tier, key in (("module", cache_key), ("function", function_cache_key)):
+        identity = _backend_artifact_sync_identity(
+            state,
+            source_key=_backend_artifact_source_key(
+                key,
+                stdlib_object_cache_key=stdlib_object_cache_key,
+                artifact_contract=artifact_contract,
+            ),
+            tier=tier,
+            artifact=output_artifact,
+            artifact_contract=artifact_contract,
+        )
+        if identity is None:
+            continue
+        if artifact_contract.is_native and _native_object_has_unresolved_module_chunks(
+            output_artifact,
+            stdlib_object_path,
+            target_triple=artifact_contract.target_triple,
+            identity=identity,
+        ):
+            return None
+        return _SyncedBackendOutput(tier, identity)
     return None
 
 
@@ -985,60 +1264,35 @@ def _validated_stdlib_contract_token_for_backend_cache_hit(
     stdlib_module_symbols: Collection[str] | None,
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None,
     stage_timings_ms: dict[str, float] | None,
+    target_triple: str | None = None,
 ) -> tuple[bool, _SharedStdlibCacheValidationToken | None]:
     if stdlib_object_path is None:
         return True, None
     stage_start = time.perf_counter()
-    active_stdlib_contract_token = stdlib_contract_validation_token
-    if (
-        active_stdlib_contract_token is not None
-        and not _shared_stdlib_cache_validation_token_matches(
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            active_stdlib_contract_token,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-        )
-    ):
-        active_stdlib_contract_token = None
-    _record_backend_cache_stage_ms(
-        stage_timings_ms,
-        "backend_cache_try_contract_token",
-        stage_start,
-    )
-    if active_stdlib_contract_token is not None:
-        return True, active_stdlib_contract_token
-
-    stage_start = time.perf_counter()
-    stdlib_contract_valid = _shared_stdlib_cache_matches_key_locked(
+    active_stdlib_contract_token = _shared_stdlib_cache_validation_token(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
         stdlib_module_symbols=stdlib_module_symbols,
-        stage_timings_ms=stage_timings_ms,
+        target_triple=target_triple,
+        previous_token=stdlib_contract_validation_token,
     )
-    if stdlib_contract_valid:
-        active_stdlib_contract_token = _shared_stdlib_cache_validation_token(
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-        )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_try_contract_validate",
         stage_start,
     )
-    return stdlib_contract_valid, active_stdlib_contract_token
+    return active_stdlib_contract_token is not None, active_stdlib_contract_token
 
 
-def _native_artifact_source_key(
+def _backend_artifact_source_key(
     base_key: str | None,
     *,
     stdlib_object_cache_key: str | None,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
 ) -> str:
-    if base_key is None:
+    artifact_contract.validate_shared_stdlib(enabled=bool(stdlib_object_cache_key))
+    if not base_key:
         # Cache disabled (e.g. --rebuild): return empty key so the daemon
         # does not match against a shared sentinel that is identical for
         # every file.  Previously `base_key or ""` produced the same
@@ -1046,8 +1300,8 @@ def _native_artifact_source_key(
         # daemon in-memory cache to return the first file's compiled output
         # for all subsequent files in the same daemon session.
         return ""
-    key = base_key or ""
-    if is_wasm or not stdlib_object_cache_key:
+    key = f"{base_key}|artifact:{artifact_contract.cache_identity}"
+    if not stdlib_object_cache_key:
         return key
     return f"{key}|stdlib:{stdlib_object_cache_key}"
 
@@ -1056,19 +1310,20 @@ def _backend_cache_artifact_path(
     cache_root: Path,
     base_key: str | None,
     *,
-    ext: str,
     stdlib_object_cache_key: str | None,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
 ) -> Path | None:
-    source_key = _native_artifact_source_key(
+    source_key = _backend_artifact_source_key(
         base_key,
         stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
+        artifact_contract=artifact_contract,
     )
     if not source_key:
         return None
-    filename_key = source_key.replace("|stdlib:", ".stdlib-")
-    return cache_root / f"{filename_key}.{ext}"
+    filename_key = source_key.replace("|artifact:", ".artifact-").replace(
+        "|stdlib:", ".stdlib-"
+    )
+    return cache_root / f"{filename_key}{artifact_contract.suffix}"
 
 
 def _try_cached_backend_candidates(
@@ -1076,7 +1331,7 @@ def _try_cached_backend_candidates(
     project_root: Path,
     cache_candidates: Sequence[tuple[str, Path]],
     output_artifact: Path,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
     cache_key: str | None,
     function_cache_key: str | None,
     cache_path: Path | None,
@@ -1088,6 +1343,9 @@ def _try_cached_backend_candidates(
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[bool, str | None]:
+    artifact_contract.validate_shared_stdlib(
+        enabled=stdlib_object_path is not None or bool(stdlib_object_cache_key)
+    )
     stage_start = time.perf_counter()
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)
@@ -1114,6 +1372,7 @@ def _try_cached_backend_candidates(
             stdlib_module_symbols=stdlib_module_symbols,
             stdlib_contract_validation_token=stdlib_contract_validation_token,
             stage_timings_ms=stage_timings_ms,
+            target_triple=artifact_contract.target_triple,
         )
     )
     del _active_stdlib_contract_token
@@ -1126,29 +1385,31 @@ def _try_cached_backend_candidates(
                     stdlib_object_cache_key,
                     stdlib_object_manifest=stdlib_object_manifest,
                     stdlib_module_symbols=stdlib_module_symbols,
+                    target_triple=artifact_contract.target_triple,
                 )
             )
-        # Native output.o cache hits are invalid without the matching
+        # Native application archive cache hits are invalid without the matching
         # stdlib_shared object they were compiled against.
         return False, None
 
     stage_start = time.perf_counter()
-    synced_tier = _synced_backend_output_cache_hit_tier(
+    synced = _synced_backend_output_cache_hit(
         state,
         output_artifact,
         output_stat,
-        is_wasm=is_wasm,
+        artifact_contract=artifact_contract,
         cache_key=cache_key,
         function_cache_key=function_cache_key,
         stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_object_path=stdlib_object_path,
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_try_synced_output",
         stage_start,
     )
-    if synced_tier is not None:
-        return True, synced_tier
+    if synced is not None:
+        return True, synced.tier
 
     for tier, candidate in cache_candidates:
         stage_start = time.perf_counter()
@@ -1165,7 +1426,11 @@ def _try_cached_backend_candidates(
             stage_start,
         )
         stage_start = time.perf_counter()
-        if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
+        try:
+            candidate_identity = _validate_backend_cache_artifact(
+                candidate, artifact_contract=artifact_contract
+            )
+        except BackendArtifactValidationError:
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
                 "backend_cache_try_artifact_valid",
@@ -1179,9 +1444,11 @@ def _try_cached_backend_candidates(
             stage_start,
         )
         stage_start = time.perf_counter()
-        if not is_wasm and _native_object_has_unresolved_module_chunks(
+        if artifact_contract.is_native and _native_object_has_unresolved_module_chunks(
             candidate,
             stdlib_object_path,
+            target_triple=artifact_contract.target_triple,
+            identity=candidate_identity,
         ):
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
@@ -1204,23 +1471,25 @@ def _try_cached_backend_candidates(
             candidate,
             output_artifact,
             tier=tier,
-            source_key=_native_artifact_source_key(
+            source_key=_backend_artifact_source_key(
                 cache_key
                 if tier == "module"
                 else (function_cache_key or cache_key or ""),
                 stdlib_object_cache_key=stdlib_object_cache_key,
-                is_wasm=is_wasm,
+                artifact_contract=artifact_contract,
             ),
             cache_path=cache_path,
-            module_cache_key=_native_artifact_source_key(
+            module_cache_key=_backend_artifact_source_key(
                 cache_key,
                 stdlib_object_cache_key=stdlib_object_cache_key,
-                is_wasm=is_wasm,
+                artifact_contract=artifact_contract,
             ),
             warnings=warnings,
             state_path=state_path,
             state=state,
             output_stat=output_stat,
+            artifact_contract=artifact_contract,
+            candidate_identity=candidate_identity,
         ):
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
@@ -1249,62 +1518,49 @@ def _backend_daemon_skip_output_sync_flags(
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
+    artifact_contract: BackendArtifactContract,
 ) -> tuple[bool, bool]:
-    is_wasm_output = output_artifact.suffix == ".wasm"
-    if not is_wasm_output and _native_object_has_unresolved_module_chunks(
-        output_artifact,
-        stdlib_object_path,
-    ):
-        return False, False
-    if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key_locked(
-        stdlib_object_path,
-        stdlib_object_cache_key,
-        stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
-    ):
-        return False, False
-    if state_path is None:
-        state_path = _artifact_sync_state_path(project_root, output_artifact)
-        state = _read_artifact_sync_state(state_path)
+    artifact_contract.validate_shared_stdlib(
+        enabled=stdlib_object_path is not None or bool(stdlib_object_cache_key)
+    )
     if output_stat is None:
         try:
             output_stat = output_artifact.stat()
         except OSError:
             return False, False
-    skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
-        state,
-        source_key=_native_artifact_source_key(
-            cache_key,
-            stdlib_object_cache_key=stdlib_object_cache_key,
-            is_wasm=is_wasm_output,
-        ),
-        tier="module",
-        stat=output_stat,
-    )
-    skip_function_output = bool(
-        function_cache_key
-    ) and _artifact_sync_state_matches_stat(
-        state,
-        source_key=_native_artifact_source_key(
-            function_cache_key,
-            stdlib_object_cache_key=stdlib_object_cache_key,
-            is_wasm=is_wasm_output,
-        ),
-        tier="function",
-        stat=output_stat,
-    )
-    if is_wasm_output and not _is_reusable_wasm_artifact(output_artifact):
+    if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key_locked(
+        stdlib_object_path,
+        stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols=stdlib_module_symbols,
+        target_triple=artifact_contract.target_triple,
+    ):
         return False, False
-    return skip_module_output, skip_function_output
+    if state_path is None:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
+        state = _read_artifact_sync_state(state_path)
+    synced = _synced_backend_output_cache_hit(
+        state,
+        output_artifact,
+        output_stat,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_object_path=stdlib_object_path,
+        artifact_contract=artifact_contract,
+    )
+    if synced is None:
+        return False, False
+    return synced.tier == "module", synced.tier == "function"
 
 
 @contextmanager
 def _temporary_backend_output_path(
     artifacts_root: Path,
     *,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
 ) -> Iterator[Path]:
-    suffix = ".wasm" if is_wasm else ".o"
+    suffix = artifact_contract.suffix
     artifacts_root.mkdir(parents=True, exist_ok=True)
     path = artifacts_root / f"backend_{os.getpid()}_{uuid.uuid4().hex}{suffix}"
     try:
@@ -1328,9 +1584,13 @@ def _stage_backend_output_and_caches(
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
+    artifact_contract: BackendArtifactContract,
 ) -> str | None:
-    is_wasm_output = output_artifact.suffix == ".wasm"
+    artifact_contract.validate_shared_stdlib(enabled=bool(stdlib_object_cache_key))
     try:
+        staged_identity = _validate_backend_cache_artifact(
+            backend_output, artifact_contract=artifact_contract
+        )
         if output_artifact.parent != Path("."):
             output_artifact.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -1340,20 +1600,14 @@ def _stage_backend_output_and_caches(
     if cache_path is not None:
         if backend_output != cache_path:
             try:
-                staged_source = _publish_immutable_backend_cache_artifact(
+                staged_identity = _publish_immutable_backend_cache_artifact(
                     backend_output,
                     cache_path,
-                    is_wasm=is_wasm_output,
+                    artifact_contract=artifact_contract,
                     warnings=warnings,
+                    identity=staged_identity,
                 )
-                if staged_source == cache_path:
-                    _ensure_native_object_symbol_facts(
-                        staged_source,
-                        is_wasm=is_wasm_output,
-                    )
-                if staged_source == cache_path:
-                    with contextlib.suppress(OSError):
-                        backend_output.unlink()
+                staged_source = staged_identity.path
             except OSError as exc:
                 return f"Failed to publish backend cache output: {exc}"
         else:
@@ -1361,77 +1615,84 @@ def _stage_backend_output_and_caches(
 
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
-    if output_already_synced is None:
-        state = _read_artifact_sync_state(state_path)
+    if output_already_synced is not False:
+        if state is None:
+            state = _read_artifact_sync_state(state_path)
         if output_stat is None:
             try:
                 output_stat = output_artifact.stat()
             except OSError:
                 output_stat = None
-        output_already_synced = (
-            bool(cache_key)
-            and output_stat is not None
-            and (
-                _artifact_sync_state_matches_stat(
-                    state,
-                    source_key=_native_artifact_source_key(
-                        cache_key,
-                        stdlib_object_cache_key=stdlib_object_cache_key,
-                        is_wasm=is_wasm_output,
-                    ),
-                    tier="module",
-                    stat=output_stat,
-                )
-            )
-        )
-        if output_already_synced and is_wasm_output:
-            output_already_synced = _is_reusable_wasm_artifact(output_artifact)
-
-    try:
-        if output_already_synced and not output_artifact.exists():
-            output_already_synced = False
-        if output_already_synced:
-            pass
-        elif staged_source == backend_output and cache_path is None:
-            backend_output.replace(output_artifact)
-        else:
-            _atomic_link_or_copy_file(staged_source, output_artifact)
-    except OSError as exc:
-        return f"Failed to move backend output: {exc}"
-
-    if cache_path is None:
-        return None
-
-    if function_cache_path is not None and function_cache_path != cache_path:
-        try:
-            published_function_cache = _publish_immutable_backend_cache_artifact(
-                staged_source,
-                function_cache_path,
-                is_wasm=is_wasm_output,
-                warnings=warnings,
-            )
-            if published_function_cache == function_cache_path:
-                _ensure_native_object_symbol_facts(
-                    published_function_cache,
-                    is_wasm=is_wasm_output,
-                )
-        except OSError as exc:
-            warnings.append(f"Function cache write failed: {exc}")
-    if cache_key and not output_already_synced:
-        try:
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_artifact_sync_state(
-                state_path,
-                source_key=_native_artifact_source_key(
+        synced_identity = (
+            _backend_artifact_sync_identity(
+                state,
+                source_key=_backend_artifact_source_key(
                     cache_key,
                     stdlib_object_cache_key=stdlib_object_cache_key,
-                    is_wasm=is_wasm_output,
+                    artifact_contract=artifact_contract,
                 ),
                 tier="module",
                 artifact=output_artifact,
+                artifact_contract=artifact_contract,
             )
-        except OSError:
+            if cache_key and output_stat is not None
+            else None
+        )
+        output_already_synced = synced_identity is not None
+        if synced_identity is not None:
+            try:
+                _require_matching_backend_content(staged_identity, synced_identity)
+            except BackendArtifactValidationError as exc:
+                return str(exc)
+    try:
+        if output_already_synced:
             pass
+        elif staged_source == output_artifact:
+            verify_stable_regular_file_identity(
+                staged_identity, label="backend staged output"
+            )
+            output_identity = staged_identity
+        else:
+            output_identity = _copy_verified_backend_artifact(
+                staged_source, output_artifact, identity=staged_identity
+            )
+    except (OSError, ValueError) as exc:
+        return f"Failed to move backend output: {exc}"
+
+    if cache_path is not None:
+        if function_cache_path is not None and function_cache_path != cache_path:
+            try:
+                _publish_immutable_backend_cache_artifact(
+                    staged_source,
+                    function_cache_path,
+                    artifact_contract=artifact_contract,
+                    warnings=warnings,
+                    identity=staged_identity,
+                )
+            except OSError as exc:
+                warnings.append(f"Function cache write failed: {exc}")
+        if cache_key and not output_already_synced:
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_artifact_sync_state(
+                    state_path,
+                    source_key=_backend_artifact_source_key(
+                        cache_key,
+                        stdlib_object_cache_key=stdlib_object_cache_key,
+                        artifact_contract=artifact_contract,
+                    ),
+                    tier="module",
+                    artifact=output_artifact,
+                    identity=output_identity,
+                )
+            except OSError as exc:
+                warnings.append(f"Backend cache sync receipt write failed: {exc}")
+
+    if backend_output not in {output_artifact, cache_path, function_cache_path}:
+        try:
+            backend_output.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(f"Backend private output cleanup failed: {exc}")
     return None
 
 
@@ -1476,6 +1737,7 @@ def _shared_stdlib_manifest(
         compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
     payload = {
         "schema": _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
+        "artifact_kind": "archive",
         "cache_key": cache_key,
         "cache_variant": cache_variant,
         "compiler_fingerprint": compiler_fingerprint,
@@ -1505,8 +1767,15 @@ def _stage_shared_stdlib_object_for_link(
     stdlib_object_manifest: str | None,
     stdlib_module_symbols: Collection[str] | None = None,
     artifacts_root: Path,
+    target_triple: str | None = None,
 ) -> Path:
-    staged_stdlib_obj = artifacts_root / stdlib_object_path.name
+    # A stable build-owned destination keeps the linker off the mutable cache
+    # generation, including when the source itself lives under artifacts_root.
+    staged_stdlib_obj = artifacts_root / "shared-stdlib-link" / stdlib_object_path.name
+    if staged_stdlib_obj.resolve() == stdlib_object_path.resolve():
+        raise OSError(
+            f"Shared stdlib link snapshot aliases its source: {stdlib_object_path}"
+        )
     staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
     staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
     staged_manifest_path = _stdlib_object_manifest_sidecar_path(staged_stdlib_obj)
@@ -1523,11 +1792,25 @@ def _stage_shared_stdlib_object_for_link(
     source_digest_path = _stdlib_object_digest_sidecar_path(stdlib_object_path)
     try:
         with _shared_stdlib_cache_lock(stdlib_object_path):
+            generation = _shared_stdlib_cache_generation_token(
+                stdlib_object_path,
+                stdlib_object_cache_key,
+                stdlib_object_manifest=stdlib_object_manifest,
+                stdlib_module_symbols=stdlib_module_symbols,
+                target_triple=target_triple,
+            )
+            if generation is None:
+                raise OSError(
+                    "Shared stdlib cache contract mismatch during staging: "
+                    f"generation unavailable for {stdlib_object_path}"
+                )
+            identities = {entry.path: entry for entry in generation[1]}
             if not _shared_stdlib_cache_matches_key(
                 stdlib_object_path,
                 stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
                 stdlib_module_symbols=stdlib_module_symbols,
+                target_triple=target_triple,
             ):
                 raise OSError(
                     "Shared stdlib cache contract mismatch during staging: "
@@ -1536,11 +1819,20 @@ def _stage_shared_stdlib_object_for_link(
                         stdlib_object_cache_key,
                         stdlib_object_manifest=stdlib_object_manifest,
                         stdlib_module_symbols=stdlib_module_symbols,
+                        target_triple=target_triple,
                     )
                 )
-            _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
+
+            def copy_snapshot(source: Path, destination: Path) -> None:
+                identity = identities.get(source.expanduser().absolute())
+                if identity is None:
+                    # Optional count metadata is not part of semantic admission.
+                    identity = _native_symbol_artifact_identity(source)
+                _copy_verified_backend_artifact(source, destination, identity=identity)
+
+            copy_snapshot(stdlib_object_path, staged_stdlib_obj)
             if source_key_path.exists():
-                _atomic_link_or_copy_file(source_key_path, staged_key_path)
+                copy_snapshot(source_key_path, staged_key_path)
             elif stdlib_object_cache_key:
                 raise OSError(
                     "Shared stdlib cache key mismatch during staging: "
@@ -1549,11 +1841,11 @@ def _stage_shared_stdlib_object_for_link(
             elif staged_key_path.exists():
                 staged_key_path.unlink()
             if source_count_path.exists():
-                _atomic_link_or_copy_file(source_count_path, staged_count_path)
+                copy_snapshot(source_count_path, staged_count_path)
             elif staged_count_path.exists():
                 staged_count_path.unlink()
             if source_manifest_path.exists():
-                _atomic_link_or_copy_file(source_manifest_path, staged_manifest_path)
+                copy_snapshot(source_manifest_path, staged_manifest_path)
             elif stdlib_object_manifest:
                 raise OSError(
                     "Shared stdlib cache contract mismatch during staging: "
@@ -1562,7 +1854,7 @@ def _stage_shared_stdlib_object_for_link(
             elif staged_manifest_path.exists():
                 staged_manifest_path.unlink()
             if source_partition_manifest_path.exists():
-                _atomic_link_or_copy_file(
+                copy_snapshot(
                     source_partition_manifest_path, staged_partition_manifest_path
                 )
             else:
@@ -1571,35 +1863,62 @@ def _stage_shared_stdlib_object_for_link(
                     f"missing partition manifest sidecar for {stdlib_object_path}"
                 )
             if source_digest_path.exists():
-                _atomic_link_or_copy_file(source_digest_path, staged_digest_path)
+                copy_snapshot(source_digest_path, staged_digest_path)
             else:
                 raise OSError(
                     "Shared stdlib cache contract mismatch during staging: "
                     f"missing object digest sidecar for {stdlib_object_path}"
                 )
-    except OSError:
-        _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+    except OSError as exc:
+        try:
+            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+        except OSError as cleanup_error:
+            exc.add_note(f"Shared stdlib staging cleanup also failed: {cleanup_error}")
         raise
     return staged_stdlib_obj
 
 
 def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
-    with contextlib.suppress(OSError):
-        stdlib_object_path.unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_count_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_key_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_manifest_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_digest_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path).unlink()
-    with contextlib.suppress(OSError):
-        _native_object_symbol_facts_sidecar_path(stdlib_object_path).unlink()
+    """Attempt every owned path; a partial invalidation is never a cache miss."""
+    paths = (
+        stdlib_object_path,
+        _stdlib_object_count_sidecar_path(stdlib_object_path),
+        _stdlib_object_key_sidecar_path(stdlib_object_path),
+        _stdlib_object_manifest_sidecar_path(stdlib_object_path),
+        _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path),
+        _stdlib_object_digest_sidecar_path(stdlib_object_path),
+        _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path),
+        _native_object_symbol_facts_sidecar_path(stdlib_object_path),
+    )
+    failures: list[tuple[Path, OSError]] = []
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures.append((path, exc))
+    if failures:
+        detail = "; ".join(f"{path}: {exc}" for path, exc in failures)
+        raise OSError(
+            f"Failed to remove shared stdlib cache artifacts: {detail}"
+        ) from ExceptionGroup(
+            "Shared stdlib artifact deletion failures",
+            [exc for _path, exc in failures],
+        )
+
+
+def _shared_stdlib_artifact_validation_error(
+    path: Path, *, target_triple: str | None
+) -> BackendArtifactValidationError | None:
+    contract = BackendArtifactContract(
+        BackendArtifactKind.NATIVE_ARCHIVE, target_triple
+    )
+    try:
+        contract.validate(path)
+    except BackendArtifactValidationError as error:
+        return error
+    return None
 
 
 def _shared_stdlib_cache_matches_key(
@@ -1609,6 +1928,7 @@ def _shared_stdlib_cache_matches_key(
     stdlib_object_manifest: str | None,
     stdlib_module_symbols: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    target_triple: str | None = None,
 ) -> bool:
     if (
         stdlib_object_path is None
@@ -1710,6 +2030,17 @@ def _shared_stdlib_cache_matches_key(
     if cached_object_digest.strip().lower() != actual_object_digest.lower():
         return False
     stage_start = time.perf_counter()
+    artifact_error = _shared_stdlib_artifact_validation_error(
+        stdlib_object_path, target_triple=target_triple
+    )
+    _record_backend_cache_stage_ms(
+        stage_timings_ms,
+        "backend_cache_stdlib_contract_artifact",
+        stage_start,
+    )
+    if artifact_error is not None:
+        return False
+    stage_start = time.perf_counter()
     try:
         partition_manifest_digest = _sha256_file(partition_manifest_path)
     except OSError:
@@ -1732,6 +2063,7 @@ def _shared_stdlib_cache_matches_key(
         stdlib_module_symbols=stdlib_module_symbols,
         object_digest=actual_object_digest,
         partition_manifest_digest=partition_manifest_digest,
+        target_triple=target_triple,
     ):
         _record_backend_cache_stage_ms(
             stage_timings_ms,
@@ -1749,6 +2081,7 @@ def _shared_stdlib_cache_matches_key(
         _shared_stdlib_native_symbol_closure_issue(
             stdlib_object_path,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
         )
         is None
     )
@@ -1766,6 +2099,7 @@ def _shared_stdlib_cache_matches_key(
                 stdlib_module_symbols=stdlib_module_symbols,
                 object_digest=actual_object_digest,
                 partition_manifest_digest=partition_manifest_digest,
+                target_triple=target_triple,
             )
     return symbol_closure_ok
 
@@ -1777,23 +2111,21 @@ def _shared_stdlib_cache_matches_key_locked(
     stdlib_object_manifest: str | None,
     stdlib_module_symbols: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    evict_corrupt: bool = False,
+    target_triple: str | None = None,
 ) -> bool:
-    if stdlib_object_path is None:
-        return False
-    stage_start = time.perf_counter()
-    with _shared_stdlib_cache_lock(stdlib_object_path):
-        _record_backend_cache_stage_ms(
-            stage_timings_ms,
-            "backend_cache_stdlib_contract_lock",
-            stage_start,
-        )
-        return _shared_stdlib_cache_matches_key(
+    return (
+        _shared_stdlib_cache_validation_token(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+            evict_corrupt=evict_corrupt,
             stage_timings_ms=stage_timings_ms,
         )
+        is not None
+    )
 
 
 def _shared_stdlib_contract_identity(
@@ -1801,8 +2133,11 @@ def _shared_stdlib_contract_identity(
     *,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
 ) -> str:
     payload = {
+        "symbol_schema": _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION,
+        "symbol_target": _symbol_normalization_target(target_triple),
         "key": stdlib_object_cache_key,
         "manifest": stdlib_object_manifest,
         "symbols": sorted(set(stdlib_module_symbols or ())),
@@ -1818,6 +2153,7 @@ def _shared_stdlib_symbol_contract_payload(
     stdlib_module_symbols: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
+    target_triple: str | None = None,
 ) -> dict[str, object]:
     return {
         "schema": _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION,
@@ -1825,6 +2161,7 @@ def _shared_stdlib_symbol_contract_payload(
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
         ),
         "object_digest": object_digest,
         "partition_manifest_digest": partition_manifest_digest,
@@ -1839,6 +2176,7 @@ def _shared_stdlib_symbol_contract_matches(
     stdlib_module_symbols: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
+    target_triple: str | None = None,
 ) -> bool:
     path = _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path)
     try:
@@ -1851,6 +2189,7 @@ def _shared_stdlib_symbol_contract_matches(
         stdlib_module_symbols=stdlib_module_symbols,
         object_digest=object_digest,
         partition_manifest_digest=partition_manifest_digest,
+        target_triple=target_triple,
     )
     return payload == expected
 
@@ -1863,6 +2202,7 @@ def _write_shared_stdlib_symbol_contract(
     stdlib_module_symbols: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
+    target_triple: str | None = None,
 ) -> None:
     payload = _shared_stdlib_symbol_contract_payload(
         stdlib_object_cache_key=stdlib_object_cache_key,
@@ -1870,6 +2210,7 @@ def _write_shared_stdlib_symbol_contract(
         stdlib_module_symbols=stdlib_module_symbols,
         object_digest=object_digest,
         partition_manifest_digest=partition_manifest_digest,
+        target_triple=target_triple,
     )
     _atomic_write_json(
         _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path),
@@ -1880,25 +2221,20 @@ def _write_shared_stdlib_symbol_contract(
 
 def _shared_stdlib_cache_validation_file_token(
     path: Path,
-) -> tuple[str, int, int, int] | None:
+) -> StableRegularFileIdentity | None:
     try:
-        stat_result = path.stat()
-    except OSError:
+        return _native_symbol_artifact_identity(path)
+    except NativeSymbolInspectionError:
         return None
-    return (
-        os.fspath(path),
-        int(stat_result.st_size),
-        int(stat_result.st_mtime_ns),
-        int(getattr(stat_result, "st_ctime_ns", 0)),
-    )
 
 
-def _shared_stdlib_cache_validation_token(
+def _shared_stdlib_cache_generation_token(
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
 ) -> _SharedStdlibCacheValidationToken | None:
     if stdlib_object_path is None:
         return None
@@ -1910,7 +2246,7 @@ def _shared_stdlib_cache_validation_token(
     ]
     if stdlib_object_manifest is not None:
         paths.append(_stdlib_object_manifest_sidecar_path(stdlib_object_path))
-    entries: list[tuple[str, int, int, int]] = []
+    entries: list[StableRegularFileIdentity] = []
     for path in paths:
         token = _shared_stdlib_cache_validation_file_token(path)
         if token is None:
@@ -1921,9 +2257,78 @@ def _shared_stdlib_cache_validation_token(
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
         ),
         tuple(entries),
     )
+
+
+def _shared_stdlib_cache_validation_token(
+    stdlib_object_path: Path | None,
+    stdlib_object_cache_key: str | None,
+    *,
+    stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
+    previous_token: _SharedStdlibCacheValidationToken | None = None,
+    evict_corrupt: bool = False,
+    stage_timings_ms: dict[str, float] | None = None,
+) -> _SharedStdlibCacheValidationToken | None:
+    """Validate and issue a token while owning the same publication generation."""
+    if stdlib_object_path is None:
+        return None
+    stage_start = time.perf_counter()
+    with _shared_stdlib_cache_lock(stdlib_object_path):
+        _record_backend_cache_stage_ms(
+            stage_timings_ms, "backend_cache_stdlib_contract_lock", stage_start
+        )
+        before = _shared_stdlib_cache_generation_token(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+        )
+        reuse_previous = (
+            before is not None
+            and previous_token is not None
+            and before == previous_token
+            and (
+                _shared_stdlib_artifact_validation_error(
+                    stdlib_object_path, target_triple=target_triple
+                )
+                is None
+            )
+        )
+        if not reuse_previous and not _shared_stdlib_cache_matches_key(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+            stage_timings_ms=stage_timings_ms,
+        ):
+            if (
+                evict_corrupt
+                and stdlib_object_cache_key
+                and _read_stdlib_cache_key(stdlib_object_path)
+                == stdlib_object_cache_key
+            ):
+                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
+            return None
+        after = _shared_stdlib_cache_generation_token(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+        )
+        if before != after:
+            raise NativeSymbolInspectionError(
+                stdlib_object_path,
+                ["shared stdlib generation changed during locked validation"],
+            )
+        return after
 
 
 def _shared_stdlib_cache_validation_token_matches(
@@ -1933,17 +2338,22 @@ def _shared_stdlib_cache_validation_token_matches(
     *,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
 ) -> bool:
     return token == _shared_stdlib_cache_validation_token(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
         stdlib_module_symbols=stdlib_module_symbols,
+        target_triple=target_triple,
+        previous_token=token,
     )
 
 
 def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
-    return target == "native"
+    # An explicit object is one complete relocatable compilation unit, not
+    # an archive disguised as an object after merging a cached stdlib.
+    return target == "native" and emit_mode != "obj"
 
 
 def _stdlib_module_symbols(
@@ -2161,6 +2571,7 @@ def _shared_stdlib_cache_mismatch_detail(
     *,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
 ) -> str:
     actual_key = _read_stdlib_cache_key(stdlib_path)
     if not expected_key:
@@ -2176,9 +2587,15 @@ def _shared_stdlib_cache_mismatch_detail(
                 return f"{stdlib_path} (missing manifest sidecar)"
             if actual_manifest != stdlib_object_manifest:
                 return f"{stdlib_path} (manifest sidecar mismatch)"
+        artifact_error = _shared_stdlib_artifact_validation_error(
+            stdlib_path, target_triple=target_triple
+        )
+        if artifact_error is not None:
+            return f"{stdlib_path} ({artifact_error})"
         issue = _shared_stdlib_native_symbol_closure_issue(
             stdlib_path,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
         )
         if issue is not None:
             return f"{stdlib_path} ({issue})"
@@ -2195,7 +2612,7 @@ def _stdlib_object_cache_path(
         return None
     cache_root = cache_path.parent
     cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root / f"stdlib_shared_{stdlib_cache_key}.o"
+    return cache_root / f"stdlib_shared_{stdlib_cache_key}.a"
 
 
 def _validate_shared_stdlib_cache_contract(
@@ -2209,27 +2626,22 @@ def _validate_shared_stdlib_cache_contract(
     stage_timings_ms: dict[str, float] | None = None,
 ) -> bool:
     """Validate a shared stdlib entry and evict corrupt exact-key artifacts."""
-    del project_root, target_triple
-    if not stdlib_object_path.exists():
-        return False
-    if _shared_stdlib_cache_matches_key_locked(
+    del project_root
+    return _shared_stdlib_cache_matches_key_locked(
         stdlib_object_path,
         expected_key,
         stdlib_object_manifest=expected_manifest,
         stdlib_module_symbols=stdlib_module_symbols,
         stage_timings_ms=stage_timings_ms,
-    ):
-        return True
-    actual_key = _read_stdlib_cache_key(stdlib_object_path)
-    if expected_key and actual_key == expected_key:
-        _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-    return False
+        evict_corrupt=True,
+        target_triple=target_triple,
+    )
 
 
-_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v3"
+_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v4-archive"
 
 
-_SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
+_SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v2-archive"
 
 
 _SHARED_STDLIB_PARTITION_SCHEMA_VERSION = "stdlib-partition-v2-exact-linkage-abi"

@@ -25,6 +25,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }
     }
@@ -271,6 +272,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
 
@@ -410,6 +412,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -442,6 +445,7 @@ mod tests {
             param_types: Some(vec!["int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();

@@ -8875,6 +8875,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::NamespaceGet,
+        name: "namespace_get",
+        type_idx: 5,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::NamespaceDel,
+        name: "namespace_del",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::RunpyRunModule,
         name: "runpy_run_module",
         type_idx: 7,
@@ -9227,6 +9237,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectCurrentframe,
         name: "inspect_currentframe",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FrameContextSet,
+        name: "frame_context_set",
+        type_idx: 5,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::SuperFromFrame,
+        name: "super_from_frame",
         type_idx: 0,
     },
     RuntimeImportSpec {
@@ -19040,6 +19060,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_globals_builtin" => Some(WasmRuntimeImport::GlobalsBuiltin),
         "locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
         "molt_locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
+        "namespace_get" => Some(WasmRuntimeImport::NamespaceGet),
+        "molt_namespace_get" => Some(WasmRuntimeImport::NamespaceGet),
+        "namespace_del" => Some(WasmRuntimeImport::NamespaceDel),
+        "molt_namespace_del" => Some(WasmRuntimeImport::NamespaceDel),
         "runpy_run_module" => Some(WasmRuntimeImport::RunpyRunModule),
         "molt_runpy_run_module" => Some(WasmRuntimeImport::RunpyRunModule),
         "runpy_run_path" => Some(WasmRuntimeImport::RunpyRunPath),
@@ -19228,6 +19252,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_inspect_cleandoc" => Some(WasmRuntimeImport::InspectCleandoc),
         "inspect_currentframe" => Some(WasmRuntimeImport::InspectCurrentframe),
         "molt_inspect_currentframe" => Some(WasmRuntimeImport::InspectCurrentframe),
+        "frame_context_set" => Some(WasmRuntimeImport::FrameContextSet),
+        "molt_frame_context_set" => Some(WasmRuntimeImport::FrameContextSet),
+        "super_from_frame" => Some(WasmRuntimeImport::SuperFromFrame),
+        "molt_super_from_frame" => Some(WasmRuntimeImport::SuperFromFrame),
         "inspect_getdoc" => Some(WasmRuntimeImport::InspectGetdoc),
         "molt_inspect_getdoc" => Some(WasmRuntimeImport::InspectGetdoc),
         "inspect_getmembers" => Some(WasmRuntimeImport::InspectGetmembers),

@@ -339,6 +339,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -385,6 +386,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
@@ -420,6 +422,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: true,
+            codegen_partition: false,
             execution_context: Default::default(),
         }];
         // Must not panic (no lift of the empty extern body).
@@ -439,6 +442,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }];
 
@@ -501,6 +505,7 @@ mod tests {
             param_types: Some(vec!["Any".into()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }];
 
@@ -565,6 +570,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         };
 
@@ -613,6 +619,7 @@ mod tests {
             param_types: func_ir.param_types.clone(),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }];
         finalize_simple_ir_drops(&mut funcs, &tti);

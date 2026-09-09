@@ -77,26 +77,23 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported tuple input"
                 )
-            if iterable.type_hint == "tuple":
+            exact_type = self._builtin_exact_type_from_expr(node.args[0])
+            if exact_type == "tuple":
                 return iterable
-            if iterable.type_hint == "list":
+            if exact_type == "list":
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_FROM_LIST", args=[iterable], result=res))
                 return res
             return self._emit_tuple_from_iter(iterable)
         if func_id == "dict":
-            has_starargs = len(node.args) > 1 or any(
-                isinstance(a, ast.Starred) for a in node.args
-            )
-            if has_starargs:
-                # dict(*args, ...) must unpack star-args into positional
-                # arguments at runtime, so route through CALL_BIND.
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee, True)
+            if node.keywords or len(node.args) > 1:
+                # Argument assembly precedes constructor iteration/mutation.
+                # The shared binder owns duplicate checking and all expansions.
+                callee = self._emit_builtin_type_value("dict")
+                callargs = self._emit_call_args_builder(node)
+                res = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+                return res
             res = MoltValue(self.next_var(), type_hint="dict")
             if not node.args:
                 self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
@@ -107,37 +104,6 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                         Diagnostic.OPERAND_VALUE, "Unsupported dict input"
                     )
                 self.emit(MoltOp(kind="DICT_FROM_OBJ", args=[iterable], result=res))
-            for kw in node.keywords:
-                if kw.arg is None:
-                    mapping = self.visit(kw.value)
-                    if mapping is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported dict ** input",
-                        )
-                    self.emit(
-                        MoltOp(
-                            kind="DICT_UPDATE_KWSTAR",
-                            args=[res, mapping],
-                            result=MoltValue("none"),
-                        )
-                    )
-                else:
-                    key = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[kw.arg], result=key))
-                    val = self.visit(kw.value)
-                    if val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported dict kw value",
-                        )
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_INDEX",
-                            args=[res, key, val],
-                            result=MoltValue("none"),
-                        )
-                    )
             return res
         if func_id == "float":
             if node.keywords or len(node.args) > 1:
@@ -160,7 +126,7 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             self.emit(MoltOp(kind="FLOAT_FROM_OBJ", args=[value], result=res))
             return res
         if func_id == "complex":
-            if any(kw.arg is None for kw in node.keywords) or len(node.args) > 2:
+            if len(node.args) > 2:
                 callee = self.visit(node.func)
                 if callee is None:
                     raise FrontendRejection(
@@ -287,13 +253,6 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                     )
                 has_base_flag = True
             for keyword in node.keywords:
-                if keyword.arg is None:
-                    callee = self.visit(node.func)
-                    if callee is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_TARGET, "Unsupported call target"
-                        )
-                    return self._emit_dynamic_call(node, callee, True)
                 if keyword.arg == "base":
                     if has_base_flag:
                         return self._emit_type_error_value(
@@ -468,12 +427,7 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                     Diagnostic.OPERAND_VALUE, "Unsupported frozenset input"
                 )
             return self._emit_frozenset_from_iter(iterable)
-            return self._emit_tuple_from_iter(iterable)
         if func_id == "bytes":
-            if any(kw.arg is None for kw in node.keywords):
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "bytes does not support **kwargs"
-                )
             if len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:
@@ -565,11 +519,6 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 self.emit(MoltOp(kind="BYTES_FROM_OBJ", args=[source_val], result=res))
             return res
         if func_id == "bytearray":
-            if any(kw.arg is None for kw in node.keywords):
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    "bytearray does not support **kwargs",
-                )
             if len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:

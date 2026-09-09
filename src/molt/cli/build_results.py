@@ -197,7 +197,7 @@ def _build_native_link_success_data(
     data["messages"] = [f"Successfully built {output_binary}"]
     data["artifacts"] = {
         "binary": str(output_binary),
-        "object": str(output_obj),
+        "archive": str(output_obj),
         "stub": str(stub_path),
         "runtime": str(runtime_lib),
     }

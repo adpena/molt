@@ -79,6 +79,8 @@ impl WasmBackend {
         let mut ir = ir;
         let target_info = crate::tir::target_info::TargetInfo::wasm_release_fast();
         crate::apply_profile_order(&mut ir);
+        let source_callables =
+            molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
         for func_ir in ir
             .functions
             .iter_mut()
@@ -117,6 +119,7 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
+        split_wasm_megafunctions(&mut ir);
         super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info);
 
         // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
@@ -139,13 +142,8 @@ impl WasmBackend {
             crate::passes::fuse_method_dispatch(func_ir);
         }
 
-        // Megafunction splitting is only sound on the current wasm path for
-        // straight-line functions. Non-linear control is lowered into a
-        // jumpful/stateful dispatch machine, and the generic sequential chunk
-        // stub is not a proven semantics-preserving transform there.
-        crate::passes::split_megafunctions_with_filter(&mut ir, |func_ir| {
-            !func_ir.is_extern && !has_non_linear_control_flow(&func_ir.ops)
-        });
+        // Bound growth introduced by TIR and final SimpleIR rewrites.
+        split_wasm_megafunctions(&mut ir);
 
         // Catalog initializers are address/ModuleId reached and therefore have
         // no ordinary SimpleIR call edge. Keep exactly the canonical catalog
@@ -169,11 +167,20 @@ impl WasmBackend {
             }
         }
 
-        let trampoline_analysis = super::trampoline_analysis::analyze_wasm_trampolines(&ir);
+        let trampoline_analysis =
+            super::trampoline_analysis::analyze_wasm_trampolines_with_source(&ir, source_callables);
         let lir_lowering_plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
             &ir,
             &trampoline_analysis.escaped_callable_targets,
         );
         self.emit_wasm_module(ir, lir_lowering_plans, trampoline_analysis)
     }
+}
+
+// One target-admission predicate serves both pre-lift and post-rewrite bounds.
+// Sequential splitting is not proven for WASM's nonlinear dispatch machine.
+fn split_wasm_megafunctions(ir: &mut SimpleIR) {
+    crate::passes::split_megafunctions_with_filter(ir, |function| {
+        !function.is_extern && !has_non_linear_control_flow(&function.ops)
+    });
 }

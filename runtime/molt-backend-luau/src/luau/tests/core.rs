@@ -268,6 +268,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
@@ -287,6 +288,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -299,6 +301,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -377,6 +380,7 @@ fn deferred_annotation_functions_are_emitted_with_their_real_body() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -410,6 +414,7 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -457,6 +462,7 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -511,6 +517,7 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -659,6 +666,7 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops,
         }],
@@ -1057,27 +1065,8 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
 }
 
 #[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable() {
-    let runner = std::env::var_os("CARGO_HOME")
-        .map(std::path::PathBuf::from)
-        .map(|home| {
-            home.join("bin")
-                .join(if cfg!(windows) { "lune.exe" } else { "lune" })
-        })
-        .or_else(|| {
-            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
-            Some(
-                std::path::PathBuf::from(home)
-                    .join(".cargo")
-                    .join("bin")
-                    .join(if cfg!(windows) { "lune.exe" } else { "lune" }),
-            )
-        });
-    let Some(runner) = runner.filter(|path| path.is_file()) else {
-        eprintln!("Lune unavailable; executable execution-frame proof skipped");
-        return;
-    };
-
     let source = format!(
         "--!strict\n{}\n{}",
         frame_runtime::FRAME_RUNTIME,
@@ -1385,23 +1374,7 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
         "direct owner lookup/removal belongs only to the ownership helper pair"
     );
     validate_luau_source(&source).expect("execution-frame oracle must pass source validation");
-    let path = std::env::temp_dir().join(format!(
-        "molt_luau_execution_frame_{}.luau",
-        std::process::id()
-    ));
-    std::fs::write(&path, source).expect("write execution-frame oracle");
-    let output = std::process::Command::new(&runner)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run Lune execution-frame oracle");
-    let _ = std::fs::remove_file(&path);
-    assert!(
-        output.status.success(),
-        "execution-frame oracle failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = execute_lune_oracle("execution_frame", &source);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0"),
@@ -1523,27 +1496,8 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
 }
 
 #[test]
-fn ordered_dict_runtime_executes_full_semantics_in_lune_when_available() {
-    let runner = std::env::var_os("CARGO_HOME")
-        .map(std::path::PathBuf::from)
-        .map(|home| {
-            home.join("bin")
-                .join(if cfg!(windows) { "lune.exe" } else { "lune" })
-        })
-        .or_else(|| {
-            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
-            Some(
-                std::path::PathBuf::from(home)
-                    .join(".cargo")
-                    .join("bin")
-                    .join(if cfg!(windows) { "lune.exe" } else { "lune" }),
-            )
-        });
-    let Some(runner) = runner.filter(|path| path.is_file()) else {
-        eprintln!("Lune unavailable; executable ordered-dict proof skipped");
-        return;
-    };
-
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn ordered_dict_runtime_executes_full_semantics_in_lune() {
     let dict_runtime_source = format!(
         "local molt_binary_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal function molt_binary_new(kind: string, value: string): any local result = {{}}; molt_binary_metadata[result] = {{kind=kind, value=value}}; return result end\n{}{}{}",
         dict_runtime::DICT_CORE_RUNTIME,
@@ -1949,26 +1903,7 @@ run_authority_oracle()
         "luau-source-size runtime_bytes={runtime_bytes} prelude_bytes={prelude_bytes} oracle_bytes={}",
         source.len()
     );
-    let path = std::env::temp_dir().join(format!(
-        "molt_luau_ordered_dict_{}.luau",
-        std::process::id()
-    ));
-    std::fs::write(&path, source).expect("write executable Luau proof");
-    let output = std::process::Command::new(&runner)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run Lune ordered-dict proof");
-    if output.status.success() {
-        let _ = std::fs::remove_file(&path);
-    }
-    assert!(
-        output.status.success(),
-        "Lune ordered-dict proof failed:\nstdout:\n{}\nstderr:\n{}\nsource: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-        path.display()
-    );
+    let output = execute_lune_oracle("ordered_dict", &source);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout
@@ -1987,6 +1922,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2039,6 +1975,7 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
             ]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2101,6 +2038,7 @@ fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2157,6 +2095,7 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     make_const("left"),
@@ -2199,6 +2138,7 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2335,6 +2275,7 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2402,6 +2343,7 @@ fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
             ]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2554,6 +2496,7 @@ fn value_scalar_plus_unknown_identity_is_rejected() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2591,6 +2534,7 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2628,6 +2572,7 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2665,6 +2610,7 @@ fn test_simple_function() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2702,6 +2648,7 @@ fn test_int_from_str_of_obj_preserves_base_operand() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2738,6 +2685,7 @@ fn test_real_ir_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2799,6 +2747,7 @@ fn test_control_flow() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2907,6 +2856,7 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3007,6 +2957,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3046,6 +2997,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "const_bigint".to_string(),
@@ -3072,6 +3024,7 @@ fn test_compile_checked_accepts_label_goto_comments() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3109,6 +3062,7 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3156,6 +3110,7 @@ fn test_compile_checked_lowers_missing_singleton() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3201,6 +3156,7 @@ fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "getframe".to_string(),
@@ -3235,6 +3191,7 @@ fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "call_internal".to_string(),
@@ -3400,6 +3357,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3456,6 +3414,7 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3525,6 +3484,7 @@ fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts(
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3555,6 +3515,7 @@ fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifact
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3608,6 +3569,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3653,6 +3615,7 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3688,6 +3651,7 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
             param_types: Some(vec!["list[int]".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {

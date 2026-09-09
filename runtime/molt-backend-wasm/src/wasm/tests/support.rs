@@ -30,6 +30,7 @@ pub(super) fn wasm_test_function(
         param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }
 }
@@ -105,6 +106,7 @@ pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR 
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -155,13 +157,13 @@ pub(super) fn wasm_module_attr_native_callable_ir(abi: &str, args: Vec<&str>) ->
     }
 }
 
-/// Extract `(param_count, result_count)` for every func type in a module's
-/// type section, in section order.
+/// Function imports in index order, retaining duplicate names.
 pub(super) fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {
     let mut imports = Vec::new();
     for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::ImportSection(reader)) = payload {
-            for import in reader.into_imports().flatten() {
+        if let Payload::ImportSection(reader) = payload.expect("valid WASM module payload") {
+            for import in reader.into_imports() {
+                let import = import.expect("valid WASM import");
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
                     imports.push(import.name.to_string());
                 }
@@ -222,58 +224,69 @@ pub(super) fn wasm_direct_call_indices(wasm: &[u8]) -> Vec<u32> {
 }
 
 pub(super) fn wasm_direct_call_indices_for_export(wasm: &[u8], export_name: &str) -> Vec<u32> {
+    wasm_direct_call_indices_for_body(wasm, Some(wasm_export_body_index(wasm, export_name)))
+}
+
+pub(super) fn wasm_operators_for_export<'a>(
+    wasm: &'a [u8],
+    export_name: &str,
+) -> Vec<wasmparser::Operator<'a>> {
+    let mut operators = Vec::new();
+    wasm_visit_operators(
+        wasm,
+        Some(wasm_export_body_index(wasm, export_name)),
+        |op| operators.push(op),
+    );
+    operators
+}
+
+fn wasm_export_body_index(wasm: &[u8], export_name: &str) -> u32 {
     let export_index = *wasm_function_export_indices(wasm)
         .get(export_name)
         .unwrap_or_else(|| panic!("missing function export {export_name}"));
-    let import_count = wasm_function_import_indices(wasm).len() as u32;
-    let body_index = export_index
+    // Import names need not be unique; function indices count entries, not
+    // names in a map. This is shared by typed, debug and direct-call inspection.
+    let import_count = wasm_function_import_names(wasm).len() as u32;
+    export_index
         .checked_sub(import_count)
-        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
-    wasm_direct_call_indices_for_body(wasm, Some(body_index))
+        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"))
 }
 
 pub(super) fn wasm_operator_debug_for_export(wasm: &[u8], export_name: &str) -> Vec<String> {
-    let export_index = *wasm_function_export_indices(wasm)
-        .get(export_name)
-        .unwrap_or_else(|| panic!("missing function export {export_name}"));
-    let import_count = wasm_function_import_indices(wasm).len() as u32;
-    let body_filter = export_index
-        .checked_sub(import_count)
-        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
-    let mut body_index = 0u32;
-    for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionEntry(body)) = payload
-            && let Ok(mut ops) = body.get_operators_reader()
-        {
-            if body_filter != body_index {
-                body_index += 1;
-                continue;
-            }
-            let mut out = Vec::new();
-            while let Ok(op) = ops.read() {
-                out.push(format!("{op:?}"));
-            }
-            return out;
-        }
-    }
-    panic!("requested WASM body {body_filter}, but no matching code body was found")
+    let mut operators = Vec::new();
+    wasm_visit_operators(
+        wasm,
+        Some(wasm_export_body_index(wasm, export_name)),
+        |op| operators.push(format!("{op:?}")),
+    );
+    operators
 }
 
 pub(super) fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option<u32>) -> Vec<u32> {
     let mut calls = Vec::new();
+    wasm_visit_operators(wasm, body_filter, |op| {
+        if let wasmparser::Operator::Call { function_index } = op {
+            calls.push(function_index);
+        }
+    });
+    calls
+}
+
+fn wasm_visit_operators<'a>(
+    wasm: &'a [u8],
+    body_filter: Option<u32>,
+    mut visit: impl FnMut(wasmparser::Operator<'a>),
+) {
     let mut body_index = 0u32;
     for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionEntry(body)) = payload
-            && let Ok(mut ops) = body.get_operators_reader()
-        {
+        if let Payload::CodeSectionEntry(body) = payload.expect("valid WASM module payload") {
             if body_filter.is_some_and(|target| target != body_index) {
                 body_index += 1;
                 continue;
             }
-            while let Ok(op) = ops.read() {
-                if let wasmparser::Operator::Call { function_index } = op {
-                    calls.push(function_index);
-                }
+            let mut ops = body.get_operators_reader().expect("valid WASM operators");
+            while !ops.eof() {
+                visit(ops.read().expect("valid WASM instruction"));
             }
             body_index += 1;
         }
@@ -284,22 +297,14 @@ pub(super) fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option
             "requested WASM body {target}, but module only has {body_index} code bodies"
         );
     }
-    calls
 }
 
 pub(super) fn wasm_has_table_set(wasm: &[u8]) -> bool {
-    for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionEntry(body)) = payload
-            && let Ok(mut ops) = body.get_operators_reader()
-        {
-            while let Ok(op) = ops.read() {
-                if matches!(op, wasmparser::Operator::TableSet { .. }) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    let mut found = false;
+    wasm_visit_operators(wasm, None, |op| {
+        found |= matches!(op, wasmparser::Operator::TableSet { .. });
+    });
+    found
 }
 
 pub(super) fn wasm_active_function_elements(wasm: &[u8]) -> BTreeMap<u32, u32> {
@@ -333,17 +338,11 @@ pub(super) fn wasm_active_function_elements(wasm: &[u8]) -> BTreeMap<u32, u32> {
 
 pub(super) fn wasm_i64_consts(wasm: &[u8]) -> Vec<i64> {
     let mut values = Vec::new();
-    for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionEntry(body)) = payload
-            && let Ok(mut ops) = body.get_operators_reader()
-        {
-            while let Ok(op) = ops.read() {
-                if let wasmparser::Operator::I64Const { value } = op {
-                    values.push(value);
-                }
-            }
+    wasm_visit_operators(wasm, None, |op| {
+        if let wasmparser::Operator::I64Const { value } = op {
+            values.push(value);
         }
-    }
+    });
     values
 }
 
@@ -405,8 +404,9 @@ pub(super) fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
 pub(super) fn wasm_function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
     let mut exports = BTreeMap::new();
     for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::ExportSection(reader)) = payload {
-            for export in reader.into_iter().flatten() {
+        if let Payload::ExportSection(reader) = payload.expect("valid WASM module payload") {
+            for export in reader {
+                let export = export.expect("valid WASM export");
                 if export.kind == ExternalKind::Func {
                     exports.insert(export.name.to_string(), export.index);
                 }

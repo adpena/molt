@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-from molt.frontend.cfg_analysis import build_cfg
+from molt.frontend.cfg_analysis import BasicBlock, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
@@ -20,6 +20,67 @@ from molt.type_facts import collect_type_facts_from_paths
 def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     gen = SimpleTIRGenerator()
     return gen.map_ops_to_json(ops)
+
+
+@pytest.mark.parametrize("kind", ["EQ", "NE", "LT", "LE", "GT", "GE"])
+def test_rich_comparison_effects_require_exact_producers(kind: str) -> None:
+    gen = SimpleTIRGenerator()
+    left = MoltValue("comparison_left", type_hint="int")
+    right = MoltValue("comparison_right", type_hint="float")
+    op = MoltOp(kind=kind, args=[left, right], result=MoltValue("comparison", "bool"))
+    assert gen._op_effect_class(op) == "writes_heap"
+    assert gen._predicate_primitive_facts(op) == (False, False)
+    gen._op_by_result[left.name] = MoltOp(kind="CONST", args=[1], result=left)
+    gen._op_by_result[right.name] = MoltOp(kind="CONST_FLOAT", args=[2.0], result=right)
+    assert gen._op_effect_class(op) == "pure"
+    assert gen._predicate_primitive_facts(op) == (True, True)
+    gen._op_by_result[left.name] = MoltOp(kind="CONST_NONE", args=[], result=left)
+    assert gen._predicate_primitive_facts(op) == (True, kind in {"EQ", "NE"})
+
+
+@pytest.mark.parametrize("kind", ["BOOL", "NOT", "IN", "NOT_IN"])
+def test_predicate_callbacks_survive_without_exact_operand_provenance(
+    kind: str,
+) -> None:
+    gen = SimpleTIRGenerator()
+    left, right = MoltValue("left", "int"), MoltValue("right", "int")
+    args = [left] if kind in {"BOOL", "NOT"} else [left, right]
+    op = MoltOp(kind=kind, args=args, result=MoltValue("predicate", "bool"))
+    assert gen._op_effect_class(op) == "writes_heap"
+    assert not gen._op_instance_cannot_raise(op, {})
+    for value in (left, right):
+        gen._op_by_result[value.name] = MoltOp(kind="CONST", args=[1], result=value)
+    expected = kind in {"BOOL", "NOT"}
+    assert gen._predicate_primitive_facts(op) == (expected, expected)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing-payload",
+        "extra-payload",
+        "wrong-result",
+        "copy-cycle",
+        "malformed-truth",
+    ],
+)
+def test_predicate_provenance_rejects_malformed_producer_shapes(defect: str) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("value", "int")
+    producer = MoltOp(kind="CONST", args=[1], result=value)
+    if defect == "missing-payload":
+        producer.args = []
+    elif defect == "extra-payload":
+        producer.args = [1, 2]
+    elif defect == "wrong-result":
+        producer.result = MoltValue("different")
+    elif defect == "copy-cycle":
+        producer.kind, producer.args = "COPY", [value]
+    elif defect == "malformed-truth":
+        producer.kind, producer.args = "NOT", []
+    gen._op_by_result[value.name] = producer
+    op = MoltOp(kind="BOOL", args=[value], result=MoltValue("result", "bool"))
+    assert gen._predicate_primitive_facts(op) == (False, False)
 
 
 def test_genexpr_outer_iterator_is_eager_and_frame_owned() -> None:
@@ -40,7 +101,9 @@ gen = (value for value in outer())
         i for i, op in enumerate(module_ops) if op["kind"] == "alloc_task"
     )
     assert iter_index < alloc_index
-    assert module_ops[alloc_index]["args"], "outer iterator cell must enter task payload"
+    assert module_ops[alloc_index]["args"], (
+        "outer iterator cell must enter task payload"
+    )
     assert any(op["kind"] == "closure_load" for op in poll_ops)
     assert not any(
         op["kind"] == "module_get_global" and op.get("s_value") == "outer"
@@ -518,7 +581,10 @@ def test_trivial_phi_elides_and_rewrites_users() -> None:
     assert add["args"][0] == "x"
 
 
-def test_dynamic_metaclass_strips_classdictcell_before_call_bind() -> None:
+@pytest.mark.parametrize("has_evaluator", [False, True])
+def test_dynamic_metaclass_preserves_only_real_annotation_namespace_cells(
+    has_evaluator,
+) -> None:
     source = """
 class Meta(type):
     pass
@@ -527,20 +593,36 @@ class C(metaclass=Meta):
     def f(self):
         return 1
 """
+    if has_evaluator:
+        source += "    type Alias = marker\n"
     gen = SimpleTIRGenerator()
     gen.visit(ast.parse(source))
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
-    classdict_key_idx = next(
-        idx
-        for idx, op in enumerate(ops)
+    classdict_keys = {
+        op["out"]
+        for op in ops
         if op.get("kind") == "const_str" and op.get("s_value") == "__classdictcell__"
-    )
-    del_idx = next(
-        idx
-        for idx, op in enumerate(ops[classdict_key_idx:], start=classdict_key_idx)
-        if op.get("kind") == "del_index"
+    }
+    if not has_evaluator:
+        assert not classdict_keys
+        return
+    assert classdict_keys
+    stores = [
+        (index, op)
+        for index, op in enumerate(ops)
+        if op.get("kind") == "store_index" and op["args"][1] in classdict_keys
+    ]
+    assert len(stores) == 1
+    store_index, store = stores[0]
+    cell = store["args"][2]
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    assert definitions[cell]["kind"] == "list_new"
+    assert definitions[cell]["args"] == [store["args"][0]]
+    assert any(op.get("kind") == "tuple_new" and cell in op["args"] for op in ops)
+    assert not any(
+        op.get("kind") == "del_index" and op["args"][1] in classdict_keys for op in ops
     )
     call_bind_indices = [
         idx for idx, op in enumerate(ops) if op.get("kind") == "call_bind"
@@ -548,9 +630,9 @@ class C(metaclass=Meta):
     assert len(call_bind_indices) >= 2
     metaclass_call_bind_idx = call_bind_indices[-1]
 
-    assert del_idx < metaclass_call_bind_idx, (
-        "__classdictcell__ must be stripped from the dynamic class namespace "
-        "before the metaclass call"
+    assert store_index < metaclass_call_bind_idx, (
+        "type construction must receive the evaluator's actual shared cell, "
+        "then publish its copied dictionary before metaclass callbacks"
     )
 
 
@@ -1972,9 +2054,12 @@ else:
         assert global_read_funcs, config_name
 
 
-def test_module_control_flow_named_calls_use_load_global_semantics() -> None:
-    source = """
-flag = False
+@pytest.mark.parametrize("condition", ["False", "unknown_condition"])
+def test_module_control_flow_named_calls_use_source_point_binding(
+    condition: str,
+) -> None:
+    source = f"""
+flag = {condition}
 if flag:
     len = 7
 
@@ -1985,9 +2070,9 @@ value = len(globals())
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
-    assert _module_global_reads_named(ops, "len")
+    assert bool(_module_global_reads_named(ops, "len")) is (condition != "False")
     assert _module_attr_reads_named(ops, "len") == []
-    assert [op for op in ops if op.get("kind") == "len"] == []
+    assert bool([op for op in ops if op.get("kind") == "len"]) is (condition == "False")
 
 
 def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
@@ -2030,11 +2115,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
     gen.visit(ast.parse("first = 1\nsecond = 2\n"))
     ir = gen.to_json()
 
-    module_init = next(
-        func
-        for func in ir["functions"]
-        if func["name"] == "molt_main"
-    )
+    module_init = next(func for func in ir["functions"] if func["name"] == "molt_main")
     init_kinds = [op["kind"] for op in module_init["ops"]]
     assert module_init["execution_context"] == "local"
     assert init_kinds.count("trace_enter_slot") == 1
@@ -2045,9 +2126,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
     )
 
     chunks = [
-        func
-        for func in ir["functions"]
-        if "__molt_module_chunk_" in func["name"]
+        func for func in ir["functions"] if "__molt_module_chunk_" in func["name"]
     ]
     assert chunks
     chunk_names = {chunk["name"] for chunk in chunks}
@@ -2058,9 +2137,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
         for op in chunk["ops"]
     )
     threaded_calls = [
-        op
-        for op in module_init["ops"]
-        if op.get("s_value") in chunk_names
+        op for op in module_init["ops"] if op.get("s_value") in chunk_names
     ]
     assert {op["s_value"] for op in threaded_calls} == chunk_names
     assert all(op.get("passes_execution_context") is True for op in threaded_calls)
@@ -2110,25 +2187,28 @@ def exceptional():
     assert exceptional_kinds.count("trace_exit") == 1
 
 
-def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("source", "symbol"),
+    [
+        ("import sys as system\nget_frame = system._getframe\n", "molt_getframe"),
+        (
+            "import inspect as inspection\ncurrent_frame = inspection.currentframe\n",
+            "molt_inspect_currentframe",
+        ),
+        ("from sys import getprofile as imported_getprofile\n", "molt_sys_getprofile"),
+        ("from sys import gettrace as imported_gettrace\n", "molt_sys_gettrace"),
+        (
+            "import sys as system\nset_profile = system.setprofile\n",
+            "molt_sys_setprofile",
+        ),
+        ("import sys as system\nset_trace = system.settrace\n", "molt_sys_settrace"),
+    ],
+)
+def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance(
+    source: str, symbol: str
+) -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(
-        ast.parse(
-            """
-import inspect as inspection
-import sys as system
-from sys import getprofile as imported_getprofile
-from sys import gettrace as imported_gettrace
-
-get_frame = system._getframe
-current_frame = inspection.currentframe
-set_profile = system.setprofile
-set_trace = system.settrace
-"""
-        )
-    )
+    gen.visit(ast.parse(source))
     ir = gen.to_json()
     symbols = {
         op["runtime_symbol"]
@@ -2136,14 +2216,7 @@ set_trace = system.settrace
         for op in func["ops"]
         if "runtime_symbol" in op
     }
-    assert symbols == {
-        "molt_getframe",
-        "molt_inspect_currentframe",
-        "molt_sys_getprofile",
-        "molt_sys_gettrace",
-        "molt_sys_setprofile",
-        "molt_sys_settrace",
-    }
+    assert symbols == {symbol}
 
 
 @pytest.mark.parametrize(
@@ -2631,11 +2704,6 @@ def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
             'import builtins\ndef f():\n    return getattr(builtins, "getattr")\n',
             "get_attr_name_default",
         ),
-        (
-            "recursive-operator-getattr",
-            'import operator as op\ndef f():\n    return getattr(op, "attrgetter")\n',
-            "get_attr_name_default",
-        ),
     ],
 )
 def test_runtime_protected_gateway_callable_identity_is_stamped_at_acquisition(
@@ -2656,6 +2724,37 @@ def test_runtime_protected_gateway_callable_identity_is_stamped_at_acquisition(
     ]
     assert len(protected) == 1, (transport, protected)
     assert protected[0]["kind"] == expected_kind, (transport, protected)
+
+
+def test_foreign_import_keeps_recursive_gateway_dispatch_dynamic() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "import operator as op\n"
+            "def f():\n"
+            "    direct = op.attrgetter\n"
+            "    return direct, getattr(op, 'attrgetter')\n"
+        )
+    )
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    ops = function["ops"]
+    # Import hooks may replace getattr. Its spelling must not bypass dynamic
+    # call dispatch; independently acquired operator gateways remain protected.
+    assert _module_global_reads_named(ops, "getattr")
+    assert any(op["kind"] in {"call_bind", "call_indirect"} for op in ops)
+    assert not any(op["kind"] == "get_attr_name_default" for op in ops)
+    protected = [
+        op
+        for op in ops
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert len(protected) == 1
+    assert protected[0]["kind"] == "get_attr_generic_obj"
 
 
 @pytest.mark.parametrize(
@@ -2877,12 +2976,15 @@ class Point:
     def __init__(self, x):
         self.x = x
 
-value = Point(3)
+def make():
+    return Point(3)
 """
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
     ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+    ops = next(
+        func["ops"] for func in ir["functions"] if func["name"].endswith("__make")
+    )
 
     alloc = next(op for op in ops if op.get("kind") == "object_new_bound")
     assert alloc.get("type_hint") == "Point"
@@ -2912,7 +3014,7 @@ overridden = Overridden(4)
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
     assert all(op.get("kind") != "object_new_bound" for op in ops)
-    assert any(op.get("kind") == "call_bind" for op in ops)
+    assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
 
 
 def test_guarded_setattr_init_uses_frontend_wire_spelling() -> None:
@@ -3142,18 +3244,47 @@ def f(seq):
     producer_idx, producer = producers[boundary["args"][0]]
     store_idx = next(
         idx
-        for idx, op in enumerate(ops[boundary_idx + 1 :], boundary_idx + 1)
+        for idx, op in enumerate(ops[producer_idx + 1 : boundary_idx], producer_idx + 1)
         if op.get("kind") == "store_var" and op.get("var") == "value"
     )
 
-    assert [op.get("kind") for op in ops[producer_idx : boundary_idx + 1]] == [
-        "load_var",
-        "check_exception",
-        "del_boundary",
-    ]
-    assert boundary_idx < store_idx
+    assert producer_idx < store_idx < boundary_idx
     assert producer.get("kind") == "load_var"
     assert producer.get("var") == "value"
+
+
+def test_local_rebind_publishes_locals_cache_before_release() -> None:
+    source = "def f(value):\n    cache = locals()\n    value = None\n    return value\n"
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ops = next(
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "__main____f"
+    )
+    producers = {
+        op["out"]: (idx, op)
+        for idx, op in enumerate(ops)
+        if isinstance(op.get("out"), str)
+    }
+    boundary_idx, boundary = next(
+        (idx, op)
+        for idx, op in enumerate(ops)
+        if op.get("kind") == "del_boundary" and op.get("s_value") == "value"
+    )
+    capture_idx, capture = producers[boundary["args"][0]]
+    assert capture.get("kind") == "load_var" and capture.get("var") == "value"
+    store_idx, store = next(
+        (idx, op)
+        for idx, op in enumerate(ops[capture_idx + 1 : boundary_idx], capture_idx + 1)
+        if op.get("kind") == "store_var" and op.get("var") == "value"
+    )
+    assert any(
+        op.get("kind") == "dict_set"
+        and op["args"][2] == store["args"][0]
+        and producers[op["args"][1]][1].get("s_value") == "value"
+        for op in ops[store_idx + 1 : boundary_idx]
+    ), "the frame-locals projection must publish before displaced-owner callbacks"
 
 
 def test_builtin_exception_names_follow_target_version_and_platform() -> None:
@@ -3765,6 +3896,80 @@ def test_sccp_worklist_solver_handles_large_cfg_without_cap_hit() -> None:
     assert gen.midend_stats["sccp_iteration_cap_hits"] == 0
 
 
+@pytest.mark.parametrize("depth", [8, 32])
+def test_sccp_acyclic_diamonds_do_not_broadcast_forwarded_facts_backward(
+    depth: int,
+) -> None:
+    gen = SimpleTIRGenerator()
+    ops = _build_sccp_growth_ops(depth=depth, constant_cond=None)
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg, max_iters_override=len(cfg.blocks))
+    assert sccp.executable_blocks == cfg.reachable
+    assert gen.midend_stats["sccp_iteration_cap_hits"] == 0
+    assert sccp.out_values[cfg.index_to_block[0]]["acc"] == 0
+
+
+def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -> None:
+    # The short arm reaches the PHI before the delayed arm. Both carry exactly
+    # the same state, but admitting the second edge changes the PHI's inputs.
+    # State equality must not suppress edge-triggered transfer reevaluation.
+    # Supply the solver's graph directly: structured build_cfg currently splits
+    # LABEL and its following PHI into separate blocks, which would test a merge
+    # through an intermediate block rather than this executable-edge contract.
+    ops = [
+        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
+        MoltOp(kind="CONST", args=[2], result=MoltValue("two")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("condition")),
+        MoltOp(kind="IF", args=[MoltValue("condition")], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=["join"], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=["delay"], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=["delayed_end"], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=["delayed_end"], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=["join"], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=["join"], result=MoltValue("none")),
+        MoltOp(
+            kind="PHI",
+            args=[MoltValue("one"), MoltValue("two")],
+            result=MoltValue("joined"),
+        ),
+        MoltOp(kind="RETURN", args=[MoltValue("joined")], result=MoltValue("none")),
+    ]
+    blocks = [
+        BasicBlock(0, 0, 4),
+        BasicBlock(1, 4, 5),
+        BasicBlock(2, 5, 7),
+        BasicBlock(3, 7, 9),
+        BasicBlock(4, 9, 12),
+    ]
+    cfg = CFGGraph(
+        blocks=blocks,
+        index_to_block={
+            index: block.id
+            for block in blocks
+            for index in range(block.start, block.end)
+        },
+        label_to_block={"delay": 2, "delayed_end": 3, "join": 4},
+        block_entry_label={2: "delay", 3: "delayed_end", 4: "join"},
+        control=build_cfg([]).control,
+        successors={0: [1, 2], 1: [4], 2: [3], 3: [4], 4: []},
+        predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
+        reachable={0, 1, 2, 3, 4},
+        dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 2, 3}, 4: {0, 4}},
+    )
+    join = cfg.label_to_block["join"]
+    gen = SimpleTIRGenerator()
+    sccp = gen._compute_sccp(ops, cfg)
+    executable_predecessors = [
+        pred for pred in cfg.predecessors[join] if (pred, join) in sccp.executable_edges
+    ]
+    assert len(executable_predecessors) == 2
+    first, second = executable_predecessors
+    assert sccp.out_values[first] == sccp.out_values[second]
+    assert "joined" in sccp.out_values[join]
+    assert "joined" not in gen._sccp_in_const_int_values(sccp)[join]
+    assert gen.midend_stats["sccp_iteration_cap_hits"] == 0
+
+
 def test_sccp_cap_hits_only_for_pathological_cases_and_preserves_semantics() -> None:
     normal_ops = _build_sccp_growth_ops(depth=48, constant_cond=True)
     expected = _eval_simple_ops(normal_ops)
@@ -3797,6 +4002,23 @@ def test_sccp_cap_hits_only_for_pathological_cases_and_preserves_semantics() -> 
         )
     assert _eval_simple_ops(capped_out) == expected
     assert capped_gen.midend_stats["sccp_iteration_cap_hits"] >= 1
+
+
+def test_sccp_direct_budget_refresh_and_explicit_policy_precedence() -> None:
+    gen = SimpleTIRGenerator()
+    ops = _build_sccp_growth_ops(depth=2, constant_cond=None)
+    cfg = build_cfg(ops)
+    with _temp_env("MOLT_SCCP_MAX_ITERS", "1"):
+        capped = gen._compute_sccp(ops, cfg)
+        assert all(not values for values in capped.out_values.values())
+        assert gen.midend_stats["sccp_iteration_cap_hits"] == 1
+        explicit = gen._compute_sccp(ops, cfg, max_iters_override=len(cfg.blocks))
+        assert explicit.out_values[0]["acc"] == 0
+        assert gen.midend_stats["sccp_iteration_cap_hits"] == 1
+    with _temp_env("MOLT_SCCP_MAX_ITERS", "200000"):
+        refreshed = gen._compute_sccp(ops, cfg)
+        assert refreshed.out_values[0]["acc"] == 0
+        assert gen.midend_stats["sccp_iteration_cap_hits"] == 1
 
 
 def test_midend_policy_matrix_resolves_profile_and_tier() -> None:

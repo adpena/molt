@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
@@ -19,7 +18,7 @@ from molt import backend_daemon_custody as _daemon_custody
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import executable_content_identity
 from molt.cli.backend_cache import (
-    _native_artifact_source_key,
+    _backend_artifact_source_key,
     _shared_stdlib_cache_matches_key_locked,
 )
 from molt.cli.backend_daemon_logs import (
@@ -40,6 +39,7 @@ from molt.cli.command_runtime import _load_cli_harness_memory_guard
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.env_paths import _resolve_env_path
 from molt.cli.models import _BackendDaemonCompileResult
+from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.runtime_paths import (
     _build_state_root,
     _cargo_profile_dir,
@@ -53,10 +53,10 @@ from molt.cli.runtime_paths import (
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 4
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 5
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 6
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 7
 
 
 _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
@@ -141,9 +141,6 @@ _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
     "MOLT_WASM_TABLE_BASE",
 )
-
-
-_NATIVE_RELOCATABLE_LINKER_ENV_KEYS = ("MOLT_LINKER", "LD", "CC")
 
 
 _DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
@@ -315,45 +312,8 @@ def _backend_codegen_env_inputs(
     return {name: payload[name] for name in sorted(payload)}
 
 
-def _native_relocatable_linker_selection(
-    env: Mapping[str, str] | None = None,
-) -> tuple[str, str]:
-    source = env if env is not None else os.environ
-    for key in _NATIVE_RELOCATABLE_LINKER_ENV_KEYS:
-        value = (source.get(key) or "").strip()
-        if value:
-            return key, value
-    return "default", "ld"
-
-
 def _command_has_path_separator(command: str) -> bool:
     return os.sep in command or (os.altsep is not None and os.altsep in command)
-
-
-def _native_relocatable_linker_identity(
-    env: Mapping[str, str] | None = None,
-) -> dict[str, object]:
-    source = env if env is not None else os.environ
-    selected_from, command = _native_relocatable_linker_selection(env)
-    path_env = source.get("PATH")
-    payload: dict[str, object] = {
-        "schema": "native-relocatable-linker-v1",
-        "selected_from": selected_from,
-        "command": command,
-    }
-    if _command_has_path_separator(command):
-        resolved_path = Path(command)
-    else:
-        resolved = shutil.which(command, path=path_env)
-        if resolved is None:
-            payload["search_path_sha256"] = hashlib.sha256(
-                (path_env or "").encode("utf-8")
-            ).hexdigest()
-            resolved_path = Path(command)
-        else:
-            resolved_path = Path(resolved)
-    payload["binary"] = _path_freshness_fingerprint(resolved_path)
-    return payload
 
 
 def _backend_codegen_env_digest(
@@ -366,8 +326,6 @@ def _backend_codegen_env_digest(
         "target": "wasm" if is_wasm else "native",
         "inputs": _backend_codegen_env_inputs(is_wasm=is_wasm, env=env),
     }
-    if not is_wasm:
-        payload["native_relocatable_linker"] = _native_relocatable_linker_identity(env)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -387,7 +345,6 @@ def _backend_daemon_config_digest(
         "project_root": str(project_root.resolve()),
         "cargo_profile": cargo_profile,
         "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
-        "native_relocatable_linker": _native_relocatable_linker_identity(env),
         "backend_features": sorted(backend_features),
         "backend_compiler_fingerprint": source.get(
             "MOLT_BACKEND_COMPILER_FINGERPRINT", ""
@@ -1140,17 +1097,31 @@ def _write_backend_daemon_ir_lease(project_root: Path, ir: Mapping[str, Any]) ->
     return _write_backend_ir_lease(project_root, ir)
 
 
+def _backend_daemon_artifact_contract_error(
+    artifact_contract: BackendArtifactContract, *, shared_stdlib: bool
+) -> str | None:
+    if not (artifact_contract.is_native or artifact_contract.is_wasm):
+        return (
+            "Backend daemon supports only native or WASM artifacts, not "
+            f"{artifact_contract.kind.value} output"
+        )
+    try:
+        artifact_contract.validate_shared_stdlib(enabled=shared_stdlib)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
 def _backend_daemon_compile_request_bytes(
     *,
     ir: Mapping[str, Any] | None,
     ir_path: Path | None = None,
     backend_output: Path,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
     wasm_link: bool,
     wasm_data_base: int | None,
     wasm_table_base: int | None,
     wasm_split_runtime_app_table_base: int | None = None,
-    target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
@@ -1164,20 +1135,31 @@ def _backend_daemon_compile_request_bytes(
     probe_cache_only: bool = False,
     include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
-    effective_cache_key = _native_artifact_source_key(
+    contract_error = _backend_daemon_artifact_contract_error(
+        artifact_contract,
+        shared_stdlib=bool(
+            stdlib_object_path
+            or stdlib_object_cache_key
+            or stdlib_object_manifest
+            or stdlib_module_symbols_json
+        ),
+    )
+    if contract_error is not None:
+        return None, contract_error
+    effective_cache_key = _backend_artifact_source_key(
         cache_key,
         stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
+        artifact_contract=artifact_contract,
     )
-    effective_function_cache_key = _native_artifact_source_key(
+    effective_function_cache_key = _backend_artifact_source_key(
         function_cache_key,
         stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
+        artifact_contract=artifact_contract,
     )
     job: dict[str, Any] = {
         "id": "job0",
-        "is_wasm": is_wasm,
-        "target_triple": target_triple,
+        "is_wasm": artifact_contract.is_wasm,
+        "target_triple": artifact_contract.target_triple,
         "wasm_link": wasm_link,
         "wasm_data_base": wasm_data_base,
         "wasm_table_base": wasm_table_base,
@@ -1188,6 +1170,9 @@ def _backend_daemon_compile_request_bytes(
         "skip_module_output_if_synced": skip_module_output_if_synced,
         "skip_function_output_if_synced": skip_function_output_if_synced,
     }
+    if artifact_contract.is_native:
+        assert artifact_contract.native_kind is not None
+        job["native_output_kind"] = artifact_contract.native_kind.value
     if probe_cache_only:
         job["probe_cache_only"] = True
     elif ir is not None and ir_path is not None:
@@ -1660,12 +1645,11 @@ def _compile_with_backend_daemon(
     project_root: Path,
     ir: Mapping[str, Any],
     backend_output: Path,
-    is_wasm: bool,
+    artifact_contract: BackendArtifactContract,
     wasm_link: bool,
     wasm_data_base: int | None,
     wasm_table_base: int | None,
     wasm_split_runtime_app_table_base: int | None = None,
-    target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
@@ -1678,10 +1662,22 @@ def _compile_with_backend_daemon(
     stdlib_module_symbols_json: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
     timeout: float | None,
-    request_bytes: bytes | None = None,
     daemon_identity: _BackendDaemonIdentity | None = None,
 ) -> _BackendDaemonCompileResult:
-    full_request_bytes = request_bytes
+    contract_error = _backend_daemon_artifact_contract_error(
+        artifact_contract,
+        shared_stdlib=bool(
+            stdlib_object_path
+            or stdlib_object_cache_key
+            or stdlib_object_manifest
+            or stdlib_module_symbols_json
+        ),
+    )
+    if contract_error is not None:
+        return _BackendDaemonCompileResult(
+            False, contract_error, None, None, None, True, False
+        )
+    full_request_bytes: bytes | None = None
     probe_request_bytes: bytes | None = None
     ir_lease_path: Path | None = None
     cache_probe_allowed = True
@@ -1697,14 +1693,13 @@ def _compile_with_backend_daemon(
                 return None, f"backend daemon IR lease write failed: {exc}"
         full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
+            artifact_contract=artifact_contract,
             ir_path=ir_lease_path,
             backend_output=backend_output,
-            is_wasm=is_wasm,
             wasm_link=wasm_link,
             wasm_data_base=wasm_data_base,
             wasm_table_base=wasm_table_base,
             wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-            target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
             config_digest=config_digest,
@@ -1727,27 +1722,23 @@ def _compile_with_backend_daemon(
             ir_lease_path.unlink()
         ir_lease_path = None
 
-    if not is_wasm and stdlib_object_path is not None:
+    if artifact_contract.is_native and stdlib_object_path is not None:
         cache_probe_allowed = _shared_stdlib_cache_matches_key_locked(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=artifact_contract.target_triple,
         )
-    if (
-        request_bytes is None
-        and (cache_key or function_cache_key)
-        and cache_probe_allowed
-    ):
+    if (cache_key or function_cache_key) and cache_probe_allowed:
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
+            artifact_contract=artifact_contract,
             backend_output=backend_output,
-            is_wasm=is_wasm,
             wasm_link=wasm_link,
             wasm_data_base=wasm_data_base,
             wasm_table_base=wasm_table_base,
             wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-            target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
             config_digest=config_digest,

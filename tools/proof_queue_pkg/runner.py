@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import TextIO, TypeGuard
+from typing import Mapping, TextIO, TypeGuard
 
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from tools.command_execution import CommandExecutor
@@ -22,7 +22,9 @@ from molt.memory_guard_paths import pytest_guard_summary_dir
 from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
+    cargo_cache_custody,
     execution_environment as environment_authority,
+    execution_receipt_details,
     supervisor_custody,
     custody,
     custody_cas,
@@ -169,6 +171,17 @@ def _validated_execution_context(
         )
     ):
         raise ValueError("guarded receipt toolchain closure is incomplete")
+    wire_context = context
+    receipt_size = len(
+        json.dumps(wire_context, sort_keys=True, separators=(",", ":")).encode()
+    )
+    if receipt_size > execution_receipt_details.CONTEXT_LIMIT_BYTES:
+        raise ValueError(
+            "guarded receipt context exceeds the 64 KiB compactness ceiling"
+        )
+    context = execution_receipt_details.expand_context(
+        wire_context, cas_root=execution_path.parent / "custody-cas"
+    )
     capture = context.get("toolchain_capture")
     artifact = capture.get("artifact") if _is_receipt_object(capture) else None
     verification = capture.get("verification") if _is_receipt_object(capture) else None
@@ -225,13 +238,6 @@ def _validated_execution_context(
         for field in verification_authority_fields
     ):
         raise ValueError("guarded receipt toolchain verification is not reproducible")
-    receipt_size = len(
-        json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
-    )
-    if receipt_size > 64 * 1024:
-        raise ValueError(
-            "guarded receipt context exceeds the 64 KiB compactness ceiling"
-        )
     live_custody = context.get("live_input_custody")
     if (
         not _is_receipt_object(live_custody)
@@ -511,9 +517,14 @@ def _validated_execution_context(
         or any(
             not _is_receipt_object(row)
             or row.get("run_owned") is not True
-            or row.get("initial_entry_count") != 0
-            or row.get("initial_manifest_sha256")
-            != supervisor_custody._canonical_payload_sha256([])
+            or (
+                row.get("schema") != cargo_cache_custody.SCHEMA
+                and (
+                    row.get("initial_entry_count") != 0
+                    or row.get("initial_manifest_sha256")
+                    != supervisor_custody._canonical_payload_sha256([])
+                )
+            )
             for row in derived_root_prelaunch
         )
         or [
@@ -533,6 +544,26 @@ def _validated_execution_context(
         or supervisor_receipt.get("nonce_sha256") != expected_nonce_hash
     ):
         raise ValueError("native process supervisor policy binding is invalid")
+    for derived in derived_root_prelaunch:
+        if derived.get("schema") == cargo_cache_custody.SCHEMA:
+            source_snapshot = source_custody.get("prelaunch")
+            source_content = source_custody.get("content")
+            if not isinstance(source_snapshot, Mapping) or not isinstance(
+                source_content, Mapping
+            ):
+                raise ValueError(
+                    "Cargo cache requires independent source content custody"
+                )
+            cargo_cache_custody.validate_prelaunch(
+                derived,
+                cas_root=execution_path.parent / "custody-cas",
+                command=policy_command,
+                env={str(key): str(value) for key, value in policy_environment.items()},
+                toolchains=full_toolchains,
+                source_root=str(source_snapshot.get("root")),
+                source_snapshot=source_snapshot,
+                source_content=source_content.get("prelaunch"),
+            )
     verified_supervisor = _COMMANDS.run(
         [
             str(binary_path),
@@ -551,7 +582,7 @@ def _validated_execution_context(
             "native process supervisor receipt failed independent verification"
         )
     expected_custody = supervisor_custody.execution_custody_sha256(
-        context,
+        wire_context,
         run_id=run_id,
         returncode=returncode,
     )
@@ -560,8 +591,9 @@ def _validated_execution_context(
     transcript = context.get("command_transcript")
     if not _is_receipt_object(transcript):
         raise ValueError("guarded receipt context has no command transcript")
-    for stream_name in ("stdout", "stderr"):
-        expected_path = execution_path.with_suffix(f".{stream_name}.bin")
+    for stream_name, expected_path in command_identity.execution_transcript_paths(
+        execution_path
+    ).items():
         expected = transcript.get(stream_name)
         if not _is_receipt_object(expected) or expected.get("path") != str(
             expected_path
@@ -602,14 +634,12 @@ def _write_execution_request(
     if not _is_receipt_object(envelope):
         raise ValueError("proof row command envelope is malformed")
     command_admission.validate_envelope(envelope, command)
-    request_path = log_path.with_suffix(".execution-request.json")
-    result_path = log_path.with_suffix(".execution.json")
+    request_path, result_path = command_identity.execution_record_paths(log_path)
     execution_nonce = uuid.uuid4().hex + uuid.uuid4().hex
     for stale in (
         request_path,
         result_path,
-        result_path.with_suffix(".stdout.bin"),
-        result_path.with_suffix(".stderr.bin"),
+        *command_identity.execution_transcript_paths(result_path).values(),
         summary_path,
     ):
         try:
@@ -1292,7 +1322,7 @@ def _run_one(
                 file=log,
             )
         print(f"proof_session_id={session_id}", file=log)
-        print(f"cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
+        print(f"requested_cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
         print(
             "command_envelope=" + json.dumps(envelope, sort_keys=True),
             file=log,

@@ -123,7 +123,7 @@ class MidendPipelineMixin(_MixinBase):
                     continue
                 if op.kind == "PHI":
                     continue
-                if self._op_effect_class(op.kind) != "pure":
+                if self._op_effect_class(op) != "pure":
                     continue
                 if not self._op_instance_cannot_raise(op, const_by_name):
                     continue

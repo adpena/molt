@@ -185,6 +185,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
         ]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let void_provider = crate::ir::FunctionIR {
@@ -197,9 +198,10 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
-    let context = crate::SimpleBackend::build_module_context(&[
+    let context = crate::SimpleBackend::prepare_module_context(&mut vec![
         typed_provider.clone(),
         void_provider.clone(),
     ]);

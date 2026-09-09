@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from enum import Enum
 from pathlib import Path
 
 from molt.cli.native_link_plan import (
+    LinkDialect,
     NativeObjectFormat,
     NativeTargetSpec,
     _host_target_triple,
     resolve_native_target_spec,
+    resolve_link_dialect,
+    target_is_wasm as source_extension_target_is_wasm,
 )
+
+SourceExtensionLinkDialect = LinkDialect
+source_extension_link_dialect = resolve_link_dialect
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,27 +50,6 @@ class SourceExtensionTargetPlan:
         return ()
 
 
-class SourceExtensionLinkDialect(str, Enum):
-    ELF_GNU = "elf-gnu"
-    MACHO = "macho"
-    COFF_GNU = "coff-gnu"
-    COFF_MSVC = "coff-msvc"
-    WASM = "wasm"
-
-
-def source_extension_target_is_wasm(target_triple: str) -> bool:
-    normalized = target_triple.strip().lower()
-    if normalized in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
-        return True
-    if normalized.startswith("wasm"):
-        raise ValueError(f"Unsupported source-extension WASM target: {target_triple!r}")
-    try:
-        resolve_native_target_spec(normalized)
-    except RuntimeError as exc:
-        raise ValueError(str(exc)) from exc
-    return False
-
-
 def source_extension_artifact_kind(target_triple: str) -> str:
     return (
         "wasm_relocatable_object"
@@ -76,31 +60,6 @@ def source_extension_artifact_kind(target_triple: str) -> str:
 
 def source_extension_artifact_suffix(target_triple: str) -> str:
     return ".molt.wasm" if source_extension_target_is_wasm(target_triple) else ".molt.a"
-
-
-def source_extension_link_dialect(
-    target_triple: str | None,
-    *,
-    host_platform: str | None = None,
-    host_arch: str | None = None,
-) -> SourceExtensionLinkDialect:
-    if target_triple is not None and source_extension_target_is_wasm(target_triple):
-        return SourceExtensionLinkDialect.WASM
-    native_target = resolve_native_target_spec(
-        target_triple,
-        host_platform=host_platform,
-        host_arch=host_arch,
-    )
-    if native_target.object_format is NativeObjectFormat.ELF:
-        return SourceExtensionLinkDialect.ELF_GNU
-    if native_target.object_format is NativeObjectFormat.MACHO:
-        return SourceExtensionLinkDialect.MACHO
-    normalized = native_target.triple or ""
-    return (
-        SourceExtensionLinkDialect.COFF_GNU
-        if (normalized.split("-")[-1] in {"gnu", "gnullvm"})
-        else SourceExtensionLinkDialect.COFF_MSVC
-    )
 
 
 def resolve_source_extension_target_plan(

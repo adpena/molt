@@ -512,7 +512,7 @@ def main() -> None:
             start = time.monotonic()
             batch_cmd = ["python", "tools/dev_test_runner.py"]
             if python == TEST_PYTHONS[0]:
-                batch_cmd.append("--verified-subset")
+                batch_cmd.append("--check-verified-subset")
             if random_order:
                 batch_cmd.append("--random-order")
             if random_seed is not None:

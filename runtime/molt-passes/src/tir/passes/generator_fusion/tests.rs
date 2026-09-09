@@ -495,6 +495,33 @@ fn wire_late_bail_is_byte_identical_including_cfg_and_ids() {
 }
 
 #[test]
+fn fusion_rejects_old_loop_label_and_structural_obligations_before_staging() {
+    for opcode in [None, Some(OpCode::CheckException), Some(OpCode::TryEnd)] {
+        let poll = counter_poll();
+        let mut caller = consumer();
+        let candidate = only_candidate(&poll, &caller);
+        if let Some(opcode) = opcode {
+            caller.label_id_map.insert(candidate.cond_block.0, 12345);
+            caller
+                .blocks
+                .get_mut(&caller.entry_block)
+                .unwrap()
+                .ops
+                .push(op_v(opcode, vec![], vec![], 12345));
+        } else {
+            caller
+                .loop_cond_blocks
+                .insert(caller.entry_block, candidate.cond_block);
+        }
+        let before = canonical_function_bytes(&caller);
+        let mut stats = FusionStats::default();
+        assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+        assert_eq!(canonical_function_bytes(&caller), before);
+        assert_eq!(stats, FusionStats::default());
+    }
+}
+
+#[test]
 fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
     for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod, OpCode::Call] {
         for split_latch in [false, true] {
@@ -631,4 +658,78 @@ fn single_yield_in_loop_recognized_and_spliced() {
         "the preserved marker must remain on the actual fused backedge"
     );
     crate::tir::verify::verify_function(cons).expect("fused consumer must verify");
+}
+
+#[test]
+fn fusion_rejects_retained_cond_entries_before_staging() {
+    for structural in [false, true] {
+        let poll = counter_poll();
+        let mut caller = consumer();
+        let candidate = only_candidate(&poll, &caller);
+        let outside = caller.fresh_block();
+        caller.blocks.insert(
+            outside,
+            TirBlock {
+                id: outside,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: candidate.cond_block,
+                    args: vec![],
+                },
+            },
+        );
+        if structural {
+            caller.loop_cond_blocks.insert(caller.entry_block, outside);
+        }
+        crate::tir::verify::verify_function(&caller)
+            .expect("retained condition predecessor must be valid before fusion");
+        let before = canonical_function_bytes(&caller);
+        let mut stats = FusionStats::default();
+        assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+        assert_eq!(canonical_function_bytes(&caller), before);
+        assert_eq!(stats, FusionStats::default());
+    }
+}
+
+#[test]
+fn fusion_rejects_altered_candidate_entry_without_claiming_entry_replacement() {
+    let poll = counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+    // Deliberately alter the entry after recognition: this is a gate-contract
+    // probe, not a claim that this altered function has valid SSA dominance.
+    // wire_fused_loop must not retire an entry it does not replace.
+    caller.entry_block = candidate.loop_header.unwrap();
+    let before = canonical_function_bytes(&caller);
+    let mut stats = FusionStats::default();
+    assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    assert_eq!(canonical_function_bytes(&caller), before);
+    assert_eq!(stats, FusionStats::default());
+}
+
+#[test]
+fn fusion_admits_unreachable_predecessor_to_explicitly_rewired_header() {
+    let poll = counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+    let outside = caller.fresh_block();
+    caller.blocks.insert(
+        outside,
+        TirBlock {
+            id: outside,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: candidate.loop_header.unwrap(),
+                args: vec![],
+            },
+        },
+    );
+    crate::tir::verify::verify_function(&caller)
+        .expect("unreachable header predecessor must be valid before fusion");
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    assert_eq!(stats.frames_elided, 1);
+    crate::tir::verify::verify_function(&caller).expect("declared header rewiring must verify");
 }

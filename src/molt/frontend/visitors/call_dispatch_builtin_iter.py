@@ -63,11 +63,6 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 )
             if node.keywords:
                 for keyword in node.keywords:
-                    if keyword.arg is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "enumerate does not support **kwargs",
-                        )
                     if keyword.arg != "start":
                         raise FrontendRejection(
                             Diagnostic.CALL_SIGNATURE,
@@ -181,51 +176,13 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             return self._emit_any_all_call(func_id, node, needs_bind)
         if func_id == "sum":
             return self._emit_sum_call(func_id, node, needs_bind)
-        if func_id == "map":
-            if any(isinstance(arg, ast.Starred) for arg in node.args) or node.keywords:
-                callee = self._emit_builtin_function(func_id)
-                res = MoltValue(self.next_var(), type_hint="Any")
-                callargs = self._emit_call_args_builder(node)
-                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
-                return res
-            if len(node.args) < 2:
-                return self._emit_type_error_value(
-                    "map() must have at least two arguments"
-                )
-            callee = self._emit_builtin_function(func_id)
-            res = MoltValue(self.next_var(), type_hint="Any")
-            callargs = self._emit_call_args_builder(node)
-            self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
-            return res
-        if func_id == "zip":
-            if any(isinstance(arg, ast.Starred) for arg in node.args) or node.keywords:
-                callee = self._emit_builtin_function(func_id)
-                res = MoltValue(self.next_var(), type_hint="Any")
-                callargs = self._emit_call_args_builder(node)
-                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
-                return res
+        if func_id in {"map", "zip"}:
             callee = self._emit_builtin_function(func_id)
             res = MoltValue(self.next_var(), type_hint="Any")
             callargs = self._emit_call_args_builder(node)
             self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
             return res
         if func_id in {"min", "max"}:
-            if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
-                kw.arg is None for kw in node.keywords
-            ):
-                callee = self._emit_builtin_function(func_id)
-                res = MoltValue(self.next_var(), type_hint="Any")
-                if needs_bind:
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
-                    )
-                else:
-                    args = self._emit_call_args(node.args)
-                    self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
-                    )
-                return res
             if not node.args:
                 return self._emit_type_error_value(
                     f"{func_id} expected at least 1 argument, got 0"
@@ -284,22 +241,6 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 )
             return res
         if func_id == "sorted":
-            if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
-                kw.arg is None for kw in node.keywords
-            ):
-                callee = self._emit_builtin_function(func_id)
-                res = MoltValue(self.next_var(), type_hint="Any")
-                if needs_bind:
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
-                    )
-                else:
-                    args = self._emit_call_args(node.args)
-                    self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
-                    )
-                return res
             if not node.args:
                 return self._emit_type_error_value("sorted expected 1 argument, got 0")
             if len(node.args) > 1:

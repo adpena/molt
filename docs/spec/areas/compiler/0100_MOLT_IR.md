@@ -98,6 +98,11 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Explicit effects**: calls and memory ops must declare their effect class.
 - **No implicit exceptions**: operations that can fail must either be guarded or emit `Throw`.
 - **Tier separation**: Tier 0 disallows `Any` and speculative guards; Tier 1 allows guards with deopt exits.
+- **Predicate authority**: Python `And`/`Or` select an operand unchanged;
+  their result is not unconditionally `Bool`. Exact operand provenance and
+  effects own representation admission. Integer-overflow replay requires an
+  exact-integer body and a callback-free, nonthrowing Boolean guard; annotations
+  alone establish neither condition.
 - **Backend megafunction splitting**: when the native/WASM backend splits an
   oversized `SimpleIR` function, generated chunk functions must preserve the
   original SSA def-use contract explicitly. Values defined before a split
@@ -108,6 +113,77 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   exception/cleanup suffix can stop the stub from running later chunks. Live-out
   frame stores belong on the normal path before the synthetic jump that skips a
   cloned suffix, never after terminal cleanup code.
+  The planner indexes borrowed per-name read/definition positions instead of
+  retaining a whole live/defined set at every operation. Same-operation reads
+  precede writes; refusal leaves both the input contract and occupied symbol
+  namespace unchanged.
+  Native preparation splits before the first TIR lift, including whole-program
+  linkage-ABI capture before object batching. WASM uses the same splitter before
+  TIR and after final rewrites, but preserves its straight-line-only admission.
+  Both stubs and chunks carry the typed `FunctionIR.codegen_partition` fact,
+  defaulting to false. This is a restrict-only optimization boundary, not a
+  Python-frame capability: it survives JSON/NDJSON, extern reconstruction,
+  function-contract hashing, and TIR artifact transport. Shared inline
+  eligibility refuses these functions even when optimization makes them tiny;
+  LLVM also emits its real `noinline` attribute.
+  Split results report explicit chunk-to-source provenance. Native module
+  context preserves that report through batch serialization; shared stdlib
+  ownership follows original source identity through one
+  `stdlib_module_symbols` authority and never decodes generated symbol names.
+  Callable task/trampoline/closure metadata is collected by the shared
+  `molt_tir::trampolines::CallableMetadata` authority before splitting. Native
+  and WASM retain source facts even when physical partitions separate callable
+  creation from marker attributes, while final ABI catalogs include generated
+  functions. Marker facts are captured at their source operation, before
+  writes, and canonical definitions invalidate stale value/callable bindings.
+  Final bodies contribute constructor/escape facts only; lowered marker
+  operands never re-author retained source metadata. Conflicting facts,
+  unknown values on known-callable markers, and overwritten callable bindings
+  fail with a named diagnostic. The existing `_poll` task-eligibility suffix is
+  not a generated-partition ownership rule.
+- **Native artifact boundary**: `NativeArtifactKind` separates real `object`
+  output from `archive` transport. Backend CLI `--native-output-kind` and the
+  daemon job `native_output_kind` field carry this choice explicitly; direct
+  callers default to `object`. Object output compiles the complete graph into
+  one object module, retaining per-function splitting but refusing shared
+  stdlib extraction and cross-object batching. Normal executable builds request
+  deterministic, non-thin archives for application and shared-stdlib artifacts,
+  including one-member and empty-stdlib cases. Emitted object headers select
+  GNU/ELF, Darwin/Mach-O, or COFF archive encoding; mixed target identities fail
+  before publication. Ordered member names and zero owner/time metadata are
+  independent of temporary paths. Batch members are mapped read-only and the
+  archive streams through the shared atomic publication boundary. There is no
+  partial-link subprocess, hand-written relocation rewriting, or archive hidden
+  behind an object artifact kind. The final linker whole-loads compiler archives
+  to retain ordinary object inclusion semantics. Cache identities include the
+  output kind; shared-stdlib reuse validates the archive and member formats as
+  well as its existing exact-key/digest custody. WASM keeps its own relocatable
+  module contract and cannot request a native artifact kind.
+- **Native header admission**: `molt.native_artifact_header` is the single bounded
+  file/bytes decoder for ELF, PE/COFF, thin Mach-O, and universal Mach-O. Native
+  object output, linked binaries, release architecture checks, and loaded Python
+  dependency custody consume its typed headers. Object emission requires one
+  relocatable object; linked-image admission excludes relocatable objects and
+  DLL/dylib kinds. ELF `ET_DYN` is explicitly a linked-image category, not proof
+  that the artifact is executable rather than a shared library. The loader and
+  consuming linker still own relocation, instruction, and dynamic ABI validity.
+  Dependency custody retains its import/load-command semantic walks but does not
+  reparse fixed headers or copy universal image slices.
+  `molt.native_target_shape` describes known artifact identity encodings, not
+  compiler support cells; backend/toolchain gates remain authoritative. Unknown
+  shapes fail explicitly. File-header width and target pointer width are distinct
+  (Mach-O arm64_32 has a 64-bit header and 32-bit pointers); header inspection
+  proves only encoded identity, not complete pointer/float/calling-convention ABI.
+  Meson CPU family/endianness projects the same shape facts. Exact Mach-O release
+  admission checks the target subtype, rejecting generic-target substitution by
+  arm64e/x86_64h or unrecognized subtype capability bits. Loaded-image custody
+  may match an observed generic runtime family, but never chooses among ambiguous
+  family slices or guesses the host architecture. Every universal slice's
+  CPU/subtype agrees with its table row; extents, alignment, overlaps, reserved
+  fields, duplicates, and nesting fail closed. A 4,096-slice resource-admission
+  ceiling bounds parser allocation independently of declared file size. This is
+  not a supported-architecture count. Optional smoke probes require matching
+  host/target facts and never presume translation such as Rosetta is installed.
 
 ## Implementation Status Snapshot (2026-02-11)
 - Implemented in this repo today:

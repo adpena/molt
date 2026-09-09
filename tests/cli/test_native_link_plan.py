@@ -9,7 +9,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import build_results, native_link_command, native_link_plan
-from molt.cli.native_link_plan import NativeObjectFormat
+from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
 from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
 
@@ -33,6 +33,8 @@ def _plan(
     bolt_requested: bool = False,
     cc: str = "clang",
     external_target: str | None = None,
+    output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
+    stdlib_path: Path | None = None,
 ):
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -61,6 +63,8 @@ def _plan(
     )
     return native_link_command._build_native_link_plan(
         output_obj=output_obj,
+        output_kind=output_kind,
+        stdlib_obj_path=stdlib_path,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=tmp_path / "app",
@@ -77,6 +81,54 @@ def _plan(
             else (SourceExtensionLinkRequirements(external_target),)
         ),
     )
+
+
+@pytest.mark.parametrize("host_platform", ["linux", "darwin", "win32"])
+def test_compiler_archives_are_wholly_loaded_without_changing_runtime_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host_platform: str
+) -> None:
+    stdlib = tmp_path / "stdlib, with spaces.unrelated"
+    stdlib.write_bytes(b"archive")
+    plan = _plan(monkeypatch, tmp_path, host_platform=host_platform, stdlib_path=stdlib)
+    for path in (tmp_path / "output.o", stdlib):
+        arguments = native_link_plan.native_artifact_link_arguments(
+            path, kind=NativeArtifactKind.ARCHIVE, target=plan.target
+        )
+        assert any(
+            plan.command[index : index + len(arguments)] == arguments
+            for index in range(len(plan.command))
+        )
+    runtime = str(tmp_path / "libmolt_runtime.a")
+    assert not any(runtime in arg and "WHOLEARCHIVE" in arg for arg in plan.command)
+    if host_platform == "linux":
+        assert plan.command.index("--no-whole-archive") < plan.command.index(runtime)
+
+
+@pytest.mark.parametrize("host_platform", ["linux", "darwin", "win32"])
+def test_object_link_input_is_never_selected_by_filename_suffix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host_platform: str
+) -> None:
+    plan = _plan(
+        monkeypatch,
+        tmp_path,
+        host_platform=host_platform,
+        output_kind=NativeArtifactKind.OBJECT,
+    )
+    assert str(tmp_path / "output.o") in plan.command
+    assert not any(
+        "whole-archive" in arg or "WHOLEARCHIVE" in arg for arg in plan.command
+    )
+    assert "-force_load" not in plan.command
+
+
+def test_missing_shared_stdlib_fails_before_link(monkeypatch, tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="Shared stdlib artifact is unavailable"):
+        _plan(
+            monkeypatch,
+            tmp_path,
+            host_platform="linux",
+            stdlib_path=tmp_path / "missing.a",
+        )
 
 
 def test_link_plan_is_immutable_and_preserves_elf_function_identity(
@@ -324,23 +376,6 @@ def test_explicit_cc_overrides_managed_driver(tmp_path: Path, monkeypatch) -> No
 
     assert command == [str(explicit.resolve())]
     assert linker_hint is None
-
-
-def test_coff_librarian_prefers_managed_llvm_lib(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
-    llvm_lib = _managed_tool(managed_bin, "llvm-lib")
-    input_object = tmp_path / "input.obj"
-    input_object.write_bytes(b"object")
-    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
-    monkeypatch.delenv("MOLT_COFF_LIB", raising=False)
-
-    command = native_link_command._windows_coff_library_command(
-        input_objects=(input_object,), output_path=tmp_path / "output.lib"
-    )
-
-    assert Path(command[0]) == llvm_lib.resolve()
 
 
 def test_explicit_mold_non_elf_selection_fails_before_link(

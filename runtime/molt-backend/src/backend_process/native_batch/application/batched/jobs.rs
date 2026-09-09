@@ -4,7 +4,7 @@ use std::path::Path;
 use molt_backend::SimpleIR;
 
 use super::super::super::{
-    NativeApplicationObjectOptions, NativeBatchJobSpec, NativeBatchModuleMetadata,
+    NativeApplicationArtifactOptions, NativeBatchJobSpec, NativeBatchModuleMetadata,
     NativeBatchObjectJob, append_referenced_external_declarations, batch_external_function_names,
 };
 use super::plan::NativeApplicationBatchPlan;
@@ -13,7 +13,7 @@ use crate::backend_process::io_limits::write_json_artifact;
 pub(super) fn materialize_native_application_batch_jobs(
     tmp_dir: &Path,
     plan: NativeApplicationBatchPlan,
-    options: &mut NativeApplicationObjectOptions<'_>,
+    options: &mut NativeApplicationArtifactOptions<'_>,
     batch_ops_budget: usize,
 ) -> io::Result<Vec<NativeBatchJobSpec>> {
     let module_context_path = tmp_dir.join("module_context.json");

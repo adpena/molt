@@ -19,7 +19,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.toolchain_identity import stable_executable_probe
 from molt.dx import checkout_custody
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact

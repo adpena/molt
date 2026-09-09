@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 
@@ -31,6 +32,56 @@ def _value_name(value: object) -> object:
     if isinstance(value, MoltValue):
         return value.name
     return value
+
+
+@pytest.mark.parametrize("annotation", ["list", "tuple"])
+def test_tuple_conversion_does_not_treat_annotations_as_exact(annotation: str) -> None:
+    ir = compile_to_tir(f"def f(value: {annotation}):\n    return tuple(value)\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    assert any(op["kind"] == "call_func" for op in ops)
+    assert not any(op["kind"] == "tuple_from_list" for op in ops)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "list",
+        "tuple",
+        "dict",
+        "set",
+        "frozenset",
+        "float",
+        "complex",
+        "int",
+        "pow",
+        "round",
+        "bytes",
+        "bytearray",
+        "memoryview",
+        "str",
+        "bool",
+        "len",
+        "map",
+        "zip",
+        "sorted",
+        "min",
+        "max",
+        "any",
+        "all",
+        "sum",
+    ],
+)
+@pytest.mark.parametrize("expansion", ["*values", "**values"])
+def test_builtin_expansion_uses_shared_call_assembly(name: str, expansion: str) -> None:
+    ir = compile_to_tir(f"def f(values):\n    return {name}({expansion})\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    expansion_kind = (
+        "callargs_expand_kwstar"
+        if expansion.startswith("**")
+        else "callargs_expand_star"
+    )
+    assert sum(op["kind"] == expansion_kind for op in ops) == 1
+    assert any(op["kind"] in {"call_bind", "call_indirect"} for op in ops)
 
 
 def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
@@ -247,6 +298,24 @@ def _module_attr_accesses(
         ):
             outs.append(out)
     return outs
+
+
+def _local_import_reads(
+    ops: list[dict[str, object]],
+    name: str,
+    imported_values: set[str],
+) -> set[str]:
+    """Follow the straight-line fixture's imported value through local storage."""
+    reads: set[str] = set()
+    stored: object = None
+    for op in ops:
+        if op.get("var") != name:
+            continue
+        if op.get("kind") == "store_var":
+            stored = op["args"][0]
+        elif op.get("kind") == "load_var" and stored in imported_values:
+            reads.add(op["out"])
+    return reads
 
 
 def _importlib_literal_main_ops(source: str) -> list[dict[str, object]]:
@@ -543,13 +612,111 @@ def test_module_try_except_assignments_use_module_storage_after_join() -> None:
     assert len(_module_attr_accesses(main_ops, "module_set_attr", "flag")) == 2
     flag_loads = _module_attr_accesses(main_ops, "module_get_global", "flag")
     print_args = [
-        args[0]
+        args[1]
         for op in main_ops
-        if op.get("kind") == "print"
+        if op.get("kind") == "callargs_push_pos"
         and isinstance(args := op.get("args"), list)
-        and args
+        and len(args) == 2
     ]
     assert any(load in print_args for load in flag_loads)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["flag = 1", "flag: int = 1", "flag += 1", "flag, other = (1, 2)"],
+)
+@pytest.mark.parametrize(
+    "flow",
+    [
+        "if input():\n{body}\n",
+        "while input():\n{body}\n    break\n",
+        "for item in input():\n{body}\n",
+        "try:\n{body}\nexcept Exception:\n    pass\n",
+    ],
+)
+def test_module_binding_has_one_publication_per_assignment(
+    body: str, flow: str
+) -> None:
+    ir = compile_to_tir("flag = 0\n" + flow.format(body=indent(body, "    ")))
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    # One initial assignment and one body assignment: control-flow promotion
+    # must not re-publish the initial value, nor may storage repeat the body write.
+    assert len(_module_attr_accesses(ops, "module_set_attr", "flag")) == 2
+
+
+@pytest.mark.parametrize(
+    "body", ["flag = 1", "flag: int = 1", "flag += 1", "flag, other = (1, 2)"]
+)
+def test_function_global_binding_has_one_publication_per_assignment(body: str) -> None:
+    ir = compile_to_tir("def f():\n    global flag\n" + indent(body, "    ") + "\n")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    assert len(_module_attr_accesses(ops, "module_set_attr", "flag")) == 1
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "def flag():\n    return 1",
+        "def flag():\n    yield 1",
+        "async def flag():\n    return 1",
+        "async def flag():\n    yield 1",
+        "class flag:\n    pass",
+    ],
+)
+def test_control_flow_definition_has_one_namespace_publication(definition: str) -> None:
+    source = "try:\n" + indent(definition, "    ") + "\nexcept Exception:\n    pass\n"
+    ir = compile_to_tir(source)
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    assert len(_module_attr_accesses(ops, "module_set_attr", "flag")) == 1
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_module_control_flow_promotion_flushes_only_unpublished_values(
+    deferred: bool,
+) -> None:
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(""))
+    generator.defer_module_attrs = deferred
+    flag = MoltValue(generator.next_var(), type_hint="int")
+    generator.emit(MoltOp(kind="CONST", args=[7], result=flag))
+    generator._store_local_value("flag", flag, publish_module=True)
+    generator.globals["flag"] = flag
+    generator._prepare_mutable_control_flow_bindings({"flag"})
+    generator._prepare_mutable_control_flow_bindings({"flag"})
+    generator._flush_deferred_module_attrs()
+    ops = next(
+        fn["ops"]
+        for fn in generator.to_json()["functions"]
+        if fn["name"] == "molt_main"
+    )
+    assert len(_module_attr_accesses(ops, "module_set_attr", "flag")) == 1
+    assert "flag" not in generator.deferred_module_attrs
+    assert "flag" not in generator.locals
+    assert generator._module_attr_type_hints["flag"] == "int"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "print()",
+        "print(1)",
+        "print(1, 2)",
+        "print(1, end='')",
+        "print(*(1, 2))",
+        "print(**{})",
+    ],
+)
+def test_print_value_uses_shared_builtin_call_authority(expression: str) -> None:
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(f"result = [{expression}]\n"))
+    ops = generator.funcs_map["molt_main"]["ops"]
+    calls = [op for op in ops if op.kind == "CALL_BIND"]
+    assert len(calls) == 1
+    assert calls[0].result.type_hint == "None"
+    assert not {"PRINT", "PRINT_NEWLINE", "STRING_JOIN"}.intersection(
+        op.kind for op in ops
+    )
+    assert any(op.kind == "LIST_NEW" and calls[0].result in op.args for op in ops)
 
 
 def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
@@ -712,14 +879,40 @@ def test_local_callable_guard_intrinsic_wrapper_lowers_known_intrinsic() -> None
     assert _has_builtin_func(source, "molt_gc_collect")
 
 
-def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+@pytest.mark.parametrize("local", [False, True])
+def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
+    local: bool,
+) -> None:
     source = (
         "def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):\n"
         "    from _intrinsics import require_intrinsic as _require\n"
         "    return _require(name, namespace)\n"
         "_HOOK = _require_intrinsic('molt_importlib_module_spec_is_package')\n"
     )
-    assert _has_builtin_func(source, "molt_importlib_module_spec_is_package")
+    if local:
+        source = "def probe():\n" + indent(source, "    ")
+    ir = compile_to_tir(source)
+    ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == ("__main____probe" if local else "molt_main")
+    )
+    assert (
+        any(
+            op.get("kind") == "builtin_func"
+            and op.get("s_value") == "molt_importlib_module_spec_is_package"
+            for op in ops
+        )
+        is local
+    )
+    if not local:
+        # Eager annotation callbacks can populate the definition's module
+        # target; releasing that old binding can replace the new wrapper.
+        targets = _module_attr_accesses(ops, "module_get_global", "_require_intrinsic")
+        assert targets
+        assert any(
+            op.get("kind") == "call_indirect" and op["args"][0] in targets for op in ops
+        )
 
 
 def test_intrinsic_require_lowers_to_public_runtime_symbol() -> None:
@@ -1105,7 +1298,8 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
         raise AssertionError("missing inner func_new_closure")
 
 
-def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
+@pytest.mark.parametrize("local", [False, True])
+def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> None:
     # Model the collision lane explicitly: compiler metadata says "Path" points
     # at zipfile._path.Path.__init__, while source imports Path from pathlib.
     known_classes = {
@@ -1137,10 +1331,15 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
         }
     }
     gen = SimpleTIRGenerator(known_classes=known_classes)
-    gen.visit(ast.parse("from pathlib import Path\nPath('x')\n"))
+    source = "from pathlib import Path\nPath('x')\n"
+    if local:
+        source = "def probe():\n" + indent(source, "    ")
+    gen.visit(ast.parse(source))
     ir = gen.to_json()
     main_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == ("__main____probe" if local else "molt_main")
     )
     const_str: dict[str, str] = {
         op["out"]: op["s_value"]
@@ -1162,14 +1361,20 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
         and const_str.get(op["args"][1]) == "Path"
     }
     assert imported_path_values, "expected from-import to materialize pathlib.Path"
-    path_call_targets = imported_path_values | path_class_vars
+    # Module publication may release a callback-populated old Path and reload
+    # its replacement; a private fast local retains the imported value.
+    path_call_targets = (
+        _local_import_reads(main_ops, "Path", imported_path_values)
+        if local
+        else path_class_vars
+    )
     assert path_call_targets, "expected pathlib.Path imported value in lowered main ops"
     assert any(
-        op.get("kind") == "call_bind"
+        op.get("kind") == ("call_bind" if local else "call_indirect")
         and len(op.get("args") or []) >= 1
         and op["args"][0] in path_call_targets
         for op in main_ops
-    ), "expected imported pathlib.Path constructor to lower via call_bind"
+    ), "expected constructor dispatch through the source-point Path binding"
     assert all(
         op.get("s_value") != "zipfile__path__Path___init__"
         for op in main_ops
@@ -1277,18 +1482,27 @@ def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
         and const_str.get(op["args"][1]) == "TypeVar"
     }
     assert imported_typevar_values, "expected from-import to materialize TypeVar"
-    typevar_global_values = {
+    publications = [
+        op
+        for op in main_ops
+        if op.get("kind") == "module_set_attr"
+        and op["args"][2] in imported_typevar_values
+        and const_str.get(op["args"][1]) == "TypeVar"
+    ]
+    assert len(publications) == 1, "the imported binding must publish exactly once"
+    module, key, _ = publications[0]["args"]
+    imported_typevar_loads = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_get_global"
-        and len(op.get("args") or []) == 2
-        and const_str.get(op["args"][1]) == "TypeVar"
+        if op.get("kind") == "module_get_global" and op["args"] == [module, key]
     }
-    assert typevar_global_values, "expected bare TypeVar read to use LOAD_GLOBAL"
+    assert imported_typevar_loads, (
+        "calls must observe the live published module binding"
+    )
     assert any(
         op.get("kind") == "call_bind"
         and len(op.get("args") or []) == 2
-        and op["args"][0] in typevar_global_values
+        and op["args"][0] in imported_typevar_loads
         for op in main_ops
     )
     assert all(
@@ -1299,6 +1513,44 @@ def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
         )
         for op in main_ops
     )
+
+
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
+def test_locals_snapshot_semantics_use_target_not_host_python(
+    version: tuple[int, int],
+) -> None:
+    gen = SimpleTIRGenerator(target_python=version)
+    gen.visit(
+        ast.parse("def f():\n    a = locals()\n    b = locals()\n    return a is b\n")
+    )
+    ops = next(
+        function["ops"]
+        for name, function in gen.funcs_map.items()
+        if name.endswith("__f")
+    )
+    dictionaries = [op for op in ops if op.kind == "DICT_NEW"]
+    # 3.12 updates one shared local cache; PEP 667 requires fresh snapshots
+    # starting with 3.13, regardless of which interpreter runs the compiler.
+    if version < (3, 13):
+        assert len(dictionaries) == 1
+    else:
+        assert len(dictionaries) >= 2
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(mapping, tail):\n    return dict(**mapping, value=tail())\n",
+        "def f(mapping, tail):\n    result = {}\n    result.update(**mapping, value=tail())\n    return result\n",
+        "def f(mapping, tail):\n    class Result(**mapping, value=tail()):\n        pass\n    return Result\n",
+    ],
+)
+def test_keyword_merge_consumers_share_argument_assembly(source: str) -> None:
+    gen = SimpleTIRGenerator()
+    gen.visit(ast.parse(source))
+    ops = [op for function in gen.funcs_map.values() for op in function["ops"]]
+    assert any(op.kind == "CALLARGS_EXPAND_KWSTAR" for op in ops)
+    assert all(op.kind != "DICT_UPDATE_KWSTAR" for op in ops)
 
 
 def _counter_known_classes() -> dict[str, dict[str, object]]:
@@ -1337,7 +1589,7 @@ def test_imported_counter_list_constructor_uses_global_binding_path() -> None:
     )
     assert counter_global_values
     assert any(
-        op.get("kind") == "call_bind"
+        op.get("kind") == "call_indirect"
         and len(op.get("args") or []) >= 1
         and op["args"][0] in counter_global_values
         for op in main_ops
@@ -1352,7 +1604,7 @@ def test_imported_counter_list_constructor_uses_global_binding_path() -> None:
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
-def test_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
+def test_local_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
     gen = SimpleTIRGenerator(
         known_classes=_counter_known_classes(),
         known_modules={"collections"},
@@ -1360,15 +1612,16 @@ def test_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
     )
     gen.visit(
         ast.parse(
-            "import collections\n"
-            'words = "a b a".split()\n'
-            "c = collections.Counter(words)\n"
+            "def probe():\n"
+            "    import collections\n"
+            '    words = ["a", "b", "a"]\n'
+            "    c = collections.Counter(words)\n"
         )
     )
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "molt_main"
+        if func["name"] == "__main____probe"
     )
 
     assert any(
@@ -1803,7 +2056,8 @@ def test_counter_string_constructor_keeps_general_constructor_path() -> None:
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
-def test_collections_namedtuple_kwonly_defaults_use_call_bind() -> None:
+@pytest.mark.parametrize("local", [False, True])
+def test_collections_namedtuple_kwonly_defaults_use_live_binding(local: bool) -> None:
     gen = SimpleTIRGenerator(
         known_modules={"collections"},
         stdlib_allowlist={"collections"},
@@ -1839,13 +2093,14 @@ def test_collections_namedtuple_kwonly_defaults_use_call_bind() -> None:
             }
         },
     )
-    gen.visit(
-        ast.parse("from collections import namedtuple\nT = namedtuple('T', ['x'])\n")
-    )
+    source = "from collections import namedtuple\nT = namedtuple('T', ['x'])\n"
+    if local:
+        source = "def probe():\n" + indent(source, "    ")
+    gen.visit(ast.parse(source))
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "molt_main"
+        if func["name"] == ("__main____probe" if local else "molt_main")
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -1861,18 +2116,16 @@ def test_collections_namedtuple_kwonly_defaults_use_call_bind() -> None:
     }
 
     assert imported_namedtuple_values, "expected from-import to materialize namedtuple"
-    namedtuple_global_values = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "module_get_global"
-        and len(op.get("args") or []) == 2
-        and const_str.get(op["args"][1]) == "namedtuple"
-    }
-    assert namedtuple_global_values, "expected bare namedtuple read to use LOAD_GLOBAL"
+    call_targets = (
+        _local_import_reads(main_ops, "namedtuple", imported_namedtuple_values)
+        if local
+        else set(_module_attr_accesses(main_ops, "module_get_global", "namedtuple"))
+    )
+    assert call_targets
     assert any(
-        op.get("kind") == "call_bind"
+        op.get("kind") == ("call_bind" if local else "call_indirect")
         and len(op.get("args") or []) == 2
-        and op["args"][0] in namedtuple_global_values
+        and op["args"][0] in call_targets
         for op in main_ops
     ), main_ops
     assert all(
@@ -1923,37 +2176,60 @@ def test_minmax_direct_abi_path_does_not_attach_python_call_metadata() -> None:
     assert max_call["out"] not in metadata_targets
 
 
-def test_counter_index_and_len_use_intrinsic_handle_path() -> None:
+@pytest.mark.parametrize("expression", ['c["a"]', "len(c)"])
+@pytest.mark.parametrize("local", [False, True])
+def test_counter_operation_respects_live_callable_binding(
+    expression: str,
+    local: bool,
+) -> None:
     gen = SimpleTIRGenerator(
         known_classes=_counter_known_classes(),
         known_modules={"collections"},
         stdlib_allowlist={"collections"},
     )
-    gen.visit(
-        ast.parse(
-            "import collections\n"
-            'words = "a b a".split()\n'
-            "c = collections.Counter(words)\n"
-            'x = c["a"]\n'
-            "n = len(c)\n"
-        )
+    source = (
+        "import collections\n"
+        'words = ["a", "b", "a"]\n'
+        "c = collections.Counter(words)\n"
+        f"result = {expression}\n"
     )
+    if local:
+        source = "def probe():\n" + indent(source, "    ")
+    gen.visit(ast.parse(source))
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "molt_main"
+        if func["name"] == ("__main____probe" if local else "molt_main")
     )
 
-    assert any(
-        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_counter_getitem"
-        for op in main_ops
-    )
-    assert any(
-        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_counter_len"
-        for op in main_ops
-    )
-    assert all(op.get("kind") != "index" for op in main_ops)
-    assert all(op.get("kind") != "len" for op in main_ops)
+    if expression == 'c["a"]' and local:
+        assert any(
+            op.get("kind") == "builtin_func"
+            and op.get("s_value") == "molt_counter_getitem"
+            for op in main_ops
+        )
+        assert all(op.get("kind") != "index" for op in main_ops)
+    elif expression == 'c["a"]':
+        live_receiver = _module_attr_accesses(main_ops, "module_get_global", "c")
+        assert live_receiver
+        assert any(
+            op.get("kind") == "index" and op["args"][0] in live_receiver
+            for op in main_ops
+        )
+        assert all(
+            op.get("kind") != "builtin_func"
+            or op.get("s_value") != "molt_counter_getitem"
+            for op in main_ops
+        )
+    else:
+        # The constructor can execute Python and rebind module-global len.
+        # The instance's known layout does not prove the next callable's identity.
+        live_len = _module_attr_accesses(main_ops, "module_get_global", "len")
+        assert live_len
+        assert any(
+            op.get("kind") == "call_indirect" and op["args"][0] in live_len
+            for op in main_ops
+        )
 
 
 def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted() -> (
@@ -2037,7 +2313,7 @@ def test_delete_function_local_releases_previous_binding_after_missing_store() -
     }
     load_idx, old_var = next(
         (idx, op["out"])
-        for idx, op in enumerate(ops)
+        for idx, op in reversed(list(enumerate(ops)))
         if op.get("kind") == "load_var"
         and op.get("var") == "item"
         and isinstance(op.get("out"), str)
@@ -2193,176 +2469,55 @@ def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> 
     assert any(op.get("s_value") == "polyval" for op in main_ops)
 
 
-def test_target_sys_platform_elides_deleted_unreachable_module_helper_body() -> None:
+@pytest.mark.parametrize(
+    "name,target,before,between,delete,elided",
+    [
+        ("_helper", "wasm", "", "", True, True),
+        ("_helper", "wasm", "", "", False, False),
+        ("helper", "wasm", "", "", False, False),
+        ("_helper", "darwin", "", "", True, False),
+        ("_helper", "wasm", "", "snapshot = globals()\n", True, False),
+        ("_helper", "wasm", "view = locals()\n", "saved = view.copy()\n", True, False),
+        ("_helper", "wasm", "view = globals().keys()\n", "", True, False),
+        ("_helper", "wasm", "", "observer()\n", True, False),
+        ("_helper", "wasm", "import foreign\n", "", True, False),
+    ],
+)
+def test_module_helper_pruning_requires_unobserved_deleted_lifetime(
+    name: str,
+    target: str,
+    before: str,
+    between: str,
+    delete: bool,
+    elided: bool,
+) -> None:
+    # Isolate reachability from third-party imports that can rewrite sys.platform.
+    # Private names remain public module attributes regardless of dead local uses.
     source = (
         "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def _mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "if sys.platform == 'darwin':\n"
-        "    _mac_os_check()\n"
-        "del _mac_os_check\n"
-        "answer = 1\n"
+        + before
+        + f"def {name}():\n    return 1\n"
+        + between
+        + f"if sys.platform == 'darwin':\n    {name}()\n"
+        + (f"del {name}\n" if delete else "")
     )
     gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
+        module_name="sample",
+        known_modules={"sys", "foreign"},
+        stdlib_allowlist={"sys", "foreign"},
+        target_sys_platform=target,
     )
     gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
-    assert all(
-        op.get("kind") != "call_indirect"
-        for func in ir["functions"]
-        for op in func["ops"]
-    )
+    names = {function["name"] for function in gen.to_json()["functions"]}
+    assert (f"sample__{name}" not in names) == elided
 
 
-def test_target_sys_platform_elides_unreferenced_private_helper_body() -> None:
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def _mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "if sys.platform == 'darwin':\n"
-        "    _mac_os_check()\n"
-        "answer = 1\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
-    )
+def test_deleted_definition_does_not_elide_later_rebinding_with_same_name() -> None:
+    gen = SimpleTIRGenerator(module_name="redefinition")
+    source = "def helper():\n    return 1\ndel helper\ndef helper():\n    return 2\n"
     gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
-    assert all(
-        op.get("kind") != "call_indirect"
-        for func in ir["functions"]
-        for op in func["ops"]
-    )
-
-
-def test_target_sys_platform_keeps_public_helper_without_live_load() -> None:
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "if sys.platform == 'darwin':\n"
-        "    mac_os_check()\n"
-        "answer = 1\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
-    )
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert any(func["name"] == "numpy__mac_os_check" for func in ir["functions"])
-
-
-def test_target_sys_platform_keeps_private_helper_without_pruned_load() -> None:
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def _private_helper():\n"
-        "    y = polyval([1], [2])\n"
-        "answer = 1\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
-    )
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert any(func["name"] == "numpy___private_helper" for func in ir["functions"])
-
-
-def test_target_sys_platform_keeps_deleted_helper_body_when_platform_branch_live() -> (
-    None
-):
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def _mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "if sys.platform == 'darwin':\n"
-        "    _mac_os_check()\n"
-        "del _mac_os_check\n"
-        "answer = 1\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="darwin",
-    )
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert any(func["name"] == "numpy___mac_os_check" for func in ir["functions"])
-    assert any(
-        op.get("s_value") == "polyval" for func in ir["functions"] for op in func["ops"]
-    )
-
-
-def test_target_sys_platform_keeps_deleted_helper_when_globals_escape() -> None:
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "def _mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "snapshot = globals()\n"
-        "if sys.platform == 'darwin':\n"
-        "    _mac_os_check()\n"
-        "del _mac_os_check\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
-    )
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert any(func["name"] == "numpy___mac_os_check" for func in ir["functions"])
-
-
-def test_target_sys_platform_elides_helper_when_globals_escape_precedes_definition() -> (
-    None
-):
-    source = (
-        "import sys\n"
-        "from .lib._polynomial_impl import polyval\n"
-        "globals()['ta'] = 1\n"
-        "submodules = globals().keys()\n"
-        "def _mac_os_check():\n"
-        "    y = polyval([1], [2])\n"
-        "if sys.platform == 'darwin':\n"
-        "    _mac_os_check()\n"
-        "del _mac_os_check\n"
-    )
-    gen = SimpleTIRGenerator(
-        module_name="numpy",
-        known_modules={"sys", "numpy.lib._polynomial_impl"},
-        target_sys_platform="wasm",
-    )
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-
-    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
-    assert all(
-        op.get("kind") != "call_indirect"
-        for func in ir["functions"]
-        for op in func["ops"]
-    )
+    assert any("helper" in function["name"] for function in gen.to_json()["functions"])
+    assert "helper" not in gen._module_elidable_deleted_functions(ast.parse(source))
 
 
 def test_source_import_statements_use_import_transaction_details() -> None:
@@ -2693,34 +2848,60 @@ def test_any_all_generator_expr_use_scalar_result_slots() -> None:
         )
 
 
-def test_globals_pop_lowers_to_exact_dict_pop() -> None:
+def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:
     ir = compile_to_tir(
         "globals().pop('_require_intrinsic', None)\n"
         "def f():\n"
         "    return globals().pop('_require_intrinsic', None)\n"
     )
 
-    for func_name in ["molt_main", "__main____f"]:
-        func_ops = next(
-            func["ops"] for func in ir["functions"] if func["name"] == func_name
-        )
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    assert any(op.get("kind") == "dict_pop" for op in main_ops)
+    assert all(op.get("kind") != "call_indirect" for op in main_ops)
+    deferred_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    # The module may replace globals before the deferred function runs.
+    live_globals = _module_attr_accesses(deferred_ops, "module_get_global", "globals")
+    assert live_globals
+    assert any(
+        op.get("kind") == "call_indirect" and op["args"][0] in live_globals
+        for op in deferred_ops
+    )
+    assert not any(op.get("kind") == "dict_pop" for op in deferred_ops)
 
-        assert any(op.get("kind") == "dict_pop" for op in func_ops)
-        assert not any(
-            op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "pop"
-            for op in func_ops
+
+@pytest.mark.parametrize("name", ["dict", "globals", "locals", "vars"])
+def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
+    name: str,
+) -> None:
+    gen = SimpleTIRGenerator()
+    gen.visit(
+        ast.parse(
+            f"def f({name}):\n    value = {name}()\n    return value.pop('key', None)\n"
         )
-        assert all(op.get("kind") != "callargs_new" for op in func_ops)
-        assert all(op.get("kind") != "call_indirect" for op in func_ops)
+    )
+    ops = next(
+        function["ops"]
+        for function in gen.to_json()["functions"]
+        if function["name"] == "__main____f"
+    )
+    assert not any(op.get("kind") == "dict_pop" for op in ops)
+    assert any(
+        op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "pop"
+        for op in ops
+    )
 
 
 def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
     ir = compile_to_tir(
         "def f():\n"
-        "    data = {str(i): i for i in range(5)}\n"
-        "    total = sum(v for v in data.values())\n"
+        "    data = {i: i for i in (0, 1, 2, 3, 4)}\n"
+        "    values = data.values()\n"
         "    inverted = {v: k for k, v in data.items()}\n"
-        "    return total + len(inverted)\n"
+        "    return values, inverted\n"
     )
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
@@ -2790,42 +2971,43 @@ def test_internal_module_vararg_function_import_stays_on_call_bind() -> None:
     ), func_ops
 
 
-def test_tensor_linear_uses_internal_fast_tensor_wrap_helper() -> None:
-    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
-    ir = compile_to_tir(source)
-    func_ops = next(
-        func["ops"]
-        for func in ir["functions"]
-        if func["name"] == "__main____tensor_linear"
-    )
+@pytest.fixture(scope="module")
+def tensor_module_ops() -> dict[str, list[dict[str, object]]]:
+    path = Path("src/molt/gpu/tensor.py")
+    # Lower once, using real module identity so relative imports have custody.
+    gen = SimpleTIRGenerator(module_name="molt.gpu.tensor", source_path=str(path))
+    gen.visit(ast.parse(path.read_text(encoding="utf-8")))
+    return {
+        function["name"]: function["ops"] for function in gen.to_json()["functions"]
+    }
+
+
+def test_tensor_linear_uses_internal_fast_tensor_wrap_helper(tensor_module_ops) -> None:
+    func_ops = tensor_module_ops["molt_gpu_tensor__tensor_linear"]
+    helpers = _module_attr_accesses(func_ops, "module_get_global", "_tensor_from_parts")
+    assert helpers
     assert any(
-        op.get("kind") == "call" and op.get("s_value") == "__main_____tensor_from_parts"
+        op.get("kind") == "call_indirect" and op["args"][0] in helpers
         for op in func_ops
     ), func_ops
 
 
-def test_tensor_view_helpers_use_internal_fast_wrap_helpers() -> None:
-    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
-    ir = compile_to_tir(source)
-    reshape_ops = next(
-        func["ops"]
-        for func in ir["functions"]
-        if func["name"] == "__main____tensor_reshape_view"
-    )
-    data_list_ops = next(
-        func["ops"]
-        for func in ir["functions"]
-        if func["name"] == "__main____tensor_data_list"
-    )
+@pytest.mark.parametrize(
+    "function, helper",
+    [
+        ("tensor_reshape_view", "_tensor_from_buffer"),
+        ("tensor_data_list", "_buffer_to_list"),
+    ],
+)
+def test_tensor_view_helpers_use_internal_fast_wrap_helpers(
+    tensor_module_ops, function: str, helper: str
+) -> None:
+    ops = tensor_module_ops[f"molt_gpu_tensor__{function}"]
+    helpers = _module_attr_accesses(ops, "module_get_global", helper)
+    assert helpers
     assert any(
-        op.get("kind") == "call"
-        and op.get("s_value") == "__main_____tensor_from_buffer"
-        for op in reshape_ops
-    ), reshape_ops
-    assert any(
-        op.get("kind") == "call" and op.get("s_value") == "__main_____buffer_to_list"
-        for op in data_list_ops
-    ), data_list_ops
+        op.get("kind") == "call_indirect" and op["args"][0] in helpers for op in ops
+    )
 
 
 def test_internal_module_intrinsic_alias_import_stays_on_call_bind() -> None:
@@ -2848,21 +3030,22 @@ def test_internal_module_intrinsic_alias_import_stays_on_call_bind() -> None:
     ), func_ops
 
 
-def test_tensor_linear_family_helpers_inline_result_format_selection() -> None:
-    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
-    ir = compile_to_tir(source)
+def test_tensor_linear_family_helpers_inline_result_format_selection(
+    tensor_module_ops,
+) -> None:
     for func_name in (
-        "__main____tensor_linear",
-        "__main____tensor_linear_split_last_dim",
-        "__main____tensor_linear_squared_relu_gate_interleaved",
+        "molt_gpu_tensor__tensor_linear",
+        "molt_gpu_tensor__tensor_linear_split_last_dim",
+        "molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved",
     ):
-        func_ops = next(
-            func["ops"] for func in ir["functions"] if func["name"] == func_name
+        func_ops = tensor_module_ops[func_name]
+        assert not _module_attr_accesses(
+            func_ops, "module_get_global", "_preferred_float_format"
         )
         assert all(
             not (
                 op.get("kind") == "call"
-                and op.get("s_value") == "__main_____preferred_float_format"
+                and op.get("s_value") == "molt_gpu_tensor___preferred_float_format"
             )
             for op in func_ops
         ), (func_name, func_ops)
