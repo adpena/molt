@@ -1965,7 +1965,9 @@ def _source_extension_object_fact(
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
-    from molt.cli.backend_cache import NativeSymbolInspectionError
+    from molt.cli.native_symbol_inspection import (
+        NativeSymbolInspectionError,
+    )
 
     try:
         symbol_inspection = _inspect_source_extension_artifact_symbols(
@@ -2096,7 +2098,9 @@ def _inspect_source_extension_artifact_symbols(
 
     # Reading a native object file's global symbols is a backend/native-link
     # concern; import it lazily so this module stays off the frontend import path.
-    from molt.cli.backend_cache import _native_object_global_symbol_facts
+    from molt.cli.native_symbol_inspection import (
+        _native_object_global_symbol_facts,
+    )
 
     if not nm_command:
         return None
@@ -2180,7 +2184,7 @@ def validate_source_extension_artifact_object_closure(
             actual_undefined = set(inspection.undefined_symbols) - actual_defined
             actual_defined_functions = set(inspection.defined_function_symbols)
         else:
-            from molt.cli.backend_cache import (
+            from molt.cli.native_symbol_inspection import (
                 NativeSymbolInspectionError,
                 _native_archive_global_symbol_facts,
             )

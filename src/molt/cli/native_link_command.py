@@ -8,7 +8,11 @@ import sys
 from typing import Sequence
 
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
+from molt.cli.compiler_target import (
+    compiler_target_triple,
+    validate_compiler_target,
+    _zig_target_query,
+)
 from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
     llvm_named_tool_candidates,
@@ -45,7 +49,6 @@ from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
     _detect_macos_deployment_target,
-    _zig_target_query,
 )
 from molt.cli.source_extension_target import source_extension_link_dialect
 

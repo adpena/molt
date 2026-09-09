@@ -100,7 +100,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 17
+_ANALYSIS_SCHEMA: Final = 18
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -2113,14 +2113,10 @@ class _Analyzer:
                 node, state_id, scope
             )
             effects |= argument_effects
-            callee_may_require_intrinsic = bool(
-                callee_result.identities & int(PythonIdentity.INTRINSICS_REQUIRE)
-            )
             if (
                 callee_result.identities
                 & int(PythonIdentity.BUILTIN_EXEC | PythonIdentity.BUILTIN_EVAL)
-                or not callee_may_require_intrinsic
-                and any(
+                or any(
                     self._expression_exposes_module_globals(argument)
                     for argument in (
                         node.func,
@@ -3827,17 +3823,6 @@ class _Analyzer:
                 expression_facts=self.expressions,
                 assignment_effects=self.assignment_effects,
                 call_facts=self.calls,
-                metadata_preserving_globals_calls=frozenset(
-                    (
-                        fact.node.lineno,
-                        fact.node.col_offset,
-                        fact.node.end_lineno,
-                        fact.node.end_col_offset,
-                        fact.node.kind,
-                    )
-                    for fact in self.calls.values()
-                    if fact.callee_may_be(PythonIdentity.INTRINSICS_REQUIRE)
-                ),
             )
         else:
             import_state = context_import_state(import_context)

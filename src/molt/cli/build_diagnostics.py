@@ -15,7 +15,9 @@ from molt.cli.models import (
     _BuildDiagnosticsContext,
     _FrontendTimingRecorderConfig,
 )
-from molt.cli.runtime_wasm_cache import _runtime_wasm_cache_diagnostics_snapshot
+from molt.cli.runtime_wasm_cache_diagnostics import (
+    _runtime_wasm_cache_diagnostics_snapshot,
+)
 from molt.cli.runtime_wasm_build_timings import _runtime_wasm_build_timings_snapshot
 from molt.metric_ratios import budget_utilization
 

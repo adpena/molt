@@ -29,6 +29,20 @@ def _compiler_root() -> Path:
     return _COMPILER_ROOT
 
 
+def _compiler_python_source_root(project_root: Path) -> Path:
+    """Return the Python import root owned by this compiler source layout.
+
+    The loaded compiler records its actual package parent: checkout src or
+    installed site-packages. Other explicit project roots describe source
+    checkouts, never an inferred or fabricated installation layout.
+    """
+    # Selecting a different compiler root does not relocate this loaded package.
+    # Only its captured package-parent layout may reuse the captured source root.
+    if project_root.resolve() == _SRC_ROOT.parent.resolve():
+        return _SRC_ROOT
+    return project_root / "src"
+
+
 def _git_rev(root: Path) -> str | None:
     try:
         result = _run_completed_command(

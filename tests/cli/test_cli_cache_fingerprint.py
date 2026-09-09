@@ -12,6 +12,7 @@ import pytest
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
+RUNTIME_SOURCE_CLOSURE = importlib.import_module("molt.cli.runtime_source_closure")
 
 
 def _cli_init(root: Path) -> Path:
@@ -64,7 +65,7 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         lambda root, backend_features: [source],
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "runtime_source_paths", lambda root, **_kwargs: []
+        RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", lambda root, **_kwargs: []
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
     monkeypatch.setattr(
@@ -136,7 +137,7 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
         backend_source_paths,
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "runtime_source_paths", runtime_source_paths
+        RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", runtime_source_paths
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
@@ -168,7 +169,7 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
         lambda source_root, backend_features: [backend_source],
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "runtime_source_paths", runtime_source_paths
+        RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", runtime_source_paths
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
@@ -725,112 +726,151 @@ def test_source_tree_cache_fingerprint_uses_clean_pathspec_state(
     assert seen_path_keys == [(str(tracked.resolve()),)]
 
 
-def test_lowering_scope_source_files_cache_validates_compact_pathspec_state(
+def test_lowering_dependency_graph_reuses_analysis_but_rechecks_source_bytes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    root = tmp_path / "repo"
-    frontend = root / "src" / "molt" / "frontend" / "cfg_analysis.py"
-    cli_source = root / "src" / "molt" / "cli" / "module_source.py"
-    frontend.parent.mkdir(parents=True, exist_ok=True)
-    cli_source.parent.mkdir(parents=True, exist_ok=True)
-    frontend.write_text("MARKER = 1\n", encoding="utf-8")
-    cli_source.write_text("MARKER = 1\n", encoding="utf-8")
-    files = (str(frontend.resolve()), str(cli_source.resolve()))
-    seed_state = {
-        "schema_version": 1,
-        "kind": "git-clean-pathspec",
-        "pathspec_count": 2,
-        "pathspec_digest": "seed",
-        "tracked_digest": "seed-objects",
-        "tracked_entry_count": 2,
-    }
-    full_state = {
-        "schema_version": 1,
-        "kind": "git-clean-pathspec",
-        "pathspec_count": 2,
-        "pathspec_digest": "full",
-        "tracked_digest": "full-objects",
-        "tracked_entry_count": 2,
-    }
-    compact_full_keys = CACHE_FINGERPRINTS._lowering_scope_clean_path_keys(root, files)
-    seen_path_keys: list[tuple[str, ...]] = []
+    from molt.cli import python_source_closure as graph
 
-    def clean_pathspec_state(
-        source_root: Path, path_keys: tuple[str, ...]
-    ) -> dict[str, str | int] | None:
-        assert source_root == root
-        seen_path_keys.append(path_keys)
-        if path_keys == compact_full_keys:
-            return full_state
-        return None
+    source = tmp_path / "src" / "molt" / "cli" / "module_source.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("import molt.cli.first\n", encoding="utf-8")
+    first, second = source.with_name("first.py"), source.with_name("other.py")
+    first.write_text("VALUE = 1\n", encoding="utf-8")
+    second.write_text("VALUE = 2\n", encoding="utf-8")
+    analyzed = []
+    analyze = graph.analyze_local_imports
 
-    monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache"
+    def record(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", record)
+    expected = {source, first}
+    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == expected
+    assert set(analyzed) == expected
+    analyzed.clear()
+    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == expected
+    assert analyzed == []
+    before = source.stat()
+    source.write_text("import molt.cli.other\n", encoding="utf-8")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == {
+        source,
+        second,
+    }
+    assert set(analyzed) == {source, second}
+
+
+def test_lowering_dependency_graph_reuse_ends_with_build_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt.cli import python_source_closure as graph
+
+    source = tmp_path / "src" / "molt" / "cli" / "module_source.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("import molt.cli.helper\n", encoding="utf-8")
+    helper = source.with_name("helper.py")
+    capture = graph.LocalPythonModuleResolver.capture_source
+    captured = []
+
+    def record(resolver, path):
+        captured.append(path)
+        return capture(resolver, path)
+
+    monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", record)
+    with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+        assert CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path) == (source,)
+        with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+            assert CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path) == (
+                source,
+            )
+    assert captured == [source]
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    captured.clear()
+    with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
+        assert set(CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)) == {
+            source,
+            helper,
+        }
+    assert set(captured) == {source, helper}
+
+
+def test_installed_python_layout_drives_both_fingerprint_scopes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import molt.cli.python_source_closure as graph
+
+    site_packages = tmp_path / "site-packages"
+    package = site_packages / "molt"
+    frontend = package / "frontend"
+    frontend.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (frontend / "__init__.py").write_text(
+        "from molt.target_python import TARGET\n", encoding="utf-8"
     )
+    target = package / "target_python.py"
+    target.write_text("TARGET = 312\n", encoding="utf-8")
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", tmp_path)
+    monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", site_packages)
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_compiler_clean_pathspec_source_state",
-        clean_pathspec_state,
+        lambda *args: None,
     )
 
-    CACHE_FINGERPRINTS._write_lowering_scope_source_files_cache(
-        root,
-        seed_state,
-        full_state,
-        files,
+    def read_only_install(*args, **kwargs):
+        raise PermissionError("installed package tree is read-only")
+
+    monkeypatch.setattr(graph, "_atomic_write_text", read_only_install)
+    assert COMPILER_METADATA._compiler_python_source_root(tmp_path) == site_packages
+    assert target in CACHE_FINGERPRINTS._lowering_scope_source_files(tmp_path)
+    assert package / "cli" in CACHE_FINGERPRINTS._frontend_tooling_source_paths(
+        tmp_path
     )
+    paths = CACHE_FINGERPRINTS._frontend_semantic_tooling_source_paths(tmp_path)
+    assert frontend in paths and target in paths
+    assert all(path.is_relative_to(site_packages) for path in paths)
+    first = CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint()
+    target.write_text("TARGET = 313\n", encoding="utf-8")
+    second = CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint()
+    assert second != first
+    assert not (tmp_path / "src").exists()
+    assert not (tmp_path / ".molt_cache").exists()
 
-    cached = CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(
-        root, seed_state
-    )
 
-    assert cached == files
-    assert seen_path_keys == [compact_full_keys]
-
-
-def test_lowering_scope_source_files_cache_rejects_stale_full_state(
+def test_selected_compiler_root_does_not_relocate_captured_package_layout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    root = tmp_path / "repo"
-    source = root / "src" / "molt" / "cli" / "module_source.py"
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text("MARKER = 1\n", encoding="utf-8")
-    files = (str(source.resolve()),)
-    seed_state = {
-        "schema_version": 1,
-        "kind": "git-clean-pathspec",
-        "pathspec_count": 1,
-        "pathspec_digest": "seed",
-        "tracked_digest": "seed-objects",
-        "tracked_entry_count": 1,
-    }
-    stored_full_state = {
-        "schema_version": 1,
-        "kind": "git-clean-pathspec",
-        "pathspec_count": 1,
-        "pathspec_digest": "full",
-        "tracked_digest": "old-objects",
-        "tracked_entry_count": 1,
-    }
-    current_full_state = dict(stored_full_state, tracked_digest="new-objects")
-
-    monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache"
-    )
+    installed_sources = tmp_path / "installed" / "site-packages"
+    checkout = tmp_path / "checkout"
+    source = checkout / "src" / "molt" / "frontend" / "__init__.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", installed_sources)
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", checkout)
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_compiler_clean_pathspec_source_state",
-        lambda _root, _path_keys: current_full_state,
+        lambda *args: None,
     )
 
-    CACHE_FINGERPRINTS._write_lowering_scope_source_files_cache(
-        root,
-        seed_state,
-        stored_full_state,
-        files,
-    )
-
+    assert COMPILER_METADATA._compiler_python_source_root(checkout) == checkout / "src"
     assert (
-        CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(root, seed_state)
-        is None
+        COMPILER_METADATA._compiler_python_source_root(installed_sources.parent)
+        == installed_sources
     )
+    for paths in (
+        CACHE_FINGERPRINTS._frontend_tooling_source_paths(checkout),
+        CACHE_FINGERPRINTS._frontend_semantic_tooling_source_paths(checkout),
+    ):
+        assert all(path.is_relative_to(checkout / "src") for path in paths)
+    before = (
+        CACHE_FINGERPRINTS._cache_tooling_fingerprint(),
+        CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
+    )
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    after = (
+        CACHE_FINGERPRINTS._cache_tooling_fingerprint(),
+        CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
+    )
+    assert all(first != second for first, second in zip(before, after, strict=True))

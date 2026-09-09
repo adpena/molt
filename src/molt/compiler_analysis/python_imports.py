@@ -595,7 +595,6 @@ def _analyze_module_import_flow_uncached(
     tree: ast.AST,
     context: ModuleImportContext,
     *,
-    metadata_preserving_globals_calls: Collection[ImportNodeKey] = (),
     statement_facts: Mapping[PythonNodeKey, PythonStatementFact],
     expression_facts: Mapping[PythonNodeKey, PythonExpressionFact],
     assignment_effects: Mapping[PythonNodeKey, int],
@@ -1034,11 +1033,8 @@ def _analyze_module_import_flow_uncached(
             or expression_may_be_metadata_mutator(expression.func)
         ):
             return unknown_states(current)
-        if (
-            isinstance(expression, ast.Call)
-            and python_node_source_key(expression)
-            not in metadata_preserving_globals_calls
-            and _call_receives_module_globals(expression, expression_facts)
+        if isinstance(expression, ast.Call) and _call_receives_module_globals(
+            expression, expression_facts
         ):
             return unknown_states(current)
         if isinstance(expression, ast.Call):

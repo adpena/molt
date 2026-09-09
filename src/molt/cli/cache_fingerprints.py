@@ -6,7 +6,7 @@ import json
 import os
 import pathlib
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Sequence
@@ -14,20 +14,21 @@ from typing import Sequence
 from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
     _compiler_root,
+    _compiler_python_source_root,
     _rustc_version,
 )
-from molt.cli.default_paths import _default_molt_cache
 from molt.file_hashing import (
     _hash_source_tree_metadata,
     _sha256_file,
     _source_fingerprint_files,
 )
 from molt.cli.python_import_resolution import (
-    LocalPythonModuleResolver,
     PythonImportPolicy,
-    local_import_dependencies,
 )
-from molt.cli.runtime_source_closure import runtime_source_paths
+from molt.cli.python_source_closure import (
+    local_python_import_closure,
+    local_python_import_graph_transaction,
+)
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -115,7 +116,7 @@ def _backend_source_paths(
 @functools.lru_cache(maxsize=128)
 def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
     project_root = pathlib.Path(project_root_str)
-    molt_root = project_root / "src" / "molt"
+    molt_root = _compiler_python_source_root(project_root) / "molt"
     return (
         molt_root / "cli",
         molt_root / "frontend",
@@ -181,95 +182,6 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 # backend/link/cargo file is excluded automatically because it is not a seed and
 # is not reachable from one.
 _LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
-_LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION = 1
-
-
-def _lowering_scope_cache_key(
-    project_root: Path,
-    seed_clean_state: dict[str, str | int],
-) -> str:
-    payload = {
-        "version": _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION,
-        "project_root": str(project_root.resolve()),
-        "seed_clean_state": seed_clean_state,
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-def _lowering_scope_cache_path(
-    project_root: Path,
-    seed_clean_state: dict[str, str | int],
-) -> Path:
-    digest = _lowering_scope_cache_key(project_root, seed_clean_state)
-    return (
-        _default_molt_cache()
-        / "frontend_lowering_scope"
-        / digest[:2]
-        / f"{digest}.json"
-    )
-
-
-def _read_lowering_scope_source_files_cache(
-    project_root: Path,
-    seed_clean_state: dict[str, str | int],
-) -> tuple[str, ...] | None:
-    cache_path = _lowering_scope_cache_path(project_root, seed_clean_state)
-    try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") != _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION
-        or payload.get("seed_clean_state") != seed_clean_state
-    ):
-        return None
-    files = payload.get("files")
-    full_clean_state = payload.get("full_clean_state")
-    if (
-        not isinstance(files, list)
-        or not all(isinstance(item, str) for item in files)
-        or not isinstance(full_clean_state, dict)
-    ):
-        return None
-    current_full_state = _compiler_clean_pathspec_source_state(
-        project_root,
-        _lowering_scope_clean_path_keys(project_root, tuple(files)),
-    )
-    if current_full_state != full_clean_state:
-        return None
-    return tuple(files)
-
-
-def _write_lowering_scope_source_files_cache(
-    project_root: Path,
-    seed_clean_state: dict[str, str | int],
-    full_clean_state: dict[str, str | int],
-    files: tuple[str, ...],
-) -> None:
-    cache_path = _lowering_scope_cache_path(project_root, seed_clean_state)
-    payload = {
-        "version": _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION,
-        "seed_clean_state": seed_clean_state,
-        "full_clean_state": full_clean_state,
-        "files": list(files),
-    }
-    tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(
-            json.dumps(payload, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp_path.replace(cache_path)
-    except OSError:
-        return
-    finally:
-        with suppress(OSError):
-            if tmp_path.exists():
-                tmp_path.unlink()
 
 
 _FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
@@ -281,7 +193,7 @@ _FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
 
 
 def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
-    molt_root = project_root / "src" / "molt"
+    molt_root = _compiler_python_source_root(project_root) / "molt"
     frontend_root = molt_root / "frontend"
     compiler_analysis_root = molt_root / "compiler_analysis"
     cli_root = molt_root / "cli"
@@ -295,119 +207,30 @@ def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
             if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
                 paths.append(source.resolve())
     paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
-    return tuple(dict.fromkeys(paths))
+    return tuple(dict.fromkeys(path for path in paths if path.exists()))
 
 
-def _lowering_scope_clean_path_keys(
-    project_root: Path,
-    reached_files: tuple[str, ...],
-) -> tuple[str, ...]:
-    molt_root = project_root / "src" / "molt"
-    frontend_root = (molt_root / "frontend").resolve()
-    keys: list[str] = [str(frontend_root)]
-    for path_str in reached_files:
-        source = pathlib.Path(path_str)
-        if frontend_root == source or frontend_root in source.parents:
-            continue
-        keys.append(path_str)
-    keys.extend(str(molt_root / relpath) for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
-    return tuple(dict.fromkeys(keys))
+def _lowering_scope_source_files(project_root: Path) -> tuple[Path, ...]:
+    """Lowering's policy projection of the shared byte-keyed dependency graph.
 
-
-@functools.lru_cache(maxsize=64)
-def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...]:
-    """Module-level import closure of the frontend lowering seeds.
-
-    Returns every ``molt``-owned source file reachable by following module-level
-    imports from the frontend / ``compiler_analysis`` / frontend-driver seeds.
-    Because a ``from PKG import submodule`` edge is attributed to the submodule it
-    names rather than to ``PKG/__init__`` (see
-    ``_module_level_molt_import_targets``), importing a frontend driver no longer
-    drags ``cli/__init__``'s command / extension-seal / daemon / package-registry
-    layer into the closure: those command-orchestration files are neither seeds
-    nor reachable from one, so editing them leaves the persisted analysis /
-    lowering / import-graph fingerprints unchanged (fixing the chronic
-    cross-session cold-start where every landing invalidated the whole cache).
-
-    The bias remains strictly toward inclusion: the whole ``frontend/`` and
-    ``compiler_analysis/`` packages are seeded wholesale and the shared aux
-    semantic files (incl. the generated intrinsic / feature-gate tables) are
-    force-included, so a lowering-relevant file is never dropped -- the worst case
-    is a spurious cold-start, never a stale lowering. The set is cached per
-    project root (mirroring ``_frontend_tooling_source_paths``); the per-module
-    cache's own source-stat + ``context_digest`` gate remains the correctness
-    authority for individual module edits.
+    Whole frontend/analysis packages, frontend/module drivers and shared semantic
+    inputs remain seeds. Grouped fromlist requests prefer actual named submodules
+    without importing package aggregates. New edges/topology are discovered on
+    every build; only the explicit build transaction may reuse a whole closure.
     """
-    project_root = pathlib.Path(project_root_str)
-    src_root = (project_root / "src").resolve()
-    resolver = LocalPythonModuleResolver((src_root,))
-    molt_root = src_root / "molt"
-    cli_root = molt_root / "cli"
-    seed_clean_state = _compiler_clean_pathspec_source_state(
+    return local_python_import_closure(
         project_root,
-        tuple(str(path) for path in _lowering_scope_seed_paths(project_root)),
+        _lowering_scope_seed_paths(project_root),
+        policy=_FRONTEND_LOWERING_IMPORT_POLICY,
+        search_roots=(_compiler_python_source_root(project_root),),
     )
-    if seed_clean_state is not None:
-        cached = _read_lowering_scope_source_files_cache(
-            project_root,
-            seed_clean_state,
-        )
-        if cached is not None:
-            return cached
-
-    seeds: set[Path] = set()
-    frontend_root = molt_root / "frontend"
-    if frontend_root.exists():
-        for source in frontend_root.rglob("*.py"):
-            seeds.add(source.resolve())
-    compiler_analysis_root = molt_root / "compiler_analysis"
-    if compiler_analysis_root.exists():
-        for source in compiler_analysis_root.rglob("*.py"):
-            seeds.add(source.resolve())
-    if cli_root.exists():
-        for source in cli_root.glob("*.py"):
-            if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
-                seeds.add(source.resolve())
-
-    reached: set[Path] = set()
-    pending = list(seeds)
-    while pending:
-        current = pending.pop()
-        if current in reached:
-            continue
-        reached.add(current)
-        try:
-            dependencies = local_import_dependencies(
-                current,
-                resolver,
-                _FRONTEND_LOWERING_IMPORT_POLICY,
-            )
-        except ValueError:
-            dependencies = set()
-        for source in dependencies:
-            if source not in reached:
-                pending.append(source)
-    result = tuple(sorted(str(path) for path in reached))
-    if seed_clean_state is not None:
-        full_clean_state = _compiler_clean_pathspec_source_state(
-            project_root,
-            _lowering_scope_clean_path_keys(project_root, result),
-        )
-        if full_clean_state is not None:
-            _write_lowering_scope_source_files_cache(
-                project_root,
-                seed_clean_state,
-                full_clean_state,
-                result,
-            )
-    return result
 
 
 def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
     """Source paths the persisted per-module *frontend* caches must key on.
 
     Derived structurally by import reachability (see
-    ``_lowering_scope_source_files_cached``): the whole ``frontend/`` tree plus
+    ``_lowering_scope_source_files``): the whole ``frontend/`` tree plus
     every ``molt``-owned file reachable from the frontend/module drivers by
     module-level import, plus the shared aux semantic files. No hand-maintained
     denylist: adding a backend/link/cargo file never enters this scope (it is not
@@ -421,11 +244,10 @@ def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
     whole); reachable files under it are therefore skipped from the per-file list
     to avoid hashing them twice.
     """
-    molt_root = project_root / "src" / "molt"
+    molt_root = _compiler_python_source_root(project_root) / "molt"
     frontend_root = (molt_root / "frontend").resolve()
     paths: list[Path] = [molt_root / "frontend"]
-    for path_str in _lowering_scope_source_files_cached(os.fspath(project_root)):
-        source = pathlib.Path(path_str)
+    for source in _lowering_scope_source_files(project_root):
         if frontend_root == source or frontend_root in source.parents:
             continue
         paths.append(source)
@@ -475,7 +297,8 @@ def _source_tree_fingerprint_transaction() -> Iterator[None]:
         return
     token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set({})
     try:
-        yield
+        with local_python_import_graph_transaction():
+            yield
     finally:
         _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(token)
 
@@ -639,6 +462,8 @@ def _cache_fingerprint(
     )
     source_paths = _backend_source_paths(root, selected_backend_features)
     if include_runtime_sources:
+        from molt.cli.runtime_source_closure import runtime_source_paths
+
         if runtime_features is None:
             source_paths += runtime_source_paths(root)
         else:

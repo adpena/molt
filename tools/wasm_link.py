@@ -29,6 +29,7 @@ import artifact_publish as artifact_publish  # noqa: E402
 from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt as find_wasm_opt, optimize as optimize_wasm  # noqa: E402, F401
 from wasm_metrics import wasm_metrics as wasm_metrics  # noqa: E402
+from molt.cli import wasm_link_inputs  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.cli.app_export_contract import (  # noqa: E402
     app_export_call_abi as app_export_call_abi,
@@ -1609,7 +1610,7 @@ def _compiler_rt_provider_inputs(
         return ()
     if any(_is_compiler_rt_provider_path(path) for path in native_objects):
         return ()
-    provider = wasm_toolchain.wasm_compiler_builtins_archive()
+    provider = wasm_link_inputs.wasm_compiler_builtins_archive()
     if provider is None:
         missing = ", ".join(sorted(required_symbols))
         raise ValueError(
@@ -1669,8 +1670,8 @@ def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
     (raw ``unreachable`` trap at ``_multiarray_umath`` import).
 
     Applies the SINGLE long-double link authority
-    (:func:`wasm_toolchain.resolve_long_double_link_policy` +
-    :func:`wasm_toolchain.long_double_whole_archive_link_argv`) â€” the SAME policy
+    (:func:`wasm_link_inputs.resolve_long_double_link_policy` +
+    :func:`wasm_link_inputs.long_double_whole_archive_link_argv`) â€” the SAME policy
     the reloc runtime and deploy cdylib links apply: whole-archive
     ``libc-printscan-long-double.a`` ahead of ``libc.a`` so its real
     ``vfprintf``/``__floatscan``/``strtold`` override the stub objects (they stay
@@ -1684,10 +1685,10 @@ def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
         return [str(path) for path in inputs]
     # libc.a present => numpy/scipy static tier: a missing formatter archive is a
     # HARD ERROR (relinking the abort stub would trap at import).
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True)
     if policy.error is not None:
         raise ValueError(policy.error)
-    return wasm_toolchain.long_double_whole_archive_link_argv(
+    return wasm_link_inputs.long_double_whole_archive_link_argv(
         policy, whole_archive=[], trailing=[str(path) for path in inputs]
     )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
 import ast
@@ -24,6 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 
+from molt.cli import native_symbol_inspection
 import pytest
 
 import molt.cli as cli
@@ -61,7 +63,6 @@ from molt.cli import runtime_features as cli_runtime_features
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli import source_extension_runtime_imports as cli_runtime_imports
 from molt.cli import typecheck as cli_typecheck
-from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -149,7 +150,9 @@ NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TARGET_PYTHON = importlib.import_module("molt.target_python")
 
 
-_STATIC_ARCHIVE_SYMBOL_FACTS: dict[Path, BACKEND_CACHE._NativeGlobalSymbolFacts] = {}
+_STATIC_ARCHIVE_SYMBOL_FACTS: dict[
+    Path, native_symbol_inspection._NativeGlobalSymbolFacts
+] = {}
 
 
 @pytest.fixture(autouse=True)
@@ -162,13 +165,13 @@ def _external_static_archive_symbol_facts(
         nm_command: Sequence[str] | None = None,
         target_triple: str | None = None,
         identity=None,
-    ) -> BACKEND_CACHE._NativeGlobalSymbolFacts | None:
+    ) -> native_symbol_inspection._NativeGlobalSymbolFacts | None:
         del nm_command, target_triple, identity
         return _STATIC_ARCHIVE_SYMBOL_FACTS.get(path.resolve())
 
     _STATIC_ARCHIVE_SYMBOL_FACTS.clear()
     monkeypatch.setattr(
-        BACKEND_CACHE,
+        native_symbol_inspection,
         "_native_archive_global_symbol_facts",
         read_symbol_facts,
     )
@@ -365,7 +368,7 @@ def _install_fake_backend_compile(
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
-        lambda runtime_lib: (fake_symbols_file, None),
+        lambda runtime_lib, **_kwargs: (fake_symbols_file, None),
     )
 
 
@@ -4708,7 +4711,7 @@ def _record_static_archive_symbol_facts(
         cli_external_native._manifest_object_closure_defined_symbols(manifest)
     )
     _STATIC_ARCHIVE_SYMBOL_FACTS[artifact_path.resolve()] = (
-        BACKEND_CACHE._NativeGlobalSymbolFacts(
+        native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=defined,
             undefined=frozenset(
                 cli_external_native._manifest_object_closure_undefined_symbols(manifest)
@@ -4939,9 +4942,9 @@ def test_native_archive_data_symbol_cannot_satisfy_callable_custody(
         {"PyInit__native"} if masquerade == "direct" else set()
     )
     monkeypatch.setattr(
-        BACKEND_CACHE,
+        native_symbol_inspection,
         "_native_archive_global_symbol_facts",
-        lambda *_args, **_kwargs: BACKEND_CACHE._NativeGlobalSymbolFacts(
+        lambda *_args, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             defined=frozenset(defined),
             undefined=frozenset(),
             defined_functions=function_symbols,
@@ -19425,7 +19428,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
-        lambda runtime_lib_path: (symbols_file, None),
+        lambda runtime_lib_path, **_kwargs: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -19538,7 +19541,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
-        lambda runtime_lib_path: (symbols_file, None),
+        lambda runtime_lib_path, **_kwargs: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -19648,7 +19651,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
-        lambda runtime_lib_path: (symbols_file, None),
+        lambda runtime_lib_path, **_kwargs: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -19766,7 +19769,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
-        lambda runtime_lib_path: (symbols_file, None),
+        lambda runtime_lib_path, **_kwargs: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -21301,19 +21304,19 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
 
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "wasm_wasi_libc_archive",
         lambda: libc_provider,
         raising=True,
     )
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda: compiler_rt_provider,
         raising=True,
     )
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "wasm_cxx_runtime_archives",
         lambda: (libcxx_provider, libcxxabi_provider, libunwind_provider),
         raising=True,
@@ -21454,13 +21457,13 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
 
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "wasm_wasi_libc_archive",
         lambda: libc_provider,
         raising=True,
     )
     monkeypatch.setattr(
-        cli_wasm_toolchain,
+        wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda: compiler_rt_provider,
         raising=True,

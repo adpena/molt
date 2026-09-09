@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from molt.cli import native_symbol_inspection
 import pytest
 
 from molt.cli import backend_cache as cache
@@ -34,28 +35,32 @@ def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch):
         yield path, identity
 
     monkeypatch.setattr(
-        cache,
+        native_symbol_inspection,
         "_native_symbol_reader_candidate",
-        lambda command: cache._NativeSymbolReaderCandidate(
+        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
             tuple(command), executable_identity=identity
         ),
     )
-    monkeypatch.setattr(cache, "stable_executable_probe", admitted_reader)
-    cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_executable_probe", admitted_reader
+    )
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     yield
-    cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
 
 
 def _tool(monkeypatch, *, code=0, stdout="", stderr=""):
-    monkeypatch.setattr(cache, "_nm_candidate_binaries", lambda: ["llvm-nm"])
+    monkeypatch.setattr(
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
 
     def run(argv, **kwargs):
         assert kwargs["errors"] == "strict"
         return subprocess.CompletedProcess(argv, code, stdout, stderr)
 
-    monkeypatch.setattr(cache, "_run_completed_command", run)
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
 
 
 @pytest.mark.parametrize(
@@ -73,8 +78,10 @@ def test_incomplete_or_malformed_tool_evidence_is_never_symbol_success(
     monkeypatch, code, stdout, stderr
 ):
     _tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
-    with pytest.raises(cache.NativeSymbolInspectionError) as caught:
-        cache._read_native_global_symbol_facts(Path("archive.a"), timeout=1)
+    with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
+        native_symbol_inspection._read_native_global_symbol_facts(
+            Path("archive.a"), timeout=1
+        )
     assert caught.value.path == Path("archive.a")
     assert "llvm-nm" in str(caught.value)
     assert caught.value.attempts
@@ -93,8 +100,10 @@ def test_legitimate_empty_artifact_has_successful_empty_facts(
     monkeypatch, code, stdout, stderr
 ):
     _tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
-    facts = cache._read_native_global_symbol_facts(Path("archive.a"), timeout=1)
-    assert facts == cache._NativeGlobalSymbolFacts(
+    facts = native_symbol_inspection._read_native_global_symbol_facts(
+        Path("archive.a"), timeout=1
+    )
+    assert facts == native_symbol_inspection._NativeGlobalSymbolFacts(
         frozenset(), frozenset(), frozenset()
     )
 
@@ -105,20 +114,25 @@ def test_successful_archive_can_contain_empty_members(monkeypatch):
         stdout="member.o:\n00000000 T provider\n",
         stderr="llvm-nm: archive.a(empty.o): no symbols\n",
     )
-    assert cache._read_native_global_symbol_facts(
+    assert native_symbol_inspection._read_native_global_symbol_facts(
         Path("archive.a"), timeout=1
     ).defined == {"provider"}
 
 
 def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(monkeypatch):
-    monkeypatch.setattr(cache, "_nm_candidate_binaries", lambda: [])
+    monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     with pytest.raises(
-        cache.NativeSymbolInspectionError, match="no nm/llvm-nm candidate"
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="no nm/llvm-nm candidate",
     ):
-        cache._read_native_global_symbol_facts(Path("archive.a"), timeout=1)
+        native_symbol_inspection._read_native_global_symbol_facts(
+            Path("archive.a"), timeout=1
+        )
     primary = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid tool output")
     monkeypatch.setattr(
-        cache, "_nm_candidate_binaries", lambda: ["first-nm", "second-nm"]
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["first-nm", "second-nm"],
     )
 
     def fail(argv, **kwargs):
@@ -126,9 +140,11 @@ def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(monkeypatc
             raise primary
         raise subprocess.TimeoutExpired(argv, 1)
 
-    monkeypatch.setattr(cache, "_run_completed_command", fail)
-    with pytest.raises(cache.NativeSymbolInspectionError) as caught:
-        cache._read_native_global_symbol_facts(Path("archive.a"), timeout=1)
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", fail)
+    with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
+        native_symbol_inspection._read_native_global_symbol_facts(
+            Path("archive.a"), timeout=1
+        )
     assert caught.value.__cause__ is primary
     assert len(caught.value.attempts) == 2
     assert "UnicodeDecodeError" in str(caught.value)
@@ -136,7 +152,11 @@ def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(monkeypatc
 
 
 def test_failed_candidate_does_not_hide_later_valid_candidate(monkeypatch):
-    monkeypatch.setattr(cache, "_nm_candidate_binaries", lambda: ["bad-nm", "good-nm"])
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["bad-nm", "good-nm"],
+    )
     calls = []
 
     def run(argv, **kwargs):
@@ -145,15 +165,15 @@ def test_failed_candidate_does_not_hide_later_valid_candidate(monkeypatch):
             argv, 0, "bad output" if argv[0] == "bad-nm" else "0000 T provider\n", ""
         )
 
-    monkeypatch.setattr(cache, "_run_completed_command", run)
-    assert cache._read_native_global_symbol_facts(
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
+    assert native_symbol_inspection._read_native_global_symbol_facts(
         Path("archive.a"), timeout=1
     ).defined == {"provider"}
     assert calls == ["bad-nm", "good-nm"]
 
 
 def test_weak_undefined_and_indirect_facts_have_explicit_semantics():
-    facts = cache._parse_native_nm_global_symbol_facts(
+    facts = native_symbol_inspection._parse_native_nm_global_symbol_facts(
         "member.o:\n U required\n w optional_function\n v optional_object\n"
         "0000 w weak_address\n0001 V weak_defined_object\n0002 W weak_defined_function\n"
         "0003 i resolver\n0004 u unique_global\n0005 I alias (indirect for provider)\n",
@@ -177,10 +197,10 @@ def test_weak_undefined_and_indirect_facts_have_explicit_semantics():
 
 def test_symbol_normalization_uses_requested_target_not_host():
     output = "0000 T _molt_init_sys\n U _required\n w _optional\n"
-    macho = cache._parse_native_nm_global_symbol_facts(
+    macho = native_symbol_inspection._parse_native_nm_global_symbol_facts(
         output, target_triple="aarch64-apple-darwin"
     )
-    elf = cache._parse_native_nm_global_symbol_facts(
+    elf = native_symbol_inspection._parse_native_nm_global_symbol_facts(
         output, target_triple="aarch64-unknown-linux-gnu"
     )
     assert macho.defined == {"molt_init_sys"}
@@ -217,9 +237,9 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
 def test_failed_symbol_read_cannot_mint_or_reuse_success_token(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     _shared_metadata(artifact)
-    monkeypatch.setattr(cache, "_nm_candidate_binaries", lambda: [])
+    monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     for _ in range(2):
-        with pytest.raises(cache.NativeSymbolInspectionError):
+        with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
             cache._shared_stdlib_cache_matches_key(
                 artifact,
                 "key",
@@ -227,7 +247,7 @@ def test_failed_symbol_read_cannot_mint_or_reuse_success_token(tmp_path, monkeyp
                 target_triple="x86_64-unknown-linux-gnu",
             )
         assert not cache._stdlib_object_symbol_contract_sidecar_path(artifact).exists()
-    assert not cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE
+    assert not native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
     _tool(monkeypatch, stdout="0000 T molt_init_sys\n")
     assert cache._shared_stdlib_cache_matches_key(
         artifact,
@@ -262,7 +282,9 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
     def unexpected_symbols(*args, **kwargs):
         raise AssertionError("invalid shared artifact must not reach symbol inspection")
 
-    monkeypatch.setattr(cache, "_read_native_global_symbol_facts", unexpected_symbols)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", unexpected_symbols
+    )
     if receipt == "symbol":
         cache._write_shared_stdlib_symbol_contract(
             artifact,
@@ -317,7 +339,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
     if kind is BackendArtifactKind.NATIVE_ARCHIVE:
         payload = static_archive_bytes(payload)
     artifact.write_bytes(payload)
-    monkeypatch.setattr(cache, "_nm_candidate_binaries", lambda: [])
+    monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     checks = [
         lambda: cache._is_valid_cached_backend_artifact(
             artifact, artifact_contract=contract
@@ -328,7 +350,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
         ),
     ]
     for check in checks:
-        with pytest.raises(cache.NativeSymbolInspectionError):
+        with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
             check()
 
 
@@ -355,23 +377,23 @@ def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path):
 
 def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
     artifact = tmp_path / "archive.a"
-    facts = cache._NativeGlobalSymbolFacts(
+    facts = native_symbol_inspection._NativeGlobalSymbolFacts(
         frozenset({"provider"}),
         frozenset({"required"}),
         frozenset({"provider"}),
         frozenset({"optional"}),
         "digest",
     )
-    payload = cache._native_object_symbol_facts_payload(
+    payload = native_symbol_inspection._native_object_symbol_facts_payload(
         object_digest="digest",
         facts=facts,
         target_triple=None,
         reader_identity=("llvm-nm",),
     )
-    path = cache._native_object_symbol_facts_sidecar_path(artifact)
+    path = native_symbol_inspection._native_object_symbol_facts_sidecar_path(artifact)
     path.write_text(json.dumps({**payload, "schema": 3}))
     assert (
-        cache._read_native_object_symbol_facts(
+        native_symbol_inspection._read_native_object_symbol_facts(
             artifact,
             object_digest="digest",
             target_triple=None,
@@ -381,7 +403,7 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
     )
     path.write_text(json.dumps(payload))
     assert (
-        cache._read_native_object_symbol_facts(
+        native_symbol_inspection._read_native_object_symbol_facts(
             artifact,
             object_digest="digest",
             target_triple=None,
@@ -390,7 +412,7 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
         is None
     )
     assert (
-        cache._read_native_object_symbol_facts(
+        native_symbol_inspection._read_native_object_symbol_facts(
             artifact,
             object_digest="digest",
             target_triple=None,
@@ -403,8 +425,8 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
 @pytest.mark.parametrize(
     "reader",
     [
-        cache._native_object_global_symbol_facts,
-        cache._native_archive_global_symbol_facts,
+        native_symbol_inspection._native_object_global_symbol_facts,
+        native_symbol_inspection._native_archive_global_symbol_facts,
     ],
 )
 def test_symbol_read_replacement_cannot_publish_facts_for_previous_bytes(
@@ -412,22 +434,29 @@ def test_symbol_read_replacement_cannot_publish_facts_for_previous_bytes(
 ):
     artifact = tmp_path / "archive.a"
     artifact.write_bytes(b"generation-A")
-    monkeypatch.setattr(cache, "_default_molt_cache", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
 
     def inspect(path, **kwargs):
         path.write_bytes(b"generation-B")
-        return cache._NativeGlobalSymbolFacts(
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
             frozenset({"B"}), frozenset(), frozenset({"B"})
         )
 
-    monkeypatch.setattr(cache, "_read_native_global_symbol_facts", inspect)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", inspect
+    )
     with pytest.raises(
-        cache.NativeSymbolInspectionError, match="changed during symbol inspection"
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="changed during symbol inspection",
     ):
         reader(artifact)
-    assert not cache._native_object_symbol_facts_sidecar_path(artifact).exists()
-    assert not cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE
-    assert not cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
+    assert not native_symbol_inspection._native_object_symbol_facts_sidecar_path(
+        artifact
+    ).exists()
+    assert not native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
+    assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
 
 
 def test_provider_cache_identity_includes_content_not_only_windows_metadata(
@@ -436,20 +465,30 @@ def test_provider_cache_identity_includes_content_not_only_windows_metadata(
     artifact = tmp_path / "archive.a"
     artifact.write_bytes(b"A")
     timestamp = artifact.stat().st_mtime_ns
-    monkeypatch.setattr(cache, "_default_molt_cache", lambda: tmp_path / "cache")
-    monkeypatch.setattr(cache, "content_change_time_ns", lambda path, stat: 42)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "content_change_time_ns", lambda path, stat: 42
+    )
 
     def inspect(path, **kwargs):
         name = path.read_text()
-        return cache._NativeGlobalSymbolFacts(
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
             frozenset({name}), frozenset(), frozenset({name})
         )
 
-    monkeypatch.setattr(cache, "_read_native_global_symbol_facts", inspect)
-    assert cache._native_archive_global_symbol_facts(artifact).defined == {"A"}
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", inspect
+    )
+    assert native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact
+    ).defined == {"A"}
     artifact.write_bytes(b"B")
     os.utime(artifact, ns=(timestamp, timestamp))
-    assert cache._native_archive_global_symbol_facts(artifact).defined == {"B"}
+    assert native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact
+    ).defined == {"B"}
 
 
 def test_validation_and_token_mint_share_one_generation_lock(tmp_path, monkeypatch):
@@ -475,7 +514,8 @@ def test_validation_and_token_mint_share_one_generation_lock(tmp_path, monkeypat
     monkeypatch.setattr(cache, "_shared_stdlib_cache_lock", locked)
     monkeypatch.setattr(cache, "_shared_stdlib_cache_matches_key", validate)
     with pytest.raises(
-        cache.NativeSymbolInspectionError, match="changed during locked validation"
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="changed during locked validation",
     ):
         cache._shared_stdlib_cache_validation_token(
             artifact, "key", stdlib_object_manifest="manifest"
@@ -518,7 +558,10 @@ def test_empty_leaf_is_not_an_application_cache_hit(tmp_path, monkeypatch, kind)
         payload = static_archive_bytes(payload)
     artifact.write_bytes(payload)
     _tool(monkeypatch)
-    assert cache._native_object_global_symbol_facts(artifact).defined == frozenset()
+    assert (
+        native_symbol_inspection._native_object_global_symbol_facts(artifact).defined
+        == frozenset()
+    )
     assert not cache._is_valid_cached_backend_artifact(
         artifact,
         artifact_contract=contract,
@@ -534,10 +577,14 @@ def test_symbol_fact_generation_is_rechecked_on_every_return(
     artifact.write_bytes(b"original")
     stamp = artifact.stat()
     _tool(monkeypatch, stdout="0000 T original_symbol\n")
-    monkeypatch.setattr(cache, "_default_molt_cache", lambda: tmp_path / "cache")
-    reader = getattr(cache, f"_native_{reader_name}_global_symbol_facts")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    reader = getattr(
+        native_symbol_inspection, f"_native_{reader_name}_global_symbol_facts"
+    )
     storage_name = f"_NATIVE_{reader_name.upper()}_SYMBOL_SETS_CACHE"
-    storage = getattr(cache, storage_name)
+    storage = getattr(native_symbol_inspection, storage_name)
 
     def replace_generation():
         artifact.write_bytes(b"replaced")
@@ -554,7 +601,9 @@ def test_symbol_fact_generation_is_rechecked_on_every_return(
                     replace_generation()
                 return result
 
-        monkeypatch.setattr(cache, storage_name, ReplacingCache(storage))
+        monkeypatch.setattr(
+            native_symbol_inspection, storage_name, ReplacingCache(storage)
+        )
     else:
         storage.clear()
         hook_name = (
@@ -564,15 +613,19 @@ def test_symbol_fact_generation_is_rechecked_on_every_return(
             else f"_write_native_{reader_name}_symbol_"
             + ("facts" if reader_name == "object" else "cache")
         )
-        original = getattr(cache, hook_name)
+        original = getattr(native_symbol_inspection, hook_name)
 
         def replace_after_operation(*args, **kwargs):
             result = original(*args, **kwargs)
             replace_generation()
             return result
 
-        monkeypatch.setattr(cache, hook_name, replace_after_operation)
-    with pytest.raises(cache.NativeSymbolInspectionError, match="changed"):
+        monkeypatch.setattr(
+            native_symbol_inspection, hook_name, replace_after_operation
+        )
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="changed"
+    ):
         reader(artifact)
 
 
@@ -598,7 +651,9 @@ def test_native_cache_shape_and_symbols_share_one_generation(tmp_path, monkeypat
 
     monkeypatch.setattr(BackendArtifactContract, "validate", replace_after_shape)
     _tool(monkeypatch, stdout="0000 T application\n")
-    with pytest.raises(cache.NativeSymbolInspectionError, match="changed"):
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="changed"
+    ):
         cache._validate_backend_cache_artifact(artifact, artifact_contract=contract)
 
 
@@ -622,14 +677,18 @@ def test_native_cache_admission_hashes_once_and_returns_reusable_generation(
     )
     assert captures == [artifact]
     assert identity.sha256 == hashlib.sha256(artifact.read_bytes()).hexdigest()
-    assert cache._native_object_global_symbol_facts(
+    assert native_symbol_inspection._native_object_global_symbol_facts(
         artifact, target_triple=contract.target_triple, identity=identity
     ).defined == {"application"}
     assert captures == [artifact], "reuse must verify mutation identity, not rehash"
     other = tmp_path / "other.o"
     other.write_bytes(artifact.read_bytes())
-    with pytest.raises(cache.NativeSymbolInspectionError, match="changed"):
-        cache._native_object_global_symbol_facts(other, identity=identity)
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="changed"
+    ):
+        native_symbol_inspection._native_object_global_symbol_facts(
+            other, identity=identity
+        )
 
 
 @pytest.mark.parametrize("stage", ["publish", "materialize", "stage"])
@@ -722,3 +781,79 @@ def test_immutable_publication_returns_admitted_identity_without_source_alias(tm
     assert not source.samefile(destination)
     source.write_text("fn bravo() {}\n")
     assert destination.read_text() == payload
+
+
+@pytest.mark.parametrize(
+    "first_stdout", ["", "0000 T irrelevant\n", "0000 T molt_borrowed\n"]
+)
+def test_typed_callable_requirement_continues_reader_ladder_and_partitions_cache(
+    tmp_path, monkeypatch, first_stdout
+):
+    archive = tmp_path / "runtime.a"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["first-nm", "second-nm"],
+    )
+    calls = []
+
+    def inspect(command, **kwargs):
+        calls.append(command[0])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            first_stdout if command[0] == "first-nm" else "0000 T molt_ready\n",
+            "",
+        )
+
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", inspect)
+    native_symbol_inspection._native_archive_global_symbol_facts(archive)
+    assert calls == ["first-nm"]
+    calls.clear()
+    requirement = native_symbol_inspection.NativeSymbolRequirement(
+        function_prefix="molt_", excluded_functions=frozenset({"molt_borrowed"})
+    )
+    facts = native_symbol_inspection._native_archive_global_symbol_facts(
+        archive, requirement=requirement
+    )
+    assert facts.defined_functions == {"molt_ready"}
+    assert calls == ["first-nm", "second-nm"]
+    calls.clear()
+    assert (
+        native_symbol_inspection._native_archive_global_symbol_facts(
+            archive, requirement=requirement
+        )
+        == facts
+    )
+    assert calls == []
+
+
+def test_typed_callable_requirement_reports_every_incompatible_reader(monkeypatch):
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_nm_candidate_binaries",
+        lambda: ["first-nm", "second-nm"],
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_run_completed_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "0000 T unrelated\n", ""
+        ),
+    )
+    with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
+        native_symbol_inspection._read_native_global_symbol_facts(
+            Path("runtime.a"),
+            timeout=1,
+            requirement=native_symbol_inspection.NativeSymbolRequirement(
+                function_prefix="molt_"
+            ),
+        )
+    assert len(caught.value.attempts) == 2
+    assert all("consumer requirement" in item for item in caught.value.attempts)
+    assert "first-nm" in caught.value.attempts[0]
+    assert "second-nm" in caught.value.attempts[1]

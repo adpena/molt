@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from molt.cli import wasm_link_inputs
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
@@ -425,7 +426,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
         raising=True,
     )
     monkeypatch.setattr(
-        WASM_TOOLCHAIN, "wasm_wasi_libc_archive", lambda: libc, raising=True
+        wasm_link_inputs, "wasm_wasi_libc_archive", lambda: libc, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT,
@@ -493,8 +494,8 @@ def test_wasi_sysroot_python_resolver_accepts_distro_target_include_layout(
     (host_include / "errno.h").write_text("#define HOST_ERRNO 1\n", encoding="utf-8")
     (target_include / "errno.h").write_text("#define WASI_ERRNO 1\n", encoding="utf-8")
 
-    assert WASM_TOOLCHAIN.normalize_wasi_sysroot(root) == root.resolve(strict=False)
-    assert WASM_TOOLCHAIN.normalize_wasi_sysroot(target_include) == root.resolve(
+    assert wasm_link_inputs.normalize_wasi_sysroot(root) == root.resolve(strict=False)
+    assert wasm_link_inputs.normalize_wasi_sysroot(target_include) == root.resolve(
         strict=False
     )
 
@@ -521,11 +522,11 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     assert shared_text.index("target_include_layout(&root") < shared_text.index(
         'root.join("include").join("errno.h")'
     )
-    python_wasm_toolchain = (
-        repo_root / "src" / "molt" / "cli" / "wasm_toolchain.py"
+    python_wasm_link_inputs = (
+        repo_root / "src" / "molt" / "cli" / "wasm_link_inputs.py"
     ).read_text(encoding="utf-8")
-    assert "/usr/include/wasm32-wasi" in python_wasm_toolchain
-    assert "WASI_SDK_PREFIX" in python_wasm_toolchain
+    assert "/usr/include/wasm32-wasi" in python_wasm_link_inputs
+    assert "WASI_SDK_PREFIX" in python_wasm_link_inputs
     assert "mod wasi_sysroot" in runtime_text
     assert "mod wasi_sysroot" in abi_text
     assert "build.flag(sysroot.sysroot_flag())" in runtime_text
@@ -567,7 +568,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         ),
     )
     monkeypatch.setattr(
-        WASM_TOOLCHAIN,
+        wasm_link_inputs,
         "wasm_wasi_libc_archive",
         lambda: libc_archive,
         raising=True,

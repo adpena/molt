@@ -77,6 +77,41 @@ def test_runtime_custody_cannot_escape_source_owner(
         )
 
 
+@pytest.mark.parametrize("claim", ["matching", "name", "path", "ast", "missing"])
+def test_intrinsic_globals_escape_requires_exact_runtime_source_custody(
+    tmp_path: Path, claim: str
+) -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as require\n"
+        "require('molt_demo', globals())\n"
+        "from . import child\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(
+        source.replace("molt_demo", "molt_other") if claim == "ast" else source
+    )
+
+    def collect() -> list[str]:
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            runtime_import_custody=None if claim == "missing" else custody,
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+        )
+
+    if claim == "matching":
+        assert set(collect()) == set(custody.modules) | {
+            "_intrinsics",
+            "_intrinsics.require_intrinsic",
+        }
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+            collect()
+
+
 def test_custodied_scan_does_not_populate_strict_memory_cache(tmp_path: Path) -> None:
     owner, custody = _custody(tmp_path)
     tree = ast.parse("__package__ = choose_package()\nfrom . import child\n")

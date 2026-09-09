@@ -71,6 +71,14 @@ from molt.frontend import SimpleTIRGenerator
 # lowering-scope reachability excludes the backend. ``None`` as the source
 # attribute means the exported name is the submodule object itself.
 _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
+    # Debug commands enter only through explicit command dispatch.
+    "_debug_helpers": ("debug_helpers", None),
+    "_capture_json_cli_result": ("debug_helpers", "_capture_json_cli_result"),
+    "_debug_eval_base_env": ("debug_helpers", "_debug_eval_base_env"),
+    "_emit_debug_payload": ("debug_helpers", "_emit_debug_payload"),
+    "_load_debug_oracle": ("debug_helpers", "_load_debug_oracle"),
+    "_merge_debug_manifest": ("debug_helpers", "_merge_debug_manifest"),
+    "_run_debug_eval_command": ("debug_helpers", "_run_debug_eval_command"),
     # molt.cli.arg_helpers
     "_BUILD_ESSENTIAL_FLAGS": ("arg_helpers", "_BUILD_ESSENTIAL_FLAGS"),
     "_BuildHelpFormatter": ("arg_helpers", "_BuildHelpFormatter"),
@@ -148,13 +156,13 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     ),
     "_module_symbol_name": ("backend_cache", "_module_symbol_name"),
     "_backend_artifact_source_key": ("backend_cache", "_backend_artifact_source_key"),
-    "_native_nm_command": ("backend_cache", "_native_nm_command"),
+    "_native_nm_command": ("native_symbol_inspection", "_native_nm_command"),
     "_native_object_global_symbol_sets": (
-        "backend_cache",
+        "native_symbol_inspection",
         "_native_object_global_symbol_sets",
     ),
     "_read_native_global_symbol_facts": (
-        "backend_cache",
+        "native_symbol_inspection",
         "_read_native_global_symbol_facts",
     ),
     "_native_object_has_unresolved_module_chunks": (
@@ -165,7 +173,10 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_cache",
         "_native_stdlib_object_split_enabled",
     ),
-    "_normalize_native_symbol_name": ("backend_cache", "_normalize_native_symbol_name"),
+    "_normalize_native_symbol_name": (
+        "native_symbol_inspection",
+        "_normalize_native_symbol_name",
+    ),
     "_publish_immutable_backend_cache_artifact": (
         "backend_cache",
         "_publish_immutable_backend_cache_artifact",
@@ -627,7 +638,7 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_detect_macos_arch": ("native_toolchain", "_detect_macos_arch"),
     "_resolve_macos_sdk_root": ("native_toolchain", "_resolve_macos_sdk_root"),
     "_run_bolt_post_link": ("native_toolchain", "_run_bolt_post_link"),
-    "_zig_target_query": ("native_toolchain", "_zig_target_query"),
+    "_zig_target_query": ("compiler_target", "_zig_target_query"),
     # molt.cli.package_distribution
     "package": ("package_distribution", "package"),
     "publish": ("package_distribution", "publish"),
@@ -843,7 +854,6 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY_REEXPORTS))
 
 
-from molt.cli import debug_helpers as _debug_helpers
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import typecheck as _typecheck
 from molt.cli import factgraph as _factgraph
@@ -931,14 +941,6 @@ from molt.cli.default_paths import (
     _default_molt_cache_cached,
     _default_molt_home,
     _default_molt_home_cached,
-)
-from molt.cli.debug_helpers import (
-    _capture_json_cli_result,
-    _debug_eval_base_env,
-    _emit_debug_payload,
-    _load_debug_oracle,
-    _merge_debug_manifest,
-    _run_debug_eval_command,
 )
 from molt.cli.deps import (
     MOLT_VENV_DIR,

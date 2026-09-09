@@ -195,6 +195,62 @@ def test_module_level_policy_skips_deferred_bodies_without_hiding_module_imports
     ) == {"package.eager", "package.lazy"}
 
 
+def test_context_independent_dependency_requests_do_not_build_binding_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "import package.eager\nfrom package import member\n"
+        "registry = make_registry()\n"
+        "def deferred():\n    __import__(unknown)\n",
+        encoding="utf-8",
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "absolute module-level requests do not demand binding analysis"
+        )
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", forbidden)
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(True, False, True),
+    ) == {"package.eager", "package", "package.member"}
+
+
+@pytest.mark.parametrize("module_only", [False, True])
+def test_relative_dependency_requests_demand_canonical_binding_facts_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_only: bool
+) -> None:
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text(
+        "__package__ = 'selected'\nfrom .first import one\nfrom .second import two\n",
+        encoding="utf-8",
+    )
+    analyze = python_import_resolution.analyze_python_bindings
+    calls = []
+
+    def record(*args, **kwargs):
+        calls.append(kwargs["policy"])
+        return analyze(*args, **kwargs)
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", record)
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(module_only, False, True),
+    ) == {
+        "selected.first",
+        "selected.first.one",
+        "selected.second",
+        "selected.second.two",
+    }
+    assert len(calls) == 1
+    assert calls[0].analyze_deferred_bodies is not module_only
+
+
 def test_branch_join_preserves_whole_possible_states() -> None:
     source = (
         "if condition is None:\n"
@@ -383,22 +439,26 @@ def test_indirect_definition_time_execution_invalidates_import_state(
         )
 
 
-def test_intrinsic_lookup_cannot_mutate_escaped_module_metadata() -> None:
+@pytest.mark.parametrize(
+    "invocation",
+    (
+        "require('molt_demo', globals())\n",
+        "value = require('molt_demo', globals())\n",
+        "if condition:\n    require = replacement\nrequire('molt_demo', globals())\n",
+    ),
+)
+def test_intrinsic_lookup_has_no_implicit_metadata_permission(invocation: str) -> None:
     source = (
         "from _intrinsics import require_intrinsic as require\n"
-        "value = require('molt_demo', globals())\n"
+        f"{invocation}"
         "from .child import value\n"
     )
-    assert set(
+    # Symbol identity is not a capability to preserve an escaped namespace.
+    # Dynamic stdlib imports require the same source-bound custody as any caller.
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         module_import_scanner._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
-    ) == {
-        "_intrinsics",
-        "_intrinsics.require_intrinsic",
-        "pkg.child",
-        "pkg.child.value",
-    }
 
 
 def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:

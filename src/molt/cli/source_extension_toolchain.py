@@ -28,7 +28,7 @@ from molt.cli.llvm_wasi_tools import (
 )
 from molt.cli.source_extension_target import SourceExtensionTargetPlan
 from molt.target_python import _parse_target_python_version
-from molt.cli.wasm_toolchain import (
+from molt.cli.wasm_link_inputs import (
     normalize_wasi_sysroot,
     resolve_wasi_sysroot as _resolve_wasi_sysroot,
     wasm_compiler_builtins_archive,

@@ -9,6 +9,8 @@ import os
 import pytest
 
 from molt.cli.python_source_closure import local_python_import_closure
+from molt.cli import python_source_closure as graph
+from molt.cli.python_import_resolution import PythonImportPolicy
 
 
 def test_local_python_import_closure_follows_tools_and_src_packages(
@@ -611,7 +613,7 @@ def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
             encoding="utf-8"
         )
     )
-    assert cache["schema_version"] == 3
+    assert cache["schema_version"] == graph._GRAPH_CACHE_SCHEMA_VERSION
     assert set(cache["entries"]) == {"tools/entry.py", "tools/helper.py"}
 
 
@@ -631,7 +633,194 @@ def test_non_mapping_graph_cache_is_ignored_and_replaced(tmp_path: Path) -> None
         "tools/entry.py",
         "tools/helper.py",
     }
-    assert json.loads(cache_path.read_text(encoding="utf-8"))["schema_version"] == 3
+    assert (
+        json.loads(cache_path.read_text(encoding="utf-8"))["schema_version"]
+        == graph._GRAPH_CACHE_SCHEMA_VERSION
+    )
+
+
+@pytest.mark.parametrize("include_attribute", [False, True])
+@pytest.mark.parametrize("full_first", [False, True])
+def test_grouped_fromlist_graph_preserves_distinct_consumer_policies(
+    tmp_path: Path, include_attribute: bool, full_first: bool
+) -> None:
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    seed = package / "entry.py"
+    seed.write_text(
+        "from pkg import child" + (", attribute" if include_attribute else "") + "\n",
+        encoding="utf-8",
+    )
+    initializer, child, aggregate = (
+        package / "__init__.py",
+        package / "child.py",
+        package / "aggregate.py",
+    )
+    initializer.write_text("import pkg.aggregate\nattribute = 1\n", encoding="utf-8")
+    child.write_text("VALUE = 1\n", encoding="utf-8")
+    aggregate.write_text("VALUE = 2\n", encoding="utf-8")
+    lowering = PythonImportPolicy(True, False, False)
+    policies = (graph._EXECUTABLE_TOOL_IMPORT_POLICY, lowering)
+    if not full_first:
+        policies = policies[::-1]
+    # Both orders, including persistent cache hits, must retain the independent
+    # owner fallback for an attribute beside a successfully resolved submodule.
+    for policy in (*policies, *policies):
+        paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy))
+        expected = {seed, child}
+        if policy.include_parent_packages or include_attribute:
+            expected.update((initializer, aggregate))
+        assert paths == expected
+    cache = json.loads(
+        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+    )
+    assert len(cache["entries"]["src/pkg/entry.py"]) == 2
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_transitive_dynamic_import_diagnostic_survives_cached_importer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warm: bool
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed, helper = tools / "entry.py", tools / "helper.py"
+    seed.write_text("import helper\n", encoding="utf-8")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    if warm:
+        local_python_import_closure(tmp_path, (seed,))
+    helper.write_text(
+        "import importlib\nimportlib.import_module(name)\n", encoding="utf-8"
+    )
+    analyzed = []
+    analyze = graph.analyze_local_imports
+
+    def record(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", record)
+    with pytest.raises(ValueError, match="non-literal dynamic Python import") as exc:
+        local_python_import_closure(tmp_path, (seed,))
+    assert str(helper) + ":2:0" in str(exc.value)
+    assert (seed in analyzed) == (not warm)
+
+
+def test_lowering_cached_graph_cannot_hide_executable_dynamic_diagnostic(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    seed, helper = package / "entry.py", package / "helper.py"
+    seed.write_text("import pkg.helper\n", encoding="utf-8")
+    helper.write_text("def deferred():\n    __import__(unknown)\n", encoding="utf-8")
+    assert set(
+        local_python_import_closure(
+            tmp_path, (seed,), policy=PythonImportPolicy(True, False, False)
+        )
+    ) == {seed, helper}
+    with pytest.raises(ValueError, match="non-literal dynamic Python import") as exc:
+        local_python_import_closure(tmp_path, (seed,))
+    assert str(helper) + ":2:4" in str(exc.value)
+
+
+def test_source_capture_keys_and_parses_the_same_byte_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed, first, later = (tools / name for name in ("entry.py", "first.py", "later.py"))
+    original = b"import first\n"
+    seed.write_bytes(original)
+    first.write_text("VALUE = 1\n", encoding="utf-8")
+    later.write_text("VALUE = 2\n", encoding="utf-8")
+    capture = graph.LocalPythonModuleResolver.capture_source
+    captures = []
+
+    def capture_then_edit(resolver, path):
+        snapshot = capture(resolver, path)
+        captures.append(path)
+        if path == seed:
+            seed.write_text("import later\n", encoding="utf-8")
+        return snapshot
+
+    monkeypatch.setattr(
+        graph.LocalPythonModuleResolver, "capture_source", capture_then_edit
+    )
+    assert set(local_python_import_closure(tmp_path, (seed,))) == {seed, first}
+    assert captures.count(seed) == 1
+    cache = json.loads(
+        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+    )
+    row = next(iter(cache["entries"]["tools/entry.py"].values()))
+    assert row["source_sha256"] == hashlib.sha256(original).hexdigest()
+    assert set(local_python_import_closure(tmp_path, (seed,))) == {seed, later}
+
+
+def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed, first, later = (tools / name for name in ("entry.py", "first.py", "later.py"))
+    seed.write_text("__import__(name)\n", encoding="utf-8")
+    first.write_text("VALUE = 1\n", encoding="utf-8")
+    later.write_text("VALUE = 2\n", encoding="utf-8")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    for target in ("first", "later"):
+        manifest.write_text(
+            "schema_version = 1\n[[source]]\npath = 'tools/entry.py'\n"
+            f"nonliteral_calls = 1\nmodules = ['{target}']\n",
+            encoding="utf-8",
+        )
+        local_python_import_closure(tmp_path, (seed,))
+    first.unlink()
+    local_python_import_closure(tmp_path, (seed,))
+    cache = json.loads(
+        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+    )
+    assert set(cache["entries"]) == {"tools/entry.py", "tools/later.py"}
+    assert len(cache["entries"]["tools/entry.py"]) == 1
+    row = next(iter(cache["entries"]["tools/entry.py"].values()))
+    assert len(row["unresolved_dynamic_imports"]) == 1
+    # A changed contract cannot reuse the accepted unresolved-call row.
+    manifest.write_text(
+        "schema_version = 1\n[[source]]\npath = 'tools/entry.py'\n"
+        "nonliteral_calls = 0\nmodules = ['later']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="manifest drift"):
+        local_python_import_closure(tmp_path, (seed,))
+
+
+def test_graph_reparses_after_parser_or_binding_authority_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed = tools / "entry.py"
+    seed.write_text("VALUE = 1\n", encoding="utf-8")
+    local_python_import_closure(tmp_path, (seed,))
+    identity = graph.local_import_analysis_identity()
+    monkeypatch.setattr(
+        graph,
+        "local_import_analysis_identity",
+        lambda: (*identity, "changed-authority"),
+    )
+    analyzed = []
+    analyze = graph.analyze_local_imports
+
+    def record(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", record)
+    local_python_import_closure(tmp_path, (seed,))
+    assert analyzed == [seed]
+    cache = json.loads(
+        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+    )
+    assert len(cache["entries"]["tools/entry.py"]) == 1
 
 
 def test_static_import_syntax_family_closes_over_all_named_modules(
@@ -778,9 +967,10 @@ def test_conditional_try_function_class_and_cycle_imports_are_closed(
 
 
 def test_seed_symlink_cannot_escape_project_authority(tmp_path: Path) -> None:
-    tools = tmp_path / "tools"
+    root = tmp_path / "project"
+    tools = root / "tools"
     outside = tmp_path / "outside.py"
-    tools.mkdir()
+    tools.mkdir(parents=True)
     outside.write_text("VALUE = 1\n", encoding="utf-8")
     seed = tools / "entry.py"
     try:
@@ -788,8 +978,8 @@ def test_seed_symlink_cannot_escape_project_authority(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"symlink creation unavailable: {exc}")
 
-    with pytest.raises(ValueError, match="outside local search roots"):
-        local_python_import_closure(tmp_path, (seed,))
+    with pytest.raises(ValueError, match="outside project root"):
+        local_python_import_closure(root, (seed,))
 
 
 def test_module_name_case_resolution_follows_host_filesystem(tmp_path: Path) -> None:
@@ -838,3 +1028,142 @@ def test_invalid_dunder_import_levels_fail_closed(
 
     with pytest.raises(ValueError, match=message):
         local_python_import_closure(tmp_path, (seed,))
+
+
+@pytest.mark.parametrize("host_version", [(3, 12), (3, 13), (3, 14)])
+def test_graph_binding_policy_and_identity_share_host_source_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_version: tuple[int, int]
+) -> None:
+    from molt.cli import python_import_resolution as resolution
+    from types import SimpleNamespace
+
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    seed = package / "entry.py"
+    seed.write_text("from . import leaf\n", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    leaf = package / "leaf.py"
+    leaf.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        resolution,
+        "sys",
+        SimpleNamespace(
+            implementation=resolution.sys.implementation,
+            version_info=(*host_version, 0, "final", 0),
+        ),
+    )
+    policies = []
+    analyze = resolution.analyze_python_bindings
+
+    def record(tree, *, source_digest, policy):
+        policies.append(policy)
+        return analyze(tree, source_digest=source_digest, policy=policy)
+
+    monkeypatch.setattr(resolution, "analyze_python_bindings", record)
+    assert leaf in local_python_import_closure(tmp_path, (seed,))
+    assert policies
+    assert all(policy.target_python == host_version for policy in policies)
+    assert graph.local_import_analysis_identity()[-1]["target_python"] == host_version
+    cold_count = len(policies)
+    assert leaf in local_python_import_closure(tmp_path, (seed,))
+    assert len(policies) == cold_count
+
+
+def test_canonical_tools_import_keeps_relative_package_context(tmp_path: Path) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed, helper, child = (
+        tools / name for name in ("entry.py", "helper.py", "child.py")
+    )
+    seed.write_text("import tools.helper\n", encoding="utf-8")
+    helper.write_text("from . import child\n", encoding="utf-8")
+    child.write_text("VALUE = 1\n", encoding="utf-8")
+    expected = {seed, helper, child}
+    assert set(local_python_import_closure(tmp_path, (seed,))) == expected
+    assert set(local_python_import_closure(tmp_path, (seed,))) == expected
+    # A source that is valid as tools.helper cannot lend its package context to
+    # the same bytes imported as the top-level helper module, even on a warm hit.
+    seed.write_text("import tools.helper\nimport helper\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no known parent package"):
+        local_python_import_closure(tmp_path, (seed,))
+
+
+def test_namespace_leaf_retains_regular_ancestor_initializers(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "pkg"
+    (package / "namespace" / "nested").mkdir(parents=True)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    seed = tools / "entry.py"
+    seed.write_text("import pkg.namespace.nested\n", encoding="utf-8")
+    initializer = package / "__init__.py"
+    initializer.write_text("from . import boot\n", encoding="utf-8")
+    boot = package / "boot.py"
+    boot.write_text("VALUE = 1\n", encoding="utf-8")
+    assert set(local_python_import_closure(tmp_path, (seed,))) == {
+        seed,
+        initializer,
+        boot,
+    }
+
+
+def test_manifest_tool_package_tree_preserves_declared_qualified_names(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "tools" / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    helper = package / "helper.py"
+    helper.write_text("from .. import root_dep\n", encoding="utf-8")
+    dependency = package.parent / "root_dep.py"
+    dependency.write_text("VALUE = 1\n", encoding="utf-8")
+    seed = package.parent / "entry.py"
+    seed.write_text("__import__(name)\n", encoding="utf-8")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        "schema_version = 1\n[[source]]\npath = 'tools/entry.py'\n"
+        "nonliteral_calls = 1\nmodule_trees = ['tools.pkg']\n",
+        encoding="utf-8",
+    )
+    assert {helper, dependency, manifest} <= set(
+        local_python_import_closure(tmp_path, (seed,))
+    )
+
+
+def test_import_alias_contexts_share_bytes_not_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.python_import_resolution import LocalPythonModuleResolver
+
+    package = tmp_path / "tools" / "pkg"
+    package.mkdir(parents=True)
+    seed = package.parent / "entry.py"
+    seed.write_text("import pkg.helper\nimport tools.pkg.helper\n", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    helper, child = package / "helper.py", package / "child.py"
+    helper.write_text("from . import child\n", encoding="utf-8")
+    child.write_text("VALUE = 1\n", encoding="utf-8")
+    captures: list[Path] = []
+    contexts: list[str] = []
+    capture = LocalPythonModuleResolver.capture_source
+    analyze = graph.analyze_local_imports
+
+    def record_capture(self, path):
+        captures.append(path)
+        return capture(self, path)
+
+    def record_analysis(snapshot, module_source, *args, **kwargs):
+        if snapshot.path == helper:
+            contexts.append(module_source.name)
+        return analyze(snapshot, module_source, *args, **kwargs)
+
+    monkeypatch.setattr(LocalPythonModuleResolver, "capture_source", record_capture)
+    monkeypatch.setattr(graph, "analyze_local_imports", record_analysis)
+    assert child in local_python_import_closure(tmp_path, (seed,))
+    assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
+    assert captures.count(helper) == 1
+    cache = json.loads((tmp_path / graph._GRAPH_CACHE_RELPATH).read_text())
+    assert len(cache["entries"]["tools/pkg/helper.py"]) == 2
+    contexts.clear()
+    assert child in local_python_import_closure(tmp_path, (seed,))
+    assert contexts == []
