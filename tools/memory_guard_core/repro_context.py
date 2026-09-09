@@ -3,6 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import json
 from pathlib import Path
+from molt.memory_guard_paths import (
+    canonical_pytest_current_test_file_path,
+    pytest_custody_path_is_canonical,
+    pytest_guard_summary_dir,
+)
 from tools.memory_guard_core.process_model import ProcessSample
 
 
@@ -186,56 +191,6 @@ def _process_lineage_payload(
     return lineage
 
 
-def _path_is_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve(strict=False).relative_to(root.resolve(strict=False))
-    except ValueError:
-        return False
-    return True
-
-
-def _pytest_custody_artifact_path(
-    kind: str,
-    suffix: str,
-    *,
-    summary_dir: Path,
-    pid: int,
-) -> Path:
-    safe_kind = "".join(ch if ch.isalnum() else "-" for ch in kind.lower()).strip("-")
-    safe_suffix = "".join(ch if ch.isalnum() else "-" for ch in suffix.lower()).strip(
-        "-"
-    )
-    return summary_dir / f"{safe_kind or 'pytest'}-{pid}_{safe_suffix}.json"
-
-
-def _canonical_pytest_current_test_file_path(
-    raw_path: str | None,
-    *,
-    root: Path,
-    summary_dir: Path,
-    fallback_pid: int,
-) -> Path:
-    path = Path(raw_path).expanduser() if raw_path else None
-    if path is None:
-        return _pytest_custody_artifact_path(
-            "test-custody",
-            "current-test",
-            summary_dir=summary_dir,
-            pid=fallback_pid,
-        )
-    if not path.is_absolute():
-        path = root / path
-    path = path.resolve(strict=False)
-    if not _path_is_under(path, summary_dir):
-        return _pytest_custody_artifact_path(
-            "test-custody",
-            "current-test",
-            summary_dir=summary_dir,
-            pid=fallback_pid,
-        )
-    return path
-
-
 def _looks_like_repo_test_path(raw: str, cwd: str | Path | None, *, root: Path) -> bool:
     if not raw or raw == "-" or raw.startswith("-") or not raw.endswith(".py"):
         return False
@@ -275,19 +230,20 @@ def test_custody_launch_env(
     environ: Mapping[str, str],
     cwd: str | Path | None,
     root: Path,
-    summary_dir: Path,
     fallback_pid: int,
     current_test_file_env: str,
 ) -> dict[str, str]:
     env = dict(environ)
     if not _command_requests_test_custody(command, cwd=cwd, root=root):
         return env
+    summary_dir = pytest_guard_summary_dir(root, env)
     summary_dir.mkdir(parents=True, exist_ok=True)
     env[current_test_file_env] = str(
-        _canonical_pytest_current_test_file_path(
+        canonical_pytest_current_test_file_path(
+            root,
             env.get(current_test_file_env),
-            root=root,
-            summary_dir=summary_dir,
+            fallback_kind="test-custody",
+            environ=env,
             fallback_pid=fallback_pid,
         )
     )
@@ -387,17 +343,17 @@ def _pytest_current_test_file_payload(
     samples: Mapping[int, ProcessSample],
     incident_pid: int | None = None,
     root: Path,
-    summary_dir: Path,
     current_test_file_env: str,
 ) -> dict[str, object] | None:
     raw_path = environ.get(current_test_file_env, "").strip()
     if not raw_path:
         return None
+    summary_dir = pytest_guard_summary_dir(root, environ)
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = root / path
     path = path.resolve(strict=False)
-    if not _path_is_under(path, summary_dir):
+    if not pytest_custody_path_is_canonical(root, path, environ=environ):
         return {
             "path": str(path),
             "rejected": "noncanonical",
@@ -421,7 +377,6 @@ def repro_context_payload(
     source_environ: Mapping[str, str],
     baseline_environ: Mapping[str, str],
     root: Path,
-    summary_dir: Path,
     current_test_file_env: str,
     samples: Mapping[int, ProcessSample],
     pid: int,
@@ -460,7 +415,6 @@ def repro_context_payload(
         samples=samples,
         incident_pid=incident_pid,
         root=root,
-        summary_dir=summary_dir,
         current_test_file_env=current_test_file_env,
     )
     if current_test_file is not None:

@@ -25,6 +25,10 @@ def test_harness_default_outputs_follow_guard_state_authority(
     repo = (tmp_path / "repo").resolve()
     external = (tmp_path / "external").resolve()
     queue_state = (tmp_path / "queue" / "tmp" / "memory_guard").resolve()
+    monkeypatch.setenv(
+        "MOLT_PYTEST_CURRENT_TEST_FILE",
+        os.environ.get("MOLT_PYTEST_CURRENT_TEST_FILE", ""),
+    )
     for name in (
         "MOLT_EXT_ROOT",
         "MOLT_EXTERNAL_ARTIFACT_ROOTS",
@@ -47,6 +51,10 @@ def test_harness_default_outputs_follow_guard_state_authority(
         env["MOLT_EXT_ROOT"] = str(repo)
         env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(queue_state)
         expected = queue_state.parent / "harness_memory_guard"
+    # A command's supplied environment must not inherit the observer's root.
+    monkeypatch.setenv(
+        "MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "observer" / "memory_guard")
+    )
     assert harness_guard_artifact_dir(repo, env) == expected
     assert harness_memory_guard._artifact_root_from_env(env) == expected
     assert harness_memory_guard.command_profile_log_path(env, repo_root=repo) == (
@@ -692,11 +700,6 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
 
     monkeypatch.setattr(
         harness_memory_guard.memory_guard,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        tmp_path,
-    )
-    monkeypatch.setattr(
-        harness_memory_guard.memory_guard,
         "run_guarded",
         fake_run_guarded,
     )
@@ -711,7 +714,7 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-m", "pytest", "tests/test_one.py"],
         prefix="MOLT_TEST",
-        env={},
+        env={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")},
         limits=limits,
     )
 

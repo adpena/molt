@@ -349,7 +349,7 @@ def canonical_harness_env(
 
 
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
-    return harness_guard_artifact_dir(_REPO_ROOT, _effective_env(env))
+    return harness_guard_artifact_dir(_REPO_ROOT, env)
 
 
 def _env_bool(
@@ -686,7 +686,7 @@ def command_profile_log_path(
 ) -> Path:
     """Return the default structured command-profile log path."""
 
-    source = _effective_env(env)
+    source = os.environ if env is None else env
     root = (repo_root or _REPO_ROOT).resolve()
     raw_path = source.get("MOLT_GUARD_PROFILE_LOG", "").strip()
     if raw_path:

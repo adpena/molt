@@ -12,6 +12,8 @@ from tools import check_memory_guard_wiring
 from tools import check_subprocess_guard_coverage
 from tools import memory_guard
 from molt import pytest_memory_guard_bootstrap
+from molt import pytest_memory_guard_config_plugin
+from molt import memory_guard_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -212,7 +214,8 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
     assert contracts["tools/memory_guard.py"] == (
         "test_custody_launch_env",
         "MOLT_PYTEST_CURRENT_TEST_FILE",
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        "active_guard_marker_dir",
+        "environ=child_env",
         "repro_context_payload",
     )
     assert contracts["tools/harness_memory_guard.py"] == (
@@ -299,7 +302,7 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
     current_test_file = Path(env["MOLT_PYTEST_CURRENT_TEST_FILE"])
     assert (
         current_test_file.parent
-        == pytest_memory_guard_bootstrap.PYTEST_OUTER_GUARD_SUMMARY_DIR
+        == pytest_memory_guard_bootstrap.outer_guard_summary_dir(env)
     )
     assert current_test_file.name.endswith("_current-test.json")
 
@@ -520,26 +523,25 @@ def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> Non
 
 
 def test_memory_guard_allocates_test_custody_env(
-    monkeypatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", tmp_path)
+    env = {"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")}
 
     pytest_env = memory_guard.test_custody_launch_env(
         [sys.executable, "-m", "pytest", "tests/test_one.py"],
-        environ={},
+        environ=env,
     )
     assert pytest_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
 
     module_env = memory_guard.test_custody_launch_env(
         [sys.executable, "-m", "tests.test_memory_guard_wiring"],
-        environ={},
+        environ=env,
     )
     assert module_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
 
     script_env = memory_guard.test_custody_launch_env(
         [sys.executable, "tests/differential/basic/builtin_chr_ord.py"],
-        environ={},
+        environ=env,
         cwd=REPO_ROOT,
     )
     assert script_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
@@ -548,6 +550,201 @@ def test_memory_guard_allocates_test_custody_env(
         [sys.executable, "-c", "print('not a test')"],
         environ={},
     )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["MOLT_EXT_ROOT", "MOLT_EXTERNAL_ARTIFACT_ROOTS", "MOLT_MEMORY_GUARD_STATE_ROOT"],
+)
+@pytest.mark.parametrize("worker", ["", "gw0"])
+def test_custody_root_transition_keeps_parent_child_and_reader_on_one_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selector: str, worker: str
+) -> None:
+    # Modules are already imported. The parent observer still has the old root
+    # when DX supplies the command's effective external/queue environment.
+    monkeypatch.setenv(
+        "MOLT_PYTEST_CURRENT_TEST_FILE",
+        os.environ.get("MOLT_PYTEST_CURRENT_TEST_FILE", ""),
+    )
+    root_keys = (
+        "MOLT_EXT_ROOT",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_MEMORY_GUARD_STATE_ROOT",
+    )
+    for key in root_keys:
+        monkeypatch.delenv(key, raising=False)
+    old_state = tmp_path / "old" / "memory_guard"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(old_state))
+    old_path = pytest_memory_guard_bootstrap.current_test_file_path(pid=701)
+    assert old_path.parent == old_state.parent / "pytest-memory-guard"
+    selected = tmp_path / "effective"
+    state = (
+        selected
+        if selector == "MOLT_MEMORY_GUARD_STATE_ROOT"
+        else selected / "tmp" / "memory_guard"
+    )
+    child_env = memory_guard.test_custody_launch_env(
+        [sys.executable, "-m", "pytest", "tests/test_memory_guard_wiring.py"],
+        environ={
+            selector: str(selected),
+            "MOLT_PYTEST_CURRENT_TEST_FILE": str(old_path),
+            "PYTEST_XDIST_WORKER": worker,
+        },
+        cwd=REPO_ROOT,
+    )
+    current_path = Path(child_env["MOLT_PYTEST_CURRENT_TEST_FILE"])
+    assert current_path.parent == state.parent / "pytest-memory-guard"
+    assert current_path != old_path
+    token, marker = memory_guard._write_active_guard_marker(
+        701, command=("pytest",), cwd=REPO_ROOT, environ=child_env
+    )
+    assert marker.parent == state / "active"
+    child_env.update(
+        {
+            "MOLT_MEMORY_GUARD_PID": "701",
+            "MOLT_MEMORY_GUARD_TOKEN": token,
+            "MOLT_MEMORY_GUARD_MARKER": str(marker),
+        }
+    )
+    assert pytest_memory_guard_bootstrap._active_guard_marker_valid(
+        child_env, guard_pid=701
+    )
+
+    class Item:
+        nodeid = "tests/test_memory_guard_wiring.py::effective_environment"
+
+    with monkeypatch.context() as child:
+        for key in root_keys:
+            child.delenv(key, raising=False)
+        for key, value in child_env.items():
+            child.setenv(key, value)
+        assert (
+            pytest_memory_guard_bootstrap.outer_guard_summary_dir()
+            == current_path.parent
+        )
+        assert (
+            pytest_memory_guard_bootstrap.install_pytest_current_test_file_env()
+            == current_path
+        )
+        pytest_memory_guard_config_plugin.pytest_runtest_call(Item())
+    # The reader is back in the old ambient environment. It must still read
+    # exactly the path that the parent allocated and the child wrote.
+    record = memory_guard._pytest_current_test_file_payload(child_env, samples={})
+    assert record is not None
+    assert record["path"] == str(current_path)
+    payload = record["worker_records"][0]["payload"] if worker else record["payload"]
+    assert payload["nodeid"] == Item.nodeid
+    assert not old_path.exists()
+
+
+@pytest.mark.parametrize("invocation", ["pytest", "module", "script"])
+def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invocation: str
+) -> None:
+    state = tmp_path / "selected" / "memory_guard"
+    env = {"MOLT_MEMORY_GUARD_STATE_ROOT": str(state)}
+    monkeypatch.setenv(
+        "MOLT_PYTEST_CURRENT_TEST_FILE",
+        os.environ.get("MOLT_PYTEST_CURRENT_TEST_FILE", ""),
+    )
+    monkeypatch.setenv(
+        "MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "observer" / "memory_guard")
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "outer_memory_guard_active", lambda _env: False
+    )
+    captured = {}
+
+    def handoff(argv, child_env):
+        captured.update(argv=argv, env=child_env)
+        raise SystemExit(71)
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "handoff_to_outer_guard", handoff
+    )
+    with pytest.raises(SystemExit, match="71"):
+        if invocation == "pytest":
+            pytest_memory_guard_bootstrap.ensure_pytest_memory_guard(
+                pytest_args=("tests/test_memory_guard_wiring.py",), environ=env
+            )
+        elif invocation == "module":
+            pytest_memory_guard_bootstrap.ensure_repo_test_module_memory_guard(
+                orig_argv=(sys.executable, "-m", "tests.test_memory_guard_wiring"),
+                environ=env,
+            )
+        else:
+            pytest_memory_guard_bootstrap.ensure_repo_test_script_memory_guard(
+                runtime_argv=(str(Path(__file__).resolve()),), environ=env
+            )
+    argv = captured["argv"]
+    summary = Path(argv[argv.index("--summary-json") + 1])
+    assert summary.parent == state.parent / "pytest-memory-guard"
+    assert captured["env"]["MOLT_MEMORY_GUARD_STATE_ROOT"] == str(state)
+    if invocation == "pytest":
+        assert (
+            Path(captured["env"]["MOLT_PYTEST_CURRENT_TEST_FILE"]).parent
+            == summary.parent
+        )
+
+
+@pytest.mark.parametrize("kind", ["pytest", "test-custody"])
+def test_shared_pytest_custody_path_policy_keeps_roles_and_parent_selection(
+    tmp_path: Path, kind: str
+) -> None:
+    env = {"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")}
+    root = tmp_path / "pytest-memory-guard"
+    fallback = root / f"{kind}-91_current-test.json"
+    for raw in (None, str(tmp_path / "outside.json"), "../outside.json"):
+        assert (
+            memory_guard_paths.canonical_pytest_current_test_file_path(
+                tmp_path, raw, fallback_kind=kind, fallback_pid=91, environ=env
+            )
+            == fallback
+        )
+    selected = root / "parent-selected.json"
+    for raw in (str(selected), "pytest-memory-guard/parent-selected.json"):
+        assert (
+            memory_guard_paths.canonical_pytest_current_test_file_path(
+                tmp_path, raw, fallback_kind=kind, fallback_pid=92, environ=env
+            )
+            == selected
+        )
+    assert (
+        memory_guard_paths.pytest_custody_artifact_path(
+            tmp_path, " Test / Module ", " Outer Guard ", pid=93, environ=env
+        )
+        == root / "test---module-93_outer-guard.json"
+    )
+    assert not memory_guard_paths.pytest_custody_path_is_canonical(
+        tmp_path, root / ".." / "outside.json", environ=env
+    )
+
+
+def test_pytest_custody_containment_resolves_final_root_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alias = tmp_path / "pytest-memory-guard"
+    target = tmp_path / "resolved-evidence"
+    env = {"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")}
+    original_resolve = Path.resolve
+
+    def resolve_alias(path: Path, *args, **kwargs) -> Path:
+        if path.is_relative_to(alias):
+            return target / path.relative_to(alias)
+        return original_resolve(path, *args, **kwargs)
+
+    # Model a final-directory symlink/junction without host-specific privileges.
+    monkeypatch.setattr(Path, "resolve", resolve_alias)
+    for path in (alias / "current.json", target / "current.json"):
+        assert memory_guard_paths.pytest_custody_path_is_canonical(
+            tmp_path, path, environ=env
+        )
+        assert (
+            memory_guard_paths.canonical_pytest_current_test_file_path(
+                tmp_path, str(path), fallback_kind="pytest", environ=env
+            )
+            == target / "current.json"
+        )
 
 
 def test_repo_test_script_startup_ignores_non_test_scripts(tmp_path: Path) -> None:
@@ -1055,9 +1252,6 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
         ),
     }
 
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
-    )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid)
 
@@ -1065,6 +1259,7 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path),
                 "MOLT_MEMORY_GUARD_PID": str(guard_pid),
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
@@ -1095,15 +1290,13 @@ def test_outer_memory_guard_accepts_live_marker_without_process_sample(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
-    )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path),
                 "MOLT_MEMORY_GUARD_PID": str(guard_pid),
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
@@ -1134,15 +1327,13 @@ def test_outer_memory_guard_rejects_terminal_active_marker(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
-    )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path),
                 "MOLT_MEMORY_GUARD_PID": str(guard_pid),
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
                 pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
@@ -1159,16 +1350,12 @@ def test_outer_memory_guard_accepts_proof_queue_custody_env(
     summary_dir = tmp_path / "pytest-memory-guard"
     summary_dir.mkdir()
     current_test_path = summary_dir / "queue-current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        summary_dir,
-    )
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
                     tmp_path / "proof_queue.sqlite3"
@@ -1188,16 +1375,12 @@ def test_outer_memory_guard_rejects_proof_queue_custody_outside_pytest_root(
 ) -> None:
     summary_dir = tmp_path / "pytest-memory-guard"
     summary_dir.mkdir()
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        summary_dir,
-    )
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
                     tmp_path / "proof_queue.sqlite3"
@@ -1218,16 +1401,12 @@ def test_outer_memory_guard_rejects_proof_queue_custody_without_sqlite_db(
     summary_dir = tmp_path / "pytest-memory-guard"
     summary_dir.mkdir()
     current_test_path = summary_dir / "queue-current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        summary_dir,
-    )
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
             {
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
                 pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
                     tmp_path / "proof_queue.json"
@@ -1245,12 +1424,8 @@ def test_pytest_current_test_hooks_write_live_identity(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    current_test_path = tmp_path / "current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        tmp_path,
-    )
+    current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
         str(current_test_path),
@@ -1276,12 +1451,10 @@ def test_pytest_current_test_env_is_forced_to_canonical_root(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    canonical_root = tmp_path / "canonical"
+    canonical_root = tmp_path / "canonical" / "pytest-memory-guard"
     outside_path = tmp_path / "outside" / "current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        canonical_root,
+    monkeypatch.setenv(
+        "MOLT_MEMORY_GUARD_STATE_ROOT", str(canonical_root.parent / "memory_guard")
     )
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
@@ -1300,12 +1473,8 @@ def test_pytest_current_test_xdist_writes_per_worker_sidecar(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    aggregate_path = tmp_path / "pytest-guard_current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        tmp_path,
-    )
+    aggregate_path = tmp_path / "pytest-memory-guard" / "pytest-guard_current-test.json"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
         str(aggregate_path),
@@ -1331,12 +1500,8 @@ def test_pytest_current_test_writer_ignores_test_monkeypatched_os_replace(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    current_test_path = tmp_path / "current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        tmp_path,
-    )
+    current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
         str(current_test_path),
@@ -1361,12 +1526,8 @@ def test_pytest_current_test_writer_retries_windows_atomic_replace(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    current_test_path = tmp_path / "current-test.json"
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
-        tmp_path,
-    )
+    current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
         str(current_test_path),

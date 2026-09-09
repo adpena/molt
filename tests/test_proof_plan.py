@@ -1051,6 +1051,26 @@ def test_windows_process_binding_selects_and_executes_portability_proof(
     )
 
 
+def test_portability_streams_node_outcomes_before_possible_timeout() -> None:
+    commands = [
+        command
+        for command in PLAN.commands
+        if command.id.startswith("portability.queue.")
+    ]
+    assert len(commands) == 3
+    for command in commands:
+        argv = command.data["argv"]
+        python_index = argv.index("python")
+        assert argv[python_index : python_index + 5] == [
+            "python",
+            "-u",
+            "-m",
+            "pytest",
+            "-v",
+        ]
+        assert "-q" not in argv
+
+
 def _receipt_for(
     command: proof_plan.ProofCommand, evidence_root: Path | None = None
 ) -> dict[str, Any]:
