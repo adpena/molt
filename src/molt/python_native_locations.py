@@ -8,16 +8,42 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, cast
 
 from molt.python_identity_common import PythonEnvironmentIdentityError
 
 
+_MACOS_DYLD_CACHE_CONTRACT_PREFIX = "macos-dyld-cache-image:"
+
+
+def _macos_dyld_cache_contract(path: str) -> str | None:
+    normalized = unicodedata.normalize("NFC", path)
+    components = normalized.split("/")
+    if (
+        not normalized.startswith("/")
+        or normalized.startswith("//")
+        or len(components) < 2
+        or any(component in {"", ".", ".."} for component in components[1:])
+        or any(character in normalized for character in ("\\", "\0", ":"))
+    ):
+        return None
+    return _MACOS_DYLD_CACHE_CONTRACT_PREFIX + normalized
+
+
 def _native_contract_valid(contract: object, operating_system: str) -> bool:
+    if operating_system == "macos":
+        return (
+            isinstance(contract, str)
+            and contract.startswith(_MACOS_DYLD_CACHE_CONTRACT_PREFIX)
+            and _macos_dyld_cache_contract(
+                contract.removeprefix(_MACOS_DYLD_CACHE_CONTRACT_PREFIX)
+            )
+            == contract
+        )
     patterns = {
         "windows": r"windows-api-set:(?:api|ext)-ms-[a-z0-9-]+-l[0-9]+-[0-9]+-[0-9]+\.dll",
-        "macos": r"macos-dyld-cache-image:[^/\\\x00:]+",
         "linux": r"linux-loader-image:linux-(?:vdso|gate)\.so\.1",
     }
     pattern = patterns.get(operating_system)
@@ -41,13 +67,19 @@ def _loaded_native_module_paths(
 
     paths: list[Path] = []
     if operating_system == "windows":
+        if os.name != "nt":
+            raise PythonEnvironmentIdentityError(
+                "cannot enumerate Windows runtime dependencies on a non-Windows host"
+            )
         from ctypes import wintypes
 
-        get_process = ctypes.windll.kernel32.GetCurrentProcess  # type: ignore[attr-defined]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        get_process = kernel32.GetCurrentProcess
         get_process.argtypes = ()
         get_process.restype = wintypes.HANDLE
         process = get_process()
-        enum_modules = ctypes.windll.psapi.EnumProcessModulesEx  # type: ignore[attr-defined]
+        enum_modules = psapi.EnumProcessModulesEx
         enum_modules.argtypes = (
             wintypes.HANDLE,
             ctypes.POINTER(wintypes.HMODULE),
@@ -70,7 +102,7 @@ def _loaded_native_module_paths(
             if count <= capacity:
                 break
             capacity = count
-        get_name = ctypes.windll.psapi.GetModuleFileNameExW  # type: ignore[attr-defined]
+        get_name = psapi.GetModuleFileNameExW
         get_name.argtypes = (
             wintypes.HANDLE,
             wintypes.HMODULE,
@@ -166,14 +198,27 @@ def _loaded_native_module_paths(
                     contains.argtypes = (ctypes.c_char_p,)
                     contains.restype = ctypes.c_bool
                     if contains(os.fsencode(raw)):
-                        contracts.add(f"macos-dyld-cache-image:{raw.name}")
+                        contract = _macos_dyld_cache_contract(raw.as_posix())
+                        if contract is None:
+                            raise PythonEnvironmentIdentityError(
+                                "loaded macOS dyld-cache image path is not canonical: "
+                                f"{raw}"
+                            )
+                        contracts.add(contract)
                         continue
             raise PythonEnvironmentIdentityError(
                 f"loaded native runtime dependency has no file identity: {raw}"
             ) from exc
         key = os.path.normcase(str(resolved))
         canonical[key] = resolved
-        alias = _loader_name(raw.name, operating_system)
+        # dyld identifies loaded images by their install/resolved path, and can
+        # legitimately load distinct framework images with the same basename.
+        # PE and ELF dependency tables bind by case-folded/import basename.
+        alias = (
+            os.path.normcase(str(resolved))
+            if operating_system == "macos"
+            else _loader_name(raw.name, operating_system)
+        )
         prior = aliases.get(alias)
         if prior is not None and not resolved.samefile(prior):
             raise PythonEnvironmentIdentityError(

@@ -636,17 +636,21 @@ def test_compact_sequence_pool_rejects_invalid_indexes_before_lookup(
         _validate_compact_source_extension_manifest(manifest)
 
 
-def test_path_canonicalization_handles_joined_flags_double_slashes_and_urls() -> None:
-    root = Path("C:/Molt/target-root")
+def test_path_canonicalization_handles_joined_flags_double_slashes_and_urls(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "target-root"
+    spelling = root.as_posix()
+    doubled = spelling.replace("/", "//")
     payload = {
         "argv": [
-            "-IC://Molt//target-root//include",
+            f"-I{doubled}//include",
             "-L" + str(root / "lib"),
-            "/LIBPATH:C:/Molt/target-root/lib",
-            "--sysroot=C://Molt//target-root//sysroot",
-            "@C:/Molt/target-root/response.rsp",
+            f"/LIBPATH:{spelling}/lib",
+            f"--sysroot={doubled}//sysroot",
+            f"@{spelling}/response.rsp",
         ],
-        "url": "https://example.invalid/C:/Molt/target-root/include",
+        "url": f"https://example.invalid/{spelling}/include",
     }
     canonical = _canonicalize_locations(payload, ((root, "@target"),))
     assert canonical["argv"] == [

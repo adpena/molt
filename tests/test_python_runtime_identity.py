@@ -40,7 +40,7 @@ def _runtime_payload(
     policy = {
         "windows": "pe-loaded-import-closure-v2",
         "linux": "elf-loaded-needed-closure-v2",
-        "macos": "mach-o-loaded-dylib-closure-v2",
+        "macos": "mach-o-loaded-dylib-closure-v3",
     }[operating_system]
     root_roles = [
         "base-dlls" if windows else "base-lib-dynload",
@@ -175,6 +175,30 @@ def test_runtime_receipt_platform_version_architecture_matrix(
         "size": 3,
         "sha256": "3" * 64,
     }
+
+
+def test_macos_runtime_receipt_accepts_distinct_python_basename_components() -> None:
+    payload = _runtime_payload(operating_system="macos")
+    dependency = payload["native_dependency_closure"]
+    dependency["components"][:2] = [
+        {
+            "id": "native-component-0",
+            "filename": "Python",
+            "node": "file-node-0",
+            "roles": ["base-executable"],
+        },
+        {
+            "id": "native-component-1",
+            "filename": "Python",
+            "node": "file-node-1",
+            "roles": ["runtime-library"],
+        },
+    ]
+    payload["explicit_files"][0]["filename"] = "Python"
+    payload["explicit_files"][1]["filename"] = "Python"
+    _reseal(payload)
+
+    assert runtime.validate_python_runtime_identity(payload) == payload
 
 
 @pytest.mark.parametrize(
@@ -316,7 +340,7 @@ def test_runtime_rejects_unreachable_native_component_with_valid_file_node() -> 
     [
         ("windows", "windows-api-set:api-ms-win-core-file-l1-1-0.dll"),
         ("linux", "linux-loader-image:linux-vdso.so.1"),
-        ("macos", "macos-dyld-cache-image:libSystem.B.dylib"),
+        ("macos", "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib"),
     ],
 )
 def test_runtime_contract_must_be_reachable_from_native_root(

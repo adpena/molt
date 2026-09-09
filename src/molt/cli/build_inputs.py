@@ -16,6 +16,7 @@ from molt.capability_manifest import (
     AuditSink,
     CapabilityManifest,
     IoMode,
+    is_audit_sink,
     load_manifest,
     resolve_runtime_policy_from_env,
     validate_manifest,
@@ -596,9 +597,9 @@ def _prepare_build_config(
             tier = (
                 MAXIMUM_BUILTIN_CAPABILITY_TIER
                 if trusted
-                else os.environ.get(
-                    "MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER
-                ).strip().casefold()
+                else os.environ.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER)
+                .strip()
+                .casefold()
             )
             resolved_runtime_policy = envelope.resolve(combined_policy, tier=tier)
         else:
@@ -1128,7 +1129,7 @@ def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """
     parts = value.split(":", 1)
     sink = parts[0]
-    if sink not in _VALID_AUDIT_SINKS:
+    if not is_audit_sink(sink):
         raise ValueError(
             f"Invalid audit sink: {sink!r}. "
             f"Must be one of: {', '.join(sorted(_VALID_AUDIT_SINKS))}"

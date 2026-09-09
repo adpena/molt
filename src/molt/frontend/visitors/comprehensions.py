@@ -758,8 +758,8 @@ class ComprehensionMixin(_MixinBase):
 
     def _comprehension_requires_async(
         self,
-        generators: list[ast.comprehension],
-        exprs: list[ast.AST | None],
+        generators: Sequence[ast.comprehension],
+        exprs: Sequence[ast.AST | None],
     ) -> bool:
         if any(comp.is_async for comp in generators):
             return True

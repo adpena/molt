@@ -19,6 +19,27 @@ def compile_source(source, target=(3, 14)):
     return generator, ir
 
 
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "expression",
+    ["super(int, 1)", "super(*(int, 1))", "super(type=int, object=1)", "super(**{})"],
+)
+def test_explicit_super_uses_ordinary_call_dispatch(expression, target):
+    # Exercise the named dispatch without a module binding index as well as the
+    # assembled frontend. Both paths must acquire the callee and evaluate args.
+    generator = SimpleTIRGenerator(target_python=target)
+    result = generator.visit(ast.parse(expression, mode="eval").body)
+    assert result is not None
+    assert any(
+        op.kind in {"CALL_BIND", "CALL_INDIRECT"} for op in generator.current_ops
+    )
+    assert not runtime_calls(generator.current_ops, "molt_super_from_frame")
+    compiled, _ = compile_source(f"def probe(): return {expression}\n", target)
+    assert any(
+        builtin_calls(function["ops"]) for function in compiled.funcs_map.values()
+    )
+
+
 @dataclass(frozen=True)
 class FramePublication:
     index: int

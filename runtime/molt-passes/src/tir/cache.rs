@@ -2678,6 +2678,23 @@ fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
     (b"windows-u16le", bytes)
 }
 
+#[cfg(target_os = "wasi")]
+fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
+    // WASI has no target-specific OsStrExt. Keep std's lossless encoded bytes
+    // opaque and bind them to an explicit target domain in the cache key.
+    (b"wasi-encoded-bytes", value.as_encoded_bytes().to_vec())
+}
+
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
+    // Preserve compilation and lossless identity on future std targets without
+    // pretending their platform encoding is Unix bytes or Windows UTF-16.
+    (
+        b"rust-platform-encoded-bytes",
+        value.as_encoded_bytes().to_vec(),
+    )
+}
+
 /// Return a cross-process-comparable, high-resolution Unix recency stamp.
 fn unix_now() -> u64 {
     SystemTime::now()

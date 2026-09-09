@@ -54,6 +54,7 @@ jobs:
       - name: Setup WASM project toolchains
         uses: ./.github/actions/setup-project
         with:
+          node-version: "24.16.0"
           rust-toolchain: "1.96.1"
           rust-targets: wasm32-wasip1
           cache-cargo: "true"

@@ -773,7 +773,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "exception_last_pending" | "exception_finally_pending_observer" => {
                 let symbol =
                     crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
-                        original_kind,
+                        kind,
                         op.is_async_work_poll(),
                     )
                     .expect("pending-exception observer kind must have a runtime projection");

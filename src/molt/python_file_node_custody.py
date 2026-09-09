@@ -140,11 +140,10 @@ class PythonFileCaptureContext:
         self._verification_fences: list[Callable[[], None]] = []
 
     def _remember(self, identity: StableRegularFileIdentity) -> None:
-        metadata = identity.path.lstat()
-        verify_stable_regular_file_identity(identity, label="Python captured file")
         self._files[identity.path] = identity
-        if metadata.st_ino:
-            self._objects[_stable_object_key(metadata)] = identity
+        device, inode, _mode, _size, _mtime_ns, _ctime_ns = identity._stat_identity
+        if inode:
+            self._objects[(device, inode)] = identity
         self._hashed_bytes += identity.size
         self._hashed_files += 1
 
@@ -205,10 +204,26 @@ class PythonFileCaptureContext:
         return identity
 
     def verify(self) -> None:
-        for identity in self._files.values():
+        identities = list(self._files.values())
+
+        def verify_identity(identity: StableRegularFileIdentity) -> None:
             verify_stable_regular_file_identity(
                 identity, label="Python capture custody"
             )
+
+        if self.hash_workers == 1:
+            for identity in identities:
+                verify_identity(identity)
+        elif identities:
+            with ThreadPoolExecutor(max_workers=self.hash_workers) as executor:
+                window = self.hash_workers * 4
+                for offset in range(0, len(identities), window):
+                    tuple(
+                        executor.map(
+                            verify_identity,
+                            identities[offset : offset + window],
+                        )
+                    )
         for verify in self._verification_fences:
             verify()
 
@@ -706,15 +721,15 @@ def _stable_tree_inventory(
             raise PythonEnvironmentIdentityError(
                 f"{label} contains a broken symlink: {path}"
             ) from exc
-        if resolved.is_dir():
-            raise PythonEnvironmentIdentityError(
-                f"{label} contains a directory symlink: {path}"
-            )
         try:
             target_relative = _relative_path(
                 resolved, canonical, label=f"{label} symlink target"
             )
         except PythonEnvironmentIdentityError:
+            if resolved.is_dir():
+                raise PythonEnvironmentIdentityError(
+                    f"{label} directory symlink escapes custody: {path} -> {resolved}"
+                ) from None
             if external_symlink_role is None:
                 raise PythonEnvironmentIdentityError(
                     f"{label} file symlink escapes custody: {path} -> {resolved}"
@@ -740,22 +755,37 @@ def _stable_tree_inventory(
             files.add(relative)
             continue
         target = by_path.get(target_relative)
-        if target is None or not stat.S_ISREG(target[1].st_mode):
+        if resolved.is_dir():
+            if target is None or not stat.S_ISDIR(target[1].st_mode):
+                raise PythonEnvironmentIdentityError(
+                    f"{label} directory symlink target is not captured: {path}"
+                )
+            rows.append(
+                {
+                    "path": relative,
+                    "kind": "directory-symlink",
+                    "target_owner": "same-root",
+                    "target": target_relative,
+                    "access": _semantic_access(target[1]),
+                }
+            )
+        elif target is None or not stat.S_ISREG(target[1].st_mode):
             raise PythonEnvironmentIdentityError(
                 f"{label} symlink target is not a captured regular file: {path}"
             )
-        node = regular_nodes[target_relative]
-        rows.append(
-            {
-                "path": relative,
-                "kind": "symlink",
-                "target_owner": "same-root",
-                "target": target_relative,
-                "node": node,
-                "access": _semantic_access(target[1]),
-            }
-        )
-        files.add(relative)
+        else:
+            node = regular_nodes[target_relative]
+            rows.append(
+                {
+                    "path": relative,
+                    "kind": "symlink",
+                    "target_owner": "same-root",
+                    "target": target_relative,
+                    "node": node,
+                    "access": _semantic_access(target[1]),
+                }
+            )
+            files.add(relative)
         try:
             after_link = path.lstat()
         except OSError as exc:
@@ -916,6 +946,16 @@ def _validate_inventory_entries(
                 raise PythonEnvironmentIdentityError(
                     f"{label} symlink entry is invalid"
                 )
+        elif kind == "directory-symlink":
+            if (
+                set(raw) != {"path", "kind", "target_owner", "target", "access"}
+                or raw.get("target_owner") != "same-root"
+                or not _valid_relative_payload_path(raw.get("target"))
+                or not _valid_access(raw.get("access"))
+            ):
+                raise PythonEnvironmentIdentityError(
+                    f"{label} directory symlink entry is invalid"
+                )
         else:
             raise PythonEnvironmentIdentityError(f"{label} entry kind is invalid")
         entries.append(raw)
@@ -934,16 +974,28 @@ def _validate_inventory_entries(
                 raise PythonEnvironmentIdentityError(
                     f"{label} parent directory is absent: {parent}"
                 )
-        if row.get("kind") != "symlink" or row.get("target_owner") != "same-root":
+        if row.get("target_owner") != "same-root" or row.get("kind") not in {
+            "symlink",
+            "directory-symlink",
+        }:
             continue
         target = by_path.get(str(row["target"]))
-        if (
-            target is None
-            or target.get("kind") not in {"file", "hardlink"}
-            or target.get("node") != row.get("node")
-        ):
+        if row.get("kind") == "directory-symlink":
+            valid_target = (
+                target is not None
+                and target.get("kind") == "directory"
+                and target.get("access") == row.get("access")
+            )
+        else:
+            valid_target = (
+                target is not None
+                and target.get("kind") in {"file", "hardlink"}
+                and target.get("node") == row.get("node")
+                and target.get("access") == row.get("access")
+            )
+        if not valid_target:
             raise PythonEnvironmentIdentityError(
-                f"{label} symlink target differs from its file row: {path}"
+                f"{label} symlink target differs from its owned row: {path}"
             )
     ordinary_by_node: dict[str, list[Mapping[str, object]]] = {}
     for row in entries:

@@ -72,7 +72,7 @@ def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
         percent_index += 3
     # CPython 3.12 has no Path.from_uri; use the stdlib URL decoder, which
     # preserves platform file-URL semantics across the supported versions.
-    raw = urllib.request.url2pathname(encoded_path)  # ty: ignore[deprecated]
+    raw = urllib.request.url2pathname(encoded_path)
     if re.search(r"%[0-9A-Fa-f]{2}", raw):
         raise PythonEnvironmentIdentityError(
             f"installed distribution {distribution!r} has a multiply encoded file URL"

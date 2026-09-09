@@ -11,13 +11,13 @@ from molt.wasm_artifact import (
     WASM_EXTERN_KIND_GLOBAL,
     WASM_EXTERN_KIND_TABLE,
     WASM_EXTERN_KIND_TAG,
+    WasmBuffer,
     WasmImport,
     WasmSectionSpan,
     parse_wasm_section_spans,
 )
 
 WasmLinkingSymbolKind = Literal["function", "data", "global", "table", "tag"]
-_Buffer = bytes | mmap.mmap
 
 _LINKING_SECTION_NAME = "linking"
 _LINKING_METADATA_VERSION = 2
@@ -168,7 +168,7 @@ def _validated_expected_symbol_kinds(
             raise ValueError(f"unsupported WebAssembly linking symbol kind {kind!r}")
 
 
-def _read_varuint(data: _Buffer, offset: int, limit: int) -> tuple[int, int]:
+def _read_varuint(data: WasmBuffer, offset: int, limit: int) -> tuple[int, int]:
     if offset >= limit:
         raise ValueError("Unexpected EOF while reading wasm varuint")
     byte = data[offset]
@@ -189,7 +189,7 @@ def _read_varuint(data: _Buffer, offset: int, limit: int) -> tuple[int, int]:
     return result, offset
 
 
-def _skip_varuint(data: _Buffer, offset: int, limit: int) -> int:
+def _skip_varuint(data: WasmBuffer, offset: int, limit: int) -> int:
     if offset >= limit:
         raise ValueError("Unexpected EOF while reading wasm varuint")
     byte = data[offset]
@@ -208,7 +208,7 @@ def _skip_varuint(data: _Buffer, offset: int, limit: int) -> int:
     return offset
 
 
-def _read_string_bounds(data: _Buffer, offset: int, limit: int) -> tuple[int, int]:
+def _read_string_bounds(data: WasmBuffer, offset: int, limit: int) -> tuple[int, int]:
     if offset >= limit:
         raise ValueError("Unexpected EOF while reading wasm varuint")
     length = data[offset]
@@ -221,7 +221,7 @@ def _read_string_bounds(data: _Buffer, offset: int, limit: int) -> tuple[int, in
     return offset, end
 
 
-def _read_string(data: _Buffer, offset: int, limit: int) -> tuple[str, int]:
+def _read_string(data: WasmBuffer, offset: int, limit: int) -> tuple[str, int]:
     start, end = _read_string_bounds(data, offset, limit)
     return data[start:end].decode("utf-8"), end
 
@@ -234,7 +234,7 @@ def _is_externally_linkable(flags: int) -> bool:
 
 
 def _indexed_symbol(
-    data: _Buffer, offset: int, limit: int, flags: int
+    data: WasmBuffer, offset: int, limit: int, flags: int
 ) -> tuple[int, str, int]:
     index, offset = _read_varuint(data, offset, limit)
     name = ""
@@ -244,7 +244,7 @@ def _indexed_symbol(
 
 
 def _symbol_table(
-    data: _Buffer,
+    data: WasmBuffer,
     offset: int,
     limit: int,
     symbols: list[WasmLinkingSymbol],
@@ -304,7 +304,7 @@ def _symbol_table(
 
 
 def _defined_names_symbol_table(
-    data: _Buffer,
+    data: WasmBuffer,
     offset: int,
     limit: int,
     expected_by_kind_and_length: dict[
@@ -374,7 +374,7 @@ def _defined_names_symbol_table(
 
 
 def _parse_wasm_linking_symbols(
-    data: _Buffer,
+    data: WasmBuffer,
     expected_by_kind_and_length: dict[
         tuple[WasmLinkingSymbolKind, int], dict[bytes, str]
     ]
@@ -442,7 +442,7 @@ def _parse_wasm_linking_symbols(
 
 
 def parse_wasm_linking_symbols(
-    data: bytes,
+    data: WasmBuffer,
     *,
     wasm_imports: Sequence[WasmImport] = (),
     section_spans: Sequence[WasmSectionSpan] | None = None,

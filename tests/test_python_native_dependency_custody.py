@@ -65,6 +65,29 @@ def _macho_image(
     return image
 
 
+def _macho_image_with_rpaths(dependency: bytes, rpaths: tuple[bytes, ...]) -> bytearray:
+    def command(command_id: int, value: bytes, minimum_size: int) -> bytes:
+        size = (minimum_size + len(value) + 1 + 7) & ~7
+        payload = bytearray(size)
+        struct.pack_into("<III", payload, 0, command_id, size, minimum_size)
+        payload[minimum_size : minimum_size + len(value)] = value
+        return bytes(payload)
+
+    commands = [command(0xC, dependency, 24)]
+    commands.extend(command(0x8000001C, rpath, 12) for rpath in rpaths)
+    image = macho_header(
+        cpu=0x01000007,
+        kind=6,
+        command_count=len(commands),
+        command_bytes=sum(map(len, commands)),
+    )
+    cursor = 32
+    for payload in commands:
+        image[cursor : cursor + len(payload)] = payload
+        cursor += len(payload)
+    return image
+
+
 def _fat_macho(*, endian: str = ">", fat64: bool = False) -> bytearray:
     return fat_macho(
         (
@@ -173,7 +196,6 @@ def test_macho_universal_selects_only_explicit_architecture(
 @pytest.mark.parametrize(
     "fmt,offset,value,reason",
     [
-        ("<I", 32 + 4, 8, "dylib command is truncated"),
         ("<I", 32 + 8, 23, "name is invalid"),
         ("<I", 16, 0, "count/extent disagree"),
         ("<I", 20, 0x1000, "load commands.*truncated"),
@@ -186,6 +208,23 @@ def test_macho_rejects_malformed_commands(
     struct.pack_into(fmt, image, offset, value)
     with pytest.raises(PythonEnvironmentIdentityError, match=reason):
         native._macho_dependencies(bytes(image), architecture="x86_64")
+
+
+def test_macho_rejects_truncated_dylib_command() -> None:
+    image = _macho_image()
+    struct.pack_into("<I", image, 20, 8)
+    struct.pack_into("<I", image, 36, 8)
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="dylib command is truncated"
+    ):
+        native._macho_dependencies(bytes(image), architecture="x86_64")
+
+
+def test_macho_rejects_truncated_rpath_command() -> None:
+    image = macho_header(cpu=0x01000007, kind=6, command_count=1, command_bytes=8)
+    struct.pack_into("<II", image, 32, 0x8000001C, 8)
+    with pytest.raises(PythonEnvironmentIdentityError, match="LC_RPATH.*truncated"):
+        native._macho_rpaths(bytes(image), architecture="x86_64")
 
 
 def test_macho_universal_rejects_overlapping_slices() -> None:
@@ -249,9 +288,10 @@ def test_truncated_headers_raise_custody_error_not_struct_error(
         ("windows", "windows-api-set:api-ms-../evil-l1-1-0.dll", False),
         ("linux", "linux-loader-image:linux-vdso.so.1", True),
         ("linux", "linux-loader-image:arbitrary.so", False),
-        ("macos", "macos-dyld-cache-image:libSystem.B.dylib", True),
-        ("macos", "macos-dyld-cache-image:../libSystem.B.dylib", False),
-        ("linux", "macos-dyld-cache-image:libSystem.B.dylib", False),
+        ("macos", "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib", True),
+        ("macos", "macos-dyld-cache-image:libSystem.B.dylib", False),
+        ("macos", "macos-dyld-cache-image:/usr/lib/../libSystem.B.dylib", False),
+        ("linux", "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib", False),
         ("windows", ["unhashable"], False),
     ],
 )
@@ -478,7 +518,10 @@ def test_macho_load_command_semantics_survive_parser_and_closure(
     executable = tmp_path / "python"
     executable.write_bytes(image)
     if kind not in {"weak", "lazy"}:
-        with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+        with pytest.raises(
+            PythonEnvironmentIdentityError,
+            match="cannot attest importer-local.*inherited run-path stacks",
+        ):
             _capture_loaded_closure(
                 monkeypatch, executable, (executable,), operating_system="macos"
             )
@@ -592,7 +635,7 @@ def test_outer_capture_verification_rechecks_native_census_after_inventory(
 @pytest.mark.parametrize(
     "operating_system,contract",
     [
-        ("macos", "macos-dyld-cache-image:libSystem.B.dylib"),
+        ("macos", "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib"),
         ("linux", "linux-loader-image:linux-vdso.so.1"),
     ],
 )
@@ -636,3 +679,203 @@ def test_observed_virtual_images_are_census_roots_not_invented_bindings(
         if operating_system == "macos"
         else []
     )
+
+
+@pytest.mark.parametrize(
+    "dependency,closed",
+    [
+        ("/usr/lib/libSystem.B.dylib", True),
+        ("/wrong/path/libSystem.B.dylib", False),
+    ],
+)
+def test_macos_cached_image_contract_requires_exact_install_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dependency: str,
+    closed: bool,
+) -> None:
+    executable = tmp_path / "Python"
+    executable.write_bytes(_macho_image(name=dependency.encode(), command=0xC))
+    contract = "macos-dyld-cache-image:/usr/lib/libSystem.B.dylib"
+    monkeypatch.setattr(
+        native,
+        "_loaded_native_module_paths",
+        lambda _os: (
+            (executable,),
+            {str(executable.resolve()): executable},
+            (contract,),
+        ),
+    )
+
+    if not closed:
+        with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
+            native._native_dependency_closure(
+                {"base-executable": executable},
+                operating_system="macos",
+                architecture="x86_64",
+                policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+                pool=_FileNodePool(),
+            )
+        return
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="macos",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=_FileNodePool(),
+    )
+    assert closure["edges"] == [{"from": "native-component-0", "to": contract}]
+    assert closure["contracts"] == [contract]
+
+
+def test_macos_loaded_images_with_same_basename_remain_distinct_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    framework = tmp_path / "Frameworks/Python.framework/Versions/3.12/Python"
+    framework.parent.mkdir(parents=True)
+    framework.write_bytes(_macho_image())
+    executable = tmp_path / "bin/Python"
+    executable.parent.mkdir()
+    executable.write_bytes(_macho_image())
+    loaded = (framework, executable)
+    aliases = {str(path.resolve()): path for path in loaded}
+    monkeypatch.setattr(
+        native,
+        "_loaded_native_module_paths",
+        lambda _os: (loaded, aliases, ()),
+    )
+
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="macos",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=_FileNodePool(),
+    )
+
+    assert [row["filename"] for row in closure["components"]] == ["Python", "Python"]
+    assert len({row["node"] for row in closure["components"]}) == 2
+    assert closure["observed_components"] == [
+        "native-component-0",
+        "native-component-1",
+    ]
+
+
+def test_macos_rpath_binding_uses_declared_loader_scope_not_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "bin/Python"
+    executable.parent.mkdir()
+    framework = tmp_path / "Frameworks/Runtime.framework/Versions/3.12/Python"
+    framework.parent.mkdir(parents=True)
+    executable.write_bytes(
+        _macho_image_with_rpaths(
+            b"@rpath/Python",
+            (b"@loader_path/../Frameworks/Runtime.framework/Versions/3.12",),
+        )
+    )
+    framework.write_bytes(_macho_image())
+    loaded = (executable, framework)
+    aliases = {str(path.resolve()): path for path in loaded}
+    monkeypatch.setattr(
+        native,
+        "_loaded_native_module_paths",
+        lambda _os: (loaded, aliases, ()),
+    )
+
+    closure = native._native_dependency_closure(
+        {"base-executable": executable},
+        operating_system="macos",
+        architecture="x86_64",
+        policy=_NATIVE_DEPENDENCY_POLICIES["macos"],
+        pool=_FileNodePool(),
+    )
+
+    assert [row["filename"] for row in closure["components"]] == ["Python", "Python"]
+    assert closure["edges"] == [
+        {"from": "native-component-0", "to": "native-component-1"}
+    ]
+
+
+def test_macos_rpath_binding_rejects_conflicting_declared_targets(
+    tmp_path: Path,
+) -> None:
+    importer = tmp_path / "bin/Python"
+    importer.parent.mkdir()
+    importer.write_bytes(_macho_image())
+    first = tmp_path / "first/Python"
+    second = tmp_path / "second/Python"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(_macho_image())
+    second.write_bytes(_macho_image())
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="ambiguous dyld binding"):
+        native._resolve_macos_loaded_dependency(
+            "@rpath/Python",
+            importer=importer,
+            rpaths=("@loader_path/../first", "@loader_path/../second"),
+            executable=importer,
+            known_paths_by_object=native._loaded_path_object_index(
+                {first.resolve(), second.resolve()}
+            ),
+        )
+
+
+@pytest.mark.parametrize("scope", ["@loader_path", "@executable_path"])
+def test_macos_rpath_binding_accepts_bare_dyld_scope_tokens(
+    tmp_path: Path, scope: str
+) -> None:
+    importer = tmp_path / "loader/importer"
+    importer.parent.mkdir()
+    importer.write_bytes(_macho_image())
+    executable = tmp_path / "executable/Python"
+    executable.parent.mkdir()
+    executable.write_bytes(_macho_image())
+    root = importer.parent if scope == "@loader_path" else executable.parent
+    target = root / "Library"
+    target.write_bytes(_macho_image())
+
+    assert (
+        native._resolve_macos_loaded_dependency(
+            "@rpath/Library",
+            importer=importer,
+            rpaths=(scope,),
+            executable=executable,
+            known_paths_by_object=native._loaded_path_object_index({target.resolve()}),
+        )
+        == target.resolve()
+    )
+
+
+def test_macos_rpath_binding_rejects_unattested_inherited_scope(
+    tmp_path: Path,
+) -> None:
+    importer = tmp_path / "importer"
+    importer.write_bytes(_macho_image())
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="inherited run-path"):
+        native._resolve_macos_loaded_dependency(
+            "@rpath/Library",
+            importer=importer,
+            rpaths=(),
+            executable=importer,
+            known_paths_by_object={},
+        )
+
+
+def test_macos_loaded_object_index_selects_alias_deterministically(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a-Python"
+    second = tmp_path / "z-Python"
+    first.write_bytes(_macho_image())
+    try:
+        second.hardlink_to(first)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+
+    forward = native._loaded_path_object_index([first, second])
+    reverse = native._loaded_path_object_index([second, first])
+    assert forward == reverse
+    assert list(forward.values()) == [first]

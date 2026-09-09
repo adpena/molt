@@ -396,6 +396,8 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "Setup canonical WebAssembly linker and WASI sysroot" in ci_text
     assert "profile: wasm" in ci_text
     assert 'wasi: "true"' in ci_text
+    setup_llvm = _read(".github/actions/setup-llvm/action.yml")
+    assert 'wasm) packages=("llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR") ;;' in setup_llvm
     wasm_steps = yaml.safe_load(wasm_text)["jobs"]["wasm-build"]["steps"]
     llvm_steps = [
         step
@@ -1168,6 +1170,38 @@ def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
     assert "wasmtime run /tmp/test_hello.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_comprehension.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_sieve.wasm" not in wasm_text
+
+
+def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    node_policy = next(
+        policy for policy in plan["toolchain_policy"] if policy["name"] == "node"
+    )
+    node_families = {
+        command["family"]
+        for command in plan["command"]
+        if "node" in command["toolchains"]
+    }
+    consumers = {
+        "repository_policy": (".github/workflows/ci.yml", "docs-gates"),
+        "rust": (".github/workflows/ci.yml", "rust-build-unit-smoke"),
+        "wasm": (".github/workflows/molt-wasm-ci.yml", "wasm-build"),
+        "formal": (".github/workflows/formal.yml", "formal-quint"),
+    }
+
+    assert node_families == set(consumers)
+    for family, (workflow_path, job_name) in consumers.items():
+        jobs = yaml.safe_load(_read(workflow_path))["jobs"]
+        setup_steps = [
+            step
+            for step in jobs[job_name]["steps"]
+            if step.get("uses") == "./.github/actions/setup-project"
+        ]
+        assert len(setup_steps) == 1, family
+        assert (
+            setup_steps[0].get("with", {}).get("node-version")
+            == node_policy["setup_value"]
+        ), family
 
 
 def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:

@@ -7,8 +7,11 @@ import json
 from pathlib import Path
 import shutil
 
+import pytest
+
 from tools.proof_queue_pkg import pact
 
+from molt.cli import external_native as cli_external_native
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
 from molt.cli.source_extension_object_closure import (
@@ -23,6 +26,22 @@ from molt.scientific_stack_versions import resolve_scientific_stack
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _pure_seal_fixtures_do_not_read_host_provider_archives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_provider_scan(_target_triple: str):
+        raise AssertionError(
+            "an import-free package seal must not inspect host WASI providers"
+        )
+
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        unexpected_provider_scan,
+    )
 
 
 def _extension_set(package: str):

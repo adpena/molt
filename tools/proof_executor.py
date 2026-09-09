@@ -120,6 +120,11 @@ def execute_commands(
         receipt["errors"] = receipt_errors
     atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
     if toolchain_error:
+        print(
+            f"proof-plan: family={receipt['family']} stage=toolchain-preflight "
+            f"executed=0 error={toolchain_error}; receipt={receipt_path}",
+            file=sys.stderr,
+        )
         return 2
     scheduler_started = time.monotonic()
     pending_ids = set(command_ids)

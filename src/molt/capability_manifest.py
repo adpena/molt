@@ -23,7 +23,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping, Optional, Union, cast
+from typing import Any, Literal, Mapping, Optional, TypeGuard, Union, cast, get_args
 
 from molt.capability_policy import (
     CapabilityPolicy,
@@ -41,11 +41,15 @@ from molt._host_capabilities_generated import (
 )
 
 VALID_IO_MODES: frozenset[str] = frozenset({"real", "virtual", "callback"})
-VALID_AUDIT_SINKS: frozenset[str] = frozenset({"null", "stderr", "jsonl"})
 VALID_AUDIT_OUTPUTS: frozenset[str] = frozenset({"stderr", "stdout", "null"})
 VALID_MOUNT_TYPES: frozenset[str] = frozenset({"memory", "readonly", "readwrite"})
 AuditSink = Literal["null", "stderr", "jsonl"]
+VALID_AUDIT_SINKS: frozenset[str] = frozenset(get_args(AuditSink))
 IoMode = Literal["real", "virtual", "callback"]
+
+
+def is_audit_sink(value: object) -> TypeGuard[AuditSink]:
+    return isinstance(value, str) and value in VALID_AUDIT_SINKS
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +409,7 @@ def resolve_runtime_policy_from_env(
             "MOLT_AUDIT_ENABLED must be one of 0, 1, false, true, no, yes, off, on"
         )
     audit_sink = env.get("MOLT_AUDIT_SINK", "null")
-    if audit_sink not in VALID_AUDIT_SINKS:
+    if not is_audit_sink(audit_sink):
         raise ManifestError(f"invalid audit sink {audit_sink!r}")
     io_mode = env.get("MOLT_IO_MODE", "real")
     if io_mode not in VALID_IO_MODES:
@@ -425,7 +429,7 @@ def resolve_runtime_policy_from_env(
         ),
         audit=AuditConfig(
             enabled=audit_enabled,
-            sink=cast(AuditSink, audit_sink),
+            sink=audit_sink,
             output=env.get("MOLT_AUDIT_OUTPUT", "stderr"),
         ),
         io=IoConfig(mode=cast(IoMode, io_mode)),
@@ -511,7 +515,7 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
         )
 
     # Audit
-    if manifest.audit.sink not in VALID_AUDIT_SINKS:
+    if not is_audit_sink(manifest.audit.sink):
         raise ManifestError(
             f"invalid audit.sink {manifest.audit.sink!r}; "
             f"valid sinks: {', '.join(sorted(VALID_AUDIT_SINKS))}"

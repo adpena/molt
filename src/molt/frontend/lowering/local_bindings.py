@@ -40,6 +40,17 @@ else:
 _ProjectionValue = TypeVar("_ProjectionValue")
 
 
+def _restore_binding_projection(
+    projection: dict[str, _ProjectionValue],
+    source: dict[str, _ProjectionValue],
+    name: str,
+) -> None:
+    """Restore one name without losing the projection's key/value coupling."""
+    projection.pop(name, None)
+    if name in source:
+        projection[name] = source[name]
+
+
 def _mask_binding_projection(
     projection: dict[str, _ProjectionValue], names: set[str]
 ) -> Callable[[], None]:
@@ -1065,18 +1076,20 @@ class LocalBindingMixin(_MixinBase):
             if not self._binding_targets_module_namespace(name):
                 # A class global cannot replace an enclosing function's local.
                 continue
-            for lexical, module in (
-                (self.imported_modules, self.global_imported_modules),
-                (
-                    self.imported_module_provenance,
-                    self.global_imported_module_provenance,
-                ),
-                (self.imported_names, self.global_imported_names),
-                (self.imported_attr_names, self.global_imported_attr_names),
-            ):
-                lexical.pop(name, None)
-                if name in module:
-                    lexical[name] = module[name]
+            _restore_binding_projection(
+                self.imported_modules, self.global_imported_modules, name
+            )
+            _restore_binding_projection(
+                self.imported_module_provenance,
+                self.global_imported_module_provenance,
+                name,
+            )
+            _restore_binding_projection(
+                self.imported_names, self.global_imported_names, name
+            )
+            _restore_binding_projection(
+                self.imported_attr_names, self.global_imported_attr_names, name
+            )
             self.local_imported_modules.discard(name)
             self.local_imported_names.discard(name)
             self._typing_import_aliases.discard(name)

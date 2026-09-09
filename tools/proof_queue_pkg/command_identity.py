@@ -1160,6 +1160,7 @@ def _validate_toolchain_identity(
 _ENVIRONMENT_EXACT_NAMES = frozenset(
     {
         "APPDATA",
+        "CI",
         "COMSPEC",
         "HOME",
         "HOMEDRIVE",
@@ -1175,6 +1176,9 @@ _ENVIRONMENT_EXACT_NAMES = frozenset(
         "PROCESSOR_ARCHITECTURE",
         "PROCESSOR_IDENTIFIER",
         "PROGRAMDATA",
+        "RUNNER_ARCH",
+        "RUNNER_OS",
+        "RUNNER_TEMP",
         "SHELL",
         "SYSTEMDRIVE",
         "SYSTEMROOT",

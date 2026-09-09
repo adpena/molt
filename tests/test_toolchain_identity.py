@@ -150,6 +150,29 @@ def test_generic_executable_probe_remains_script_capable(tmp_path):
         assert captured.sha256 == hashlib.sha256(data).hexdigest()
 
 
+def test_verified_executable_probe_reuses_and_fences_captured_generation(tmp_path):
+    path = tmp_path / "llvm-nm"
+    path.write_bytes(b"generation-a")
+    with identity.stable_executable_probe(path, label="symbol reader") as (
+        entrypoint,
+        captured,
+    ):
+        pass
+
+    with identity.stable_executable_probe(
+        entrypoint, label="symbol reader", identity=captured
+    ) as (warm_entrypoint, warm_identity):
+        assert warm_entrypoint == entrypoint
+        assert warm_identity == captured
+
+    path.write_bytes(b"generation-b")
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        with identity.stable_executable_probe(
+            entrypoint, label="symbol reader", identity=captured
+        ):
+            pass
+
+
 @pytest.mark.parametrize("data", [b"#define VALUE 42\n", b"--export=example\n"])
 def test_resource_custody_does_not_claim_native_executable_admission(tmp_path, data):
     from molt.cli.runtime_cargo_plan import (

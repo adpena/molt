@@ -2317,6 +2317,29 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
     )
     sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(cli_commands, "resolve_wasi_sysroot", lambda: sysroot)
+    # This is a producer/wheel custody test, not a host compiler-discovery test.
+    # Bind the same typed tool family the real producer consumes, then retain
+    # the real target command construction and mocked compiler byte outputs.
+    tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
+        cc=_resolved_llvm_tool("cc", ("fixture-clang",)),
+        cxx=_resolved_llvm_tool("cxx", ("fixture-clang++",)),
+        wasm_ld=_resolved_llvm_tool("wasm_ld", ("wasm-ld",)),
+        ar=_resolved_llvm_tool("ar", ("llvm-ar",)),
+        ranlib=_resolved_llvm_tool("ranlib", ("llvm-ranlib",)),
+        nm=_resolved_llvm_tool("nm", ("llvm-nm",)),
+        strip=_resolved_llvm_tool("strip", ("llvm-strip",)),
+    )
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "_resolve_source_extension_wasm_toolchain",
+        lambda _target: cli_source_extension_toolchain._SourceExtensionWasmToolchain(
+            ok=True,
+            compiler_kind="clang",
+            tools=tools,
+            wasi_sysroot=sysroot,
+            detail="deterministic producer fixture tool family",
+        ),
+    )
     _install_extension_object_symbol_facts(
         monkeypatch,
         default_init_symbol="PyInit_demoext",

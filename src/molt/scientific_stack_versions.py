@@ -92,6 +92,17 @@ def _require_exact_keys(
         )
 
 
+def _table(value: object, *, field: str, path: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: {field} must be a table")
+    table: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{path}: {field} keys must be strings")
+        table[key] = item
+    return table
+
+
 def _string(value: Any, *, field: str, path: Path) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"{path}: {field} must be a canonical non-empty string")
@@ -233,9 +244,7 @@ def load_verified_support_matrix(
     registry = load_source_extension_registry(
         _registry_path(payload.get("source_extension_registry"), path=path)
     )
-    selection = payload.get("selection")
-    if not isinstance(selection, dict):
-        raise ValueError(f"{path}: [selection] table is required")
+    selection = _table(payload.get("selection"), field="[selection]", path=path)
     _require_exact_keys(
         selection,
         expected={"numpy", "scipy", "cpython"},
@@ -253,9 +262,8 @@ def load_verified_support_matrix(
     entries: list[ScientificStackVersion] = []
     seen: set[tuple[str, str, str]] = set()
     for index, raw in enumerate(raw_entries):
-        if not isinstance(raw, dict):
-            raise ValueError(f"{path}: verified[{index}] must be a table")
-        entry = _scientific_entry(raw, index=index, path=path, registry=registry)
+        table = _table(raw, field=f"verified[{index}]", path=path)
+        entry = _scientific_entry(table, index=index, path=path, registry=registry)
         key = (entry.numpy, entry.scipy, entry.cpython)
         if key in seen:
             raise ValueError(f"{path}: duplicate verified tuple {entry.tuple_label}")

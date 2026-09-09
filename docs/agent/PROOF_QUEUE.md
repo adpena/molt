@@ -156,6 +156,16 @@ the separately verified `RUNNER_TOOL_CACHE` and still reject `D:`; other hosted
 platforms use the per-run custody root. Outside that verified contract, a `D:`
 checkout still fails closed exactly as local policy requires.
 
+Deterministic child environments retain `CI`, `RUNNER_TEMP`, `RUNNER_OS`,
+`RUNNER_ARCH`, and the GitHub facts needed to revalidate that contract; filtering
+them out must not silently turn an admitted runner into an unowned local path.
+The guarded command's working directory is separate from its Molt source
+authority. Staged packages and standalone Cargo projects use the guard tools
+belonging to the loaded Molt checkout, not tools discovered in the command
+directory. A foreign preloaded guard or guard dependency fails before launch;
+it is never replaced while it may hold live process custody. An installed package
+without the owning source guard tools reports that requirement explicitly.
+
 `C:\Molt` is the artifact and warm-checkout tier, not a disposable cold-clone or
 backup treadmill. Create a new `C:\Molt\worktrees\...` checkout only for real
 isolation from dirty WIP or branch surgery; for read-only doc/status checks
@@ -703,6 +713,11 @@ refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
 Molt runtime invalid-object-header aborts, quiet running pytest rows with missing
 current-test custody markers, non-final memory-guard summaries on terminal
 rows, and memory-guard orphan cleanup.
+Command-envelope, environment-override, and launch-prefix refusals share
+`queue-policy-rejection`, retaining the actual rejection line rather than a
+generic terminal footer. They report operator policy evidence, not an executed
+product failure. Cold single-test Cargo rejection retains its more specific
+diagnostic and batching guidance.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 

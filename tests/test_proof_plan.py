@@ -241,7 +241,9 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     ]
 
 
-def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> None:
+def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership() -> (
+    None
+):
     commands = {command.id: command for command in PLAN.commands}
     core = commands["rust.test.ir-wasm-runtime-authorities"]
     complement = commands["rust.test.compiler-authorities"]
@@ -1858,6 +1860,29 @@ def test_executor_refuses_uncommitted_source_attestation(
     with pytest.raises(ValueError, match="clean source tree"):
         proof_plan.execute_commands(PLAN, (command,), tmp_path / "receipt.json")
     assert not (tmp_path / "receipt.json").exists()
+
+
+def test_executor_preflight_error_is_visible_and_receipted(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+
+    def reject_toolchain(_plan, _names):
+        raise ValueError("toolchain contract violation: node version mismatch")
+
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", reject_toolchain)
+    command = next(
+        command for command in PLAN.commands if command.id == "python.static.ty"
+    )
+    receipt_path = tmp_path / "preflight.json"
+    assert proof_plan.execute_commands(PLAN, (command,), receipt_path) == 2
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["commands"] == []
+    assert receipt["status"] == "failure"
+    message = capsys.readouterr().err
+    assert "stage=toolchain-preflight executed=0" in message
+    assert receipt["errors"][0] in message
+    assert str(receipt_path) in message
 
 
 def test_executor_rejects_source_mutation_during_partition(
