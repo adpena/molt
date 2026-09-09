@@ -758,6 +758,29 @@ def _molt_runtime_namespace_symbol(symbol: str) -> bool:
     return symbol.startswith(("molt_", "__molt"))
 
 
+def _archive_provider_candidate_symbols(
+    manifest: Mapping[str, Any],
+) -> frozenset[str]:
+    """Return only undefined symbols whose authority may be a toolchain archive.
+
+    Generated link imports and runtime ABI names are classified without reading
+    the host sysroot. Unknown Molt-runtime names must reach the ABI board's
+    generated-authority rejection; an installed archive may not reclassify them.
+    """
+
+    defined_symbols = set(_manifest_object_closure_defined_symbols(manifest))
+    runtime_backed_symbols = _wasm_runtime_backed_abi_symbols()
+    return frozenset(
+        symbol
+        for symbol in _manifest_object_closure_undefined_symbols(manifest)
+        if not is_c_api_symbol(symbol)
+        and symbol not in defined_symbols
+        and symbol not in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+        and symbol not in runtime_backed_symbols
+        and not _molt_runtime_namespace_symbol(symbol)
+    )
+
+
 def _object_closure_abi_symbol_board(
     manifest: Mapping[str, Any],
     *,
@@ -1074,10 +1097,12 @@ def _validate_external_package_native_artifact(
         )
     )
     if artifact_kind == "wasm_relocatable_object":
-        external_link_classes = {
-            **wasm_external_link_provider_symbol_classes(target_triple),
-            **WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-        }
+        external_link_classes = dict(WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES)
+        if _archive_provider_candidate_symbols(manifest):
+            external_link_classes = {
+                **wasm_external_link_provider_symbol_classes(target_triple),
+                **external_link_classes,
+            }
         abi_symbols, abi_symbol_errors = _object_closure_abi_symbol_board(
             manifest,
             external_link_classes=external_link_classes,

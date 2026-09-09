@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 
 from molt.cli import backend_cache
 from molt.cli import llvm_wasi_tools
 from molt.cli import source_extension_target
 from molt.cli import source_extension_toolchain
+from molt import llvm_toolchain
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 import pytest
 
@@ -728,3 +730,211 @@ def test_backend_symbol_reader_consumes_canonical_nm_authority(
         str(Path("/usr/bin/nm")),
     ]
     assert seen == [("nm", True)]
+
+
+def test_wasm_symbol_reader_consumes_only_verified_llvm_nm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+    monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
+    calls: list[list[str]] = []
+    verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
+    verified_nm.parent.mkdir(parents=True)
+    verified_nm.write_bytes(b"tool")
+    executable_identity = backend_cache.stable_regular_file_identity(
+        verified_nm, label="test llvm-nm"
+    )
+    monkeypatch.setattr(
+        backend_cache,
+        "verify_wasm_llvm_nm",
+        lambda _root, *, environ: llvm_toolchain.WasmLlvmNmVerification(
+            path=verified_nm,
+            fact=llvm_toolchain.LlvmToolVersionFact(
+                "llvm-nm", "bin/llvm-nm", "22.1.8", 7, "a" * 64
+            ),
+            executable_identity=executable_identity,
+        ),
+    )
+    monkeypatch.setattr(
+        backend_cache,
+        "_run_completed_command",
+        lambda argv, **_kwargs: (
+            calls.append(argv)
+            or subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
+        ),
+    )
+
+    facts = backend_cache._read_native_global_symbol_facts(
+        Path("libc.a"), timeout=1, target_triple="wasm32-wasip1"
+    )
+    assert facts.defined == {"provider"}
+    assert [call[0] for call in calls] == [str(verified_nm)]
+
+
+def test_wasm_symbol_reader_warm_verification_recaptures_retargeted_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+    alias = tmp_path / "bin" / "llvm-nm"
+    first = tmp_path / "tool-generations" / "llvm-nm-first"
+    second = tmp_path / "tool-generations" / "llvm-nm-second"
+    alias.parent.mkdir(parents=True)
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"generation-a")
+    second.write_bytes(b"generation-b")
+    try:
+        alias.symlink_to(first)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+    calls: list[Path] = []
+
+    def verify(_root, *, environ):
+        del environ
+        identity = backend_cache.stable_regular_file_identity(
+            alias.resolve(strict=True),
+            label="test llvm-nm generation",
+        )
+        calls.append(identity.path)
+        return llvm_toolchain.WasmLlvmNmVerification(
+            path=alias,
+            fact=llvm_toolchain.LlvmToolVersionFact(
+                "llvm-nm",
+                "external:llvm-nm",
+                "22.1.8",
+                identity.size,
+                identity.sha256,
+            ),
+            executable_identity=identity,
+        )
+
+    monkeypatch.setattr(backend_cache, "verify_wasm_llvm_nm", verify)
+    environment = {"MOLT_LLVM_NM": str(alias), "PATH": ""}
+    initial = backend_cache._verified_wasm_llvm_nm(environment)
+
+    alias.unlink()
+    alias.symlink_to(second)
+    refreshed = backend_cache._verified_wasm_llvm_nm(environment)
+
+    assert initial.executable_identity.path == first.absolute()
+    assert refreshed.executable_identity.path == second.absolute()
+    assert calls == [first.absolute(), second.absolute()]
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+
+
+def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+    monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
+    artifact = tmp_path / "libc.a"
+    artifact.write_bytes(b"archive")
+    verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
+    verified_nm.parent.mkdir(parents=True)
+    verified_nm.write_bytes(b"tool")
+    executable_identity = backend_cache.stable_regular_file_identity(
+        verified_nm, label="test llvm-nm"
+    )
+    monkeypatch.setattr(
+        backend_cache, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    reader_digest = "a" * 64
+
+    def verify(_root, *, environ):
+        return llvm_toolchain.WasmLlvmNmVerification(
+            path=verified_nm,
+            fact=llvm_toolchain.LlvmToolVersionFact(
+                "llvm-nm", "bin/llvm-nm", "22.1.8", 7, reader_digest
+            ),
+            executable_identity=executable_identity,
+        )
+
+    monkeypatch.setattr(backend_cache, "verify_wasm_llvm_nm", verify)
+    monkeypatch.setattr(
+        backend_cache,
+        "_read_native_global_symbol_facts",
+        lambda *_args, **_kwargs: backend_cache._NativeGlobalSymbolFacts(
+            frozenset({"provider"}), frozenset(), frozenset({"provider"})
+        ),
+    )
+
+    backend_cache._native_archive_global_symbol_facts(
+        artifact, target_triple="wasm32-wasip1"
+    )
+    first = next(iter(backend_cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE))
+    assert first[8][-3:] == ("22.1.8", "a" * 64, "")
+
+    backend_cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    reader_digest = "b" * 64
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+    backend_cache._native_archive_global_symbol_facts(
+        artifact, target_triple="wasm32-wasip1"
+    )
+    second = next(iter(backend_cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE))
+    assert first != second
+
+
+def test_wasm_symbol_reader_rejects_tool_replacement_during_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_cache._cached_wasm_llvm_nm_verification.cache_clear()
+    monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
+    verified_nm = tmp_path / "llvm-nm"
+    verified_nm.write_bytes(b"generation-a")
+    executable_identity = backend_cache.stable_regular_file_identity(
+        verified_nm, label="test llvm-nm"
+    )
+    monkeypatch.setattr(
+        backend_cache,
+        "verify_wasm_llvm_nm",
+        lambda _root, *, environ: llvm_toolchain.WasmLlvmNmVerification(
+            path=verified_nm,
+            fact=llvm_toolchain.LlvmToolVersionFact(
+                "llvm-nm", "external:llvm-nm", "22.1.8", 12, "a" * 64
+            ),
+            executable_identity=executable_identity,
+        ),
+    )
+
+    def replace_reader(argv, **_kwargs):
+        verified_nm.write_bytes(b"generation-b")
+        return subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
+
+    monkeypatch.setattr(backend_cache, "_run_completed_command", replace_reader)
+
+    with pytest.raises(
+        backend_cache.NativeSymbolInspectionError,
+        match="verified symbol reader changed during symbol inspection",
+    ):
+        backend_cache._read_native_global_symbol_facts(
+            tmp_path / "libc.a",
+            timeout=1,
+            target_triple="wasm32-wasip1",
+        )
+
+
+def test_native_symbol_reader_rejects_tool_replacement_during_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_cache._cached_symbol_reader_entrypoint_identity.cache_clear()
+    native_nm = tmp_path / "nm"
+    native_nm.write_bytes(b"generation-a")
+    monkeypatch.setattr(
+        backend_cache, "_nm_candidate_binaries", lambda: [str(native_nm)]
+    )
+
+    def replace_reader(argv, **_kwargs):
+        native_nm.write_bytes(b"generation-b")
+        return subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
+
+    monkeypatch.setattr(backend_cache, "_run_completed_command", replace_reader)
+
+    with pytest.raises(
+        backend_cache.NativeSymbolInspectionError,
+        match="verified symbol reader changed during symbol inspection",
+    ):
+        backend_cache._read_native_global_symbol_facts(
+            tmp_path / "native.a",
+            timeout=1,
+        )

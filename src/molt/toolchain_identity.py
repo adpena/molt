@@ -639,12 +639,22 @@ def read_stable_regular_file(
 
 @contextmanager
 def stable_executable_probe(
-    path: Path, *, label: str
+    path: Path,
+    *,
+    label: str,
+    identity: StableRegularFileIdentity | None = None,
 ) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
-    """Bind a probe's lexical entrypoint and content generation across execution."""
+    """Bind a probe to a cold-captured or already-attested executable generation."""
     entrypoint, resolved = _executable_paths(path, label=label)
     before_entry = _stat_identity(entrypoint.lstat())
-    identity = stable_regular_file_identity(resolved, label=label)
+    if identity is None:
+        identity = stable_regular_file_identity(resolved, label=label)
+    else:
+        if resolved != identity.path:
+            raise StableRegularFileChangedError(
+                f"{label} entrypoint resolves to a different generation: {entrypoint}"
+            )
+        verify_stable_regular_file_identity(identity, label=label)
     try:
         yield entrypoint, identity
     finally:

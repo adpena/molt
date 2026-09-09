@@ -290,8 +290,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         class Collector(PythonLexicalScopeVisitor):
             found = False
 
-            def visit_AnnAssign(self, annotation: ast.AnnAssign) -> None:
-                if isinstance(annotation.target, ast.Name) and annotation.simple:
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                if isinstance(node.target, ast.Name) and node.simple:
                     self.found = True
 
         collector = Collector(eager_annotations=self.eager_annotations)

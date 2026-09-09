@@ -887,7 +887,7 @@ class CallNamedDispatchMixin(_MixinBase):
                     )
                     return res
                 # Constructor diagnostics follow ordinary argument evaluation.
-                return self._emit_dynamic_call(node)
+                return CALL_NOT_HANDLED
             if func_id == "classmethod":
                 if len(node.args) != 1 or node.keywords:
                     raise FrontendRejection(

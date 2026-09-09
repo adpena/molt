@@ -6412,6 +6412,27 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
     ]
 
 
+def test_archive_provider_candidate_authority_excludes_non_provider_classes() -> None:
+    manifest = {
+        "object_closure": {
+            "defined_symbols": ["project_owned"],
+            "undefined_symbols": [
+                "PyLong_FromLong",
+                "project_owned",
+                "molt_capi_semantic_type",
+                "molt_alloc",
+                "molt_future_magic",
+                "__molt_future_magic",
+                "malloc",
+            ],
+        }
+    }
+
+    assert cli_external_native._archive_provider_candidate_symbols(manifest) == {
+        "malloc"
+    }
+
+
 def test_external_native_artifact_plan_records_external_link_symbol_board(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6516,7 +6537,15 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
 
 def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: pytest.fail(
+            "generated external-link symbols must not inspect provider archives"
+        ),
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
@@ -6621,7 +6650,15 @@ def test_external_native_artifact_plan_rejects_package_native_symbol_without_own
 
 def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: pytest.fail(
+            "generated runtime symbols must not inspect provider archives"
+        ),
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
@@ -6662,7 +6699,15 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
 
 def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: pytest.fail(
+            "unknown Molt runtime symbols must reach generated-ABI rejection"
+        ),
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,

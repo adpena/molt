@@ -40,7 +40,7 @@ PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v4"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
 _NATIVE_DEPENDENCY_POLICIES = {
     "windows": "pe-loaded-import-closure-v2",
-    "macos": "mach-o-loaded-dylib-closure-v2",
+    "macos": "mach-o-loaded-dylib-closure-v3",
     "linux": "elf-loaded-needed-closure-v2",
 }
 _RUNTIME_IDENTITY_FIELDS = frozenset(
@@ -821,12 +821,13 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     component_ids: set[str] = set()
     component_roles: set[str] = set()
     filenames: set[str] = set()
+    component_keys: set[tuple[str, int]] = set()
     role_nodes = {
         str(row["role"]): row["node"]
         for row in cast(list[Mapping[str, object]], explicit)
     }
     expected_roots: list[str] = []
-    prior_filename = ""
+    prior_component_key = ("", -1)
     for index, raw_component in enumerate(components):
         if not isinstance(raw_component, Mapping):
             raise PythonEnvironmentIdentityError(
@@ -841,16 +842,24 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             if isinstance(filename, str) and payload["operating_system"] == "windows"
             else filename
         )
+        node = component.get("node")
+        node_index = (
+            int(node.removeprefix("file-node-"))
+            if isinstance(node, str) and node in nodes_by_id
+            else -1
+        )
+        component_key = (str(filename_key), node_index)
         if (
             set(component) != {"id", "filename", "node", "roles"}
             or component_id != f"native-component-{index}"
             or not isinstance(filename, str)
             or not filename
             or any(separator in filename for separator in ("/", "\\", "\0"))
-            or str(filename_key) < prior_filename
-            or filename_key in filenames
-            or not isinstance(component.get("node"), str)
-            or component.get("node") not in nodes_by_id
+            or component_key < prior_component_key
+            or component_key in component_keys
+            or (payload["operating_system"] != "macos" and filename_key in filenames)
+            or not isinstance(node, str)
+            or node not in nodes_by_id
             or not isinstance(roles, list)
             or not all(isinstance(role, str) for role in roles)
             or roles != sorted(set(roles))
@@ -861,7 +870,8 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             raise PythonEnvironmentIdentityError(
                 "Python runtime native dependency component is invalid"
             )
-        prior_filename = str(filename_key)
+        prior_component_key = component_key
+        component_keys.add(component_key)
         filenames.add(str(filename_key))
         component_ids.add(str(component_id))
         component_roles.update(cast(list[str], roles))

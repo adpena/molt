@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from pathlib import Path
 from typing import Any
 
@@ -58,13 +59,20 @@ def test_run_cli_test_process_preserves_check_semantics(monkeypatch) -> None:
         raise AssertionError("expected CalledProcessError")
 
 
-def test_cli_test_popen_kwargs_applies_child_rlimit(monkeypatch) -> None:
+def test_cli_test_popen_kwargs_applies_platform_process_containment(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("MOLT_CLI_TEST_MAX_PROCESS_RSS_GB", "1")
 
     kwargs = process_guard.cli_test_popen_kwargs({"MOLT_CLI_TEST_MEMORY_GUARD": "1"})
 
-    assert kwargs.get("start_new_session") is True
-    assert callable(kwargs.get("preexec_fn"))
+    if os.name == "nt":
+        assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert "preexec_fn" not in kwargs
+        assert "start_new_session" not in kwargs
+    else:
+        assert kwargs.get("start_new_session") is True
+        assert callable(kwargs.get("preexec_fn"))
 
 
 def test_guarded_cli_test_popen_enters_memory_guard_wrapper(

@@ -206,13 +206,13 @@ def class_body_functions(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
 
     class Collector(PythonLexicalScopeVisitor):
-        def visit_FunctionDef(self, child: ast.FunctionDef) -> None:
-            functions.append(child)
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            functions.append(node)
 
-        def visit_AsyncFunctionDef(self, child: ast.AsyncFunctionDef) -> None:
-            functions.append(child)
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            functions.append(node)
 
-        def visit_ClassDef(self, child: ast.ClassDef) -> None:
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
             return
 
     collector = Collector(eager_annotations=False)
@@ -238,9 +238,9 @@ def class_annotation_syntax_error(
         annotation_scope = False
         error: tuple[ast.AST, str] | None = None
 
-        def visit(self, child: ast.AST) -> None:
+        def visit(self, node: ast.AST) -> None:
             if self.error is None:
-                super().visit(child)
+                super().visit(node)
 
         def _region(
             self, children: Sequence[ast.AST], *, class_visible: bool, annotation: bool
@@ -251,12 +251,12 @@ def class_annotation_syntax_error(
                 self.visit(child)
             self.class_visible, self.annotation_scope = saved
 
-        def _visit_definition_header(self, child: LexicalDefinitionNode) -> None:
+        def _visit_definition_header(self, node: LexicalDefinitionNode) -> None:
             if (
                 self.class_visible
                 and self.annotation_scope
                 and isinstance(
-                    child,
+                    node,
                     (
                         ast.Lambda,
                         ast.ListComp,
@@ -266,14 +266,14 @@ def class_annotation_syntax_error(
                     ),
                 )
             ):
-                kind = "lambda" if isinstance(child, ast.Lambda) else "comprehension"
+                kind = "lambda" if isinstance(node, ast.Lambda) else "comprehension"
                 self.error = (
-                    child,
+                    node,
                     f"Cannot use {kind} in annotation scope within class scope",
                 )
                 return
             regions = definition_lexical_regions(
-                child, eager_annotations=True, future_annotations=future_annotations
+                node, eager_annotations=True, future_annotations=future_annotations
             )
             for expression in regions.enclosing:
                 self.visit(expression)
@@ -284,17 +284,17 @@ def class_annotation_syntax_error(
                 regions.body, class_visible=regions.kind == "class", annotation=False
             )
 
-        def visit_ListComp(self, child: ast.ListComp) -> None:
-            self._visit_definition_header(child)
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            self._visit_definition_header(node)
 
-        def visit_SetComp(self, child: ast.SetComp) -> None:
-            self._visit_definition_header(child)
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            self._visit_definition_header(node)
 
-        def visit_DictComp(self, child: ast.DictComp) -> None:
-            self._visit_definition_header(child)
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            self._visit_definition_header(node)
 
-        def visit_GeneratorExp(self, child: ast.GeneratorExp) -> None:
-            self._visit_definition_header(child)
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self._visit_definition_header(node)
 
     validator = Validator(eager_annotations=not future_annotations)
     validator.visit(node)

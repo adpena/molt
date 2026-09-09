@@ -52,7 +52,7 @@ runs:
         sudo "$installer" "$LLVM_MAJOR"
         case "$LLVM_PROFILE" in
           full) read -r -a packages <<< "$LLVM_APT_PACKAGES" ;;
-          wasm) packages=("lld-$LLVM_MAJOR") ;;
+          wasm) packages=("llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR") ;;
           *) printf 'unsupported LLVM SDK profile: %s\n' "$LLVM_PROFILE" >&2; exit 2 ;;
         esac
         sudo apt-get install -y "${packages[@]}"

@@ -3,16 +3,19 @@
 Runtime roots and the complete observed loaded-image census are attested here.
 Mandatory imports must resolve within that census or explicit virtual OS
 contracts. Optional declarations are retained, never inferred to be bound from
-a matching basename. This snapshot does not attest future loader selections,
-unloaded extension dependencies, or resolve rpaths. Later loads need readmission.
+a matching basename. Importer-local Mach-O run paths are resolved exactly;
+inherited dyld run-path stacks are not inferred. This snapshot does not attest
+future loader selections or unloaded extension dependencies. Later loads need
+readmission.
 """
 
 from __future__ import annotations
 
+import os
 import struct
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from molt.exact_json import canonical_json_sha256
@@ -31,6 +34,7 @@ from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_native_locations import (
     _loaded_native_module_paths,
     _loader_name,
+    _macos_dyld_cache_contract,
     _native_contract_valid,
 )
 
@@ -267,9 +271,9 @@ def _elf_dependencies(
     return tuple(NativeDependency(name, "required") for name in sorted(names))
 
 
-def _macho_dependencies(
+def _macho_load_commands(
     data: bytes, *, architecture: str | None = None
-) -> tuple[NativeDependency, ...]:
+) -> tuple[str, tuple[tuple[int, int, int], ...]]:
     header = _dependency_header(data, "macos", architecture)
     metadata = header.metadata
     assert isinstance(metadata, MachOHeader)
@@ -277,6 +281,49 @@ def _macho_dependencies(
     command_count = metadata.command_count
     offset = header.offset + metadata.header_size
     limit = offset + metadata.command_bytes
+    commands: list[tuple[int, int, int]] = []
+    for _index in range(command_count):
+        if offset + 8 > limit:
+            raise PythonEnvironmentIdentityError(
+                "loaded macOS dependency has a truncated load command"
+            )
+        command, size = struct.unpack_from(endian + "II", data, offset)
+        if size < 8 or offset + size > limit:
+            raise PythonEnvironmentIdentityError(
+                "loaded macOS dependency has an invalid load command"
+            )
+        commands.append((command & 0x7FFFFFFF, offset, size))
+        offset += size
+    if offset != limit:
+        raise PythonEnvironmentIdentityError(
+            "Mach-O load-command count/extent disagree"
+        )
+    return endian, tuple(commands)
+
+
+def _macho_command_string(
+    data: bytes, *, offset: int, size: int, minimum_offset: int, label: str, endian: str
+) -> str:
+    if size < minimum_offset:
+        raise PythonEnvironmentIdentityError(f"Mach-O {label} is truncated")
+    name_offset = struct.unpack_from(endian + "I", data, offset + 8)[0]
+    start = offset + name_offset
+    end = data.find(b"\0", start, offset + size)
+    if name_offset < minimum_offset or end < 0:
+        raise PythonEnvironmentIdentityError(f"Mach-O {label} is invalid")
+    try:
+        value = data[start:end].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PythonEnvironmentIdentityError(f"Mach-O {label} is not UTF-8") from exc
+    if not value:
+        raise PythonEnvironmentIdentityError(f"Mach-O {label} is empty")
+    return value
+
+
+def _macho_dependencies(
+    data: bytes, *, architecture: str | None = None
+) -> tuple[NativeDependency, ...]:
+    endian, commands = _macho_load_commands(data, architecture=architecture)
     dylib_commands: dict[int, DependencyKind] = {
         0xC: "required",
         0x18: "weak",
@@ -285,44 +332,117 @@ def _macho_dependencies(
         0x23: "upward",
     }
     dependencies: set[NativeDependency] = set()
-    for _index in range(command_count):
-        if offset + 8 > limit:
-            raise PythonEnvironmentIdentityError(
-                "loaded macOS dependency has a truncated load command"
-            )
-        command, size = struct.unpack_from(endian + "II", data, offset)
-        base_command = command & 0x7FFFFFFF
-        if size < 8 or offset + size > limit:
-            raise PythonEnvironmentIdentityError(
-                "loaded macOS dependency has an invalid load command"
-            )
-        if base_command in dylib_commands:
+    for command, offset, size in commands:
+        if command in dylib_commands:
             if size < 24:
                 raise PythonEnvironmentIdentityError(
                     "Mach-O dylib command is truncated"
                 )
-            name_offset = struct.unpack_from(endian + "I", data, offset + 8)[0]
-            start = offset + name_offset
-            end = data.find(b"\0", start, offset + size)
-            if name_offset < 24 or end < 0:
-                raise PythonEnvironmentIdentityError(
-                    "Mach-O dependency name is invalid"
-                )
-            try:
-                name = data[start:end].decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise PythonEnvironmentIdentityError(
-                    "Mach-O dependency name is not UTF-8"
-                ) from exc
-            if not name:
-                raise PythonEnvironmentIdentityError("Mach-O dependency name is empty")
-            dependencies.add(NativeDependency(name, dylib_commands[base_command]))
-        offset += size
-    if offset != limit:
-        raise PythonEnvironmentIdentityError(
-            "Mach-O load-command count/extent disagree"
-        )
+            name = _macho_command_string(
+                data,
+                offset=offset,
+                size=size,
+                minimum_offset=24,
+                label="dependency name",
+                endian=endian,
+            )
+            dependencies.add(NativeDependency(name, dylib_commands[command]))
     return tuple(sorted(dependencies))
+
+
+def _macho_rpaths(data: bytes, *, architecture: str | None = None) -> tuple[str, ...]:
+    endian, commands = _macho_load_commands(data, architecture=architecture)
+    rpaths = {
+        _macho_command_string(
+            data,
+            offset=offset,
+            size=size,
+            minimum_offset=12,
+            label="LC_RPATH value",
+            endian=endian,
+        )
+        for command, offset, size in commands
+        if command == 0x1C
+    }
+    return tuple(sorted(rpaths))
+
+
+def _resolve_macos_loaded_dependency(
+    dependency: str,
+    *,
+    importer: Path,
+    rpaths: Sequence[str],
+    executable: Path,
+    known_paths_by_object: Mapping[tuple[int, int], Path],
+) -> Path | None:
+    """Resolve direct and importer-local dyld scopes against the loaded census."""
+
+    def scoped_path(value: str, *, loader: Path) -> Path | None:
+        if value == "@loader_path":
+            return loader.parent
+        if value.startswith("@loader_path/"):
+            return loader.parent / value.removeprefix("@loader_path/")
+        if value == "@executable_path":
+            return executable.parent
+        if value.startswith("@executable_path/"):
+            return executable.parent / value.removeprefix("@executable_path/")
+        if PurePosixPath(value).is_absolute():
+            return Path(value)
+        return None
+
+    declared: list[Path] = []
+    if dependency.startswith("@rpath/"):
+        suffix = dependency.removeprefix("@rpath/")
+        for rpath in rpaths:
+            root = scoped_path(rpath, loader=importer)
+            if root is None:
+                raise PythonEnvironmentIdentityError(
+                    f"unsupported Mach-O LC_RPATH {rpath!r} in {importer.name}"
+                )
+            declared.append(root / suffix)
+    else:
+        direct = scoped_path(dependency, loader=importer)
+        if direct is None:
+            raise PythonEnvironmentIdentityError(
+                f"unsupported Mach-O dependency install name {dependency!r}"
+            )
+        declared.append(direct)
+    matches: set[Path] = set()
+    for candidate in declared:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        metadata = resolved.stat()
+        loaded = known_paths_by_object.get((metadata.st_dev, metadata.st_ino))
+        if loaded is not None:
+            matches.add(loaded)
+    if len(matches) > 1:
+        raise PythonEnvironmentIdentityError(
+            "loaded native dependency closure has ambiguous dyld binding "
+            f"{dependency!r} required by {importer.name}"
+        )
+    if dependency.startswith("@rpath/") and not matches:
+        raise PythonEnvironmentIdentityError(
+            "loaded native dependency closure cannot attest importer-local "
+            f"dyld binding {dependency!r} required by {importer.name}; "
+            "inherited run-path stacks are unsupported"
+        )
+    return next(iter(matches), None)
+
+
+def _loaded_path_object_index(paths: Iterable[Path]) -> dict[tuple[int, int], Path]:
+    """Index the observed census once by stable filesystem object identity."""
+
+    by_object: dict[tuple[int, int], Path] = {}
+    for path in sorted(paths, key=os.fspath):
+        metadata = path.stat()
+        if not metadata.st_ino:
+            raise PythonEnvironmentIdentityError(
+                f"loaded native image has no stable object identity: {path}"
+            )
+        by_object.setdefault((metadata.st_dev, metadata.st_ino), path)
+    return by_object
 
 
 def _native_dependencies(
@@ -351,38 +471,61 @@ def _native_dependency_closure(
         operating_system
     )
     by_name: dict[str, Path] = dict(loader_aliases)
-    for path in loaded:
-        key = _loader_name(path.name, operating_system)
-        prior = by_name.get(key)
-        if prior is not None and not path.samefile(prior):
-            raise PythonEnvironmentIdentityError(
-                f"loaded native modules have an ambiguous basename: {path.name}"
-            )
-        by_name[key] = path
+    if operating_system != "macos":
+        for path in loaded:
+            key = _loader_name(path.name, operating_system)
+            prior = by_name.get(key)
+            if prior is not None and not path.samefile(prior):
+                raise PythonEnvironmentIdentityError(
+                    f"loaded native modules have an ambiguous basename: {path.name}"
+                )
+            by_name[key] = path
     roles_by_path: dict[Path, set[str]] = {}
     for role, path in roots.items():
         canonical = path.resolve(strict=True)
         roles_by_path.setdefault(canonical, set()).add(role)
-        root_name = _loader_name(canonical.name, operating_system)
-        prior = by_name.get(root_name)
-        if prior is not None and not canonical.samefile(prior):
-            raise PythonEnvironmentIdentityError(
-                f"runtime root has an ambiguous loader name: {canonical.name}"
-            )
-        by_name[root_name] = canonical
+        if operating_system != "macos":
+            root_name = _loader_name(canonical.name, operating_system)
+            prior = by_name.get(root_name)
+            if prior is not None and not canonical.samefile(prior):
+                raise PythonEnvironmentIdentityError(
+                    f"runtime root has an ambiguous loader name: {canonical.name}"
+                )
+            by_name[root_name] = canonical
+
+    observed_paths = {path.resolve(strict=True) for path in loaded}
+    known_paths = observed_paths | set(roles_by_path)
+    macos_executable = next(
+        (path for path, roles in roles_by_path.items() if "base-executable" in roles),
+        None,
+    )
+    macos_paths_by_object = (
+        _loaded_path_object_index(known_paths) if operating_system == "macos" else {}
+    )
+    if operating_system == "macos" and macos_executable is None:
+        raise PythonEnvironmentIdentityError(
+            "macOS native dependency closure has no base executable scope"
+        )
+
+    def image_key(path: Path) -> str:
+        return (
+            os.fspath(path)
+            if operating_system == "macos"
+            else _loader_name(path.name, operating_system)
+        )
+
     discovered: dict[str, Path] = {}
     nodes: dict[str, str] = {}
     contracts: set[str] = set(loader_contracts)
     raw_edges: set[tuple[str, str]] = set()
     deferred: set[tuple[str, NativeDependency]] = set()
-    observed_paths = {path.resolve(strict=True) for path in loaded}
     pending = sorted(
-        observed_paths | set(roles_by_path),
-        key=lambda path: _loader_name(path.name, operating_system),
+        known_paths,
+        key=image_key,
     )
     while pending:
         path = pending.pop()
-        name = _loader_name(path.name, operating_system)
+        name = image_key(path)
         if name in discovered:
             continue
         metadata = path.lstat()
@@ -390,6 +533,11 @@ def _native_dependency_closure(
         data = pool.read_bound(node, label="loaded native dependency")
         nodes[name] = node
         discovered[name] = path
+        rpaths = (
+            _macho_rpaths(data, architecture=architecture)
+            if operating_system == "macos"
+            else ()
+        )
         dependencies = _native_dependencies(
             data, operating_system, architecture=architecture
         )
@@ -402,7 +550,18 @@ def _native_dependency_closure(
                 continue
             dependency = declaration.name
             dependency_key = _loader_name(Path(dependency).name, operating_system)
-            target = by_name.get(dependency_key)
+            if operating_system == "macos":
+                if macos_executable is None:
+                    raise AssertionError("validated macOS executable scope is absent")
+                target = _resolve_macos_loaded_dependency(
+                    dependency,
+                    importer=path,
+                    rpaths=rpaths,
+                    executable=macos_executable,
+                    known_paths_by_object=macos_paths_by_object,
+                )
+            else:
+                target = by_name.get(dependency_key)
             contract: str | None = None
             if (
                 target is None
@@ -413,13 +572,23 @@ def _native_dependency_closure(
             ):
                 contract = f"windows-api-set:{dependency_key}"
             elif target is None:
-                contract = next(
-                    (
-                        value
-                        for value in loader_contracts
-                        if value.partition(":")[2] == dependency_key
-                    ),
-                    None,
+                exact_macos_contract = (
+                    _macos_dyld_cache_contract(dependency)
+                    if operating_system == "macos"
+                    else None
+                )
+                contract = (
+                    exact_macos_contract
+                    if exact_macos_contract in loader_contracts
+                    else next(
+                        (
+                            value
+                            for value in loader_contracts
+                            if operating_system != "macos"
+                            and value.partition(":")[2] == dependency_key
+                        ),
+                        None,
+                    )
                 )
             if target is None and contract is not None:
                 contracts.add(contract)
@@ -443,11 +612,17 @@ def _native_dependency_closure(
                     raise PythonEnvironmentIdentityError(
                         f"native dependency path disagrees with loaded image: {dependency}"
                     )
-            target_key = _loader_name(target.name, operating_system)
+            target_key = image_key(target)
             raw_edges.add((name, target_key))
             if target_key not in discovered:
                 pending.append(target)
-    ordered_names = sorted(discovered)
+    ordered_names = sorted(
+        discovered,
+        key=lambda name: (
+            _loader_name(discovered[name].name, operating_system),
+            int(nodes[name].removeprefix("file-node-")),
+        ),
+    )
     ids = {
         name: f"native-component-{index}" for index, name in enumerate(ordered_names)
     }

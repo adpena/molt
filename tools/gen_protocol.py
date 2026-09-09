@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import inspect
 import subprocess
 import sys
@@ -90,6 +91,7 @@ OUT_ATTRS = ROOT / "src/molt/frontend/_protocol_attrs.py"
 # by the scaffold; the rest are pulled in on demand from observed usage.
 _TYPING_NAMES = {
     "Any",
+    "AsyncIterator",
     "Callable",
     "ClassVar",
     "Collection",
@@ -115,6 +117,7 @@ _TYPE_CHECKING_IMPORTS = {
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
     "PythonBindingIndex": "molt.compiler_analysis.python_binding_facts",
     "PythonDependencyAuthority": "molt.compiler_analysis.python_lexical_scope",
+    "PythonFrameContextScope": "molt.frontend.lowering.function_lifecycle",
     "SemaResult": "molt.frontend.sema",
     "SerializationContext": "molt.frontend.lowering.serialization_context",
     "StaticTruthKwargs": "molt.compiler_analysis.static_truth",
@@ -215,10 +218,9 @@ def _render_method_stub(name: str, value: object) -> str | None:
     if func_node is None or func_node.name != name:
         return None
 
-    # Rebuild decorators from the *binding* (vars() value), not the AST: the AST
-    # decorator list can include project-specific decorators that are not part of
-    # the typing surface, while staticmethod/classmethod are reliably visible on
-    # the binding. We emit exactly the two binding decorators the Protocol needs.
+    # Binding decorators and contextlib wrappers change the callable contract.
+    # Resolve contextlib decorators by identity, including import aliases, so a
+    # generator method is not incorrectly projected as a bare Iterator.
     decorators: list[str] = []
     if isinstance(value, staticmethod):
         decorators.append("    @staticmethod")
@@ -226,6 +228,21 @@ def _render_method_stub(name: str, value: object) -> str | None:
         decorators.append("    @classmethod")
     elif isinstance(value, property):
         decorators.append("    @property")
+    namespace = getattr(inspect.unwrap(func), "__globals__", {})
+    for decorator in func_node.decorator_list:
+        binding = None
+        if isinstance(decorator, ast.Name):
+            binding = namespace.get(decorator.id)
+        elif (
+            isinstance(decorator, ast.Attribute)
+            and isinstance(decorator.value, ast.Name)
+            and namespace.get(decorator.value.id) is contextlib
+        ):
+            binding = getattr(contextlib, decorator.attr, None)
+        if binding is contextlib.contextmanager:
+            decorators.append("    @contextmanager")
+        elif binding is contextlib.asynccontextmanager:
+            decorators.append("    @asynccontextmanager")
 
     # Re-render the signature deterministically with ast.unparse, then strip the
     # body to ``...``. ast.unparse normalizes whitespace, giving stable diffs
@@ -723,6 +740,19 @@ def render_protocol_file(
         '"""\n\n'
     )
     extra = ["from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs"]
+    context_decorators = sorted(
+        {
+            decorator.id
+            for _, stub in methods
+            for node in ast.parse(textwrap.dedent(stub)).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for decorator in node.decorator_list
+            if isinstance(decorator, ast.Name)
+            and decorator.id in {"contextmanager", "asynccontextmanager"}
+        }
+    )
+    if context_decorators:
+        extra.append(f"from contextlib import {', '.join(context_decorators)}")
     imports = _render_import_block(
         typing_names, types_names, tc_lines, needs_ast, extra_imports=extra
     )

@@ -31,6 +31,7 @@ from typing import (
 )
 
 from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs
+from contextlib import contextmanager
 
 from molt.frontend._types import (
     ActiveException,
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleImportFlow
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
+    from molt.frontend.lowering.function_lifecycle import PythonFrameContextScope
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
     from molt.compiler_analysis.static_truth import StaticTruthKwargs
@@ -653,9 +655,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> bool: ...
 
     def _comprehension_requires_async(
-        self, generators: list[ast.comprehension], exprs: list[ast.AST | None]
+        self, generators: Sequence[ast.comprehension], exprs: Sequence[ast.AST | None]
     ) -> bool: ...
 
+    @contextmanager
     def _comprehension_scope(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
     ) -> Iterator[None]: ...
@@ -2593,6 +2596,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @staticmethod
     def _sum_add_result_hint(acc: MoltValue, value: MoltValue) -> str: ...
 
+    @contextmanager
     def _suppress_check_exception(self, *, emit_on_exit: bool = True) -> Any: ...
 
     def _sync_module_pressure_counts_from_funcs_map(self) -> None: ...

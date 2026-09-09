@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import stat
 from pathlib import Path
 
@@ -9,24 +8,13 @@ import pytest
 
 from molt.cli import atomic_io
 from molt import file_publication
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
 from molt.wasm_artifact import (
     _build_wasm_sections,
     _write_wasm_string,
     transform_wasm_publication_file,
 )
-
-
-def _digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _identity(kind: str, pair: dict[str, object]) -> RuntimeBuildIdentity:
-    payload = {"pair": pair, "member": {"kind": kind}}
-    return RuntimeBuildIdentity(_digest(payload), _digest(pair), payload)
+from tests.runtime_build_identity_helper import runtime_build_identity
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -85,12 +73,11 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     reloc = tmp_path / "molt_runtime_reloc.wasm"
     shared.write_bytes(b"shared")
     reloc.write_bytes(b"reloc")
-    pair = {"schema": "molt.runtime-build-pair.v2", "plan": "exact"}
     publish_runtime_wasm_generation(
         shared,
         reloc,
-        shared_identity=_identity("shared", pair),
-        reloc_identity=_identity("reloc", pair),
+        shared_identity=runtime_build_identity("shared", "atomic-publication"),
+        reloc_identity=runtime_build_identity("reloc", "atomic-publication"),
     )
     # Immutable shared+reloc members plus the atomic pair pointer. Internal
     # publication deliberately creates no fixed-name compatibility projections.

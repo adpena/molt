@@ -3510,27 +3510,28 @@ class _Analyzer:
         self, handler: ast.ExceptHandler, state_id: int, scope: _Scope
     ) -> PythonCompletionFlow[int]:
         effects = NO_EFFECTS
-        if handler.name:
+        exception_name = handler.name
+        if exception_name:
             state_id, effects = self._bind_name(
-                handler.name, OTHER_IDENTITY, state_id, scope
+                exception_name, OTHER_IDENTITY, state_id, scope
             )
         flow = self._normal_flow(state_id, effects).sequence(
             lambda normal: self.exec_statements(handler.body, normal, scope),
             join_states=self.states.join,
         )
-        if handler.name:
+        if exception_name:
 
             def clear_exception(incoming: int) -> PythonCompletionFlow[int]:
                 # CPython clears an exception target by storing None before
                 # deleting it, including when the handler already deleted it.
                 rebound, release_effects = self._bind_name(
-                    handler.name,
+                    exception_name,
                     exact_identity(PythonIdentity.INERT_VALUE),
                     incoming,
                     scope,
                 )
                 cleared, cleanup_effects = self.delete_target(
-                    ast.Name(id=handler.name, ctx=ast.Del()), rebound, scope
+                    ast.Name(id=exception_name, ctx=ast.Del()), rebound, scope
                 )
                 return self._normal_flow(cleared, release_effects | cleanup_effects)
 

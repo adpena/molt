@@ -36,31 +36,47 @@ GuardLoader = Callable[[Path | None], Any]
 
 
 def _molt_repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[2]
+    if (
+        not (root / "pyproject.toml").is_file()
+        or not (root / "tools" / "harness_memory_guard.py").is_file()
+    ):
+        raise RuntimeError(
+            "guarded execution requires the Molt source checkout owning "
+            f"{__file__}; its repository guard tools are unavailable"
+        )
+    return root
 
 
 def load_harness_memory_guard(cwd: Path | None) -> Any:
-    roots = [_molt_repo_root()]
-    if cwd is not None:
-        roots.append(cwd.resolve())
-    roots.append(Path.cwd().resolve())
-    seen: set[Path] = set()
-    for root in reversed(roots):
-        if root in seen:
-            continue
-        seen.add(root)
-        root_str = str(root)
-        tools_str = str(root / "tools")
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
-        if tools_str not in sys.path:
-            sys.path.insert(0, tools_str)
+    del cwd  # A command directory cannot authorize a different guard module.
+    root = _molt_repo_root()
+    for path in (root, root / "tools"):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
     try:
         from tools import harness_memory_guard
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             f"memory guard helper is required for guarded subprocesses: {exc}"
         ) from exc
+    # Never replace a live foreign guard: it may own processes and suppression
+    # state. Reject the mixed source authority before any child is launched.
+    for module, relative in (
+        (harness_memory_guard, "harness_memory_guard.py"),
+        (getattr(harness_memory_guard, "memory_guard", None), "memory_guard.py"),
+        (
+            getattr(harness_memory_guard, "process_sentinel", None),
+            "process_sentinel.py",
+        ),
+    ):
+        actual = getattr(module, "__file__", None)
+        expected = root / "tools" / relative
+        if actual is None or Path(actual).resolve() != expected.resolve():
+            raise RuntimeError(
+                f"guard source authority mismatch: expected {expected}, loaded {actual!r}; "
+                "use a fresh process bound to one Molt checkout"
+            )
     return harness_memory_guard
 
 
@@ -165,7 +181,10 @@ def run_completed_command(
     guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
         memory_guard_prefix,
         guard_env,
-        repo_root=(cwd_path or Path.cwd()),
+        # The command's working directory is not its Molt source authority:
+        # standalone Cargo workspaces and staged packages execute below or
+        # outside the checkout while retaining this loaded guard's owner.
+        repo_root=_molt_repo_root(),
     )
     capture_streams = capture_output or stdout is not None or stderr is not None
     result = guard_context.run(

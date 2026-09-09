@@ -1,10 +1,74 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from molt import process_guard
+
+
+def test_guard_loader_rejects_preloaded_foreign_module(monkeypatch, tmp_path):
+    import tools
+
+    foreign = SimpleNamespace(
+        __file__=str(tmp_path / "tools" / "harness_memory_guard.py")
+    )
+    monkeypatch.setattr(tools, "harness_memory_guard", foreign)
+    with pytest.raises(RuntimeError, match="guard source authority mismatch"):
+        process_guard.load_harness_memory_guard(tmp_path)
+    assert tools.harness_memory_guard is foreign
+
+
+def test_guard_loader_uses_owning_checkout_not_command_directory(tmp_path):
+    guard = process_guard.load_harness_memory_guard(tmp_path)
+    assert guard._REPO_ROOT == process_guard._molt_repo_root()
+
+
+@pytest.mark.parametrize("dependency", ["memory_guard", "process_sentinel"])
+def test_guard_loader_rejects_foreign_dependency(monkeypatch, tmp_path, dependency):
+    guard = process_guard.load_harness_memory_guard(tmp_path)
+    foreign = SimpleNamespace(__file__=str(tmp_path / f"{dependency}.py"))
+    monkeypatch.setattr(guard, dependency, foreign)
+    with pytest.raises(RuntimeError, match="guard source authority mismatch"):
+        process_guard.load_harness_memory_guard(tmp_path)
+    assert getattr(guard, dependency) is foreign
+
+
+def test_guard_loader_reports_installed_package_without_source_tools(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        process_guard,
+        "__file__",
+        str(tmp_path / "site-packages" / "molt" / "process_guard.py"),
+    )
+    with pytest.raises(RuntimeError, match="repository guard tools are unavailable"):
+        process_guard.load_harness_memory_guard(tmp_path)
+
+
+@pytest.mark.parametrize("nested", [True, False])
+def test_guard_source_authority_is_independent_of_command_cwd(tmp_path, nested):
+    source_root = process_guard._molt_repo_root()
+    command_cwd = source_root / "tools" / "proof_supervisor" if nested else tmp_path
+    captured = {}
+
+    class Context:
+        @classmethod
+        def from_env(cls, *_args, **kwargs):
+            captured["source_root"] = kwargs["repo_root"]
+            return cls()
+
+        def run(self, command, **kwargs):
+            captured["cwd"] = kwargs["cwd"]
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+    process_guard.run_completed_command(
+        ["compiler", "input"],
+        cwd=command_cwd,
+        guard_loader=lambda _cwd: SimpleNamespace(HarnessExecutionContext=Context),
+    )
+    assert captured == {"source_root": source_root, "cwd": command_cwd}
 
 
 def test_typed_argv_boundary_rejects_shell_text() -> None:

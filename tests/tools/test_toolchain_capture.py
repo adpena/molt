@@ -128,6 +128,8 @@ def test_custody_cas_publication_collision_preserves_and_verifies_winner(
             # the transport digest itself must reject an otherwise-valid blob.
             content[4 if kind == "json" else len(content) // 2] ^= 0xFF
         target.write_bytes(content)
+        if os.name != "nt":
+            target.chmod(stat.S_IMODE(staged.stat().st_mode))
         competitors[target] = bytes(content)
         real_publish(staged, target)
 
@@ -152,6 +154,29 @@ def test_custody_cas_publication_collision_preserves_and_verifies_winner(
         verify(reference, expected_root=root)
     assert len(competitors) == 1
     assert all(path.read_bytes() == content for path, content in competitors.items())
+    assert not list(root.rglob(".custody-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX immutable mode contract")
+def test_custody_cas_publication_collision_rejects_winner_with_mutable_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "cas"
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"immutable payload")
+    real_publish = custody_cas.file_publication.durable_publish_exclusive
+
+    def compete(staged: Path, target: Path) -> None:
+        target.write_bytes(staged.read_bytes())
+        target.chmod(0o644)
+        real_publish(staged, target)
+
+    monkeypatch.setattr(
+        custody_cas.file_publication, "durable_publish_exclusive", compete
+    )
+    with pytest.raises(ValueError, match="non-executable file mode changed"):
+        custody_cas.put_file(root, source)
     assert not list(root.rglob(".custody-*"))
 
 

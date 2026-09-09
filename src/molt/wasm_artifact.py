@@ -56,6 +56,7 @@ WASM_EXTERN_KIND_MEMORY = 2
 WASM_EXTERN_KIND_GLOBAL = 3
 WASM_EXTERN_KIND_TAG = 4
 WASM_VALUE_TYPE_I32 = 0x7F
+WasmBuffer = bytes | mmap.mmap
 
 
 def wasm_runtime_manifest_path(artifact: Path) -> Path:
@@ -300,11 +301,13 @@ class WasmCallableTableEntry:
         }
 
 
-def _read_wasm_varuint(data: bytes | mmap.mmap, offset: int) -> tuple[int, int]:
+def _read_wasm_varuint(
+    data: WasmBuffer, offset: int, *, limit: int | None = None
+) -> tuple[int, int]:
     result = 0
     shift = 0
     while True:
-        if offset >= len(data):
+        if offset >= len(data) or (limit is not None and offset >= limit):
             raise ValueError("Unexpected EOF while reading wasm varuint")
         byte = data[offset]
         offset += 1
@@ -316,10 +319,12 @@ def _read_wasm_varuint(data: bytes | mmap.mmap, offset: int) -> tuple[int, int]:
             raise ValueError("wasm varuint is too large")
 
 
-def _read_wasm_string(data: bytes | mmap.mmap, offset: int) -> tuple[str, int]:
-    length, offset = _read_wasm_varuint(data, offset)
+def _read_wasm_string(
+    data: WasmBuffer, offset: int, *, limit: int | None = None
+) -> tuple[str, int]:
+    length, offset = _read_wasm_varuint(data, offset, limit=limit)
     end = offset + length
-    if end > len(data):
+    if end > len(data) or (limit is not None and end > limit):
         raise ValueError("Unexpected EOF while reading wasm string")
     return data[offset:end].decode("utf-8"), end
 
@@ -343,11 +348,15 @@ def _write_wasm_string(value: str) -> bytes:
     return _write_wasm_varuint(len(encoded)) + encoded
 
 
-def _read_wasm_custom_section_name(payload: bytes) -> str:
-    if not payload:
+def _read_wasm_custom_section_name(
+    data: WasmBuffer, offset: int = 0, limit: int | None = None
+) -> str:
+    if limit is None:
+        limit = len(data)
+    if offset >= limit:
         return ""
     try:
-        name, _ = _read_wasm_string(payload, 0)
+        name, _ = _read_wasm_string(data, offset, limit=limit)
     except (UnicodeDecodeError, ValueError):
         return "<unparseable>"
     return name
@@ -413,7 +422,7 @@ def wasm_publication_policy_violations(
 
 
 def parse_wasm_section_spans(
-    data: bytes,
+    data: WasmBuffer,
     *,
     allow_duplicate_standard_sections: bool = False,
 ) -> list[WasmSectionSpan]:
@@ -436,8 +445,11 @@ def parse_wasm_section_spans(
         section_end = offset + section_size
         if section_end > len(data):
             raise ValueError("Invalid wasm section length")
-        payload = data[offset:section_end]
-        custom_name = _read_wasm_custom_section_name(payload) if section_id == 0 else ""
+        custom_name = (
+            _read_wasm_custom_section_name(data, offset, section_end)
+            if section_id == 0
+            else ""
+        )
         sections.append(
             WasmSectionSpan(
                 id=section_id,
