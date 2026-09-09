@@ -37,37 +37,32 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
 
-# The pre-push hook invokes this script without the repo root on sys.path;
-# put this worktree first so neither `tools` nor `molt` resolves through an
-# older editable install from the main checkout.
-for import_root in (REPO_ROOT, SRC_ROOT):
-    text = str(import_root)
-    if text in sys.path:
-        sys.path.remove(text)
-    sys.path.insert(0, text)
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports, load_module_from_path
+else:
+    from tools.import_file import bind_repository_imports, load_module_from_path
+
+bind_repository_imports(__file__)
 
 from tools import lane_maturity  # noqa: E402
-from tools.import_file import load_module_from_path  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
+
 
 def _worktree_canonical_molt_root(repo_root: Path) -> Path:
     """Load the invoking worktree's authority despite an older editable install."""
     module_path = SRC_ROOT / "molt" / "dx.py"
     module = load_module_from_path("_molt_worktree_dx", module_path)
     return module.canonical_molt_root(repo_root)
+
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
@@ -225,7 +220,9 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
     return rows
 
 
-def gate(rows: list[dict], now: float, *, max_worktrees: int, max_signal_age_hours: float) -> list[str]:
+def gate(
+    rows: list[dict], now: float, *, max_worktrees: int, max_signal_age_hours: float
+) -> list[str]:
     """Return a list of drift violations (empty == clean).
 
     The gate makes worktree/branch drift BLOCKING instead of a silent slow
@@ -400,7 +397,10 @@ def main() -> int:
                 # git-cherry merge-commit miscount), OR its commits were captured in
                 # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
                 on_main = (
-                    _git(["merge-base", "--is-ancestor", r["branch"], "origin/main"]).returncode == 0
+                    _git(
+                        ["merge-base", "--is-ancestor", r["branch"], "origin/main"]
+                    ).returncode
+                    == 0
                 )
                 flag = "-D" if (on_main or r["path"] in captured) else "-d"
                 if _git(["branch", flag, r["branch"]]).returncode == 0:
@@ -408,7 +408,9 @@ def main() -> int:
     _git(["worktree", "prune"])
     swept = _sweep_empty_orphan_worktree_dirs()
     # Delete any remaining fully-merged branches (not checked out anywhere).
-    merged = _git(["branch", "--merged", "origin/main", "--format=%(refname:short)"]).stdout
+    merged = _git(
+        ["branch", "--merged", "origin/main", "--format=%(refname:short)"]
+    ).stdout
     for b in merged.splitlines():
         b = b.strip()
         if b and b != "main":

@@ -40,6 +40,12 @@ the selected custody root. Keep human-readable run/platform identity in receipts
 not repeated in every scratch path: native compiler/linker descendants still
 have classic path-length limits. Explicit test roots remain caller-owned.
 
+File-launched tools bind imports through `tools/import_file.py` before loading
+repository helpers. Already-executed foreign packages or descendants are errors;
+unexecuted namespace search paths are bound to the selected source, including
+resource lookup and parent-first restoration. Git hooks use this same authority,
+not independent `sys.path` rewrites or bypasses.
+
 Python startup guarding is owned by `src/molt/pytest_memory_guard_bootstrap.py`;
 state paths are owned by `src/molt/memory_guard_paths.py`. Source and test-local
 `sitecustomize.py` files are adapters into that package, not repository-wide
