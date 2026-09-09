@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import stat
-import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 import zipfile
@@ -80,7 +79,7 @@ def _atomic_copy_file(
     expected_sha256: str | None = None,
 ) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path = file_publication.staged_file_path(dst, purpose="copy")
     try:
         shutil.copyfile(src, tmp_path)
         if codesign:
@@ -120,7 +119,7 @@ def _link_failure_wants_copy(exc: OSError) -> bool:
 
 def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path = file_publication.staged_file_path(dst, purpose="link")
     try:
         source_mode = src.stat().st_mode
         if source_mode & stat.S_IWRITE:
@@ -141,7 +140,7 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
 @contextmanager
 def _atomic_zip_file(path: Path) -> Iterator[zipfile.ZipFile]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path = file_publication.staged_file_path(path, purpose="zip")
     try:
         with zipfile.ZipFile(tmp_path, "w") as zf:
             yield zf

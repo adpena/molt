@@ -29,6 +29,25 @@ def _reseal(payload: dict[str, Any]) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "operating_system,old_policy",
+    [
+        ("windows", "pe-loaded-import-closure-v2"),
+        ("linux", "elf-loaded-needed-closure-v2"),
+        ("macos", "mach-o-loaded-dylib-closure-v3"),
+    ],
+)
+def test_runtime_rejects_pre_loader_executable_custody(
+    operating_system: str, old_policy: str
+) -> None:
+    payload = _runtime_payload(operating_system=operating_system)
+    payload["capabilities"]["native_dependency_policy"] = old_policy
+    payload["native_dependency_closure"]["policy"] = old_policy
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        runtime.validate_python_runtime_identity(payload)
+
+
 def _runtime_payload(
     *,
     operating_system: str = "linux",
@@ -37,11 +56,7 @@ def _runtime_payload(
 ) -> dict[str, Any]:
     """The donor's fixture topology, with distinct executable/library/Unicode nodes."""
     windows = operating_system == "windows"
-    policy = {
-        "windows": "pe-loaded-import-closure-v2",
-        "linux": "elf-loaded-needed-closure-v2",
-        "macos": "mach-o-loaded-dylib-closure-v3",
-    }[operating_system]
+    policy = runtime._NATIVE_DEPENDENCY_POLICIES[operating_system]
     root_roles = [
         "base-dlls" if windows else "base-lib-dynload",
         "platstdlib",
@@ -102,6 +117,7 @@ def _runtime_payload(
         "native_dependency_closure": {
             "status": "closed",
             "policy": policy,
+            "executable_component": "native-component-1",
             "root_components": [f"native-component-{index}" for index in range(3)],
             "observed_components": [f"native-component-{index}" for index in range(3)],
             "observed_contracts": [],
@@ -199,6 +215,76 @@ def test_macos_runtime_receipt_accepts_distinct_python_basename_components() -> 
     _reseal(payload)
 
     assert runtime.validate_python_runtime_identity(payload) == payload
+
+
+@pytest.mark.parametrize("operating_system", ["windows", "linux"])
+def test_receipt_distinguishes_configured_and_loaded_same_name_files(
+    operating_system: str,
+) -> None:
+    payload = _runtime_payload(operating_system=operating_system)
+    dependency = payload["native_dependency_closure"]
+    dependency["components"][:2] = [
+        {
+            "id": "native-component-0",
+            "filename": "Python",
+            "node": "file-node-0",
+            "roles": ["base-executable"],
+        },
+        {
+            "id": "native-component-1",
+            "filename": "Python",
+            "node": "file-node-1",
+            "roles": ["runtime-library"],
+        },
+    ]
+    payload["explicit_files"][0]["filename"] = "Python"
+    payload["explicit_files"][1]["filename"] = "Python"
+    dependency["observed_components"] = ["native-component-1", "native-component-2"]
+    dependency["executable_component"] = "native-component-1"
+    dependency["edges"] = []
+    _reseal(payload)
+    assert runtime.validate_python_runtime_identity(payload) == payload
+    dependency["observed_components"].insert(0, "native-component-0")
+    _reseal(payload)
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="loader names are ambiguous"
+    ):
+        runtime.validate_python_runtime_identity(payload)
+
+
+@pytest.mark.parametrize("value", [None, [], "native-component-99"])
+def test_runtime_requires_an_observed_executable_component(value: object) -> None:
+    payload = _runtime_payload()
+    payload["native_dependency_closure"]["executable_component"] = value
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="executable.*observed"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+@pytest.mark.parametrize("surface", ["executable", "importer", "provider", "deferred"])
+def test_runtime_never_uses_configured_only_root_as_loaded_image(surface: str) -> None:
+    payload = _runtime_payload()
+    dependency = payload["native_dependency_closure"]
+    dependency["observed_components"].remove("native-component-1")
+    dependency["executable_component"] = "native-component-0"
+    dependency["edges"] = []
+    if surface == "executable":
+        dependency["executable_component"] = "native-component-1"
+    elif surface == "importer":
+        dependency["edges"] = [
+            {"from": "native-component-1", "to": "native-component-0"}
+        ]
+    elif surface == "provider":
+        dependency["edges"] = [
+            {"from": "native-component-0", "to": "native-component-1"}
+        ]
+    else:
+        dependency["deferred_imports"] = [
+            {"from": "native-component-1", "name": "absent", "kind": "filter"}
+        ]
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        runtime.validate_python_runtime_identity(payload)
 
 
 @pytest.mark.parametrize(
@@ -327,10 +413,14 @@ def test_runtime_rejects_unreachable_native_component_with_valid_file_node() -> 
     _reseal(payload)
     with pytest.raises(PythonEnvironmentIdentityError, match="unreachable"):
         runtime.validate_python_runtime_identity(payload)
-    # The same component is admissible when the existing root graph reaches it.
+    # A graph edge alone cannot invent a loaded provider.
     dependency["edges"].insert(
         1, {"from": "native-component-1", "to": "native-component-3"}
     )
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="dependency edge"):
+        runtime.validate_python_runtime_identity(payload)
+    dependency["observed_components"].append("native-component-3")
     _reseal(payload)
     assert runtime.validate_python_runtime_identity(payload) == payload
 

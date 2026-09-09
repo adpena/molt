@@ -10,6 +10,7 @@ import sys
 from typing import Iterable, Sequence
 
 from molt import python_environment_identity
+from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from molt.cli import source_build_environment
 from molt.exact_json import canonical_json_sha256
 from molt.python_external_custody import empty_external_import_custody
@@ -43,11 +44,7 @@ def _host_target() -> tuple[str, str, list[str], str]:
         "macos": ["base-lib-dynload", "platstdlib", "stdlib"],
         "linux": ["base-lib-dynload", "platstdlib", "stdlib"],
     }[operating_system]
-    dependency_policy = {
-        "windows": "pe-loaded-import-closure-v2",
-        "macos": "mach-o-loaded-dylib-closure-v3",
-        "linux": "elf-loaded-needed-closure-v2",
-    }[operating_system]
+    dependency_policy = _NATIVE_DEPENDENCY_POLICIES[operating_system]
     return operating_system, architecture, root_roles, dependency_policy
 
 
@@ -81,6 +78,7 @@ def runtime_identity_manifest() -> dict[str, object]:
     }
     dependency_material = {
         "policy": dependency_policy,
+        "executable_component": "native-component-0",
         "root_components": ["native-component-0"],
         "observed_components": ["native-component-0"],
         "observed_contracts": [],

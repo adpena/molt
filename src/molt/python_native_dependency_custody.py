@@ -525,35 +525,18 @@ def _native_dependency_closure(
     for role, path in roots.items():
         canonical = path.resolve(strict=True)
         roles_by_path.setdefault(canonical, set()).add(role)
-        if operating_system != "macos":
-            root_name = _loader_name(canonical.name, operating_system)
-            prior = by_name.get(root_name)
-            if prior is not None and not canonical.samefile(prior):
-                raise PythonEnvironmentIdentityError(
-                    f"runtime root has an ambiguous loader name: {canonical.name}"
-                )
-            by_name[root_name] = canonical
 
     observed_paths = {path.resolve(strict=True) for path in loaded}
     known_paths = observed_paths | set(roles_by_path)
-    macos_executable = next(
-        (path for path, roles in roles_by_path.items() if "base-executable" in roles),
-        None,
-    )
+    macos_executable = loader_snapshot.executable
     macos_paths_by_object = (
-        _loaded_path_object_index(known_paths) if operating_system == "macos" else {}
+        _loaded_path_object_index(observed_paths) if operating_system == "macos" else {}
     )
-    if operating_system == "macos" and macos_executable is None:
-        raise PythonEnvironmentIdentityError(
-            "macOS native dependency closure has no base executable scope"
-        )
 
     def image_key(path: Path) -> str:
-        return (
-            os.fspath(path)
-            if operating_system == "macos"
-            else _loader_name(path.name, operating_system)
-        )
+        # File components and loader import names have different identities.
+        # A configured launcher may share a basename with a distinct live image.
+        return os.fspath(path)
 
     discovered: dict[str, Path] = {}
     nodes: dict[str, str] = {}
@@ -562,7 +545,7 @@ def _native_dependency_closure(
     deferred: set[tuple[str, NativeDependency]] = set()
     pending = sorted(
         known_paths,
-        key=image_key,
+        key=lambda path: (_loader_name(path.name, operating_system), image_key(path)),
     )
     while pending:
         path = pending.pop()
@@ -574,6 +557,12 @@ def _native_dependency_closure(
         data = pool.read_bound(node, label="loaded native dependency")
         nodes[name] = node
         discovered[name] = path
+        if path not in observed_paths:
+            # A configured launcher is a content-bound runtime input, not a
+            # loaded importer/provider. Its pre-exec dependencies and run-path
+            # scope cannot be inferred from the current process's loader census.
+            del data
+            continue
         loaded_macho_identity = macos_image_identities.get(path)
         rpaths = (
             _macho_rpaths(
@@ -600,8 +589,6 @@ def _native_dependency_closure(
             dependency = declaration.name
             dependency_key = _loader_name(Path(dependency).name, operating_system)
             if operating_system == "macos":
-                if macos_executable is None:
-                    raise AssertionError("validated macOS executable scope is absent")
                 target = _resolve_macos_loaded_dependency(
                     dependency,
                     importer=path,
@@ -729,6 +716,9 @@ def _native_dependency_closure(
     pool.capture_context.register_verification_fence(verify_census)
     material = {
         "policy": policy,
+        "executable_component": ids[
+            image_key(loader_snapshot.executable.resolve(strict=True))
+        ],
         "root_components": root_components,
         "observed_components": observed_components,
         "observed_contracts": sorted(loader_contracts),

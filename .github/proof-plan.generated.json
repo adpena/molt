@@ -161,7 +161,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a8d5b46bcb63295e0c5f6983a1f969b3477b7c434ad1cdf7a01fda1e43310d76",
+  "authority_sha256": "b507b190e3176b641ac1e3c4ba03cedbb5da2030335cdbfa8d3dc8722231aa62",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -555,6 +555,7 @@
         "tests/cli/test_native_artifact_contract.py",
         "tests/test_python_environment_identity.py",
         "tests/test_python_native_dependency_custody.py",
+        "tests/test_python_native_locations.py",
         "tests/test_python_runtime_identity.py",
         "src/molt/cli/source_extension_*.py",
         "src/molt/cli/source_extensions.py",
@@ -3043,6 +3044,7 @@
         "tests/test_toolchain_identity.py",
         "tests/test_toolchain_executable_selection.py",
         "tests/test_python_native_dependency_custody.py",
+        "tests/test_python_native_locations.py",
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],

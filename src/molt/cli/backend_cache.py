@@ -37,6 +37,7 @@ from molt.cli.backend_artifact_contract import (
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
+from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -334,7 +335,7 @@ def _publish_immutable_backend_cache_artifact(
 
     if dst.exists():
         return existing_generation()
-    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path = staged_file_path(dst, purpose="backend-cache")
     try:
         # Copy through the existing verified publication primitive. Linking the
         # caller's writable source into a cache transfers neither ownership nor

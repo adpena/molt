@@ -161,7 +161,7 @@ def test_owned_path_rejects_ancestor_links_before_resolution(
 
 
 def test_staging_names_are_bounded_unique_and_destination_bound(tmp_path: Path) -> None:
-    destination = tmp_path / ("authority-" * 10 + ".json")
+    destination = tmp_path / ("authority-" * 24 + ".json")
     first = file_publication.staged_file_path(destination)
     second = file_publication.staged_file_path(destination)
     expected = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
@@ -171,6 +171,14 @@ def test_staging_names_are_bounded_unique_and_destination_bound(tmp_path: Path) 
     assert first.name.endswith(".tmp")
     assert len(first.name) == len(".molt-write--.tmp") + 16 + 32
     assert not first.exists() and not second.exists()
+    nested = first
+    for _ in range(8):
+        previous = nested
+        nested = file_publication.staged_file_path(previous)
+        assert nested.parent == destination.parent
+        assert len(nested.name) == len(first.name)
+        assert nested != previous
+        assert not nested.exists()
 
 
 @pytest.mark.parametrize("parent_traversal", [False, True])

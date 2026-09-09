@@ -98,8 +98,15 @@ Rust via rustup:
 ## Python runtime identity
 
 Python environment identity captures one immutable loader snapshot in
-`molt.python_native_locations`: loaded paths, loader aliases, non-file loader
-contracts, and observed Mach-O CPU identities. Dependency capture consumes and
+`molt.python_native_locations`: the OS-loaded executable, loaded paths, loader
+aliases, non-file loader contracts, and observed Mach-O CPU identities. PSAPI
+identifies the Windows executable; dyld image zero identifies the macOS main
+image. Linux requires the first loader image to agree with `AT_PHDR` and the
+kernel mapping's device/inode identity; ambiguous explicit-interpreter launches
+fail closed. Configured CPython base/venv launchers remain content-bound inputs,
+not invented loaded importers or providers. The receipt designates an observed
+executable component and binds that designation into its closure digest.
+Dependency capture consumes and
 rechecks that same snapshot. On macOS, universal images are read through the
 exact slice already selected by dyld, never the first or generic matching slice.
 Missing files require an explicit shared-cache contract; census or slice changes

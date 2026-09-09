@@ -15,11 +15,11 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 from molt.file_hashing import content_change_time_ns
+from molt.file_publication import staged_file_path
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
@@ -1865,7 +1865,7 @@ def write_llvm_toolchain_attestation(
         "llvm_config": str(attested_prefix / llvm_config_relative),
     }
     path = llvm_attestation_path(verification.prefix)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp = staged_file_path(path, purpose="llvm-attestation")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tmp.open("w", encoding="utf-8") as handle:

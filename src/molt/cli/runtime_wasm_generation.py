@@ -3,12 +3,11 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_json
-from molt.file_publication import durable_replace
+from molt.file_publication import durable_replace, staged_file_path
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
 from molt.exact_json import read_exact
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
@@ -185,9 +184,8 @@ def publish_runtime_wasm_generation(
         raise ValueError("runtime generation coordinates use non-canonical names")
     shared.parent.mkdir(parents=True, exist_ok=True)
     reloc.parent.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex
-    staged_shared = shared.with_name(f".{shared.name}.{token}.generation")
-    staged_reloc = reloc.with_name(f".{reloc.name}.{token}.generation")
+    staged_shared = staged_file_path(shared, purpose="generation")
+    staged_reloc = staged_file_path(reloc, purpose="generation")
     actual_source_shared = source_shared or shared
     actual_source_reloc = source_reloc or reloc
     try:
