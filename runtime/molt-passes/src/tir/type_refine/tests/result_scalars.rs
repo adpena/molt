@@ -12,7 +12,7 @@ fn intrinsic_result_slots_preserve_exact_status_without_payload_or_purity_infere
         } else {
             vec![ValueId(0), ValueId(1)]
         };
-        let func = single_block_func(
+        let mut func = single_block_func(
             vec![
                 make_op(
                     opcode,
@@ -47,25 +47,37 @@ fn intrinsic_result_slots_preserve_exact_status_without_payload_or_purity_infere
             ],
             8,
         );
-        let exact = extract_exact_scalar_map(&func);
-        for id in 3..=7 {
-            assert_eq!(
-                exact.get(&ValueId(id)),
-                Some(&TirType::Bool),
-                "{opcode:?}, slot {id}"
-            );
-        }
-        if opcode == OpCode::IterNextUnboxed {
-            assert!(!exact.contains_key(&ValueId(2)));
-        } else {
-            assert_eq!(exact.get(&ValueId(2)), Some(&TirType::I64));
+        // Neither an unknown input nor persisting inferred result types changes
+        // which result slots are intrinsically exact. Keep the pre/post-refine
+        // consumers in this shared family instead of a separate iterator rule.
+        func.value_types.insert(ValueId(0), TirType::DynBox);
+        for refined in [false, true] {
+            if refined {
+                refine_types(&mut func);
+            }
+            let exact = extract_exact_scalar_map(&func);
+            let proven = extract_proven_map(&func);
+            for id in 3..=7 {
+                assert_eq!(
+                    exact.get(&ValueId(id)),
+                    Some(&TirType::Bool),
+                    "{opcode:?}, slot {id}, refined={refined}"
+                );
+            }
+            assert_eq!(proven.get(&ValueId(3)), Some(&TirType::Bool));
+            assert_eq!(proven.get(&ValueId(7)), Some(&TirType::Bool));
+            if opcode == OpCode::IterNextUnboxed {
+                assert!(!exact.contains_key(&ValueId(2)));
+                assert!(!proven.contains_key(&ValueId(2)));
+                let effects = crate::tir::op_kinds_generated::opcode_effects_table(opcode);
+                assert!(!effects.nothrow && !effects.consistent && !effects.effect_free);
+            } else {
+                assert_eq!(exact.get(&ValueId(2)), Some(&TirType::I64));
+            }
         }
         let effects =
             crate::tir::op_kinds_generated::opcode_effects_table(OpCode::ExceptionPending);
         assert!(!effects.consistent && !effects.effect_free);
-        let proven = extract_proven_map(&func);
-        assert_eq!(proven.get(&ValueId(3)), Some(&TirType::Bool));
-        assert_eq!(proven.get(&ValueId(7)), Some(&TirType::Bool));
     }
 }
 

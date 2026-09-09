@@ -683,7 +683,9 @@ admission_job = "rust-build-unit-smoke"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 60
+# The added runtime ownership shard has its own bounded compile; the serialized
+# command envelope is 66 minutes. This is a ceiling, not a performance claim.
+timeout_minutes = 70
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1973,14 +1975,31 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.test.default-truth"]
+dependencies = ["rust.test.ir-wasm-runtime-authorities"]
 # Correctness-only host build: cold dependency optimization dominated the proof
 # window. Keep generated-program optimization unchanged; measure total build and
 # test time separately from optimized-host compiler performance.
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
-argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-wasm", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--test-threads=1"]
+# Pass and WASM libtests are owned by the prerequisite, not repeated here.
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--test-threads=1"]
 toolchains = ["cargo", "lune", "node", "wasm-ld"]
+
+[[command]]
+id = "rust.test.ir-wasm-runtime-authorities"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = ["rust.test.default-truth"]
+# IR/pass and WASM consumer repair plus runtime ownership acceptance do not
+# require native code generation. Keep the captured Node/WASM linker closure;
+# the full compiler-authorities command separately owns native/Rust/Luau proofs.
+# Libtest ORs these family filters. Do not include ignored runtime GC benchmarks.
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "call::", "object::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--test-threads=1"]
+toolchains = ["cargo", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.clippy.workspace-default"

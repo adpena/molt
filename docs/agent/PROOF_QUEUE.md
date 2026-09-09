@@ -69,6 +69,15 @@ critical-path attribution before changing crate boundaries or parallelism.
 Process-custody events prove process identity and lifecycle, not per-crate
 wall time; their sequence numbers must not be interpreted as timestamps.
 
+`rust.test.ir-wasm-runtime-authorities` selects the IR/pass and WASM families
+alongside runtime call/frame/namespace/object ownership tests, without requesting
+native/Rust/Luau code generation or ignored runtime GC benchmarks. Its captured
+Node and WASM-linker tools remain required for actual WASM consumers. The
+compiler-authorities command depends on this batch and owns the complementary
+native/Rust/Luau, IR and lowering tests; it does not repeat pass/WASM libtests.
+Use both command receipts when claiming complete compiler-family acceptance.
+Neither correctness batch replaces optimized-runtime proof.
+
 Receipt unit tests use `tests/proof_queue_custody_test_support.py`: real Python
 validation, CAS hashing and custody binding over synthetic test inputs, with
 only the exact native-verifier execution boundary replaced. They never build

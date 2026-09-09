@@ -2,6 +2,50 @@ use super::support::*;
 use crate::ir::ExecutionContextPolicy;
 use wasmparser::Operator;
 
+/// Return the fixed operand-stack effect that wasmparser assigns to an
+/// ordinary fallthrough operator. This is generated from wasmparser's operator
+/// table so newly emitted scalar instructions join the proof surface with
+/// their typed stack signature instead of requiring another local whitelist.
+///
+/// Custom-arity instructions stay fail-closed: their effect depends on module
+/// types or control labels and must be modeled explicitly by `frame_paths`.
+/// Exception instructions are also excluded even when their stack arity is
+/// fixed because they transfer control rather than falling through normally.
+fn frame_proof_linear_stack_effect(op: &Operator<'_>) -> Option<(u32, u32)> {
+    macro_rules! classify_operator {
+        (
+            $(
+                @$proposal:ident $variant:ident
+                $({ $($arg:ident: $argty:ty),* })?
+                => $visit:ident ($($annotation:tt)*)
+            )*
+        ) => {
+            match op {
+                $(
+                    Operator::$variant $( { $($arg: _,)* .. } )? => {
+                        classify_operator!(@effect @$proposal $($annotation)*)
+                    }
+                )*
+                _ => None,
+            }
+        };
+        (@effect @exceptions $($annotation:tt)*) => {
+            None
+        };
+        (@effect @legacy_exceptions $($annotation:tt)*) => {
+            None
+        };
+        (@effect @$proposal:ident arity $pops:literal -> $pushes:literal) => {
+            Some(($pops, $pushes))
+        };
+        (@effect @$proposal:ident arity custom) => {
+            None
+        };
+    }
+
+    wasmparser::for_each_operator!(classify_operator)
+}
+
 /// Explore the emitted structured control-flow graph, treating data-dependent
 /// branches nondeterministically. A static exit-site count is not a frame proof:
 /// the split owner has normal, exceptional and chunk-stop return paths. Each
@@ -130,44 +174,9 @@ fn frame_paths(
             Operator::Block { .. }
             | Operator::Loop { .. }
             | Operator::End
-            | Operator::Nop
             | Operator::Call { .. }
-            | Operator::CallIndirect { .. }
-            | Operator::Drop
-            | Operator::Select
-            | Operator::LocalGet { .. }
-            | Operator::LocalSet { .. }
-            | Operator::LocalTee { .. }
-            | Operator::GlobalGet { .. }
-            | Operator::GlobalSet { .. }
-            | Operator::I32Const { .. }
-            | Operator::I64Const { .. }
-            | Operator::F32Const { .. }
-            | Operator::F64Const { .. }
-            | Operator::I32Load { .. }
-            | Operator::I64Load { .. }
-            | Operator::I32Store { .. }
-            | Operator::I64Store { .. }
-            | Operator::I32Eqz
-            | Operator::I64Eqz
-            | Operator::I32Eq
-            | Operator::I32Ne
-            | Operator::I64Eq
-            | Operator::I64Ne
-            | Operator::I32WrapI64
-            | Operator::I64ExtendI32U
-            | Operator::I64ExtendI32S
-            | Operator::I32Add
-            | Operator::I32Sub
-            | Operator::I32And
-            | Operator::I32Or
-            | Operator::I64Add
-            | Operator::I64Sub
-            | Operator::I64And
-            | Operator::I64Or
-            | Operator::I64Shl
-            | Operator::I64ShrU
-            | Operator::I64ShrS => successors.push(index + 1),
+            | Operator::CallIndirect { .. } => successors.push(index + 1),
+            other if frame_proof_linear_stack_effect(other).is_some() => successors.push(index + 1),
             other => {
                 return Err(format!(
                     "unsupported frame-proof operator at {index}: {other:?}"
@@ -177,6 +186,54 @@ fn frame_paths(
         pending.extend(successors.into_iter().map(|next| (next, enters, exits)));
     }
     Ok(returns.len())
+}
+
+#[test]
+fn frame_path_proof_derives_linear_scalar_ops_from_wasmparser_signatures() {
+    assert_eq!(
+        frame_proof_linear_stack_effect(&Operator::I64GeU),
+        Some((2, 1))
+    );
+    assert_eq!(
+        frame_proof_linear_stack_effect(&Operator::I32Mul),
+        Some((2, 1))
+    );
+    assert_eq!(
+        frame_proof_linear_stack_effect(&Operator::F64ConvertI64S),
+        Some((1, 1))
+    );
+    assert_eq!(
+        frame_proof_linear_stack_effect(&Operator::Drop),
+        Some((1, 0))
+    );
+
+    let enter = Operator::Call { function_index: 0 };
+    let exit = Operator::Call { function_index: 1 };
+    let scalar_family = [
+        enter,
+        Operator::I64Const { value: 7 },
+        Operator::I64Const { value: 3 },
+        Operator::I64GeU,
+        Operator::Drop,
+        exit,
+        Operator::Return,
+        Operator::End,
+    ];
+    assert_eq!(frame_paths(&scalar_family, 0, 1, 1).unwrap(), 1);
+}
+
+#[test]
+fn frame_path_proof_rejects_unmodeled_control_even_with_fixed_stack_arity() {
+    assert_eq!(frame_proof_linear_stack_effect(&Operator::ThrowRef), None);
+    assert_eq!(
+        frame_proof_linear_stack_effect(&Operator::ReturnCall { function_index: 2 }),
+        None
+    );
+    assert!(
+        frame_paths(&[Operator::ThrowRef, Operator::End], 0, 1, 0)
+            .unwrap_err()
+            .contains("unsupported frame-proof operator")
+    );
 }
 
 #[test]
