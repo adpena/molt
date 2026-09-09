@@ -1,10 +1,11 @@
-schema_version = 2
+schema_version = 3
 default_release = "22.1.8"
 canonical_build_type = "Release"
 
 [debian_installer]
-url = "https://apt.llvm.org/llvm.sh"
-sha256 = "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+url = "https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea/llvm.sh"
+sha256 = "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"
+provenance_url = "https://github.com/opencollab/llvm-jenkins.debian.net/commit/c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea"
 
 [wasi_sysroot]
 version = "33.0+m"
