@@ -72,6 +72,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_const_int("v0", 1),
@@ -102,6 +103,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_op("const_none"),
@@ -128,6 +130,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -338,6 +341,7 @@ fn split_large_function_preserves_drop_authority_on_chunks_only() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
@@ -417,6 +421,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -495,6 +500,7 @@ fn split_generated_op_verifier_rejects_noncanonical_frame_load() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             OpIR {
@@ -634,6 +640,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
@@ -789,6 +796,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
@@ -838,6 +846,7 @@ fn split_large_function_void_only_stub_returns_none() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -957,11 +966,6 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
 
 #[test]
 fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
-    let previous = std::env::var("MOLT_MAX_FUNCTION_OPS").ok();
-    unsafe {
-        std::env::remove_var("MOLT_MAX_FUNCTION_OPS");
-    }
-
     let mut ops = Vec::new();
     for i in 0..1401 {
         ops.push(OpIR {
@@ -980,13 +984,25 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::Inherited,
             ops,
         }],
         profile: None,
     };
 
-    split_megafunctions(&mut ir);
+    let sources =
+        super::super::megafunction_split::split_megafunctions_at_limit(&mut ir, 2000, |_| true);
+    assert!(
+        ir.functions
+            .iter()
+            .all(|function| function.codegen_partition)
+    );
+    for (chunk, source) in &sources {
+        assert_eq!(source, "builtins__molt_module_chunk_2");
+        assert!(ir.functions.iter().any(|function| &function.name == chunk));
+    }
+    assert_eq!(sources.len() + 1, ir.functions.len());
 
     let names: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
     assert!(
@@ -999,9 +1015,22 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             .any(|name| name.starts_with("__molt_chunk_v1_")),
         "module chunk should be split into backend private chunks at the native default threshold"
     );
+}
 
-    match previous {
-        Some(value) => unsafe { std::env::set_var("MOLT_MAX_FUNCTION_OPS", value) },
-        None => unsafe { std::env::remove_var("MOLT_MAX_FUNCTION_OPS") },
+// Rejection must return the exact input and must not reserve any names,
+// including when failure happens after planning rather than at the size gate.
+#[test]
+fn split_refusal_preserves_contract_and_namespace() {
+    for max_ops in [0, usize::MAX] {
+        let function = adversarial_named_large_function("unchanged");
+        let mut occupied = BTreeSet::from([function.name.clone()]);
+        let before_names = occupied.clone();
+        let mut before = Vec::new();
+        crate::write_function_ir_contract(&function, &mut before).unwrap();
+        let rejected = split_large_function(function, max_ops, &mut occupied).unwrap_err();
+        let mut after = Vec::new();
+        crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(occupied, before_names);
     }
 }

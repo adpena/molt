@@ -35,10 +35,19 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
 /// logic (via [`exception_successors`]) when building its block-lowering order,
 /// instead of re-deriving the label→block mapping in `lowering.rs`.
 pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
-    func.label_id_map
-        .iter()
-        .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
-        .collect()
+    let mut targets = HashMap::with_capacity(func.label_id_map.len());
+    let mut ambiguous = HashSet::new();
+    for (&bid, &label) in &func.label_id_map {
+        if targets.insert(label, BlockId(bid)).is_some() {
+            ambiguous.insert(label);
+        }
+    }
+    // Invalid duplicate labels must not select a hash-order-dependent target.
+    // The verifier diagnoses referenced labels with no unique resolution.
+    for label in ambiguous {
+        targets.remove(&label);
+    }
+    targets
 }
 
 /// Which CFG edges a dominator/reachability computation should traverse.
@@ -62,6 +71,9 @@ pub enum CfgEdgePolicy {
     Full,
     /// Terminator edges only (the strict-CFG verifier view).
     TerminatorOnly,
+    /// Block retention only: executable edges plus non-executable exception
+    /// label custody (for example TryEnd). Never use this as executable proof.
+    Retention,
 }
 
 /// Collect the implicit exception-edge successors of `block`.
@@ -80,14 +92,22 @@ pub enum CfgEdgePolicy {
 /// block-ordering pass route through it so there is exactly one place that knows
 /// how TIR reaches exception handlers.
 ///
-/// Public so `lowering.rs::compute_function_rpo` can include exception-reachable
-/// handler blocks in its lowering order instead of duplicating the
-/// edge-extraction logic.
+/// Backend ordering consumes this edge policy through
+/// [`executable_reverse_postorder`], without a second traversal implementation.
 pub fn exception_successors(
     block: &TirBlock,
     label_to_block: &HashMap<i64, BlockId>,
 ) -> Vec<BlockId> {
     let mut successors = Vec::new();
+    append_exception_successors(block, label_to_block, &mut successors);
+    successors
+}
+
+fn append_exception_successors(
+    block: &TirBlock,
+    label_to_block: &HashMap<i64, BlockId>,
+    successors: &mut Vec<BlockId>,
+) {
     for op in &block.ops {
         if is_exception_transfer_edge(op.opcode)
             && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
@@ -96,7 +116,6 @@ pub fn exception_successors(
             successors.push(target);
         }
     }
-    successors
 }
 
 /// Whether an op's label-valued `value` attr is an exception-transfer CFG edge.
@@ -119,17 +138,26 @@ pub fn is_simple_exception_transfer_kind(kind: &str) -> bool {
     kind_to_opcode_table(kind).is_some_and(is_exception_transfer_edge)
 }
 
-/// All CFG successors of `block` under the given edge policy.
-fn block_successors(
+fn append_block_successors(
     block: &TirBlock,
     label_to_block: &HashMap<i64, BlockId>,
     policy: CfgEdgePolicy,
-) -> Vec<BlockId> {
-    let mut succs = terminator_successors(&block.terminator);
-    if policy == CfgEdgePolicy::Full {
-        succs.extend(exception_successors(block, label_to_block));
+    successors: &mut Vec<BlockId>,
+) {
+    block.terminator.append_successors(successors);
+    match policy {
+        CfgEdgePolicy::Full => append_exception_successors(block, label_to_block, successors),
+        CfgEdgePolicy::TerminatorOnly => {}
+        CfgEdgePolicy::Retention => {
+            successors.extend(
+                block
+                    .ops
+                    .iter()
+                    .filter_map(super::clone_support::exception_label_of)
+                    .filter_map(|label| label_to_block.get(&label).copied()),
+            );
+        }
     }
-    succs
 }
 
 /// Build predecessor map for the full CFG (terminator + exception edges).
@@ -154,9 +182,14 @@ pub fn build_pred_map_with(
         pred_map.entry(bid).or_default();
     }
     let label_to_block = exception_label_to_block(func);
+    let mut successors = Vec::new();
     for (&bid, block) in &func.blocks {
-        for succ in block_successors(block, &label_to_block, policy) {
-            pred_map.entry(succ).or_default().push(bid);
+        successors.clear();
+        append_block_successors(block, &label_to_block, policy, &mut successors);
+        for succ in &successors {
+            if let Some(preds) = pred_map.get_mut(succ) {
+                preds.push(bid);
+            }
         }
     }
     for preds in pred_map.values_mut() {
@@ -178,23 +211,51 @@ pub fn executable_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
 
 /// Blocks reachable from the function entry under an explicit edge policy.
 pub fn reachable_blocks_with(func: &TirFunction, policy: CfgEdgePolicy) -> HashSet<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut stack: Vec<BlockId> = vec![func.entry_block];
+    reverse_postorder_with(func, policy).into_iter().collect()
+}
+
+/// Existing executable blocks in reverse postorder under an explicit edge policy.
+/// Shared by exact-scalar analysis, dominators and backend block emission.
+pub fn reverse_postorder_with(func: &TirFunction, policy: CfgEdgePolicy) -> Vec<BlockId> {
+    reverse_postorder_from_roots_with(func, [func.entry_block], policy)
+}
+
+/// Reachability closure from explicit roots, sharing canonical edge resolution
+/// and iterative traversal with executable reachability and backend ordering.
+/// Structural retention uses additional roots; executable analyses do not.
+pub fn reachable_blocks_from_roots_with(
+    func: &TirFunction,
+    roots: impl IntoIterator<Item = BlockId>,
+    policy: CfgEdgePolicy,
+) -> HashSet<BlockId> {
+    reverse_postorder_from_roots_with(func, roots, policy)
+        .into_iter()
+        .collect()
+}
+
+fn reverse_postorder_from_roots_with(
+    func: &TirFunction,
+    roots: impl IntoIterator<Item = BlockId>,
+    policy: CfgEdgePolicy,
+) -> Vec<BlockId> {
+    let mut visited = HashSet::with_capacity(func.blocks.len());
     let label_to_block = exception_label_to_block(func);
-
-    while let Some(bid) = stack.pop() {
-        if !visited.insert(bid) {
-            continue;
-        }
+    super::traversal::reverse_postorder_by(roots, func.blocks.len(), |bid, output| {
         let Some(block) = func.blocks.get(&bid) else {
-            continue;
+            return false;
         };
-        for succ in block_successors(block, &label_to_block, policy) {
-            stack.push(succ);
+        if !visited.insert(bid) {
+            return false;
         }
-    }
+        append_block_successors(block, &label_to_block, policy, output);
+        output.retain(|next| func.blocks.contains_key(next) && !visited.contains(next));
+        true
+    })
+}
 
-    visited
+/// The executable full-CFG order used by backend lowering.
+pub fn executable_reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
+    reverse_postorder_with(func, CfgEdgePolicy::Full)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,39 +284,10 @@ pub fn compute_idoms_with(
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
     policy: CfgEdgePolicy,
 ) -> HashMap<BlockId, Option<BlockId>> {
-    // RPO numbering via DFS from entry.
-    let mut rpo_order: Vec<BlockId> = Vec::new();
-    let mut visited: HashSet<BlockId> = HashSet::new();
-
-    fn dfs_postorder(
-        bid: BlockId,
-        func: &TirFunction,
-        label_to_block: &HashMap<i64, BlockId>,
-        policy: CfgEdgePolicy,
-        visited: &mut HashSet<BlockId>,
-        order: &mut Vec<BlockId>,
-    ) {
-        if !visited.insert(bid) {
-            return;
-        }
-        if let Some(block) = func.blocks.get(&bid) {
-            for succ in block_successors(block, label_to_block, policy) {
-                dfs_postorder(succ, func, label_to_block, policy, visited, order);
-            }
-        }
-        order.push(bid);
+    let rpo_order = reverse_postorder_with(func, policy);
+    if rpo_order.is_empty() {
+        return HashMap::new();
     }
-
-    let label_to_block = exception_label_to_block(func);
-    dfs_postorder(
-        func.entry_block,
-        func,
-        &label_to_block,
-        policy,
-        &mut visited,
-        &mut rpo_order,
-    );
-    rpo_order.reverse(); // Now in reverse postorder.
 
     // Map BlockId -> RPO index for fast lookup.
     let rpo_index: HashMap<BlockId, usize> = rpo_order
@@ -362,7 +394,7 @@ pub fn dominates(
     idoms: &HashMap<BlockId, Option<BlockId>>,
 ) -> bool {
     if dominator == target {
-        return true;
+        return idoms.contains_key(&target);
     }
     let mut current = target;
     loop {
@@ -445,6 +477,59 @@ mod tests {
     use super::*;
     use crate::tir::blocks::TirBlock;
     use crate::tir::types::TirType;
+
+    #[test]
+    fn absent_entry_has_no_reachable_or_dominator_nodes() {
+        let mut func = TirFunction::new("empty".into(), vec![], TirType::None);
+        func.blocks.clear();
+        for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
+            let preds = build_pred_map_with(&func, policy);
+            let idoms = compute_idoms_with(&func, &preds, policy);
+            assert!(preds.is_empty());
+            assert!(reachable_blocks_with(&func, policy).is_empty());
+            assert!(idoms.is_empty());
+            assert!(!dominates(func.entry_block, func.entry_block, &idoms));
+        }
+        assert!(
+            crate::tir::verify::verify_function(&func)
+                .unwrap_err()
+                .iter()
+                .any(|error| error.message.contains("entry block"))
+        );
+    }
+
+    #[test]
+    fn dangling_edges_are_not_nodes_and_remain_verifier_errors() {
+        let mut func = TirFunction::new("dangling".into(), vec![], TirType::None);
+        let missing = BlockId(99);
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: missing,
+            args: vec![],
+        };
+        for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
+            let preds = build_pred_map_with(&func, policy);
+            let idoms = compute_idoms_with(&func, &preds, policy);
+            assert_eq!(
+                reachable_blocks_with(&func, policy),
+                HashSet::from([func.entry_block])
+            );
+            assert_eq!(
+                preds.keys().copied().collect::<HashSet<_>>(),
+                HashSet::from([func.entry_block])
+            );
+            assert_eq!(idoms, HashMap::from([(func.entry_block, None)]));
+            assert!(!dominates(missing, missing, &idoms));
+        }
+        assert!(
+            crate::tir::verify::verify_function(&func)
+                .unwrap_err()
+                .iter()
+                .any(|error| error.message.contains("does not exist"))
+        );
+    }
+
+    #[path = "rpo_tests.rs"]
+    mod rpo;
 
     #[test]
     fn single_block_dominates_itself() {

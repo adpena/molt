@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from molt.cli.native_link_plan import NativeArtifactKind
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ def backend_command_prefix(
     is_luau_transpile: bool,
     is_rust_transpile: bool,
     is_wasm: bool,
+    native_output_kind: NativeArtifactKind = NativeArtifactKind.OBJECT,
     target_triple: str | None,
     wasm_link: bool = False,
     wasm_data_base: int | None = None,
@@ -132,6 +134,8 @@ def backend_command_prefix(
             )
     elif target_triple:
         cmd.extend(["--target-triple", target_triple])
+    if not is_luau_transpile and not is_rust_transpile and not is_wasm:
+        cmd.extend(["--native-output-kind", native_output_kind.value])
     return cmd
 
 
@@ -300,9 +304,7 @@ def emit_pipeline_fact_graph(
             resolved_modules=resolved_modules,
             ir=ir,
             warnings=build_preamble.warnings,
-            backend_compiler_fingerprint=(
-                runtime_context.backend_compiler_fingerprint
-            ),
+            backend_compiler_fingerprint=(runtime_context.backend_compiler_fingerprint),
             start_daemon=False,
         )
         if dispatch_error is not None:

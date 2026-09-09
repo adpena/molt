@@ -71,6 +71,7 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -142,6 +143,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -212,6 +214,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -253,6 +256,7 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let void_ret = FunctionIR {
@@ -265,6 +269,7 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -319,6 +324,7 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -378,6 +384,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -429,6 +436,7 @@ fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

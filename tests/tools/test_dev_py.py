@@ -483,7 +483,7 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
             [
                 "python",
                 "tools/dev_test_runner.py",
-                "--verified-subset",
+                "--check-verified-subset",
                 "--random-order",
                 "--random-seed",
                 "17",
@@ -514,6 +514,39 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
             False,
         ),
     ]
+
+
+@pytest.mark.parametrize("flags", [[], ["--random-order", "--random-seed", "17"]])
+def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None:
+    from tools import dev_test_runner
+
+    module = _load_dev_py()
+    batches = []
+
+    def capture_batch(args, python=None, env=None, tty=False):
+        batches.append((list(args), python))
+        assert env["MOLT_CAPABILITY_TIER"] == module.MAXIMUM_BUILTIN_CAPABILITY_TIER
+
+    monkeypatch.delenv("MOLT_CAPABILITY_TIER", raising=False)
+    monkeypatch.delenv("MOLT_DEV_TRUSTED", raising=False)
+    monkeypatch.delenv("MOLT_PYTEST_RANDOM_ORDER", raising=False)
+    monkeypatch.delenv("MOLT_PYTEST_RANDOM_SEED", raising=False)
+    monkeypatch.setattr(module, "run_uv", capture_batch)
+    monkeypatch.setattr(module.sys, "argv", ["tools/dev.py", "test", *flags])
+    module.main()
+
+    assert [python for _args, python in batches] == list(module.TEST_PYTHONS)
+    for index, (args, _python) in enumerate(batches):
+        commands = []
+        monkeypatch.setattr(dev_test_runner, "_run", lambda cmd: commands.append(list(cmd)))
+        monkeypatch.setattr(dev_test_runner.sys, "argv", args[1:])
+        dev_test_runner.main()
+        assert commands[0][:2] == ["pytest", "-q"]
+        expected_tail = (
+            [[dev_test_runner.sys.executable, "tools/verified_subset.py", "check"]]
+            if index == 0 else []
+        )
+        assert commands[1:] == expected_tail
 
 
 def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:

@@ -40,6 +40,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         ..Default::default()
     };
     let type_map = extract_type_map(func);
+    let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Build constant map: ValueId → i64 for ConstInt, ValueId → bool for ConstBool.
     let mut int_consts: HashMap<ValueId, i64> = HashMap::new();
@@ -93,6 +94,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
 
             let result = op.results[0];
+            let type_map = if crate::tir::op_kinds_generated::opcode_predicate_semantics(op.opcode)
+                .is_some()
+            {
+                &exact_scalar_types
+            } else {
+                &type_map
+            };
 
             // --- Rule 5: Commutative ordering (constants on the right) ---
             if op.operands.len() == 2
@@ -136,6 +144,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     // Not(Not(x)) → Copy(x)
                     if op.opcode == OpCode::Not
                         && let Some(&inner_src) = not_source.get(&operand)
+                        && exact_scalar_types.get(&inner_src) == Some(&TirType::Bool)
                     {
                         let old = op.clone();
                         let mut replacement = TirOp {

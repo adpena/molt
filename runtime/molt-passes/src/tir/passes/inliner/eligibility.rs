@@ -73,7 +73,8 @@ pub fn is_inlineable(
 ///
 /// Gate-evaluation order (the first failing gate is the reported reason, so the
 /// reason is deterministic): the [`inline_safety_gate`] correctness gates
-/// (recursion -> handlers -> generator -> entry-predecessor -> closure) first, then
+/// (execution context -> physical partition -> recursion -> handlers ->
+/// generator -> entry-predecessor -> closure) first, then
 /// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
 /// short-circuit order of the prior `is_inline_safe && within_budget` predicate
 /// exactly, so the bool is byte-identical at every call site.
@@ -108,7 +109,8 @@ pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries)
 /// EXCLUDES the cost-model budget - that is [`InlineWhyNot::OverBudget`], applied
 /// only by [`classify_inline_eligibility`].
 ///
-/// Gate order is the prior `is_inline_safe` order verbatim:
+/// Gate order begins with Python execution-context and physical partition
+/// restrictions, then preserves the existing structural safety order:
 /// 1. **recursive** - a member of the call graph's recursive set (cycle, self-edge,
 ///    or opaque-call function). Inlining is unbounded.
 /// 2. **exception HANDLER region** - [`TirFunction::has_exception_handlers`]
@@ -122,6 +124,12 @@ pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries)
 /// 5. **closure** - the first param is the implicit captured-env param
 ///    ([`is_closure`]); the direct param->operand splice would miscompile it.
 fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
+    if callee.execution_context != molt_ir::ExecutionContextPolicy::None {
+        return Some(InlineWhyNot::ExecutionContext);
+    }
+    if callee.is_codegen_partition() {
+        return Some(InlineWhyNot::CodegenPartition);
+    }
     if call_graph.recursive_set().contains(&callee.name) {
         return Some(InlineWhyNot::Recursive);
     }

@@ -72,10 +72,7 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                     if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
                         return MoltObject::none().bits();
                     }
-                    let order = dict_order(dict_ptr);
-                    let hashes = dict_hashes(dict_ptr);
-                    let table = dict_table(dict_ptr);
-                    let found = dict_find_entry(_py, order, hashes, table, item_bits);
+                    let found = dict_find_entry(_py, dict_ptr, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -115,271 +112,73 @@ pub(crate) unsafe fn dict_update_apply(
     other_bits: u64,
 ) -> u64 {
     unsafe {
-        let other_obj = obj_from_bits(other_bits);
-        if let Some(ptr) = other_obj.as_ptr() {
-            if object_type_id(ptr) == TYPE_ID_DICT {
-                let iter_bits = molt_dict_items(other_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    return MoltObject::none().bits();
-                }
-                let iter = molt_iter(iter_bits);
-                dec_ref_bits(_py, iter_bits);
-                if obj_from_bits(iter).is_none() {
-                    return MoltObject::none().bits();
-                }
-                let mut elem_index = 0usize;
-                loop {
-                    let pair_bits = molt_iter_next(iter);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, iter);
-                        return MoltObject::none().bits();
-                    }
-                    let pair_obj = obj_from_bits(pair_bits);
-                    let Some(pair_ptr) = pair_obj.as_ptr() else {
-                        dec_ref_bits(_py, iter);
-                        return MoltObject::none().bits();
-                    };
-                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                        dec_ref_bits(_py, pair_bits);
-                        dec_ref_bits(_py, iter);
-                        return MoltObject::none().bits();
-                    }
-                    let (item_bits, done_bits) = {
-                        let Some(pair) = crate::object::seq_access::with_immutable_tuple_slice(
-                            pair_ptr,
-                            |items| items.first().copied().zip(items.get(1).copied()),
-                        )
-                        .flatten() else {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, iter);
-                            return MoltObject::none().bits();
-                        };
-                        pair
-                    };
-                    if is_truthy(_py, obj_from_bits(done_bits)) {
-                        dec_ref_bits(_py, pair_bits);
-                        break;
-                    }
-                    match dict_pair_from_item(_py, item_bits) {
-                        Ok((key, val)) => {
-                            set_fn(_py, target_bits, key, val);
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, pair_bits);
-                                dec_ref_bits(_py, iter);
-                                return MoltObject::none().bits();
-                            }
-                        }
-                        Err(DictSeqError::NotIterable) => {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, iter);
-                            // CPython 3.12/3.13 report the element index; 3.14
-                            // changed it to the generic "object is not iterable".
-                            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14)
-                            {
-                                "object is not iterable".to_string()
-                            } else {
-                                format!(
-                                    "cannot convert dictionary update sequence element #{elem_index} to a sequence"
-                                )
-                            };
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        Err(DictSeqError::BadLen(len)) => {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, iter);
-                            let msg = format!(
-                                "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
-                            );
-                            return raise_exception::<_>(_py, "ValueError", &msg);
-                        }
-                        Err(DictSeqError::Exception) => {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, iter);
-                            return MoltObject::none().bits();
-                        }
-                    }
-                    dec_ref_bits(_py, pair_bits);
-                    elem_index += 1;
-                }
-                dec_ref_bits(_py, iter);
-                return MoltObject::none().bits();
-            }
-            if let Some(keys_bits) = attr_name_bits_from_bytes(_py, b"keys") {
-                let keys_method_bits = attr_lookup_ptr(_py, ptr, keys_bits);
-                dec_ref_bits(_py, keys_bits);
-                if let Some(keys_method_bits) = keys_method_bits {
-                    let keys_iterable = call_callable0(_py, keys_method_bits);
-                    dec_ref_bits(_py, keys_method_bits);
-                    let keys_iter = molt_iter(keys_iterable);
-                    dec_ref_bits(_py, keys_iterable);
-                    if obj_from_bits(keys_iter).is_none() {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "dict.update expects a mapping or iterable",
-                        );
-                    }
-                    let Some(getitem_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "dict.update expects a mapping or iterable",
-                        );
-                    };
-                    let getitem_method_bits = attr_lookup_ptr(_py, ptr, getitem_bits);
-                    dec_ref_bits(_py, getitem_bits);
-                    let Some(getitem_method_bits) = getitem_method_bits else {
-                        dec_ref_bits(_py, keys_iter);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "dict.update expects a mapping or iterable",
-                        );
-                    };
-                    loop {
-                        let pair_bits = molt_iter_next(keys_iter);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, getitem_method_bits);
-                            dec_ref_bits(_py, keys_iter);
-                            return MoltObject::none().bits();
-                        }
-                        let pair_obj = obj_from_bits(pair_bits);
-                        let Some(pair_ptr) = pair_obj.as_ptr() else {
-                            dec_ref_bits(_py, getitem_method_bits);
-                            dec_ref_bits(_py, keys_iter);
-                            return MoltObject::none().bits();
-                        };
-                        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, getitem_method_bits);
-                            dec_ref_bits(_py, keys_iter);
-                            return MoltObject::none().bits();
-                        }
-                        let (key_bits, done_bits) = {
-                            let Some(pair) = crate::object::seq_access::with_immutable_tuple_slice(
-                                pair_ptr,
-                                |items| items.first().copied().zip(items.get(1).copied()),
-                            )
-                            .flatten() else {
-                                dec_ref_bits(_py, pair_bits);
-                                dec_ref_bits(_py, getitem_method_bits);
-                                dec_ref_bits(_py, keys_iter);
-                                return MoltObject::none().bits();
-                            };
-                            pair
-                        };
-                        if is_truthy(_py, obj_from_bits(done_bits)) {
-                            dec_ref_bits(_py, pair_bits);
-                            break;
-                        }
-                        let val_bits = call_callable1(_py, getitem_method_bits, key_bits);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, getitem_method_bits);
-                            dec_ref_bits(_py, keys_iter);
-                            return MoltObject::none().bits();
-                        }
-                        set_fn(_py, target_bits, key_bits, val_bits);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, pair_bits);
-                            dec_ref_bits(_py, getitem_method_bits);
-                            dec_ref_bits(_py, keys_iter);
-                            return MoltObject::none().bits();
-                        }
-                        dec_ref_bits(_py, pair_bits);
-                    }
-                    dec_ref_bits(_py, getitem_method_bits);
-                    dec_ref_bits(_py, keys_iter);
-                    return MoltObject::none().bits();
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-            }
+        let direct_target =
+            std::ptr::fn_addr_eq(set_fn, dict_update_set_in_place as DictUpdateSetter)
+                .then(|| obj_from_bits(target_bits).as_ptr())
+                .flatten();
+        if direct_target.is_some() && target_bits == other_bits {
+            return MoltObject::none().bits();
         }
-        let iter = molt_iter(other_bits);
-        if obj_from_bits(iter).is_none() {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return raise_not_iterable(_py, other_bits);
+        let outcome = crate::object::mapping_merge::apply(
+            _py,
+            other_bits,
+            |_, _| true,
+            |key, value, hash| {
+                if let Some(target) = direct_target {
+                    crate::object::mapping_merge::insert_dict(_py, target, key, value, hash)
+                } else {
+                    set_fn(_py, target_bits, key, value);
+                    !exception_pending(_py)
+                }
+            },
+        );
+        if outcome != crate::object::mapping_merge::MergeOutcome::NotMapping {
+            return MoltObject::none().bits();
         }
+        let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, other_bits) else {
+            return MoltObject::none().bits();
+        };
         let mut elem_index = 0usize;
         loop {
-            let pair_bits = molt_iter_next(iter);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, iter);
-                return MoltObject::none().bits();
-            }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                dec_ref_bits(_py, iter);
-                return MoltObject::none().bits();
+            let item = match iter.next() {
+                Ok(Some(item)) => item,
+                Ok(None) => return MoltObject::none().bits(),
+                Err(()) => return MoltObject::none().bits(),
             };
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                dec_ref_bits(_py, pair_bits);
-                dec_ref_bits(_py, iter);
-                return MoltObject::none().bits();
-            }
-            let (item_bits, done_bits) = {
-                let Some(pair) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    dec_ref_bits(_py, pair_bits);
-                    dec_ref_bits(_py, iter);
-                    return MoltObject::none().bits();
-                };
-                pair
-            };
-            if is_truthy(_py, obj_from_bits(done_bits)) {
-                dec_ref_bits(_py, pair_bits);
-                break;
-            }
-            match dict_pair_from_item(_py, item_bits) {
-                Ok((key, val)) => {
-                    set_fn(_py, target_bits, key, val);
+            let pair = dict_pair_from_item(_py, item);
+            dec_ref_bits(_py, item);
+            match pair {
+                Ok((key, value)) => {
+                    set_fn(_py, target_bits, key, value);
+                    dec_ref_bits(_py, key);
+                    dec_ref_bits(_py, value);
                     if exception_pending(_py) {
-                        dec_ref_bits(_py, pair_bits);
-                        dec_ref_bits(_py, iter);
                         return MoltObject::none().bits();
                     }
                 }
                 Err(DictSeqError::NotIterable) => {
-                    dec_ref_bits(_py, pair_bits);
-                    dec_ref_bits(_py, iter);
-                    // CPython 3.12/3.13 report the element index; 3.14 changed it
-                    // to the generic "object is not iterable".
-                    let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                    let message = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
                         "object is not iterable".to_string()
                     } else {
                         format!(
                             "cannot convert dictionary update sequence element #{elem_index} to a sequence"
                         )
                     };
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, "TypeError", &message);
                 }
                 Err(DictSeqError::BadLen(len)) => {
-                    dec_ref_bits(_py, pair_bits);
-                    dec_ref_bits(_py, iter);
-                    let msg = format!(
-                        "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        &format!(
+                            "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
+                        ),
                     );
-                    return raise_exception::<_>(_py, "ValueError", &msg);
                 }
-                Err(DictSeqError::Exception) => {
-                    dec_ref_bits(_py, pair_bits);
-                    dec_ref_bits(_py, iter);
-                    return MoltObject::none().bits();
-                }
+                Err(DictSeqError::Exception) => return MoltObject::none().bits(),
             }
-            dec_ref_bits(_py, pair_bits);
             elem_index += 1;
         }
-        dec_ref_bits(_py, iter);
-        MoltObject::none().bits()
     }
 }
 
@@ -579,10 +378,10 @@ pub extern "C" fn molt_dict_pop(
             if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return MoltObject::none().bits();
             }
+            let found = dict_find_entry(_py, dict_ptr, key_bits);
             let order = dict_order(dict_ptr);
             let hashes = dict_hashes(dict_ptr);
             let table = dict_table(dict_ptr);
-            let found = dict_find_entry(_py, order, hashes, table, key_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -601,6 +400,7 @@ pub extern "C" fn molt_dict_pop(
                     (*header_from_obj_ptr(dict_ptr))
                         .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
                 }
+                crate::object::ops::dict_commit_structure(_py, dict_ptr);
                 dec_ref_bits(_py, key_val);
                 dec_ref_bits(_py, val_val);
                 return val_val;
@@ -744,12 +544,17 @@ pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
             }
-            let pairs = dict_order(dict_ptr).clone();
-            let out_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
+            let out_ptr = alloc_dict_with_pairs(_py, &[]);
             if out_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            MoltObject::from_ptr(out_ptr).bits()
+            let result = MoltObject::from_ptr(out_ptr).bits();
+            dict_update_apply(_py, result, dict_update_set_in_place, dict_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, result);
+                return MoltObject::none().bits();
+            }
+            result
         }
     })
 }
@@ -792,6 +597,7 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
                 (*header_from_obj_ptr(dict_ptr))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
+            crate::object::ops::dict_commit_structure(_py, dict_ptr);
             dec_ref_bits(_py, key_bits);
             dec_ref_bits(_py, val_bits);
             MoltObject::from_ptr(item_ptr).bits()
@@ -802,122 +608,35 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let dict_obj = obj_from_bits(dict_bits);
-        let Some(ptr) = dict_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
-        };
         unsafe {
+            let Some(ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
+            };
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
                 return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
             };
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            let Some(dict) = obj_from_bits(dict_bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
-            }
-            let mapping_obj = obj_from_bits(mapping_bits);
-            let Some(mapping_ptr) = mapping_obj.as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            if object_type_id(mapping_ptr) == TYPE_ID_DICT {
-                let order = dict_order(mapping_ptr);
-                for idx in (0..order.len()).step_by(2) {
-                    let key_bits = order[idx];
-                    let val_bits = order[idx + 1];
-                    let key_obj = obj_from_bits(key_bits);
-                    let Some(key_ptr) = key_obj.as_ptr() else {
-                        return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                    };
-                    if object_type_id(key_ptr) != TYPE_ID_STRING {
-                        return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                    }
-                    dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                }
+            // Preserve the call boundary: invalid/duplicate keywords must
+            // not mutate the destination, and all keys/values are evaluated
+            // before string validation.
+            let keywords = alloc_dict_with_pairs(_py, &[]);
+            if keywords.is_null() {
                 return MoltObject::none().bits();
             }
-            let Some(keys_bits) = attr_name_bits_from_bytes(_py, b"keys") else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            let keys_method_bits = attr_lookup_ptr(_py, mapping_ptr, keys_bits);
-            dec_ref_bits(_py, keys_bits);
-            let Some(keys_method_bits) = keys_method_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            let keys_iterable = call_callable0(_py, keys_method_bits);
-            let iter_bits = molt_iter(keys_iterable);
-            if obj_from_bits(iter_bits).is_none() {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
+            let _keywords_guard = PtrDropGuard::new(keywords);
+            if !crate::object::mapping_merge::merge_keywords(_py, keywords, mapping_bits)
+                || !crate::object::mapping_merge::validate_keywords(_py, keywords)
+            {
+                return MoltObject::none().bits();
             }
-            let Some(getitem_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            let getitem_method_bits = attr_lookup_ptr(_py, mapping_ptr, getitem_bits);
-            dec_ref_bits(_py, getitem_bits);
-            let Some(getitem_method_bits) = getitem_method_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "argument after ** must be a mapping",
-                );
-            };
-            loop {
-                let pair_bits = molt_iter_next(iter_bits);
-                let pair_obj = obj_from_bits(pair_bits);
-                let Some(pair_ptr) = pair_obj.as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let Some((key_bits, done_bits)) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let key_obj = obj_from_bits(key_bits);
-                let Some(key_ptr) = key_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                };
-                if object_type_id(key_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
-                }
-                let val_bits = call_callable1(_py, getitem_method_bits, key_bits);
-                dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-            }
-            MoltObject::none().bits()
+            dict_update_apply(
+                _py,
+                MoltObject::from_ptr(dict).bits(),
+                dict_update_set_in_place,
+                MoltObject::from_ptr(keywords).bits(),
+            )
         }
     })
 }

@@ -236,9 +236,35 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
 
 // ── RPO algorithm tests ──
 //
-// The RPO algorithm is exercised end-to-end by the integration tests in
-// `runtime/molt-backend/tests/llvm_rpo.rs`, which call into
-// [`super::compute_function_rpo`] directly with synthetic CFGs covering
+// The RPO algorithm is exercised by the shared IR tests in
+// `runtime/molt-ir/src/tir/dominators/tests/rpo_tests.rs`, which call into
+// [`crate::tir::dominators::executable_reverse_postorder`] directly with synthetic CFGs covering
 // diamonds, loops, switches, deep chains, self-loops, and unreachable
-// blocks. Those tests live in a separate test binary and so are not
-// blocked by drift in the wider lib test suite.
+// blocks. They run without an LLVM feature or backend build.
+
+#[test]
+fn lower_codegen_partition_emits_real_llvm_noinline_attribute() {
+    for partitioned in [false, true] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut function = TirFunction::new("__molt_chunk_v1_user".into(), vec![], TirType::None);
+        function.attrs.insert(
+            crate::tir::function::CODEGEN_PARTITION_ATTR.into(),
+            AttrValue::Bool(partitioned),
+        );
+        function
+            .blocks
+            .get_mut(&function.entry_block)
+            .unwrap()
+            .terminator = Terminator::Return { values: vec![] };
+        let lowered = lower_tir_to_llvm(&function, &backend);
+        let kind = Attribute::get_named_enum_kind_id("noinline");
+        assert_ne!(kind, 0, "LLVM must expose its noinline attribute");
+        assert_eq!(
+            lowered
+                .get_enum_attribute(AttributeLoc::Function, kind)
+                .is_some(),
+            partitioned
+        );
+    }
+}

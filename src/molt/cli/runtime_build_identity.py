@@ -65,6 +65,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/artifact_state.py",
     "src/molt/cli/atomic_io.py",
     "src/molt/cli/build_locks.py",
+    "src/molt/file_locks.py",
     "src/molt/cli/command_runtime.py",
     "src/molt/cli/compiler_metadata.py",
     "src/molt/cli/config_resolution.py",

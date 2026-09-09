@@ -19,6 +19,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = "0.11"
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
+ar_archive_writer = { version = "0.5.2", optional = true }
 memmap2 = { version = "0.9", optional = true }
 molt-wasm-facts = { path = "../molt-wasm-facts", optional = true }
 rmp-serde = "1"
@@ -30,6 +31,7 @@ cudarc = { version = "0.19", optional = true, default-features = false, features
 mlx-rs = { version = "0.25", optional = true }
 
 [dev-dependencies]
+object = { version = "0.39", default-features = false, features = ["read", "write", "std"] }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 # Re-import molt-tir with the test-util feature so molt-backend's own tests can
 # reach the crate-private accessor seams (representation-plan / tir-cache /
@@ -64,6 +66,8 @@ polly = ["llvm", "molt-backend-native/polly"]
 luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]
 native-backend = [
     "dep:molt-backend-native",
+    "dep:ar_archive_writer",
+    "dep:memmap2",
     "molt-backend-native/native-backend",
 ]
 cbor = ["dep:ciborium"]
@@ -108,10 +112,6 @@ required-features = ["native-backend"]
 
 [[test]]
 name = "llvm_generated_object_linkage"
-required-features = ["llvm"]
-
-[[test]]
-name = "llvm_rpo"
 required-features = ["llvm"]
 
 [[test]]

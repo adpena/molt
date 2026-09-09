@@ -417,6 +417,7 @@ fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

@@ -36,11 +36,12 @@ pub(crate) fn function(
         param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }
 }
 
-/// The EXACT post-`overflow_peel` SimpleIR shape (captured live from
+/// Exact-bound variant of the post-`overflow_peel` SimpleIR shape (captured live from
 /// `tmp/peel_sum.py`'s `compute` — fast structured loop with two
 /// `checked_add`s + carried overflow flag + `prev_*` snapshot slots,
 /// post-loop dispatch, generic boxed slow loop, exit-arg merge).
@@ -50,6 +51,7 @@ pub(crate) fn peeled_compute_func_ir() -> FunctionIR {
         &["n"],
         None,
         vec![
+            op_v("const", Some("_exact_bound"), None, &[], 1_000_000),
             op_v("const", Some("v106"), None, &[], 0),
             op_v("const", Some("v108"), None, &[], 0),
             op_v("const", Some("v117"), None, &[], 1),
@@ -67,7 +69,7 @@ pub(crate) fn peeled_compute_func_ir() -> FunctionIR {
             op("load_var", Some("_v40"), Some("_bb1_arg2"), &[]),
             op("load_var", Some("_v41"), Some("_bb1_arg3"), &[]),
             op("load_var", Some("_v42"), Some("_bb1_arg4"), &[]),
-            op("lt", Some("v111"), None, &["_v16", "n"]),
+            op("lt", Some("v111"), None, &["_v16", "_exact_bound"]),
             op("not", Some("_v44"), None, &["_v40"]),
             op("and", Some("_v45"), None, &["v111", "_v44"]),
             op("loop_break_if_false", None, None, &["_v45"]),
@@ -95,7 +97,7 @@ pub(crate) fn peeled_compute_func_ir() -> FunctionIR {
             op("load_var", Some("_v30"), Some("_bb7_arg1"), &[]),
             op_v("jump", None, None, &[], 21),
             op_v("label", None, None, &[], 21),
-            op("lt", Some("v111"), None, &["_v29", "n"]),
+            op("lt", Some("v111"), None, &["_v29", "_exact_bound"]),
             op_v("br_if", None, None, &["v111"], 16),
             op("store_var", None, Some("_bb5_arg0"), &["_v30"]),
             op_v("jump", None, None, &[], 17),

@@ -20,15 +20,18 @@ from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
     is_llvm_linker_role,
-    llvm_linker_role_for_object_format,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
+    LinkDialect,
+    NativeArtifactKind,
     NativeLinkPlan,
     NativeObjectFormat,
     _host_target_triple,
     native_link_capabilities,
+    native_artifact_link_arguments,
+    whole_archive_link_arguments,
     native_link_policy_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
@@ -79,7 +82,7 @@ def _resolve_available_fast_linker(
             host_platform=host_platform,
             host_arch=platform.machine(),
         )
-        linker_role = llvm_linker_role_for_object_format(target.object_format.value)
+        linker_role = target.link_dialect.llvm_linker_role
     if llvm_linker_candidates(linker_role, sibling_directories=sibling_directories):
         return "lld"
     return None
@@ -103,7 +106,7 @@ def _resolve_dev_linker(
                 host_platform=sys.platform if host_platform is None else host_platform,
                 host_arch=platform.machine(),
             )
-            linker_role = llvm_linker_role_for_object_format(target.object_format.value)
+            linker_role = target.link_dialect.llvm_linker_role
         return (
             "lld"
             if llvm_linker_candidates(
@@ -134,7 +137,7 @@ def _resolve_native_linker_hint(
         host_platform=host_platform,
         host_arch=platform.machine(),
     )
-    linker_role = llvm_linker_role_for_object_format(target.object_format.value)
+    linker_role = target.link_dialect.llvm_linker_role
     if profile == "dev":
         raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
         is_host_linux = target_triple is None and host_platform.startswith("linux")
@@ -243,36 +246,6 @@ def _build_native_link_driver_command(
     return link_cmd, linker_hint, normalized_target
 
 
-def _windows_coff_library_command(
-    *,
-    input_objects: Sequence[Path],
-    output_path: Path,
-) -> list[str]:
-    override = os.environ.get("MOLT_COFF_LIB")
-    if override:
-        return [
-            *resolve_explicit_tool_command(override, label="MOLT_COFF_LIB"),
-            f"/OUT:{output_path}",
-            *[str(path) for path in input_objects],
-        ]
-    candidates = llvm_named_tool_candidates("llvm-lib", "lib")
-    if not candidates:
-        candidates = llvm_linker_candidates("lld-link")
-    if candidates:
-        tool = candidates[0]
-        is_lld_link = tool.stem.lower() == "lld-link"
-        return [
-            str(tool),
-            *(("/lib",) if is_lld_link else ()),
-            f"/OUT:{output_path}",
-            *[str(path) for path in input_objects],
-        ]
-    raise RuntimeError(
-        "Windows native object emission requires llvm-lib, lib.exe, or lld-link "
-        "to combine COFF objects."
-    )
-
-
 def _build_native_link_plan(
     *,
     output_obj: Path,
@@ -283,6 +256,8 @@ def _build_native_link_plan(
     sysroot_path: Path | None,
     profile: str,
     runtime_build_identity: RuntimeBuildIdentity,
+    output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
+    stdlib_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_obj_path: Path | None = None,
     external_static_archives: Sequence[Path] = (),
     external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
@@ -300,14 +275,25 @@ def _build_native_link_plan(
         host_platform=host_platform,
         host_arch=host_arch,
     )
-    link_inputs = [str(stub_path), str(output_obj)]
-    if stdlib_obj_path is not None and stdlib_obj_path.exists():
-        link_inputs.append(str(stdlib_obj_path))
     target = resolve_native_target_spec(
         target_triple,
         host_platform=host_platform,
         host_arch=host_arch,
     )
+    link_inputs = [
+        str(stub_path),
+        *native_artifact_link_arguments(output_obj, kind=output_kind, target=target),
+    ]
+    if stdlib_obj_path is not None:
+        if not stdlib_obj_path.is_file():
+            raise RuntimeError(
+                f"Shared stdlib artifact is unavailable: {stdlib_obj_path}"
+            )
+        link_inputs.extend(
+            native_artifact_link_arguments(
+                stdlib_obj_path, kind=stdlib_kind, target=target
+            )
+        )
     target_dialect = source_extension_link_dialect(
         target_triple,
         host_platform=host_platform,
@@ -336,7 +322,7 @@ def _build_native_link_plan(
         link_cmd,
         hinted=linker_hint,
     )
-    expected_role = llvm_linker_role_for_object_format(target.object_format.value)
+    expected_role = target.link_dialect.llvm_linker_role
     explicit_selectors = tuple(
         arg.split("=", 1)[1].strip() for arg in link_cmd if arg.startswith("-fuse-ld=")
     )
@@ -387,8 +373,11 @@ def _build_native_link_plan(
         link_inputs.extend(
             [
                 *[
-                    f"-Wl,/WHOLEARCHIVE:{archive}"
+                    argument
                     for archive in resolved_external_archives
+                    for argument in whole_archive_link_arguments(
+                        str(archive), dialect=target.link_dialect
+                    )
                 ],
                 runtime_lib_str,
                 *external_link_arguments,
@@ -403,8 +392,11 @@ def _build_native_link_plan(
         link_inputs.extend(
             [
                 *[
-                    f"-Wl,-force_load,{archive}"
+                    argument
                     for archive in resolved_external_archives
+                    for argument in whole_archive_link_arguments(
+                        str(archive), dialect=target.link_dialect
+                    )
                 ],
                 runtime_lib_str,
                 runtime_lib_str,
@@ -458,7 +450,10 @@ def _build_native_link_plan(
                 )
             )
             _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
-            link_cmd.append(f"-Wl,/DEF:{def_path}")
+            if target.link_dialect is LinkDialect.COFF_MSVC:
+                link_cmd.extend(("-Xlinker", f"/DEF:{def_path}"))
+            else:
+                link_cmd.append(str(def_path))
     link_cmd.extend(
         native_link_policy_flags(
             target=target,

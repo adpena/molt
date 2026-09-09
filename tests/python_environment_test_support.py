@@ -237,8 +237,9 @@ def realized_environment_manifest(
                 "external_source": None,
             }
         )
-    directory_paths = {scripts_root}
-    for file_path in [selected, *installed_paths]:
+    # Declared import roots exist even when no distribution supplies a file.
+    directory_paths = {scripts_root, site_root}
+    for file_path in [site_root, selected, *installed_paths]:
         parts = file_path.split("/")
         directory_paths.update(
             "/".join(parts[:index]) for index in range(1, len(parts))

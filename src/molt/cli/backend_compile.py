@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.backend_cache import NativeSymbolInspectionError
+
 import os
 import subprocess
 import sys
@@ -65,6 +67,7 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
+from molt.cli.native_link_plan import NativeArtifactKind
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
@@ -200,31 +203,34 @@ def _prepare_backend_setup(
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
     cache_setup_start = time.perf_counter()
-    cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
-        cache_enabled=cache,
-        ir=ir,
-        target=target,
-        target_triple=target_triple,
-        profile=profile,
-        runtime_cargo_profile=runtime_cargo_profile,
-        backend_cargo_profile=backend_cargo_profile,
-        emit_mode=emit_mode,
-        is_wasm=is_wasm,
-        linked=linked,
-        project_root=project_root,
-        cache_dir=cache_dir,
-        output_artifact=output_artifact,
-        warnings=warnings,
-        entry_module=entry_module,
-        module_graph_metadata=module_graph_metadata,
-        target_python=target_python,
-        stdlib_profile=stdlib_profile,
-        native_artifact_plan=native_artifact_plan,
-        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
-        backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
-        resolved_capability_policy=resolved_capability_policy,
-        stage_timings_ms=stage_timings_ms,
-    )
+    try:
+        cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
+            cache_enabled=cache,
+            ir=ir,
+            target=target,
+            target_triple=target_triple,
+            profile=profile,
+            runtime_cargo_profile=runtime_cargo_profile,
+            backend_cargo_profile=backend_cargo_profile,
+            emit_mode=emit_mode,
+            is_wasm=is_wasm,
+            linked=linked,
+            project_root=project_root,
+            cache_dir=cache_dir,
+            output_artifact=output_artifact,
+            warnings=warnings,
+            entry_module=entry_module,
+            module_graph_metadata=module_graph_metadata,
+            target_python=target_python,
+            stdlib_profile=stdlib_profile,
+            native_artifact_plan=native_artifact_plan,
+            runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+            backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
+            resolved_capability_policy=resolved_capability_policy,
+            stage_timings_ms=stage_timings_ms,
+        )
+    except NativeSymbolInspectionError as error:
+        return None, _fail(str(error), json_output, command="build")
     _record_pipeline_stage_ms(
         stage_timings_ms,
         "backend_setup_prepare_cache",
@@ -642,7 +648,10 @@ def _execute_backend_compile(
     # cache directories in the same command.
     backend_output_ctx = _temporary_backend_output_path(
         artifacts_root,
-        is_wasm=is_wasm,
+        artifact_contract=cache_setup.artifact_contract,
+    )
+    native_output_kind = (
+        cache_setup.artifact_contract.native_kind or NativeArtifactKind.OBJECT
     )
     with backend_output_ctx as backend_output:
         daemon_identity_path = (
@@ -714,6 +723,7 @@ def _execute_backend_compile(
             ) = _backend_daemon_skip_output_sync_flags(
                 project_root,
                 output_artifact,
+                artifact_contract=cache_setup.artifact_contract,
                 cache_key=cache_key if cache else None,
                 function_cache_key=(
                     function_cache_key
@@ -755,12 +765,11 @@ def _execute_backend_compile(
                 project_root=molt_root,
                 ir=ir,
                 backend_output=backend_output,
-                is_wasm=is_wasm,
+                artifact_contract=cache_setup.artifact_contract,
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
                 wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-                target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
                 config_digest=backend_daemon_config_digest,
@@ -773,7 +782,6 @@ def _execute_backend_compile(
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                 stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
-                request_bytes=None,
                 daemon_identity=daemon_identity,
             )
             backend_compiled = daemon_compile.ok
@@ -823,12 +831,11 @@ def _execute_backend_compile(
                         project_root=molt_root,
                         ir=ir,
                         backend_output=backend_output,
-                        is_wasm=is_wasm,
+                        artifact_contract=cache_setup.artifact_contract,
                         wasm_link=wasm_link,
                         wasm_data_base=wasm_data_base,
                         wasm_table_base=wasm_table_base,
                         wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-                        target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
@@ -841,7 +848,6 @@ def _execute_backend_compile(
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
-                        request_bytes=None,
                         daemon_identity=(
                             _read_backend_daemon_identity(daemon_identity_path)
                             if daemon_identity_path is not None
@@ -930,6 +936,7 @@ def _execute_backend_compile(
                 is_luau_transpile=is_luau_transpile,
                 is_rust_transpile=is_rust_transpile,
                 is_wasm=is_wasm,
+                native_output_kind=native_output_kind,
                 target_triple=target_triple,
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
@@ -1053,6 +1060,7 @@ def _execute_backend_compile(
                 ),
                 function_cache_path=function_cache_path if cache else None,
                 warnings=warnings,
+                artifact_contract=cache_setup.artifact_contract,
                 output_already_synced=(
                     skip_module_output_if_synced
                     if daemon_ready and cache and cache_key
@@ -1144,7 +1152,7 @@ def _prepare_backend_compile(
                 project_root=project_root,
                 cache_candidates=cache_setup.cache_candidates,
                 output_artifact=output_artifact,
-                is_wasm=is_wasm,
+                artifact_contract=cache_setup.artifact_contract,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
                 cache_path=cache_path,

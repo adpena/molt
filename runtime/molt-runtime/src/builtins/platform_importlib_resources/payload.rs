@@ -480,6 +480,7 @@ mod tests {
     #[cfg(feature = "stdlib_archive")]
     use std::io::Write;
 
+    #[cfg(feature = "stdlib_archive")]
     fn bootstrap_module_file() -> String {
         if super::super::super::sys_platform_str().starts_with("win") {
             "C:\\repo\\src\\molt\\stdlib\\sys.py".to_string()

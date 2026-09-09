@@ -88,12 +88,16 @@
     "src/molt/python_runtime_identity.py",
     "src/molt/python_file_node_custody.py",
     "src/molt/python_native_dependency_custody.py",
+    "src/molt/native_artifact_header.py",
+    "src/molt/native_target_shape.py",
     "src/molt/python_native_locations.py",
     "src/molt/python_identity_common.py",
     "src/molt/python_uv_lock_identity.py",
     "src/molt/python_capture.py",
     "tools/proof_queue_pkg/pact.py",
     "tools/proof_queue_pkg/runner.py",
+    "tools/proof_queue_pkg/execution_receipt_details.py",
+    "tools/proof_queue_pkg/cargo_cache_custody.py",
     "tools/proof_queue_pkg/scheduling.py",
     "tools/proof_queue_pkg/state.py",
     "tools/proof_supervisor/build.py",
@@ -148,6 +152,8 @@
     "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
     "tests/tools/test_proof_queue.py",
+    "tests/tools/test_proof_queue_execution_receipt_details.py",
+    "tests/tools/test_proof_queue_cargo_cache_custody.py",
     "tests/tools/test_proof_supervisor_inventory.py",
     "tests/tools/test_memory_guard_spawn_callback.py",
     "tests/tools/test_pytest_truth_plugin.py",
@@ -155,7 +161,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ed897871b9e8dc5a9eb9a3c6f4d4a6f19c48c6415933bf031b3e17200c785145",
+  "authority_sha256": "bf4e1fe8b94a306dee39a039c04d760526b0c44445eda9d6b7fa369f4a27ebbc",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -314,7 +320,7 @@
       ],
       "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
-      "description": "Native compiler/linker integration smoke isolated from pure Python proof.",
+      "description": "Native compiler/linker and supervisor receipt integration isolated from pure Python proof.",
       "executor": "github-job",
       "inputs": [
         ".github/workflows/ci.yml",
@@ -326,6 +332,11 @@
         "tests/test_bench_harness.py",
         "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_native_link_*.py",
+        "tests/tools/test_proof_queue_native_receipts.py",
+        "tests/proof_queue_custody_test_support.py",
+        "tests/python_environment_test_support.py",
+        "tools/proof_queue_pkg/**",
+        "tools/proof_supervisor/**",
         "runtime/**"
       ],
       "job": "native-integration",
@@ -534,6 +545,14 @@
         "src/molt/cli/source_build_environment.py",
         "src/molt/cli/source_build_inventory.py",
         "src/molt/python_*.py",
+        "src/molt/native_artifact_header.py",
+        "src/molt/native_target_shape.py",
+        "src/molt/cli/native_binary.py",
+        "src/molt/cli/native_link_plan.py",
+        "tests/native_artifact_fixtures.py",
+        "tests/test_native_artifact_header.py",
+        "tests/cli/test_cli_native_binary_authority.py",
+        "tests/cli/test_native_artifact_contract.py",
         "tests/test_python_environment_identity.py",
         "tests/test_python_native_dependency_custody.py",
         "tests/test_python_runtime_identity.py",
@@ -2984,7 +3003,9 @@
         "tests/test_harness_layers.py",
         "tests/test_harness_report.py",
         "tests/test_manifest_env.py",
-        "tests/test_monty_conformance_runner.py"
+        "tests/test_monty_conformance_runner.py",
+        "tests/tools/test_proof_queue_execution_receipt_details.py",
+        "tests/tools/test_proof_queue_cargo_cache_custody.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3095,6 +3116,13 @@
         "tests/cli/test_cli_artifact_format_validation.py",
         "tests/cli/test_cli_shared_stdlib_cache.py",
         "tests/test_ustar.py",
+        "tests/test_native_artifact_header.py",
+        "tests/cli/test_cli_native_binary_authority.py",
+        "tests/cli/test_native_artifact_contract.py",
+        "tests/cli/test_native_symbol_authority.py",
+        "tests/cli/test_native_symbol_build_errors.py",
+        "tests/cli/test_backend_artifact_contract.py",
+        "tests/cli/test_artifact_sync.py",
         "tests/cli/test_native_link_custody.py",
         "tests/cli/test_native_link_manifest.py",
         "tests/cli/test_cargo_execution_failure_authority.py",
@@ -3197,7 +3225,8 @@
         "3.12",
         "pytest",
         "-q",
-        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"
+        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest",
+        "tests/tools/test_proof_queue_native_receipts.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
@@ -3297,6 +3326,69 @@
         "python",
         "rustc",
         "cargo",
+        "wasm-ld"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--timings",
+        "--profile",
+        "dev-fast",
+        "--config",
+        "profile.dev-fast.package.cranelift-codegen.opt-level=0",
+        "--no-fail-fast",
+        "--lib",
+        "--bins",
+        "--test",
+        "generated_artifact_custody",
+        "-p",
+        "molt-codegen-abi",
+        "-p",
+        "molt-ir",
+        "-p",
+        "molt-passes",
+        "-p",
+        "molt-tir",
+        "-p",
+        "molt-backend",
+        "-p",
+        "molt-backend-native",
+        "-p",
+        "molt-backend-wasm",
+        "-p",
+        "molt-backend-luau",
+        "-p",
+        "molt-backend-rust",
+        "--no-default-features",
+        "--features",
+        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend",
+        "--",
+        "--include-ignored",
+        "--skip",
+        "arith_codegen_golden_capture",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [
+        "rust.test.default-truth"
+      ],
+      "family": "rust",
+      "id": "rust.test.compiler-authorities",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "cargo",
+        "lune",
+        "node",
         "wasm-ld"
       ]
     },
@@ -3854,11 +3946,11 @@
       },
       "rust": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 2280,
-        "headroom_seconds": 840,
-        "projected_makespan_seconds": 2760,
+        "critical_path_seconds": 2400,
+        "headroom_seconds": 240,
+        "projected_makespan_seconds": 3360,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 2760
+          "compiler-build-resource": 3360
         }
       },
       "rust_security": {
@@ -5351,6 +5443,18 @@
         "--verbose"
       ],
       "version_pattern": "^rustc 1\\.96\\.1\\b"
+    },
+    {
+      "executable": "lune",
+      "name": "lune",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::cargo install lune --version 0.10.5 --locked"
+      ],
+      "setup_value": "0.10.5",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^lune 0\\.10\\.5$"
     },
     {
       "content_path_command": [

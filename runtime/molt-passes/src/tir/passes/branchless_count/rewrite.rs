@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
@@ -29,7 +31,18 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
 }
 
 fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite> {
-    let block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
+    let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
+    block_ids.sort_unstable();
+    let predecessors = crate::tir::dominators::build_pred_map(func);
+    let Ok(mut protected_roots) = func.block_retirement_metadata_roots(&HashSet::new()) else {
+        // Invalid label custody cannot authorize a rewrite. The TIR verifier
+        // owns diagnostics for invalid input; preserve it without mutation.
+        return Vec::new();
+    };
+    protected_roots.insert(func.entry_block);
+    // Predecessor sets deliberately erase edge multiplicity and kind. An arm
+    // can also be an implicit handler of its sole ordinary predecessor, or a
+    // structural TryEnd target. Neither ownership is retired by this rewrite.
     let mut rewrites = Vec::new();
 
     for &bid in &block_ids {
@@ -49,11 +62,21 @@ fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite>
         if !facts.is_bool(cond) {
             continue;
         }
+        if then_blk == else_blk
+            || then_blk == bid
+            || else_blk == bid
+            || protected_roots.contains(&then_blk)
+            || protected_roots.contains(&else_blk)
+            || predecessors.get(&then_blk).map(Vec::as_slice) != Some(&[bid])
+            || predecessors.get(&else_blk).map(Vec::as_slice) != Some(&[bid])
+        {
+            continue;
+        }
 
         let Some(then_block) = func.blocks.get(&then_blk) else {
             continue;
         };
-        if then_block.ops.len() != 1 {
+        if !then_block.args.is_empty() || then_block.ops.len() != 1 {
             continue;
         }
         let then_op = &then_block.ops[0];
@@ -71,6 +94,9 @@ fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite>
         } else {
             continue;
         };
+        if !facts.can_increment_unconditionally(func, bid, counter_val) {
+            continue;
+        }
 
         let incremented_val = then_op.results[0];
 
@@ -81,11 +107,14 @@ fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite>
         if then_merge_args.len() != 1 || then_merge_args[0] != incremented_val {
             continue;
         }
+        if [bid, then_blk, else_blk].contains(&merge_blk) {
+            continue;
+        }
 
         let Some(else_block) = func.blocks.get(&else_blk) else {
             continue;
         };
-        if !else_block.ops.is_empty() {
+        if !else_block.args.is_empty() || !else_block.ops.is_empty() {
             continue;
         }
         let (else_target, else_merge_args) = match &else_block.terminator {
@@ -120,6 +149,10 @@ fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite>
 }
 
 fn apply_rewrites(func: &mut TirFunction, rewrites: Vec<Rewrite>, stats: &mut PassStats) {
+    if rewrites.is_empty() {
+        return;
+    }
+    let mut retired = HashSet::with_capacity(rewrites.len() * 2);
     for rw in rewrites {
         let new_counter = func.fresh_value();
 
@@ -139,15 +172,21 @@ fn apply_rewrites(func: &mut TirFunction, rewrites: Vec<Rewrite>, stats: &mut Pa
             args: vec![new_counter],
         };
 
-        func.blocks.remove(&rw.then_block_id);
-        if rw.else_block_id != rw.merge_block_id {
-            func.blocks.remove(&rw.else_block_id);
-        }
+        retired.insert(rw.then_block_id);
+        retired.insert(rw.else_block_id);
 
         stats.values_changed += 1;
         stats.ops_removed += 1;
         stats.ops_added += 1;
     }
+    let retained = func
+        .blocks
+        .keys()
+        .copied()
+        .filter(|block| !retired.contains(block))
+        .collect();
+    func.retain_blocks(&retained)
+        .expect("branchless diamond retirement preserves all live block references");
 }
 
 struct Rewrite {

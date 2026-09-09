@@ -180,6 +180,7 @@ fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             const_int("init", 0),

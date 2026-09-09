@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonCallSiteFact,
+        PythonExpressionFact,
+        PythonNodeKey,
+        PythonStatementFact,
+    )
+
 import ast
+from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -17,6 +28,8 @@ from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,
     python_pattern_capture_names,
+    python_pattern_irrefutable_reason,
+    python_pattern_is_capture_only,
 )
 
 
@@ -562,13 +575,19 @@ def _normalized_import_context(context: ModuleImportContext) -> ModuleImportCont
     return replace(context, spec_name=context.module_name)
 
 
-def _call_receives_module_globals(node: ast.Call) -> bool:
+def _call_receives_module_globals(
+    node: ast.Call, expression_facts: Mapping[PythonNodeKey, PythonExpressionFact]
+) -> bool:
+    """Project evaluated receiver/argument provenance, never builtin spelling."""
+    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+
+    expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
+    if isinstance(node.func, ast.Attribute):
+        expressions.append(node.func.value)
     return any(
-        isinstance(child, ast.Call)
-        and isinstance(child.func, ast.Name)
-        and child.func.id == "globals"
-        for argument in (*node.args, *(keyword.value for keyword in node.keywords))
-        for child in ast.walk(argument)
+        fact is not None and fact.exposes_module_globals
+        for expression in expressions
+        for fact in (expression_facts.get(PythonNodeKey.from_node(expression)),)
     )
 
 
@@ -577,14 +596,32 @@ def _analyze_module_import_flow_uncached(
     context: ModuleImportContext,
     *,
     metadata_preserving_globals_calls: Collection[ImportNodeKey] = (),
+    statement_facts: Mapping[PythonNodeKey, PythonStatementFact],
+    expression_facts: Mapping[PythonNodeKey, PythonExpressionFact],
+    assignment_effects: Mapping[PythonNodeKey, int],
+    call_facts: Mapping[PythonNodeKey, PythonCallSiteFact],
 ) -> ModuleImportFlow:
-    """Build one conservative O(AST + states*metadata-writes) event/dataflow pass."""
+    """Project metadata through the canonical statement completion partitions."""
+
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonCompletion,
+        PythonCompletionFlow,
+        PythonIdentity,
+        PythonNodeKey,
+    )
+    from molt.compiler_analysis.python_effects_generated import (
+        NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
+        RAISES,
+        UNKNOWN_EFFECTS,
+        WRITES_MODULE_METADATA,
+    )
 
     initial = (context_import_state(context),)
     by_node: dict[ImportNodeKey, tuple[ModuleImportState, ...]] = {}
     all_states: set[ModuleImportState] = set(initial)
-    deferred_bodies: list[tuple[Sequence[ast.stmt], bool]] = []
-    deferred_expressions: list[ast.expr] = []
+    deferred_bodies: dict[ImportNodeKey, tuple[Sequence[ast.stmt], bool]] = {}
+    pending_bodies: deque[ImportNodeKey] = deque()
+    deferred_expressions: dict[ImportNodeKey, ast.expr] = {}
     metadata_mutator_functions: set[str] = set()
     future_annotations = any(
         isinstance(statement, ast.ImportFrom)
@@ -598,13 +635,15 @@ def _analyze_module_import_flow_uncached(
             key = python_node_source_key(node)
             previous = by_node.get(key, ())
             by_node[key] = _merge_states(previous, states)
-        if isinstance(
-            node,
-            (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.GeneratorExp),
-        ):
-            return
-        for child in ast.iter_child_nodes(node):
-            record(child, states)
+
+    def metadata_assignment(
+        states: tuple[ModuleImportState, ...], target: ast.AST, value: ast.AST
+    ) -> tuple[ModuleImportState, ...]:
+        updated = _merge_states(
+            update_module_import_state(state, target, value) for state in states
+        )
+        all_states.update(updated)
+        return updated
 
     def assign_states(
         states: tuple[ModuleImportState, ...],
@@ -612,8 +651,15 @@ def _analyze_module_import_flow_uncached(
         value: ast.AST,
         *,
         direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        raised_states: list[tuple[ModuleImportState, ...]] | None = None,
     ) -> tuple[ModuleImportState, ...]:
         current = states
+        value_fact = expression_facts.get(PythonNodeKey.from_node(value))
+        if value_fact is not None and value_fact.exposes_module_globals:
+            # Publishing a module mapping into a binding escapes the metadata
+            # authority; using that same mapping as an immediate store receiver
+            # is handled by the precise assignment facts below.
+            current = unknown_states(current)
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
                 if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(
@@ -625,19 +671,47 @@ def _analyze_module_import_flow_uncached(
                             (element,),
                             element_value,
                             direct_metadata_names=direct_metadata_names,
+                            raised_states=raised_states,
                         )
-                elif any(
-                    target_writes_metadata(element, direct_metadata_names)
-                    for element in target.elts
-                ):
-                    current = unknown_states(current)
-            elif target_writes_metadata(target, direct_metadata_names):
-                current = _merge_states(
-                    update_module_import_state(state, target, value)
-                    for state in current
+                else:
+                    current = expression_effects(
+                        target,
+                        current,
+                        direct_metadata_names=direct_metadata_names,
+                        raised_states=raised_states,
+                    )
+                    if any(
+                        target_writes_metadata(element, direct_metadata_names)
+                        for element in target.elts
+                    ):
+                        current = unknown_states(current)
+            else:
+                current = expression_effects(
+                    target,
+                    current,
+                    direct_metadata_names=direct_metadata_names,
+                    raised_states=raised_states,
                 )
+                if target_writes_metadata(target, direct_metadata_names):
+                    current = metadata_assignment(current, target, value)
+            current = target_completion_states(target, current, direct_metadata_names)
         all_states.update(current)
         return current
+
+    def target_completion_states(
+        target: ast.AST,
+        states: tuple[ModuleImportState, ...],
+        direct_metadata_names: Collection[str],
+    ) -> tuple[ModuleImportState, ...]:
+        effects = assignment_effects.get(
+            PythonNodeKey.from_node(target), UNKNOWN_EFFECTS
+        )
+        if effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS or (
+            effects & WRITES_MODULE_METADATA
+            and not target_writes_metadata(target, direct_metadata_names)
+        ):
+            return unknown_states(states)
+        return states
 
     def unknown_states(
         states: tuple[ModuleImportState, ...],
@@ -826,30 +900,134 @@ def _analyze_module_import_flow_uncached(
     def expression_effects(
         expression: ast.AST,
         states: tuple[ModuleImportState, ...],
+        *,
+        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        raised_states: list[tuple[ModuleImportState, ...]] | None = None,
+    ) -> tuple[ModuleImportState, ...]:
+        current = expression_metadata_transfer(
+            expression,
+            states,
+            direct_metadata_names=direct_metadata_names,
+            raised_states=raised_states,
+        )
+        fact = expression_facts.get(PythonNodeKey.from_node(expression))
+        if raised_states is not None and (
+            fact is None or (fact.effects | fact.truth_effects) & RAISES
+        ):
+            raised_states.append(_merge_states(states, current))
+        return current
+
+    def expression_metadata_transfer(
+        expression: ast.AST,
+        states: tuple[ModuleImportState, ...],
+        *,
+        direct_metadata_names: Collection[str],
+        raised_states: list[tuple[ModuleImportState, ...]] | None,
     ) -> tuple[ModuleImportState, ...]:
         current = states
+
+        def transfer(
+            child: ast.AST, incoming: tuple[ModuleImportState, ...]
+        ) -> tuple[ModuleImportState, ...]:
+            return expression_effects(
+                child,
+                incoming,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=raised_states,
+            )
+
+        if isinstance(expression, ast.IfExp):
+            current = transfer(expression.test, current)
+            truth = expression_truth(expression.test)
+            outcomes: list[tuple[ModuleImportState, ...]] = []
+            for live, branch in (
+                (truth is not False, expression.body),
+                (truth is not True, expression.orelse),
+            ):
+                if live:
+                    outcomes.append(transfer(branch, current))
+                else:
+                    record_unreachable(branch)
+            return _merge_states(*outcomes)
+        if isinstance(expression, ast.BoolOp):
+            outcomes = []
+            for index, value in enumerate(expression.values):
+                current = transfer(value, current)
+                truth = expression_truth(value)
+                last = index == len(expression.values) - 1
+                stops = (
+                    truth is False
+                    if isinstance(expression.op, ast.And)
+                    else truth is True
+                )
+                if last or stops or truth is None:
+                    outcomes.append(current)
+                if stops:
+                    for skipped in expression.values[index + 1 :]:
+                        record_unreachable(skipped)
+                    break
+            return _merge_states(*outcomes)
+        if isinstance(expression, ast.Compare):
+            current = transfer(expression.left, current)
+            outcomes = []
+            for comparator in expression.comparators:
+                current = transfer(comparator, current)
+                # Every comparison can terminate a chain. Preserve correlation
+                # rather than forcing the last comparator's writes on all exits.
+                outcomes.append(current)
+            return _merge_states(*outcomes)
         for child in expression_evaluation_children(expression):
-            current = expression_effects(child, current)
+            current = expression_effects(
+                child,
+                current,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=raised_states,
+            )
+        # Calls observe import metadata after their callee and arguments run.
+        # Recursive pre-recording would stamp later siblings with stale state.
+        record(expression, current)
         if isinstance(expression, ast.NamedExpr):
-            current = assign_states(current, (expression.target,), expression.value)
+            current = assign_states(
+                current,
+                (expression.target,),
+                expression.value,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=raised_states,
+            )
             return invalidate_proven_call_bindings(current, (expression.target,))
+        call = call_facts.get(PythonNodeKey.from_node(expression))
         if (
             isinstance(expression, ast.Call)
-            and isinstance(expression.func, ast.Attribute)
-            and expression.func.attr == "__setitem__"
-            and isinstance(expression.func.value, ast.Call)
-            and isinstance(expression.func.value.func, ast.Name)
-            and expression.func.value.func.id == "globals"
-            and not expression.func.value.args
-            and not expression.func.value.keywords
-            and len(expression.args) >= 2
-            and isinstance(expression.args[0], ast.Constant)
-            and expression.args[0].value in _IMPORT_METADATA_NAMES
+            and call is not None
+            and (
+                call.callee_is(PythonIdentity.GLOBALS_SETITEM)
+                or call.callee_is(PythonIdentity.GLOBALS_DELITEM)
+            )
         ):
-            target_name = expression.args[0].value
-            assert isinstance(target_name, str)
-            synthetic_target = ast.Name(id=target_name)
-            return assign_states(current, (synthetic_target,), expression.args[1])
+            # Binding flow owns method identity, argument admission and old-value
+            # release. A spelled globals()/__setitem__ is not mutation authority.
+            effects = assignment_effects.get(
+                PythonNodeKey.from_node(expression), UNKNOWN_EFFECTS
+            )
+            if effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
+                return unknown_states(current)
+            key_fact = expression_facts.get(PythonNodeKey.from_node(expression.args[0]))
+            name = None if key_fact is None else key_fact.static_value
+            if not isinstance(name, str):
+                return (
+                    unknown_states(current)
+                    if effects & WRITES_MODULE_METADATA
+                    else current
+                )
+            if name not in _IMPORT_METADATA_NAMES:
+                return current
+            target = ast.Name(id=name)
+            if call.callee_is(PythonIdentity.GLOBALS_DELITEM):
+                return _merge_states(
+                    invalidate_module_import_state(state, target, deleted=True)
+                    for state in current
+                )
+            return metadata_assignment(current, target, expression.args[1])
         if isinstance(expression, ast.Call) and (
             isinstance(expression.func, ast.Name)
             and expression.func.id in {"exec", "eval"}
@@ -860,7 +1038,7 @@ def _analyze_module_import_flow_uncached(
             isinstance(expression, ast.Call)
             and python_node_source_key(expression)
             not in metadata_preserving_globals_calls
-            and _call_receives_module_globals(expression)
+            and _call_receives_module_globals(expression, expression_facts)
         ):
             return unknown_states(current)
         if isinstance(expression, ast.Call):
@@ -873,10 +1051,10 @@ def _analyze_module_import_flow_uncached(
             ):
                 attribute_name = expression.args[1].value
                 if attribute_name in _IMPORT_METADATA_NAMES:
-                    synthetic_target = ast.Name(id=attribute_name)
-                    return assign_states(
-                        current, (synthetic_target,), expression.args[2]
-                    )
+                    # setattr may invoke a descriptor or release an old value.
+                    # It cannot publish a precise caller-module anchor merely
+                    # because the supplied member has a metadata spelling.
+                    return unknown_states(current)
                 owner_name = dotted_expression_name(expression.args[0])
                 rebound = (
                     f"{owner_name}.{attribute_name}" if owner_name is not None else None
@@ -902,128 +1080,242 @@ def _analyze_module_import_flow_uncached(
         # mapping. Proven-pure calls remain useful to ModuleSpec parsing.
         return current
 
+    def record_unreachable(node: ast.AST) -> None:
+        # Explicit absence differs from an unobserved deferred execution phase.
+        # Never erase a site reached through another incoming completion.
+        for child in ast.walk(node):
+            if isinstance(child, (ast.stmt, ast.Call)):
+                by_node.setdefault(python_node_source_key(child), ())
+
+    def unreachable_block(
+        statements: Sequence[ast.stmt],
+    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+        for statement in statements:
+            record_unreachable(statement)
+        return PythonCompletionFlow()
+
+    def expression_truth(node: ast.expr) -> bool | None:
+        fact = expression_facts.get(PythonNodeKey.from_node(node))
+        return None if fact is None else fact.result.truth
+
     def flow_statements(
         statements: Sequence[ast.stmt],
         states: tuple[ModuleImportState, ...],
         *,
-        mutate_metadata: bool,
+        eager_annotations: bool = True,
         direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
-    ) -> tuple[ModuleImportState, ...]:
-        current = states
+    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+        pending_expression_raises: list[tuple[ModuleImportState, ...]] = []
+
+        def evaluate(
+            expression: ast.AST,
+            incoming: tuple[ModuleImportState, ...],
+        ) -> tuple[ModuleImportState, ...]:
+            return expression_effects(
+                expression,
+                incoming,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=pending_expression_raises,
+            )
+
+        completion = PythonCompletionFlow(normal=states if states else None)
         for statement in statements:
+            pending_expression_raises.clear()
+            current = completion.normal
+            if current is None:
+                record_unreachable(statement)
+                continue
+            before = current
+            # Statement identity is also an explicit reachability projection.
+            key = python_node_source_key(statement)
+            by_node[key] = _merge_states(by_node.get(key, ()), current)
+            outcome: PythonCompletionFlow[tuple[ModuleImportState, ...]] | None = None
             if isinstance(statement, (ast.Import, ast.ImportFrom)):
                 record(statement, current)
                 current = bind_proven_import_calls(current, statement)
             elif isinstance(statement, ast.Assign):
-                record(statement.value, current)
-                current = expression_effects(statement.value, current)
-                if mutate_metadata:
-                    current = assign_states(
-                        current,
-                        statement.targets,
-                        statement.value,
-                        direct_metadata_names=direct_metadata_names,
-                    )
+                current = evaluate(statement.value, current)
+                current = assign_states(
+                    current,
+                    statement.targets,
+                    statement.value,
+                    direct_metadata_names=direct_metadata_names,
+                    raised_states=pending_expression_raises,
+                )
                 current = invalidate_proven_call_bindings(current, statement.targets)
                 update_mutator_bindings(statement.targets, statement.value)
             elif isinstance(statement, ast.AnnAssign):
-                record(statement.annotation, current)
                 if statement.value is not None:
-                    record(statement.value, current)
-                    current = expression_effects(statement.value, current)
-                    if mutate_metadata:
-                        current = assign_states(
-                            current,
-                            (statement.target,),
-                            statement.value,
-                            direct_metadata_names=direct_metadata_names,
-                        )
+                    current = evaluate(statement.value, current)
+                    current = assign_states(
+                        current,
+                        (statement.target,),
+                        statement.value,
+                        direct_metadata_names=direct_metadata_names,
+                        raised_states=pending_expression_raises,
+                    )
                     current = invalidate_proven_call_bindings(
                         current, (statement.target,)
                     )
                     update_mutator_bindings((statement.target,), statement.value)
+                else:
+                    current = evaluate(statement.target, current)
+                if (
+                    eager_annotations
+                    and context.target_python < (3, 14)
+                    and not future_annotations
+                ):
+                    current = evaluate(statement.annotation, current)
             elif isinstance(statement, ast.AugAssign):
                 record(statement, current)
-                if mutate_metadata and target_writes_metadata(
-                    statement.target, direct_metadata_names
-                ):
+                current = evaluate(statement.target, current)
+                current = evaluate(statement.value, current)
+                if target_writes_metadata(statement.target, direct_metadata_names):
                     current = _merge_states(
                         invalidate_module_import_state(state, statement.target)
                         for state in current
                     )
                     all_states.update(current)
+                current = target_completion_states(
+                    statement.target, current, direct_metadata_names
+                )
             elif isinstance(statement, ast.Delete):
                 current = invalidate_proven_call_bindings(current, statement.targets)
-                if mutate_metadata:
-                    for target in statement.targets:
-                        if not target_writes_metadata(target, direct_metadata_names):
-                            continue
+                for target in statement.targets:
+                    current = evaluate(target, current)
+                    if target_writes_metadata(target, direct_metadata_names):
                         current = _merge_states(
                             invalidate_module_import_state(state, target, deleted=True)
                             for state in current
                         )
-                    all_states.update(current)
+                    current = target_completion_states(
+                        target, current, direct_metadata_names
+                    )
+                all_states.update(current)
             elif isinstance(statement, ast.If):
-                record(statement.test, current)
-                current = expression_effects(statement.test, current)
-                body = flow_statements(
-                    statement.body,
-                    current,
-                    mutate_metadata=mutate_metadata,
-                    direct_metadata_names=direct_metadata_names,
+                current = evaluate(statement.test, current)
+                truth = expression_truth(statement.test)
+                body = (
+                    flow_statements(
+                        statement.body,
+                        current,
+                        eager_annotations=eager_annotations,
+                        direct_metadata_names=direct_metadata_names,
+                    )
+                    if truth is not False
+                    else unreachable_block(statement.body)
                 )
                 alternate = (
                     flow_statements(
                         statement.orelse,
                         current,
-                        mutate_metadata=mutate_metadata,
+                        eager_annotations=eager_annotations,
                         direct_metadata_names=direct_metadata_names,
                     )
-                    if statement.orelse
-                    else current
+                    if truth is not True
+                    else unreachable_block(statement.orelse)
                 )
-                current = _merge_states(body, alternate)
-                all_states.update(current)
+                outcome = body.merge(alternate, join_states=_merge_states)
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-                if isinstance(statement, ast.While):
-                    record(statement.test, current)
-                    current = expression_effects(statement.test, current)
-                else:
-                    record(statement.iter, current)
-                    current = expression_effects(statement.iter, current)
-                    # Iteration itself invokes __iter__/__next__ independently
-                    # of evaluating the iterable expression.
-                    current = unknown_states(current)
-                    if mutate_metadata and target_writes_metadata(
-                        statement.target, direct_metadata_names
-                    ):
-                        current = unknown_states(current)
-                body = flow_statements(
-                    statement.body,
-                    current,
-                    mutate_metadata=mutate_metadata,
-                    direct_metadata_names=direct_metadata_names,
-                )
-                current = _merge_states(current, body)
-                if statement.orelse:
-                    current = flow_statements(
-                        statement.orelse,
-                        current,
-                        mutate_metadata=mutate_metadata,
-                        direct_metadata_names=direct_metadata_names,
+                if not isinstance(statement, ast.While):
+                    current = evaluate(statement.iter, current)
+                loop_fact = statement_facts.get(PythonNodeKey.from_node(statement))
+                iteration = None if loop_fact is None else loop_fact.iteration
+
+                def advance(
+                    header: tuple[ModuleImportState, ...],
+                ) -> tuple[
+                    tuple[ModuleImportState, ...] | None,
+                    PythonCompletionFlow[tuple[ModuleImportState, ...]],
+                ]:
+                    raised: list[tuple[ModuleImportState, ...]] = []
+                    if isinstance(statement, ast.While):
+                        tested = expression_effects(
+                            statement.test,
+                            header,
+                            direct_metadata_names=direct_metadata_names,
+                            raised_states=raised,
+                        )
+                        truth = expression_truth(statement.test)
+                    else:
+                        # The binding/completion authority owns iterator and
+                        # target callbacks; import consumers project its facts.
+                        tested = (
+                            unknown_states(header)
+                            if iteration is None
+                            or iteration.effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+                            else header
+                        )
+                        if iteration is None or iteration.effects & RAISES:
+                            raised.append(tested)
+                        truth = (
+                            False if iteration is not None and iteration.empty else None
+                        )
+                    body_entry = tested
+                    if not isinstance(statement, ast.While) and truth is not False:
+                        if target_writes_metadata(
+                            statement.target, direct_metadata_names
+                        ):
+                            body_entry = unknown_states(tested)
+                        body_entry = target_completion_states(
+                            statement.target, body_entry, direct_metadata_names
+                        )
+                        target_effects = assignment_effects.get(
+                            PythonNodeKey.from_node(statement.target), UNKNOWN_EFFECTS
+                        )
+                        if target_effects & RAISES:
+                            raised.append(_merge_states(tested, body_entry))
+                    body = (
+                        flow_statements(
+                            statement.body,
+                            body_entry,
+                            eager_annotations=eager_annotations,
+                            direct_metadata_names=direct_metadata_names,
+                        )
+                        if truth is not False
+                        else unreachable_block(statement.body)
                     )
-                all_states.update(current)
+                    if raised:
+                        body = body.merge(
+                            PythonCompletionFlow(raised=_merge_states(*raised)),
+                            join_states=_merge_states,
+                        )
+                    return tested if truth is not True else None, body
+
+                outcome = PythonCompletionFlow.loop(
+                    current,
+                    advance,
+                    lambda exhausted: flow_statements(
+                        statement.orelse,
+                        exhausted,
+                        eager_annotations=eager_annotations,
+                        direct_metadata_names=direct_metadata_names,
+                    ),
+                    join_states=_merge_states,
+                    equivalent_states=lambda left, right: left == right,
+                    widen_state=unknown_states,
+                    finalize=(
+                        lambda state: PythonCompletionFlow(normal=unknown_states(state))
+                    )
+                    if iteration is not None and iteration.release_effects
+                    else None,
+                )
+                # A literal-true loop never visits its else suite. Missing facts
+                # must not resurrect imports in an unvisited execution phase.
+                if (
+                    isinstance(statement, ast.While)
+                    and expression_truth(statement.test) is True
+                ):
+                    unreachable_block(statement.orelse)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 current = invalidate_proven_call_bindings(
                     current, (ast.Name(id=statement.name),)
                 )
                 for expression in (*statement.decorator_list, *statement.args.defaults):
-                    record(expression, current)
-                    current = expression_effects(expression, current)
+                    current = evaluate(expression, current)
                 for expression in statement.args.kw_defaults:
                     if expression is not None:
-                        record(expression, current)
-                        current = expression_effects(expression, current)
+                        current = evaluate(expression, current)
                 if context.target_python < (3, 14) and not future_annotations:
                     annotations = [
                         argument.annotation
@@ -1047,10 +1339,12 @@ def _analyze_module_import_flow_uncached(
                     if statement.returns is not None:
                         annotations.append(statement.returns)
                     for expression in annotations:
-                        record(expression, current)
-                        current = expression_effects(expression, current)
+                        current = evaluate(expression, current)
                 mutates_metadata = function_mutates_metadata(statement)
-                deferred_bodies.append((statement.body, mutates_metadata))
+                deferred_key = python_node_source_key(statement)
+                if deferred_key not in deferred_bodies:
+                    pending_bodies.append(deferred_key)
+                deferred_bodies[deferred_key] = (statement.body, mutates_metadata)
                 if mutates_metadata:
                     metadata_mutator_functions.add(statement.name)
                 if any(
@@ -1067,133 +1361,339 @@ def _analyze_module_import_flow_uncached(
                     *statement.bases,
                     *(keyword.value for keyword in statement.keywords),
                 ):
-                    record(expression, current)
-                    current = expression_effects(expression, current)
+                    current = evaluate(expression, current)
                 class_global_metadata = scope_global_metadata_names(statement.body)
-                current = flow_statements(
+                # Class preparation can fail before the body independently of
+                # decorator/base expression evaluation.
+                pending_expression_raises.append(current)
+                outcome = flow_statements(
                     statement.body,
                     current,
-                    mutate_metadata=bool(class_global_metadata),
                     direct_metadata_names=class_global_metadata,
                 )
+                if outcome.normal is not None:
+                    # Metaclass construction and class-name publication run only
+                    # after a normally completed class body.
+                    pending_expression_raises.append(outcome.normal)
                 if any(
                     dotted_expression_name(decorator) in metadata_mutator_functions
                     for decorator in statement.decorator_list
                 ):
-                    current = unknown_states(current)
+                    outcome = outcome.sequence(
+                        lambda state: PythonCompletionFlow(
+                            normal=unknown_states(state)
+                        ),
+                        join_states=_merge_states,
+                    )
             elif isinstance(statement, getattr(ast, "TypeAlias", ())):
-                deferred_expressions.append(statement.value)
+                deferred_expressions[python_node_source_key(statement.value)] = (
+                    statement.value
+                )
                 for type_param in statement.type_params:
                     for attribute in ("bound", "default_value"):
                         value = getattr(type_param, attribute, None)
                         if isinstance(value, ast.expr):
-                            deferred_expressions.append(value)
+                            deferred_expressions[python_node_source_key(value)] = value
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
-                for item in statement.items:
-                    record(item.context_expr, current)
-                    current = expression_effects(item.context_expr, current)
-                    current = unknown_states(current)
-                    if (
-                        mutate_metadata
-                        and item.optional_vars is not None
-                        and target_writes_metadata(
-                            item.optional_vars, direct_metadata_names
+
+                def enter_context(
+                    index: int,
+                    incoming: tuple[ModuleImportState, ...],
+                ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                    if index == len(statement.items):
+                        return flow_statements(
+                            statement.body,
+                            incoming,
+                            eager_annotations=eager_annotations,
+                            direct_metadata_names=direct_metadata_names,
                         )
-                    ):
-                        current = unknown_states(current)
-                current = flow_statements(
-                    statement.body,
-                    current,
-                    mutate_metadata=mutate_metadata,
-                    direct_metadata_names=direct_metadata_names,
-                )
-                current = unknown_states(current)
+                    item = statement.items[index]
+                    raised: list[tuple[ModuleImportState, ...]] = []
+                    evaluated = expression_effects(
+                        item.context_expr,
+                        incoming,
+                        direct_metadata_names=direct_metadata_names,
+                        raised_states=raised,
+                    )
+                    entered = unknown_states(evaluated)
+                    prefix = PythonCompletionFlow(
+                        raised=_merge_states(incoming, entered, *raised),
+                    )
+                    # Assignment and nested acquisition occur inside this manager;
+                    # their failures may be suppressed by its exit callback.
+                    assigned = PythonCompletionFlow(normal=entered)
+                    if item.optional_vars is not None:
+                        assigned = PythonCompletionFlow(normal=entered, raised=entered)
+                    body = assigned.sequence(
+                        lambda normal: enter_context(index + 1, normal),
+                        join_states=_merge_states,
+                    )
+                    return prefix.merge(
+                        body.unwind_context(
+                            lambda state: PythonCompletionFlow(
+                                normal=unknown_states(state),
+                                raised=unknown_states(state),
+                            ),
+                            join_states=_merge_states,
+                        ),
+                        join_states=_merge_states,
+                    )
+
+                outcome = enter_context(0, current)
             elif isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-                states_before_try = set(all_states)
                 body = flow_statements(
                     statement.body,
                     current,
-                    mutate_metadata=mutate_metadata,
+                    eager_annotations=eager_annotations,
                     direct_metadata_names=direct_metadata_names,
                 )
-                branches = [body]
-                handler_states = _merge_states(
-                    current,
-                    body,
-                    (state for state in all_states if state not in states_before_try),
+                outcome = (
+                    PythonCompletionFlow(normal=body.normal)
+                    .sequence(
+                        lambda state: flow_statements(
+                            statement.orelse,
+                            state,
+                            eager_annotations=eager_annotations,
+                            direct_metadata_names=direct_metadata_names,
+                        ),
+                        join_states=_merge_states,
+                    )
+                    .merge(
+                        PythonCompletionFlow(
+                            returned=body.returned,
+                            broken=body.broken,
+                            continued=body.continued,
+                        ),
+                        join_states=_merge_states,
+                    )
                 )
-                for handler in statement.handlers:
-                    if handler.type is not None:
-                        record(handler.type, handler_states)
-                    body_states = handler_states
-                    if handler.name in _IMPORT_METADATA_NAMES:
-                        body_states = unknown_states(body_states)
-                    branches.append(
-                        flow_statements(
+                if body.normal is None:
+                    unreachable_block(statement.orelse)
+                if body.raised is not None and statement.handlers:
+
+                    def evaluate_handler_type(
+                        handler: ast.ExceptHandler,
+                        incoming: tuple[ModuleImportState, ...],
+                    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                        if handler.type is None:
+                            return PythonCompletionFlow(normal=incoming)
+                        raised: list[tuple[ModuleImportState, ...]] = []
+                        evaluated = expression_effects(
+                            handler.type,
+                            incoming,
+                            direct_metadata_names=direct_metadata_names,
+                            raised_states=raised,
+                        )
+                        # Even an inert handler expression can be invalid as an
+                        # exception type. Matching failure bypasses all handlers.
+                        return PythonCompletionFlow(
+                            normal=evaluated,
+                            raised=_merge_states(incoming, evaluated, *raised),
+                        )
+
+                    def execute_handler(
+                        handler: ast.ExceptHandler,
+                        incoming: tuple[ModuleImportState, ...],
+                    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                        scoped_target = handler.name in direct_metadata_names
+                        entered = (
+                            unknown_states(incoming) if scoped_target else incoming
+                        )
+                        branch = flow_statements(
                             handler.body,
-                            body_states,
-                            mutate_metadata=mutate_metadata,
+                            entered,
+                            eager_annotations=eager_annotations,
                             direct_metadata_names=direct_metadata_names,
                         )
+                        if scoped_target:
+                            target = ast.Name(id=handler.name, ctx=ast.Del())
+                            branch = branch.map_states(
+                                lambda states: _merge_states(
+                                    invalidate_module_import_state(
+                                        state, target, deleted=True
+                                    )
+                                    for state in states
+                                )
+                            )
+                        return branch
+
+                    if isinstance(statement, ast.TryStar):
+
+                        def group_protocol(
+                            incoming: tuple[ModuleImportState, ...],
+                        ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                            # ExceptionGroup subclasses may implement split/derive
+                            # in Python, independently of handler type expressions.
+                            changed = unknown_states(incoming)
+                            return PythonCompletionFlow(
+                                normal=changed,
+                                raised=_merge_states(incoming, changed),
+                            )
+
+                        handled = PythonCompletionFlow.exception_group_handlers(
+                            body.raised,
+                            statement.handlers,
+                            evaluate_type=evaluate_handler_type,
+                            execute_handler=execute_handler,
+                            split_group=group_protocol,
+                            merge_group=group_protocol,
+                            join_states=_merge_states,
+                        )
+                        outcome = outcome.merge(handled, join_states=_merge_states)
+                    else:
+                        unmatched: tuple[ModuleImportState, ...] | None = body.raised
+                        for handler in statement.handlers:
+                            if unmatched is None:
+                                record_unreachable(handler)
+                                continue
+                            evaluated = evaluate_handler_type(handler, unmatched)
+                            outcome = outcome.merge(
+                                evaluated.without_normal(),
+                                join_states=_merge_states,
+                            )
+                            unmatched = evaluated.normal
+                            if unmatched is not None:
+                                outcome = outcome.merge(
+                                    execute_handler(handler, unmatched),
+                                    join_states=_merge_states,
+                                )
+                            if handler.type is None:
+                                unmatched = None
+                        if unmatched is not None:
+                            outcome = outcome.merge(
+                                PythonCompletionFlow(raised=unmatched),
+                                join_states=_merge_states,
+                            )
+                elif body.raised is not None:
+                    outcome = outcome.merge(
+                        PythonCompletionFlow(raised=body.raised),
+                        join_states=_merge_states,
                     )
-                current = _merge_states(*branches)
-                if statement.orelse:
-                    current = flow_statements(
-                        statement.orelse,
-                        current,
-                        mutate_metadata=mutate_metadata,
-                        direct_metadata_names=direct_metadata_names,
-                    )
+                else:
+                    for handler in statement.handlers:
+                        record_unreachable(handler)
                 if statement.finalbody:
-                    current = flow_statements(
-                        statement.finalbody,
-                        current,
-                        mutate_metadata=mutate_metadata,
-                        direct_metadata_names=direct_metadata_names,
+                    if not outcome.successors():
+                        unreachable_block(statement.finalbody)
+                    outcome = outcome.apply_finally(
+                        lambda state: flow_statements(
+                            statement.finalbody,
+                            state,
+                            eager_annotations=eager_annotations,
+                            direct_metadata_names=direct_metadata_names,
+                        ),
+                        join_states=_merge_states,
                     )
             elif isinstance(statement, ast.Match):
-                record(statement.subject, current)
-                current = expression_effects(statement.subject, current)
-                branches = [current]
+                current = evaluate(statement.subject, current)
+                branches = PythonCompletionFlow()
+                unmatched: tuple[ModuleImportState, ...] | None = current
                 for case in statement.cases:
-                    case_states = current
-                    if case.guard is not None:
-                        record(case.guard, case_states)
-                        case_states = expression_effects(case.guard, case_states)
-                    pattern_names = set(python_pattern_capture_names(case.pattern))
-                    if mutate_metadata and pattern_names & set(direct_metadata_names):
-                        case_states = unknown_states(case_states)
-                    branches.append(
-                        flow_statements(
-                            case.body,
-                            case_states,
-                            mutate_metadata=mutate_metadata,
-                            direct_metadata_names=direct_metadata_names,
-                        )
+                    if unmatched is None:
+                        record_unreachable(case)
+                        continue
+                    irrefutable = (
+                        python_pattern_irrefutable_reason(case.pattern) is not None
                     )
-                current = _merge_states(*branches)
+                    case_states = unmatched
+                    if not python_pattern_is_capture_only(case.pattern):
+                        pending_expression_raises.append(case_states)
+                    pattern_names = set(python_pattern_capture_names(case.pattern))
+                    if pattern_names & set(direct_metadata_names):
+                        case_states = unknown_states(case_states)
+                    guard_truth = True
+                    if case.guard is not None:
+                        case_states = evaluate(case.guard, case_states)
+                        guard_truth = expression_truth(case.guard)
+                    if guard_truth is not False:
+                        branches = branches.merge(
+                            flow_statements(
+                                case.body,
+                                case_states,
+                                eager_annotations=eager_annotations,
+                                direct_metadata_names=direct_metadata_names,
+                            ),
+                            join_states=_merge_states,
+                        )
+                    else:
+                        unreachable_block(case.body)
+                    if irrefutable and guard_truth is True:
+                        unmatched = None
+                    elif guard_truth is not True:
+                        unmatched = _merge_states(unmatched, case_states)
+                if unmatched is not None:
+                    branches = branches.merge(
+                        PythonCompletionFlow(normal=unmatched),
+                        join_states=_merge_states,
+                    )
+                outcome = branches
             else:
                 record(statement, current)
-                current = expression_effects(statement, current)
-        return current
+                current = evaluate(statement, current)
+            fact = statement_facts.get(PythonNodeKey.from_node(statement))
+            mask = (
+                fact.completions
+                if fact is not None
+                else PythonCompletion.NORMAL | PythonCompletion.RAISE
+            )
+            if outcome is None:
+                outcome = PythonCompletionFlow()
+                for kind in PythonCompletion:
+                    if kind is not PythonCompletion.NONE and mask & kind:
+                        outcome = outcome.merge(
+                            PythonCompletionFlow.single(
+                                kind,
+                                _merge_states(before, current)
+                                if kind == PythonCompletion.RAISE
+                                else current,
+                            ),
+                            join_states=_merge_states,
+                        )
+            if pending_expression_raises:
+                outcome = outcome.merge(
+                    PythonCompletionFlow(
+                        raised=_merge_states(*pending_expression_raises)
+                    ),
+                    join_states=_merge_states,
+                )
+            if fact is not None:
+                projected = PythonCompletionFlow()
+                for kind, state in outcome.successors():
+                    if mask & kind:
+                        projected = projected.merge(
+                            PythonCompletionFlow.single(kind, state),
+                            join_states=_merge_states,
+                        )
+                outcome = projected
+            completion = completion.without_normal().merge(
+                outcome, join_states=_merge_states
+            )
+            for _kind, state in outcome.successors():
+                all_states.update(state)
+        return completion
 
     body = tuple(getattr(tree, "body", ()))
-    final_states = flow_statements(body, initial, mutate_metadata=True)
+    module_completion = flow_statements(
+        body,
+        initial,
+    )
+    final_states = module_completion.normal or ()
     deferred_states = _merge_states(all_states, final_states)
     # Function imports observe globals when called. Graph consumers therefore
     # union every reachable module state; frontend lowering keeps them relative.
-    for deferred_body, mutates_metadata in deferred_bodies:
+    while pending_bodies:
+        body_key = pending_bodies.popleft()
+        deferred_body, mutates_metadata = deferred_bodies[body_key]
         body_states = (
             unknown_states(deferred_states) if mutates_metadata else deferred_states
         )
         flow_statements(
             deferred_body,
             body_states,
-            mutate_metadata=mutates_metadata,
+            eager_annotations=False,
             direct_metadata_names=scope_global_metadata_names(deferred_body),
         )
-    for deferred_expression in deferred_expressions:
-        record(deferred_expression, deferred_states)
+    for deferred_expression in deferred_expressions.values():
         expression_effects(deferred_expression, deferred_states)
     return ModuleImportFlow(
         by_node, final_states, _merge_states(all_states, final_states)
@@ -1286,11 +1786,14 @@ def resolve_relative_import(
     if state.package.kind == "known":
         if state.spec_parent.kind == "invalid":
             return RelativeImportResolution(None, "invalid_spec")
-        if state.spec_parent.kind == "unknown":
-            return RelativeImportResolution(None, "unknown_spec")
         package = state.package
+        # CPython retains the explicit package before consulting spec.parent.
+        # An unknown spec can fail or execute callbacks/warnings, but successful
+        # resolution still uses this known anchor. Keep graph identity distinct
+        # from the required runtime execution of that protocol.
         requires_runtime = (
-            state.spec_parent.kind == "known"
+            state.spec_parent.kind == "unknown"
+            or state.spec_parent.kind == "known"
             and state.spec_parent.value != state.package.value
         )
     elif state.package.kind == "invalid":

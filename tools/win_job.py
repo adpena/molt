@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 from dataclasses import dataclass
+import math
 import subprocess
 import sys
 import time
@@ -38,6 +39,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_VM_READ = 0x0010
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _ERROR_MORE_DATA = 234
+_NATURAL_EXIT_GRACE_SEC = 0.25
 
 
 class WinJobError(RuntimeError):
@@ -97,6 +99,9 @@ class WindowsJobCleanup:
     system_after: WindowsSystemResources
     terminated_remaining_processes: bool
     elapsed_s: float
+    initial_process_ids: tuple[int, ...]
+    escalation_process_ids: tuple[int, ...]
+    natural_exit_wait_s: float
 
     @property
     def completed(self) -> bool:
@@ -678,22 +683,57 @@ def complete_job_custody(
     A direct child can exit while grandchildren remain alive.  Closing a
     ``KILL_ON_JOB_CLOSE`` handle only signals those descendants; it does not
     wait for their DLLs, handles, and commit charge to be released.  This
-    primitive retains the sole exact-Job authority, terminates any remaining
-    members, and waits for kernel accounting to reach zero before the caller
-    may publish success or start the next process.
+    primitive retains the sole exact-Job authority until accounting reaches
+    zero. Process-handle completion can precede Job accounting retirement, so
+    first allow a bounded natural-exit drain, reserving at least half of the
+    remaining timeout for forced cleanup. Genuine survivors are terminated
+    through the Job, never through the diagnostic PID snapshots.
+
+    ``terminated_remaining_processes`` records whether termination was requested,
+    not whether a racy process counter proves any particular process was killed.
+    Callers must not treat forced cleanup as ordinary successful completion.
     """
 
     if not _WINDOWS:
         return None
     if not job:
         raise WinJobError("Windows job handle is required")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Windows job cleanup timeout must be finite and positive")
     started = time.monotonic()
+    deadline = started + timeout
     system_before = system_resources()
     before = job_accounting(job)
-    terminated_remaining = before.active_processes > 0
-    if terminated_remaining:
-        terminate_job(job)
-    wait_until_empty(job, timeout=timeout)
+    initial_process_ids = process_ids(job) if before.active_processes else ()
+    escalation_process_ids: tuple[int, ...] = ()
+    terminated_remaining = False
+    natural_exit_wait_s = 0.0
+    if before.active_processes:
+        natural_started = time.monotonic()
+        grace = min(_NATURAL_EXIT_GRACE_SEC, max(0.0, deadline - natural_started) / 2.0)
+        grace_expired = False
+        try:
+            wait_until_empty(job, timeout=grace)
+        except TimeoutError:
+            grace_expired = True
+        finally:
+            natural_exit_wait_s = max(0.0, time.monotonic() - natural_started)
+        if grace_expired:
+            # Recheck after the timed wait: a process may have retired between
+            # its last accounting query and timeout delivery. Keep snapshots
+            # of exact Job membership, but never use PIDs as cleanup authority.
+            escalation_process_ids = process_ids(job)
+            if active_process_count(job):
+                terminate_job(job)
+                terminated_remaining = True
+                try:
+                    wait_until_empty(job, timeout=max(0.0, deadline - time.monotonic()))
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"{exc}; exact-job initial_pids={initial_process_ids}, "
+                        f"escalation_pids={escalation_process_ids}, "
+                        "termination_requested=True"
+                    ) from exc
     after = job_accounting(job)
     if after.active_processes != 0:
         raise WinJobError(
@@ -707,6 +747,9 @@ def complete_job_custody(
         system_after=system_resources(),
         terminated_remaining_processes=terminated_remaining,
         elapsed_s=max(0.0, time.monotonic() - started),
+        initial_process_ids=initial_process_ids,
+        escalation_process_ids=escalation_process_ids,
+        natural_exit_wait_s=natural_exit_wait_s,
     )
 
 

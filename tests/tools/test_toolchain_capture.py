@@ -293,6 +293,86 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
     assert compact_peak < legacy_peak
 
 
+@pytest.mark.parametrize("image_count", [0, 48, 2_000])
+def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
+    tmp_path: Path,
+    image_count: int,
+) -> None:
+    owned = tmp_path / "owned.py"
+    owned.write_bytes(b"owned\n")
+    identity = _identity(owned)
+    owned_sha256 = hashlib.sha256(owned.read_bytes()).hexdigest()
+    images = [
+        {
+            "role": f"image-{index}",
+            "path": str(owned),
+            "sha256": owned_sha256,
+            "selection": {"details": "full captured selection" * 20},
+        }
+        for index in range(image_count)
+    ]
+    inventory = [{"observed_image_count": image_count, "images": images}]
+    selection = {"selection_probe_count": 1, "selected_images": images}
+    identity["python"]["process_images"] = images
+    for name in ("cargo", "rustc", "git", "uv"):
+        identity[name] = {
+            "identity_sha256": "c" * 64,
+            "process_images": images,
+            "process_image_inventories": inventory,
+            "link_selection": selection,
+        }
+    compact = toolchain_capture.compact_toolchains(identity)
+    # Production's non-toolchain custody already occupies ~52KiB. The summary
+    # must stay bounded even when runtime/helper inventories grow by thousands.
+    assert len(json.dumps(compact, sort_keys=True).encode()) < 8 * 1024
+    for name, full in identity.items():
+        for field in ("process_images", "process_image_inventories", "link_selection"):
+            if field in full:
+                assert compact[name][field] == {
+                    "count": len(full[field]),
+                    "semantic_sha256": canonical_json_sha256(full[field]),
+                }
+    summaries, reference, _telemetry = toolchain_capture.publish_capture(
+        tmp_path / "cas",
+        identity,
+    )
+    assert summaries == compact
+    full_capture = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+    assert full_capture["toolchains"] == identity
+    assert toolchain_capture.compact_toolchains(full_capture["toolchains"]) == compact
+    # Same count, different selection: digest authority must still notice.
+    identity["rustc"]["link_selection"] = {**selection, "selection_probe_count": 2}
+    changed = toolchain_capture.compact_toolchains(identity)
+    assert (
+        changed["rustc"]["link_selection"]["count"]
+        == compact["rustc"]["link_selection"]["count"]
+    )
+    assert changed["rustc"]["link_selection"] != compact["rustc"]["link_selection"]
+
+
+@pytest.mark.parametrize("toolchain", ["python", "rustc"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("process_images", {"count": 1}),
+        ("process_image_inventories", "missing"),
+        ("link_selection", []),
+    ],
+)
+def test_compact_process_inventory_rejects_malformed_or_already_compact_input(
+    tmp_path: Path,
+    toolchain: str,
+    field: str,
+    value: object,
+) -> None:
+    owned = tmp_path / "owned.py"
+    owned.write_bytes(b"owned\n")
+    identity = _identity(owned)
+    identity.setdefault(toolchain, {})[field] = value
+    with pytest.raises(ValueError, match=f"{field} has malformed inventory"):
+        toolchain_capture.compact_toolchains(identity)
+
+
 def test_compact_python_package_count_does_not_expand_receipt_or_allocation(
     tmp_path: Path,
 ) -> None:

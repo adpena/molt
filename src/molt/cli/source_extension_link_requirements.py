@@ -14,6 +14,7 @@ from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
     source_extension_link_dialect,
 )
+from molt.cli.native_link_plan import whole_archive_link_arguments
 
 _STATIC_INPUT_SUFFIXES = frozenset({".a", ".lib", ".o", ".obj", ".molt.wasm"})
 _BARE_LIBRARY_SUFFIXES = {
@@ -146,10 +147,6 @@ class SourceExtensionLinkRequirements:
         }
 
 
-def _argument_basename(argument: str) -> str:
-    return Path(argument.replace("\\", "/")).name
-
-
 def _is_static_input_path(path: str) -> bool:
     lowered = path.lower()
     return any(lowered.endswith(suffix) for suffix in _STATIC_INPUT_SUFFIXES)
@@ -207,13 +204,37 @@ def _atomic_copy_file(source: Path, destination: Path) -> None:
 def _canonical_link_arguments(
     link_args: Sequence[str], *, dialect: SourceExtensionLinkDialect
 ) -> tuple[str, ...]:
-    raw = tuple(str(argument).strip() for argument in link_args)
+    # Unwrap the driver envelope before interpreting linker operands. Keep each
+    # payload intact: a comma or space in a path is not an argument separator.
+    raw_args = tuple(str(argument) for argument in link_args)
+    unwrapped: list[str] = []
+    raw_index = 0
+    while raw_index < len(raw_args):
+        argument = raw_args[raw_index]
+        if argument == "-Xlinker":
+            raw_index += 1
+            if raw_index == len(raw_args) or not raw_args[raw_index]:
+                raise ValueError("source-extension -Xlinker requires one operand")
+            argument = raw_args[raw_index]
+        unwrapped.append(argument)
+        raw_index += 1
+    raw = tuple(unwrapped)
     canonical: list[str] = []
     index = 0
     while index < len(raw):
         argument = raw[index]
         if not argument:
             index += 1
+            continue
+        if argument == "-force_load":
+            if dialect is not SourceExtensionLinkDialect.MACHO:
+                raise ValueError("source-extension -force_load requires Mach-O")
+            if index + 1 >= len(raw) or not _is_static_input_path(raw[index + 1]):
+                raise ValueError(
+                    "source-extension -force_load requires one static input"
+                )
+            canonical.append(f"-Wl,-force_load,{raw[index + 1]}")
+            index += 2
             continue
         if dialect is SourceExtensionLinkDialect.MACHO and argument == "-framework":
             if index + 1 >= len(raw) or not _is_bare_provider_name(raw[index + 1]):
@@ -242,7 +263,7 @@ def _canonical_link_arguments(
 
 def _resolve_source_path(path: str, roots: Sequence[Path]) -> Path | None:
     resolved_roots = tuple(root.resolve() for root in roots)
-    candidate = Path(path).expanduser()
+    candidate = Path(path.replace("\\", "/")).expanduser()
     candidates = (
         (candidate,)
         if candidate.is_absolute()
@@ -469,11 +490,7 @@ def _render_atom(
         return (base,)
     if item.loading is SourceExtensionLinkLoadingPolicy.AS_NEEDED:
         return ("-Wl,--as-needed", base, "-Wl,--no-as-needed")
-    if dialect is SourceExtensionLinkDialect.MACHO:
-        return (f"-Wl,-force_load,{base}",)
-    if dialect is SourceExtensionLinkDialect.COFF_MSVC:
-        return (f"-Wl,/WHOLEARCHIVE:{base}",)
-    return ("-Wl,--whole-archive", base, "-Wl,--no-whole-archive")
+    return whole_archive_link_arguments(base, dialect=dialect)
 
 
 def render_source_extension_link_arguments(
@@ -495,10 +512,14 @@ def render_source_extension_link_arguments(
     )
     for item in requirements.items:
         if isinstance(item, SourceExtensionLinkCyclicGroup):
-            arguments.append("-Wl,--start-group")
+            # wasm-ld keeps lazy archive symbols available throughout the link;
+            # it neither needs nor accepts GNU archive-group delimiters.
+            if dialect is not SourceExtensionLinkDialect.WASM:
+                arguments.append("-Wl,--start-group")
             for member in item.members:
                 arguments.extend(_render_atom(member, dialect=dialect))
-            arguments.append("-Wl,--end-group")
+            if dialect is not SourceExtensionLinkDialect.WASM:
+                arguments.append("-Wl,--end-group")
         else:
             arguments.extend(_render_atom(item, dialect=dialect))
     return tuple(arguments)
@@ -508,12 +529,10 @@ def source_extension_link_requirements(
     link_args: Sequence[str],
     *,
     target_triple: str,
-    folded_static_archives: Sequence[str] = (),
     path_roots: Sequence[Path] = (),
     publish_root: Path | None = None,
 ) -> SourceExtensionLinkRequirements:
     dialect = source_extension_link_dialect(target_triple)
-    folded = {name.casefold() for name in folded_static_archives}
     items: list[SourceExtensionLinkItem] = []
     group_members: list[SourceExtensionLinkAtom] | None = None
     retained_symbols: set[str] = set()
@@ -531,9 +550,7 @@ def source_extension_link_requirements(
         *,
         loading: SourceExtensionLinkLoadingPolicy,
         resolved_source: Path | None = None,
-    ) -> SourceExtensionLinkInput | None:
-        if _argument_basename(raw_path).casefold() in folded:
-            return None
+    ) -> SourceExtensionLinkInput:
         source = resolved_source or _resolve_source_path(raw_path, path_roots)
         if source is None:
             raise ValueError(
@@ -563,8 +580,7 @@ def source_extension_link_requirements(
                 forced_input,
                 loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
             )
-            if item is not None:
-                append_item(item)
+            append_item(item)
             continue
         group_start = argument in {"-Wl,--start-group", "--start-group"}
         group_end = argument in {"-Wl,--end-group", "--end-group"}
@@ -627,8 +643,6 @@ def source_extension_link_requirements(
             )
         )
         if _is_static_input_path(argument):
-            if _argument_basename(argument).casefold() in folded:
-                continue
             source = _resolve_source_path(argument, path_roots)
             if source is not None:
                 item = make_input(
@@ -636,8 +650,7 @@ def source_extension_link_requirements(
                     loading=loading,
                     resolved_source=source,
                 )
-                if item is not None:
-                    append_item(item)
+                append_item(item)
                 continue
         provider = _provider_from_argument(
             argument,

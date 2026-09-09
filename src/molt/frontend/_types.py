@@ -9,7 +9,7 @@ It must never import from molt.frontend.__init__ or any mixin (cycle break).
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import (
@@ -51,19 +51,6 @@ def _next_ic_index() -> int:
     idx = _ic_counter[0] % _IC_TABLE_CAPACITY
     _ic_counter[0] += 1
     return idx
-
-
-class _InlineSuperFoldRequired(Exception):
-    """Raised inside ``_try_inline_method_call`` when an inlined method body
-    contains a ``super()`` call that cannot be folded statically.
-
-    The inlined body is spliced into the caller's scope, which carries no
-    ``__class__`` closure cell, so a ``super()`` that lowers to the runtime
-    super path would raise ``RuntimeError: super(): __class__ cell not found``
-    (or bind to the wrong class) at execution time.  This sentinel aborts the
-    whole inline expansion; the caller then falls back to the general dispatch
-    path, which threads the method's real ``__class__`` closure cell.
-    """
 
 
 @dataclass
@@ -116,6 +103,30 @@ class ScratchCell:
 
 
 @dataclass
+class ComprehensionBinding:
+    """One scoped Python binding with SSA or stateful-frame transport.
+
+    Captured iteration variables store a real closure-cell object in that same
+    slot. The public name never aliases the surrounding frame's storage.
+    """
+
+    variable_slot: str | None
+    async_slot: AsyncFrameSlot | None
+    is_cell: bool = False
+    type_hint: str = "Any"
+    definitely_bound: bool = False
+
+    def __post_init__(self) -> None:
+        if (self.variable_slot is None) == (self.async_slot is None):
+            raise ValueError("comprehension binding requires exactly one slot")
+        if (
+            self.async_slot is not None
+            and self.async_slot.role is not AsyncFrameSlotRole.SCRATCH
+        ):
+            raise ValueError("comprehension transport requires a scratch-role slot")
+
+
+@dataclass
 class MoltOp:
     kind: str
     args: list[Any]
@@ -139,12 +150,13 @@ class _ClassNsScope:
 
     Molt mirrors this: when ``ns`` is set (the class is built dynamically), each
     class-body name store emits ``STORE_INDEX(ns, name, value)`` and each load
-    emits ``INDEX(ns, name)`` — the heap dict is loop-carried-correct without SSA
-    phi participation, the same way the module dict backs module-scope loops.
+    probes ``molt_namespace_get(ns, name, missing)`` before lexical/global
+    fallback. The mapping is loop-carried-correct without namespace SSA phis.
     ``attr_values`` additionally snapshots name->MoltValue for the static
     ``CLASS_DEF`` fast path (straight-line bodies that never need the dict).
-    ``names`` is the set of names bound in this class body; a Name not in it
-    resolves through the enclosing/global/builtin chain (CPython LOAD_NAME).
+    ``names`` tracks published attributes; immutable declaration sets retain
+    lexical ownership even after deletion. Never-stored names still probe the
+    live mapping, which may have been populated by __prepare__ or a callback.
 
     The instance is pushed/popped on ``SimpleTIRGenerator._class_ns_stack`` by
     ``visit_ClassDef`` and consulted by ``_store_local_value`` /
@@ -156,6 +168,14 @@ class _ClassNsScope:
     names: set[str]
     class_name: str
     module_name: str
+    local_names: frozenset[str] = frozenset()
+    global_names: frozenset[str] = frozenset()
+    nonlocal_names: frozenset[str] = frozenset()
+    enclosing_locals: dict[str, MoltValue] = field(default_factory=dict)
+    annotation_namespace_cell: MoltValue | None = None
+    class_node: ast.ClassDef | None = None
+    class_cell: MoltValue | None = None
+    methods: dict[str, MethodInfo] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1396,17 +1416,20 @@ class TryScope:
     try_start_has_handler_value: bool = True
 
 
+type MethodDescriptor = Literal[
+    "function",
+    "classmethod",
+    "staticmethod",
+    "property",
+    "decorated",
+    "property_update",
+]
+
+
 class MethodInfo(TypedDict):
     func: MoltValue
     attr: MoltValue
-    descriptor: Literal[
-        "function",
-        "classmethod",
-        "staticmethod",
-        "property",
-        "decorated",
-        "property_update",
-    ]
+    descriptor: MethodDescriptor
     return_hint: str | None
     param_count: int
     defaults: list[dict[str, Any]]
@@ -1417,25 +1440,8 @@ class MethodInfo(TypedDict):
     has_closure: bool
     property_field: str | None
     property_update: Literal["setter", "deleter"] | None
-    # True when ``has_closure`` is purely the implicit ``__class__`` super cell
-    # (no real enclosing-local capture).  Set only by ``compile_method`` (the
-    # non-generator path that computes inline metadata); the generator/async
-    # method builders never populate it, so it is ``NotRequired`` and every
-    # reader accesses it via ``.get("inline_closure_ok")``.
-    inline_closure_ok: NotRequired[bool]
     inline_return: NotRequired[ast.expr | None]
     inline_params: NotRequired[list[str] | None]
-    inline_owner_class: NotRequired[str | None]
-    # Module that *defines* the inlinable method.  An inline splices the body
-    # into the caller's scope; any bare-Name reference in the body that is not a
-    # substituted parameter or a builtin resolves against the *caller's* module
-    # globals (``visit_Name`` -> ``_emit_global_get``).  When the body reads one
-    # of the defining module's globals (recorded in ``inline_free_names``), the
-    # inline is therefore only sound when the call site is compiled in that same
-    # module.  ``_try_inline_method_call`` consults both to refuse a cross-module
-    # inline that would mis-resolve a defining-module global.
-    inline_owner_module: NotRequired[str | None]
-    inline_free_names: NotRequired[frozenset[str]]
     inline_init_assigns: NotRequired[list[tuple[str, ast.expr]] | None]
 
 
@@ -1569,7 +1575,6 @@ __all__ = [
     "_ic_counter",
     "_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF",
     "_next_ic_index",
-    "_InlineSuperFoldRequired",
     "MoltValue",
     "MoltOp",
     "SCCPResult",

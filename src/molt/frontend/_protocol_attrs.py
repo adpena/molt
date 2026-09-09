@@ -27,6 +27,7 @@ from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
     ClassInfo,
+    ComprehensionBinding,
     FormatToken,
     FuncInfo,
     MoltOp,
@@ -35,21 +36,22 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
+    from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.frontend.sema import SemaResult
 
 
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _STUB_IMPORT_MODULES: frozenset[str]
-    _active_classcell_cell: MoltValue | None
     _active_midend_function_name: Any
     _class_body_depth: int
     _class_ns_stack: list[_ClassNsScope]
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
-    _free_var_analysis_cache_by_node: Any
-    _inline_super_must_fold: bool
+    _lexical_dependency_cache: PythonDependencyAuthority | None
+    _lexical_dependency_index: PythonBindingIndex | None
     _list_int_containers: set[str]
     _midend_env_snapshot: Any
     _midend_stats_reported: Any
@@ -84,7 +86,6 @@ class _GeneratorProtocolAttrs(Protocol):
     bytearray_len_hints: dict[str, int]
     class_annotation_exec_counter: Any
     class_annotation_exec_map: MoltValue | None
-    class_annotation_exec_name: str | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
     class_definition_pending: set[str]
     classes: dict[str, ClassInfo]
@@ -94,6 +95,7 @@ class _GeneratorProtocolAttrs(Protocol):
     comp_shadow_locals: set[str]
     compat: Any
     compiler_bindings: dict[str, MoltValue]
+    comprehension_bindings: dict[str, ComprehensionBinding]
     const_ints: dict[str, int]
     container_elem_hints: dict[str, str]
     context_depth: Any
@@ -104,6 +106,7 @@ class _GeneratorProtocolAttrs(Protocol):
     current_line: int | None
     current_method_first_param: str | None
     current_ops: list[MoltOp]
+    current_python_first_arg: str | MoltValue | None
     defer_module_attrs: Any
     deferred_module_attrs: set[str]
     del_targets: set[str]
@@ -145,3 +148,4 @@ class _GeneratorProtocolAttrs(Protocol):
     globals_builtin_val: MoltValue | None
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: set[tuple[str, str]]

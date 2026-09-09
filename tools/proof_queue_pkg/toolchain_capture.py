@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Mapping, Sequence, cast
 
+from molt.exact_json import canonical_json_sha256
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg.process_image_capture import (
@@ -511,6 +512,31 @@ def frozen_files(payload: object) -> list[FrozenFile]:
     return [files[key] for key in sorted(files)]
 
 
+def _compact_process_inventory(identity: Mapping[str, object]) -> dict[str, object]:
+    """Project image custody without duplicating its full CAS-owned inventory.
+
+    Process admission consumes the full capture, not these bounded summaries.
+    Counts aid inspection; digests bind every row and all selection telemetry.
+    """
+    summaries: dict[str, object] = {}
+    for name, expected in (
+        ("process_images", list),
+        ("process_image_inventories", list),
+        ("link_selection", Mapping),
+    ):
+        if name not in identity:
+            continue
+        value = identity[name]
+        if not isinstance(value, expected):
+            raise ValueError(f"toolchain {name} has malformed inventory")
+        assert isinstance(value, (list, Mapping))
+        summaries[name] = {
+            "count": len(value),
+            "semantic_sha256": canonical_json_sha256(value),
+        }
+    return summaries
+
+
 def _compact_python(identity: Mapping[str, object]) -> dict[str, object]:
     compact: dict[str, object] = {
         key: value
@@ -595,12 +621,7 @@ def _compact_python(identity: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(profile, Mapping):
         raise ValueError("python toolchain has no capture profile")
     compact["inventory_profile"] = dict(profile)
-    process_images = identity.get("process_images")
-    compact["process_images"] = (
-        [dict(row) for row in process_images if isinstance(row, Mapping)]
-        if isinstance(process_images, list)
-        else []
-    )
+    compact.update(_compact_process_inventory(identity))
     return compact
 
 
@@ -617,15 +638,7 @@ def compact_toolchains(toolchains: Mapping[str, object]) -> dict[str, object]:
                 for key, value in raw.items()
                 if not isinstance(value, (dict, list))
             }
-            process_images = raw.get("process_images")
-            if isinstance(process_images, list):
-                summary["process_images"] = process_images
-            process_image_inventories = raw.get("process_image_inventories")
-            if isinstance(process_image_inventories, list):
-                summary["process_image_inventories"] = process_image_inventories
-            link_selection = raw.get("link_selection")
-            if isinstance(link_selection, Mapping):
-                summary["link_selection"] = dict(link_selection)
+            summary.update(_compact_process_inventory(raw))
             summaries[name] = summary
     return summaries
 

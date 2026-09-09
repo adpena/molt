@@ -184,18 +184,12 @@ def _emit_backend_pipeline_outputs(
         )
 
     if output_layout.emit_mode == "obj":
-        prepared_object_output, _partial_link_process, prepared_object_error = (
+        prepared_object_output, prepared_object_error = (
             _link_pipeline._prepare_native_object_artifact(
                 output_artifact=output_layout.output_artifact,
-                artifacts_root=artifacts_root,
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
-                stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
-                stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
-                stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
                 json_output=json_output,
-                link_timeout=prepared_build_config.link_timeout,
                 target_triple=output_layout.target_triple,
-                sysroot_path=prepared_build_roots.sysroot_path,
             )
         )
         if prepared_object_error is not None:

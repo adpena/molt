@@ -30,6 +30,9 @@ else:
 
 class AssignmentStatementVisitorMixin(_MixinBase):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name) and self._class_ns_stack:
+            self._emit_class_annotated_assignment(node, self._class_ns_stack[-1])
+            return None
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
             raise FrontendRejection(
                 Diagnostic.SYNTAX_FORM,
@@ -119,10 +122,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             if self.is_async():
                 self._store_local_value(node.target.id, value_node)
             else:
-                self._store_local_value(node.target.id, value_node)
+                self._store_local_value(node.target.id, value_node, publish_module=True)
                 if value_node is not None:
                     self._propagate_container_hints(node.target.id, value_node)
-                self._emit_module_attr_set(node.target.id, value_node)
                 if self.current_func_name == "molt_main":
                     self.globals[node.target.id] = value_node
             return None
@@ -425,10 +427,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 self._store_local_value(node.target.id, res)
             else:
                 self._apply_explicit_hint(node.target.id, res)
-                self._store_local_value(node.target.id, res)
+                self._store_local_value(node.target.id, res, publish_module=True)
                 if res is not None:
                     self._propagate_container_hints(node.target.id, res)
-                self._emit_module_attr_set(node.target.id, res)
                 if self.current_func_name == "molt_main":
                     self.globals[node.target.id] = res
             return None
@@ -809,6 +810,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             )
             return
         if isinstance(target, ast.Name):
+            if target.id in self.comp_shadow_locals:
+                self._store_comprehension_local_value(target.id, value_node)
+                return
             # A class-body name (for-loop target, with-as target, tuple-unpack
             # element, plain assign) binds ONLY into the class namespace mapping
             # (P0 #50).  ``_store_local_value`` routes it there via the class-ns
@@ -858,9 +862,11 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     imported_module_provenance
                 )
             elif target.id in self.global_decls:
-                previous_global = {
-                    target.id: self.global_imported_module_provenance[target.id]
-                } if target.id in self.global_imported_module_provenance else {}
+                previous_global = (
+                    {target.id: self.global_imported_module_provenance[target.id]}
+                    if target.id in self.global_imported_module_provenance
+                    else {}
+                )
                 self.global_imported_module_provenance[target.id] = (
                     self._join_imported_module_provenance(
                         previous_global,
@@ -876,18 +882,14 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     self._propagate_func_type_hint(value_node, source_expr)
             if self.current_func_name != "molt_main" and target.id in self.global_decls:
                 self._store_local_value(target.id, value_node)
-                # Also update the module-level attribute so global assignment
-                # is visible to other functions reading the module dict.
-                self._emit_module_attr_set_runtime(target.id, value_node)
                 return
             if self.is_async():
                 self._store_local_value(target.id, value_node)
             else:
                 self._apply_explicit_hint(target.id, value_node)
-                self._store_local_value(target.id, value_node)
+                self._store_local_value(target.id, value_node, publish_module=True)
                 if value_node is not None:
                     self._propagate_container_hints(target.id, value_node)
-                self._emit_module_attr_set(target.id, value_node)
                 if self.current_func_name == "molt_main":
                     self.module_chunk_globals.add(target.id)
                     self.globals[target.id] = value_node

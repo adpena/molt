@@ -188,6 +188,7 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             OpIR {
@@ -274,6 +275,7 @@ fn try_except_elision_uses_typed_int_body_without_transport_hints() {
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             OpIR {

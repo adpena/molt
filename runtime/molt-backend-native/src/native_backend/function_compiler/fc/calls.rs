@@ -32,7 +32,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     op_idx: usize,
     func_name: &str,
     emit_traces: bool,
-    has_frame_slot: bool,
+    owned_frame_entered: Option<Variable>,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
@@ -70,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             op,
             op_idx,
             emit_traces,
-            has_frame_slot,
+            owned_frame_entered,
             returns_value,
             rc_authority,
             &mut *module,
@@ -122,7 +122,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             op_idx,
             func_name,
             emit_traces,
-            has_frame_slot,
+            owned_frame_entered,
             returns_value,
             &mut *module,
             &mut *import_ids,
@@ -251,7 +251,7 @@ fn handle_call_direct_op(
     op: &OpIR,
     op_idx: usize,
     emit_traces: bool,
-    has_frame_slot: bool,
+    owned_frame_entered: Option<Variable>,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
@@ -552,32 +552,24 @@ fn handle_call_direct_op(
             } else {
                 raise_results[0]
             };
-            if has_frame_slot {
-                let trace_exit_ref = import_func_ref(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    "molt_trace_exit",
-                    &[],
-                    &[types::I64],
-                );
-                builder.ins().call(trace_exit_ref, &[]);
-            }
+            emit_owned_execution_frame_exit(
+                owned_frame_entered,
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                &mut *sealed_blocks,
+            );
             builder.ins().return_(&[err_val]);
         } else {
-            if has_frame_slot {
-                let trace_exit_ref = import_func_ref(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    "molt_trace_exit",
-                    &[],
-                    &[types::I64],
-                );
-                builder.ins().call(trace_exit_ref, &[]);
-            }
+            emit_owned_execution_frame_exit(
+                owned_frame_entered,
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                &mut *sealed_blocks,
+            );
             builder.ins().return_(&[]);
         }
 
@@ -915,7 +907,7 @@ fn handle_call_guarded_op(
     op_idx: usize,
     func_name: &str,
     emit_traces: bool,
-    has_frame_slot: bool,
+    owned_frame_entered: Option<Variable>,
     returns_value: bool,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -1224,18 +1216,14 @@ fn handle_call_guarded_op(
     // the pending RecursionError propagates to the caller
     // instead of being silently swallowed as None (which
     // caused TypeError: NoneType + int downstream).
-    if has_frame_slot {
-        let trace_exit_ref = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            "molt_trace_exit",
-            &[],
-            &[types::I64],
-        );
-        builder.ins().call(trace_exit_ref, &[]);
-    }
+    emit_owned_execution_frame_exit(
+        owned_frame_entered,
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        &mut *sealed_blocks,
+    );
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
         builder.ins().return_(&[none_bits]);
@@ -1277,18 +1265,14 @@ fn handle_call_guarded_op(
     seal_block_once(&mut *builder, &mut *sealed_blocks, else_fail_block);
     // Same as then_fail_block: return immediately on recursion
     // guard failure so the pending RecursionError propagates.
-    if has_frame_slot {
-        let trace_exit_ref = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            "molt_trace_exit",
-            &[],
-            &[types::I64],
-        );
-        builder.ins().call(trace_exit_ref, &[]);
-    }
+    emit_owned_execution_frame_exit(
+        owned_frame_entered,
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        &mut *sealed_blocks,
+    );
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
         builder.ins().return_(&[none_bits]);

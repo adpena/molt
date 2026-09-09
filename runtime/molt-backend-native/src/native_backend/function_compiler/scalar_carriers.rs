@@ -75,19 +75,21 @@ pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condi
 }
 
 #[cfg(feature = "native-backend")]
+/// Preserve the boxed runtime result unless semantic representation facts prove
+/// an exact Boolean. Rich comparisons may return arbitrary Python objects.
 pub(in crate::native_backend::function_compiler) fn def_bool_result(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     out: &str,
-    boxed_bool: Value,
+    boxed_result: Value,
     raw_bool: Option<Value>,
 ) {
-    let raw_bool = raw_bool.unwrap_or_else(|| builder.ins().band_imm(boxed_bool, 1));
     if representation_plan.is_bool_unboxed(out) {
+        let raw_bool = raw_bool.unwrap_or_else(|| builder.ins().band_imm(boxed_result, 1));
         def_var_named(builder, vars, out, raw_bool);
     } else {
-        def_var_named(builder, vars, out, boxed_bool);
+        def_var_named(builder, vars, out, boxed_result);
     }
 }
 

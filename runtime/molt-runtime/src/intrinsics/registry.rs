@@ -1037,7 +1037,7 @@ mod tests {
             let load_name_bits = MoltObject::from_ptr(load_name_ptr).bits();
             let load_bits = crate::molt_get_attr_name(module_bits, load_name_bits);
             assert!(obj_from_bits(load_bits).as_ptr().is_some());
-            let intrinsic_name_ptr = alloc_string(_py, b"molt_gpu_buffer_to_list");
+            let intrinsic_name_ptr = alloc_string(_py, b"molt_capabilities_has");
             let intrinsic_name_bits = MoltObject::from_ptr(intrinsic_name_ptr).bits();
             let resolved_bits =
                 molt_load_intrinsic_runtime(intrinsic_name_bits, MoltObject::none().bits());
@@ -1054,16 +1054,25 @@ mod tests {
             let split_name_bits = MoltObject::from_ptr(split_name_ptr).bits();
             let split_bits =
                 molt_load_intrinsic_runtime(split_name_bits, MoltObject::none().bits());
-            let split_ptr = obj_from_bits(split_bits)
-                .as_ptr()
-                .expect("split intrinsic should resolve to a function");
-            assert_eq!(
-                unsafe { object_type_id(split_ptr) },
-                crate::TYPE_ID_FUNCTION
-            );
-            assert_eq!(
-                unsafe { crate::function_fn_ptr(split_ptr) },
-                crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const () as usize as u64
+            #[cfg(feature = "molt_gpu_primitives")]
+            {
+                let split_ptr = obj_from_bits(split_bits)
+                    .as_ptr()
+                    .expect("split intrinsic should resolve to a function");
+                assert_eq!(
+                    unsafe { object_type_id(split_ptr) },
+                    crate::TYPE_ID_FUNCTION
+                );
+                assert_eq!(
+                    unsafe { crate::function_fn_ptr(split_ptr) },
+                    crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const () as usize
+                        as u64
+                );
+            }
+            #[cfg(not(feature = "molt_gpu_primitives"))]
+            assert!(
+                obj_from_bits(split_bits).is_none(),
+                "disabled GPU intrinsic must not resolve"
             );
 
             let missing_name_ptr = alloc_string(_py, b"molt_missing_intrinsic");

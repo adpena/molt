@@ -8,6 +8,41 @@
 
 ---
 
+## Predicate result, effect, and representation authority
+
+The six rich comparisons are callback-capable, throwing, arbitrary-owned-value
+operations at opcode scope. `predicate_semantics` selects equality, ordering,
+truth conversion, or containment;
+`comparison_scalar_domains` generates the identical exact-primitive pair policy
+for the Python frontend and shared native/WASM Rust pipeline. Exact scalar pairs
+produce bool; equality is total across these domains, while ordering is nothrow
+only within an ordering-enabled domain. Unknown operands remain impure/DynBox.
+
+Annotations, return hints, and subclass-accepting guards are not exactness proofs.
+Frontend queries follow intrinsic defining operations; TIR's
+`type_refine::extract_exact_scalar_map` propagates intrinsic producers, existing
+scalar transfer rules, and SSA edges without importing those hints. The separate
+`exact_scalar_result_type` fact preserves heap BigInt semantic exactness without
+changing its boxed carrier. Refinement, DCE, GVN, LICM, exception elimination, and
+representation floors consume this shared predicate fact. No rich comparison may
+declare an operand-independent bool result or an unconditional bool projection.
+Truth and containment produce exact bool values on success without licensing
+callback elimination: unknown truth operands and containment remain impure.
+Malformed producer/result shapes cannot mint exactness. Double logical negation
+can collapse to its input only when that input is an exact bool.
+
+Initial lifting and refinement project scalar function return contracts from
+the assembled exact-producer map, never annotation-derived arithmetic facts.
+Generic `Pow` stays DynBox even with exact numeric operands: negative exponents
+can change integer results to float, and fractional powers can produce complex.
+
+At runtime, `object/ops_compare.rs` owns class-slot lookup, strict-subclass
+reflected priority, NotImplemented fallback, and result custody. Equality values
+and list/tuple ordering preserve arbitrary result identity. Truth boundaries
+(container equality, sorting, C API bool requests) consume and release the owned
+result and propagate truth-conversion errors. `object.__ne__` delegates to only
+its receiver's equality slot; the common dispatcher owns reflection.
+
 ## 1. Motivation — the bug class (5 proven instances)
 
 A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` string is the **wire contract** between the Python frontend and the Rust backend. Five independent components must agree on that vocabulary, and each keeps its **own private copy** of the table:
@@ -126,15 +161,21 @@ instead of maintaining a parallel opcode-to-result-count match. The generator
 rejects `variable` unless the opcode is on the audited context-dependent
 whitelist, so fixed-result opcodes cannot quietly escape verifier coverage.
 The same table owns opcode-intrinsic result types through
-`operand_independent_result_type`, generating
+`operand_independent_result_types`, generating result-indexed
 `opcode_operand_independent_result_type_table` and
 `opcode_operand_independent_result_tir_type`. Operand-dependent producers
 (`Div`, shifts, arithmetic, `and`/`or`, indexing, iterators, calls, and tuple
 builders) deliberately stay absent so `type_refine.rs` proves them only from
-operand/attr facts, while `block_versioning.rs`, `branchless_count.rs`, and
-`fast_math.rs`, and `strength_reduction.rs` consume the generated intrinsic
+operand/attr facts. Checked arithmetic declares `[i64, bool]`; unboxed iteration
+declares `[operand, bool]`, preserving the dependent payload and exact status
+separately. Exception-pending reads are exact Boolean producers but remain
+impure mutable-state observations. No result fact licenses code motion.
+`block_versioning.rs`, `fast_math.rs`, and `strength_reduction.rs` consume the generated intrinsic
 table instead of private opcode matches; `gvn.rs` also consumes it as part of
-value-key/type gating. GVN numbering eligibility is also table-owned as a role lattice:
+value-key/type gating. Branchless counting consumes the shared exact-scalar map
+and lazy value-range proof, requiring a nonallocating inline counter increment
+and exclusive CFG arm predecessors instead of maintaining its own type map.
+GVN numbering eligibility is also table-owned as a role lattice:
 `gvn_always_numberable_opcodes`, `gvn_type_gated_numberable_opcodes`, and
 `gvn_value_keyed_constant_opcodes` plus `gvn_numberable_attr_key_opcodes` generate
 `opcode_gvn_numbering_role_table` plus
@@ -238,6 +279,30 @@ nesting. DCE and SCCP own their try-depth traversal and dead-op/constant-fold
 policy; the registry owns only the Enter/Exit role for the closed opcode set,
 so nesting cannot drift into private TryStart/TryEnd matches beside the
 label/transfer facts.
+
+Block retirement is owned by `TirFunction::retain_blocks`: it validates retained
+terminator and exception-label references atomically, then removes blocks and
+their label/value projections together. `structural_block_roots` includes every
+loop metadata key and endpoint. A transform replacing a loop calls
+`retire_loop_metadata` explicitly; dropping a live loop relation is not a cleanup
+side effect. `block_retirement_metadata_roots` supplies reusable read-only
+constraints for batched discovery such as branchless counting. Region-replacing
+transforms use `validate_block_retirement` before mutation or staging: the plan
+names retired blocks and loop owners, explicitly rewired incoming ordinary
+targets, and whether it replaces the function entry. Every incoming ordinary
+edge from outside that region must survive or target a declared rewiring,
+including edges from unreachable or metadata-only retained blocks. Retired
+source edges disappear with their source; labels inside cloned source remain
+protected and are not authorized by ordinary-edge rewiring. Unrolling and
+fusion share this preflight, rather than discovering incomplete rewiring after
+mutating IDs, statistics, operations or loop metadata. Commit validation still
+checks that the transform fulfilled its plan.
+DCE, SCCP, branchless counting, loop unrolling and generator fusion
+share this authority. Retention reachability uses the canonical iterative CFG
+traversal with `CfgEdgePolicy::Retention`, which includes non-executable label
+custody such as `TryEnd`. `Full` remains executable edges only; preserving a
+block for metadata never manufactures an executable predecessor or type proof.
+
 Generator poll-body eligibility is table-owned as a role lattice too:
 `generator_fusion_poll_required_yield_opcodes` and
 `generator_fusion_poll_reject_opcodes` generate

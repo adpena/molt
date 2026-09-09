@@ -17,7 +17,6 @@ from molt.cli.native_link_plan import NativeLinkPlan
 from molt.llvm_linker_roles import (
     executable_selects_linker_role,
     lexical_executable_path,
-    llvm_linker_role_for_object_format,
 )
 from molt import process_guard
 
@@ -160,9 +159,7 @@ def native_link_tool_facts(plan: NativeLinkPlan) -> list[dict[str, object]]:
         _linker_from_driver_trace(plan, driver) if driver is not None else None
     )
     if plan.linker_hint == "lld":
-        linker_role = llvm_linker_role_for_object_format(
-            plan.target.object_format.value
-        )
+        linker_role = plan.target.link_dialect.llvm_linker_role
         if traced_linker is not None:
             if not executable_selects_linker_role(traced_linker, linker_role):
                 raise RuntimeError(
@@ -239,9 +236,7 @@ def native_link_cache_tool_facts(plan: NativeLinkPlan) -> list[dict[str, object]
     sibling = driver.parent if driver is not None else None
     linker: Path | None
     if plan.linker_hint == "lld":
-        linker_role = llvm_linker_role_for_object_format(
-            plan.target.object_format.value
-        )
+        linker_role = plan.target.link_dialect.llvm_linker_role
         explicit_linkers = tuple(
             lexical_executable_path(Path(arg.split("=", 1)[1].strip()))
             for arg in plan.command

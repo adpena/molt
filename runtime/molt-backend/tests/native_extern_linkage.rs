@@ -27,6 +27,7 @@ fn provider_function(name: &str, params: &[&str], returns_value: bool) -> Functi
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }
 }
@@ -61,11 +62,12 @@ fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBacke
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let void_provider = provider_function("stdlib_void_helper", &[], false);
     let value_provider = provider_function("stdlib_value_helper", &[], true);
-    let module_context = SimpleBackend::build_module_context(&[
+    let module_context = SimpleBackend::prepare_module_context(&mut vec![
         main.clone(),
         void_provider.clone(),
         value_provider.clone(),
@@ -152,6 +154,7 @@ fn extern_call_mismatch_fixture(
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let provider = provider_function(
@@ -159,7 +162,7 @@ fn extern_call_mismatch_fixture(
         declaration_params,
         declaration_returns_value,
     );
-    let module_context = SimpleBackend::build_module_context(&[caller.clone(), provider]);
+    let module_context = SimpleBackend::prepare_module_context(&mut vec![caller.clone(), provider]);
     (
         SimpleIR {
             functions: vec![
@@ -186,6 +189,7 @@ fn native_object_retains_exact_generated_object_abi_import() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -262,6 +266,7 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -313,6 +318,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -322,6 +328,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 param_types: None,
                 source_file: None,
                 is_extern: true,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],

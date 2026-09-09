@@ -22,6 +22,69 @@ descendant process. `declared-tree` admits only fixed images or identities first
 executed from declared derived roots; a derived path cannot change identity
 during the run.
 
+### Cold Cargo custody and preserved candidates
+
+The Python proof queue owns prelaunch derived-root provenance through
+`proof_queue_pkg/cargo_cache_custody.py`. An admitted Cargo target is fresh,
+empty, and exclusively locked. Completed, drained, input-stable supervision can
+seal its output as a preserved candidate, including after completed test failures.
+Timeouts, incomplete process closure, or changed inputs never seal it. Unsealed
+generations remain evidence and the next attempt starts a distinct cold generation.
+
+Warm admission is not implemented: process supervision and Git source capture do
+not enforce all filesystem/environment inputs of build scripts or procedural
+macros. A seal proves captured output, not complete compilation-input closure.
+Encountering a sealed candidate rejects execution with the classified
+`cargo-input-closure-unproven` diagnostic, including its path and seal reference.
+The candidate and state pointer remain unchanged; rejection does not reread the
+large target or output manifest. The runner also rejects asserted reused custody.
+No warm-cache speed gain or rebuild-topology optimization is claimed by this lane.
+
+The consumer-neutral `molt.file_locks` module owns OS and in-process locking;
+compiler build-path policy remains in `molt.cli.build_locks`. Proof cache
+admission does not import the CLI or frontend merely to obtain a lock.
+
+Candidate identity binds independently captured Git-tracked and nonignored untracked
+source bytes/modes, explicit overlays, the Git revision, captured toolchain files,
+command/profile/target and deterministic semantic environment. Queue nonces and
+effective output paths are execution transport, not a proven compilation closure.
+Existing developer targets are not imported. Candidate output capture rejects
+links, junctions, special entries, external hard links and changes during inventory.
+
+Source capture never recursively inventories ignored local caches. Explicit
+overlays and toolchain inputs extend captured source, but no declaration alone
+proves the absence of undeclared reads. Future warm admission requires an enforced
+complete-input authority, not an allowlist promise or cached source assertion.
+The current execution receipt independently owns the source-content CAS reference
+and its terminal handle/topology verification, so a seed cannot assert its own
+source identity. Output inventory uses the shared no-follow topology and
+handle-bound hashing authority with a closing membership fence. Work is linear
+in admitted source bytes and selected target bytes; source capture reports its
+file count, bytes hashed, and wall time separately from target selection.
+
+`cargo_target_selection` records requested and effective target, cold state,
+immutable input references, and selection wall time before the proof
+command starts. The runner validates that same custody authority against the
+native policy. The Rust supervisor continues to bind every actually executed
+derived image to its content identity; declaring a directory alone is not the
+queue's cache admission proof.
+
+Rust tests that produce linkable or executable fixtures use
+`runtime/test_support/cargo_test_artifacts.rs`. The helper creates a uniquely
+named directory beside the canonical running Cargo test image and never falls
+back to system TEMP. Cargo already resolved the invocation's selected target;
+the test must not reinterpret a relative `CARGO_TARGET_DIR` from its package cwd.
+The supervisor remains the authority for admission within the captured absolute,
+exclusive Cargo target. At launch it hashes the opened executable and binds its
+OS file identity and mutation token; directory placement is not content proof.
+
+Generated inputs and images remain Cargo-owned after each test, preserving bytes
+for terminal receipt capture and replay. Tests never recursively delete fixture
+directories by a potentially replaced pathname. The existing selected-target
+custody and retirement lifecycle owns eventual cleanup; ordinary source-only
+Cargo runs retain these outputs under the normal Cargo target lifecycle. There
+is no fixture-specific cleanup protocol or independent retirement registry.
+
 Fixed-image paths are canonicalized only for identity admission. The exact
 lexical `command[0]` is preserved for launch and argv0 semantics (for example,
 Rustup's `cargo`, `rustc`, and `rustup` proxies). Multiple policy rows that

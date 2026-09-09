@@ -23,8 +23,10 @@ from typing import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
+from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_build_identity import RuntimeBuildIdentity
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
@@ -673,8 +675,12 @@ class _RuntimeArtifactState:
     runtime_lib_ready_future: Future[bool] | None = None
 
 
+_SharedStdlibCacheValidationToken = tuple[str, tuple[StableRegularFileIdentity, ...]]
+
+
 @dataclass(frozen=True)
 class _BackendCacheSetup:
+    artifact_contract: BackendArtifactContract
     cache_enabled: bool
     cache_key: str | None
     function_cache_key: str | None
@@ -688,9 +694,7 @@ class _BackendCacheSetup:
     stdlib_object_manifest: str | None = None
     stdlib_module_symbols_json: str | None = None
     stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
-    stdlib_contract_validation_token: (
-        tuple[str, tuple[tuple[str, int, int, int], ...]] | None
-    ) = None
+    stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
 
 
 @dataclass(frozen=True)

@@ -585,7 +585,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- ExceptionPending: read the runtime exception-pending flag as
-            //    a raw i64 boolean (`molt_exception_pending() != 0`).  Produced
+            //    an exact i1 boolean (`molt_exception_pending() != 0`). Produced
             //    by `loop_break_if_exception` and consumed as the condition of
             //    the loop-exit CondBranch that breaks an iterator-consumer loop
             //    on a mid-iteration raise.  Non-foldable: it observes mutable
@@ -612,13 +612,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, raw);
-                    // `molt_exception_pending` returns a raw i64 0/1 (NOT a
-                    // NaN-boxed bool), so the consuming CondBranch must test it
-                    // with `!= 0` (the TirType::I64 path) rather than routing it
-                    // through `molt_is_truthy`, which would misinterpret the bit
-                    // pattern of `1` as a boxed value.
-                    self.value_types.insert(result_id, TirType::I64);
+                    let pending = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            raw.into_int_value(),
+                            self.backend.context.i64_type().const_zero(),
+                            "exc_pending_bool",
+                        )
+                        .unwrap();
+                    self.values.insert(result_id, pending.into());
+                    self.value_types.insert(result_id, TirType::Bool);
                 }
             }
 

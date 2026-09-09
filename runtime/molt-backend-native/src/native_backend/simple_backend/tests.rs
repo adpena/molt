@@ -69,32 +69,43 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
+fn compile_trace_probe_object(
+    emit_traces_env: Option<&str>,
+    execution_context: crate::ir::ExecutionContextPolicy,
+) -> Vec<u8> {
     let _guard = acquire_backend_env_lock();
     let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", emit_traces_env);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![
-                OpIR {
-                    kind: "trace_enter_slot".to_string(),
-                    value: Some(7),
+            ops: if execution_context == crate::ir::ExecutionContextPolicy::Local {
+                vec![
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        ..OpIR::default()
+                    },
+                ]
+            } else {
+                vec![OpIR {
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
-                },
-                OpIR {
-                    kind: "trace_exit".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    ..OpIR::default()
-                },
-            ],
+                }]
+            },
             param_types: None,
             source_file: None,
             is_extern: false,
-            execution_context: Default::default(),
+            codegen_partition: false,
+            execution_context,
         }],
         profile: None,
     };
@@ -106,7 +117,11 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         functions,
         profile: None,
     };
-    let analysis = analyze_native_backend_ir(&ir, true);
+    let analysis = analyze_native_backend_ir(
+        &ir,
+        true,
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+    );
     let function_has_ret = compute_function_has_ret(&ir.functions);
     let function_arities = ir
         .functions

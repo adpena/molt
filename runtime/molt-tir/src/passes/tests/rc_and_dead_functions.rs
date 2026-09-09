@@ -8,6 +8,7 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -31,6 +32,7 @@ fn rc_coalescing_preserves_pair_across_control_flow() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -54,6 +56,7 @@ fn rc_coalescing_handles_borrow_release_pair() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("borrow", "y"),
@@ -76,6 +79,7 @@ fn rc_coalescing_preserves_pair_with_intervening_use() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
@@ -100,6 +104,7 @@ fn rc_coalescing_eliminates_different_vars_independently() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "a"),
@@ -144,6 +149,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -165,6 +171,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -174,6 +181,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -210,6 +218,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -231,6 +240,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -240,6 +250,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -281,6 +292,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -295,6 +307,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -304,6 +317,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -313,6 +327,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],

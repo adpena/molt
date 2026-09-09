@@ -73,8 +73,16 @@ fn shared_stdlib_cache_requires_matching_key() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let stdlib_path = tmp_dir.join("stdlib.o");
-    std::fs::write(&stdlib_path, b"placeholder").expect("write stdlib object");
+    let stdlib_path = tmp_dir.join("stdlib.a");
+    let mut object = object::write::Object::new(
+        object::BinaryFormat::Elf,
+        object::Architecture::X86_64,
+        object::Endianness::Little,
+    );
+    object.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
+    let bytes = object.write().expect("write object fixture");
+    crate::backend_process::write_native_archive_bytes(&stdlib_path, &bytes)
+        .expect("write stdlib archive");
 
     write_shared_stdlib_cache_sidecars(
         &stdlib_path,
@@ -153,6 +161,23 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("partition-a"),
     ));
 
+    // Even current sidecars cannot relabel an old merged object as an archive.
+    std::fs::write(&stdlib_path, &bytes).expect("replace archive with old-style object");
+    write_shared_stdlib_cache_sidecars(
+        &stdlib_path,
+        7,
+        Some("abc123"),
+        Some("{\"cache_key\":\"abc123\"}"),
+        "partition-a",
+    )
+    .expect("write matching object sidecars");
+    assert!(!shared_stdlib_cache_matches(
+        &stdlib_path,
+        Some("abc123"),
+        Some("{\"cache_key\":\"abc123\"}"),
+        Some("partition-a")
+    ));
+
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -167,7 +192,7 @@ fn shared_stdlib_publish_lock_serializes_concurrent_threads() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let stdlib_path = tmp_dir.join("stdlib.o");
+    let stdlib_path = tmp_dir.join("stdlib.a");
     let first_inside = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let violation = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (first_entered_tx, first_entered_rx) = std::sync::mpsc::channel();
@@ -235,6 +260,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let func_b = FunctionIR {
@@ -248,22 +274,26 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let mut changed = func_b.clone();
     changed.ops[0].s_value = Some("3.13".to_string());
 
-    let ordered_functions = vec![func_a.clone(), func_b.clone()];
-    let reordered_functions = vec![func_b, func_a.clone()];
-    let changed_functions = vec![func_a, changed];
+    let mut ordered_functions = vec![func_a.clone(), func_b.clone()];
+    let mut reordered_functions = vec![func_b, func_a.clone()];
+    let mut changed_functions = vec![func_a, changed];
     let mut context_changed_functions = ordered_functions.clone();
     context_changed_functions[0].execution_context =
         molt_backend::ir::ExecutionContextPolicy::Local;
-    let ordered_context = molt_backend::SimpleBackend::build_module_context(&ordered_functions);
-    let reordered_context = molt_backend::SimpleBackend::build_module_context(&reordered_functions);
-    let changed_context = molt_backend::SimpleBackend::build_module_context(&changed_functions);
+    let ordered_context =
+        molt_backend::SimpleBackend::prepare_module_context(&mut ordered_functions);
+    let reordered_context =
+        molt_backend::SimpleBackend::prepare_module_context(&mut reordered_functions);
+    let changed_context =
+        molt_backend::SimpleBackend::prepare_module_context(&mut changed_functions);
     let context_changed_context =
-        molt_backend::SimpleBackend::build_module_context(&context_changed_functions);
+        molt_backend::SimpleBackend::prepare_module_context(&mut context_changed_functions);
     let ordered = shared_stdlib_partition_manifest(&ordered_functions, &ordered_context)
         .expect("partition manifest");
     let reordered = shared_stdlib_partition_manifest(&reordered_functions, &reordered_context)
@@ -312,6 +342,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let copy_init = FunctionIR {
@@ -326,6 +357,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let copy_chunk = FunctionIR {
@@ -338,6 +370,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let copy_copy = FunctionIR {
@@ -351,6 +384,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let valid_partition = vec![
@@ -391,7 +425,7 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let blocking = tmp_dir.join("not-a-dir");
     std::fs::write(&blocking, b"x").expect("write blocking file");
-    let stdlib_path = blocking.join("stdlib.o");
+    let stdlib_path = blocking.join("stdlib.a");
 
     let err = write_shared_stdlib_cache_sidecars(
         &stdlib_path,
@@ -421,6 +455,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -430,6 +465,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -439,6 +475,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -452,6 +489,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -465,6 +503,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -501,6 +540,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -510,6 +550,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -519,6 +560,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -532,6 +574,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -545,6 +588,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -583,6 +627,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -595,6 +640,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -607,6 +653,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -634,7 +681,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
 }
 
 #[test]
-fn compile_stdlib_cache_object_emits_parseable_empty_object() {
+fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-empty-stdlib-cache-{}-{}",
         std::process::id(),
@@ -644,9 +691,9 @@ fn compile_stdlib_cache_object_emits_parseable_empty_object() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let stdlib = tmp_dir.join("empty-stdlib.o");
+    let stdlib = tmp_dir.join("empty-stdlib.a");
 
-    compile_stdlib_cache_object(
+    compile_stdlib_cache_archive(
         &stdlib,
         Vec::new(),
         None,
@@ -661,16 +708,14 @@ fn compile_stdlib_cache_object_emits_parseable_empty_object() {
         !bytes.is_empty(),
         "empty stdlib cache path must publish a real object file"
     );
-    object::File::parse(&*bytes).expect("empty stdlib cache must be a parseable object");
+    assert_native_archive_members(&bytes, 1);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
 fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-empty-stdlib-cache-{}-{}",
         std::process::id(),
@@ -680,24 +725,11 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let output = tmp_dir.join("out.o");
-    let stdlib = tmp_dir.join("stdlib.o");
+    let output = tmp_dir.join("out.a");
+    let stdlib = tmp_dir.join("stdlib.a");
     let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
     std::fs::write(&runtime_symbols, "molt_main\n").expect("write runtime symbols");
 
-    let env_keys = [
-        "MOLT_ENTRY_MODULE",
-        "MOLT_STDLIB_OBJ",
-        "MOLT_STDLIB_CACHE_KEY",
-        "MOLT_STDLIB_CACHE_MANIFEST",
-        "MOLT_STDLIB_MODULE_SYMBOLS",
-        "MOLT_RUNTIME_CALLABLE_SYMBOLS",
-    ];
-    let prior_env: Vec<(&str, Option<String>)> = env_keys
-        .iter()
-        .copied()
-        .map(|key| (key, std::env::var(key).ok()))
-        .collect();
     unsafe {
         std::env::set_var("MOLT_ENTRY_MODULE", "demo");
         std::env::set_var("MOLT_STDLIB_OBJ", &stdlib);
@@ -711,6 +743,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         id: "job0".to_string(),
         is_wasm: false,
         target_triple: None,
+        native_output_kind: NativeArtifactKind::Archive,
         wasm_link: false,
         wasm_data_base: None,
         wasm_table_base: None,
@@ -737,6 +770,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -749,6 +783,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -761,6 +796,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -773,6 +809,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                 ],
@@ -785,22 +822,17 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
     let mut cache = DaemonCache::new(None);
     let result = compile_single_job(job, &mut cache);
 
-    for (key, value) in prior_env {
-        match value {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-    }
-
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
-    assert!(output.exists(), "application output object missing");
-    let stdlib_bytes = std::fs::read(&stdlib).expect("read daemon empty stdlib object");
+    assert_native_archive_members(
+        &std::fs::read(&output).expect("read application archive"),
+        1,
+    );
+    let stdlib_bytes = std::fs::read(&stdlib).expect("read daemon empty stdlib archive");
     assert!(
         !stdlib_bytes.is_empty(),
-        "daemon empty stdlib cache must publish a real object"
+        "daemon empty stdlib cache must publish a real archive"
     );
-    object::File::parse(&*stdlib_bytes)
-        .expect("daemon empty stdlib cache must be a parseable object");
+    assert_native_archive_members(&stdlib_bytes, 1);
     assert_eq!(
         std::fs::read_to_string(stdlib_cache_count_sidecar_path(&stdlib))
             .expect("read stdlib count sidecar"),
@@ -824,9 +856,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
 
 #[test]
 fn daemon_native_without_stdlib_obj_keeps_full_ir() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(&["MOLT_STDLIB_OBJ", "MOLT_ENTRY_MODULE"]);
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
@@ -840,6 +870,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -852,6 +883,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -864,6 +896,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -876,22 +909,17 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
         profile: None,
     };
 
-    let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
-    let entry_module = std::env::var("MOLT_ENTRY_MODULE").ok();
-    unsafe {
-        std::env::remove_var("MOLT_STDLIB_OBJ");
-        std::env::remove_var("MOLT_ENTRY_MODULE");
-    }
-
     // Mirror the daemon native path: without a stdlib cache target,
     // it must compile the full IR, not the drained remainder.
-    let maybe_stdlib = std::env::var("MOLT_STDLIB_OBJ").ok();
+    let maybe_stdlib = crate::backend_process::shared_stdlib_archive_path_from_env()
+        .expect("shared stdlib request admission");
     if maybe_stdlib.is_none() {
         molt_backend::inject_runtime_exit(&mut ir);
         molt_backend::eliminate_dead_functions(&mut ir);
@@ -903,15 +931,6 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
     }
 
     let names: Vec<_> = ir.functions.iter().map(|func| func.name.as_str()).collect();
-
-    match stdlib_obj_path {
-        Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_OBJ", value) },
-        None => unsafe { std::env::remove_var("MOLT_STDLIB_OBJ") },
-    }
-    match entry_module {
-        Some(value) => unsafe { std::env::set_var("MOLT_ENTRY_MODULE", value) },
-        None => unsafe { std::env::remove_var("MOLT_ENTRY_MODULE") },
-    }
 
     assert_eq!(
         names,

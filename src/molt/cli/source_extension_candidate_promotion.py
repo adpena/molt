@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.file_publication import durable_remove_path, is_link_like
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload

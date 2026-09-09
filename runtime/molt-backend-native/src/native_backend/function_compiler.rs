@@ -801,13 +801,18 @@ impl SimpleBackend {
             representation_plan,
         );
 
-        // Traceback frame tracking is separate from full call tracing. The
+        // Semantic execution-frame ownership is separate from full call tracing. The
         // frontend emits code-slot-backed trace_enter_slot/trace_exit markers
         // for every Python frame; native codegen lowers the enter marker at its
         // IR position so module code can initialize code slots first, then pops
         // exactly once in the unified return block.
-        let has_frame_slot =
-            emit_traces && func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
+        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        let owned_frame_entered = has_frame_slot.then(|| {
+            let entered = builder.declare_var(types::I8);
+            let inactive = builder.ins().iconst(types::I8, 0);
+            builder.def_var(entered, inactive);
+            entered
+        });
 
         let label_transport_plans: BTreeMap<i64, BlockTransportPlan> = if stateful {
             // Stateful live-across-suspend values have frame custody, not a
@@ -1564,7 +1569,7 @@ impl SimpleBackend {
                     let __flow = fc::funcobj::handle_funcobj_op(
                         &op,
                         op_idx,
-                        emit_traces,
+                        owned_frame_entered,
                         has_frame_slot,
                         is_block_filled,
                         rc_authority,
@@ -1630,7 +1635,7 @@ impl SimpleBackend {
                         op_idx,
                         func_ir.name.as_str(),
                         emit_traces,
-                        has_frame_slot,
+                        owned_frame_entered,
                         returns_value,
                         rc_authority,
                         &mut self.module,
@@ -2327,18 +2332,14 @@ impl SimpleBackend {
         switch_to_block_materialized(&mut builder, master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
-        if has_frame_slot {
-            let trace_exit_fn = import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_trace_exit",
-                &[],
-                &[types::I64],
-            );
-            builder.ins().call(trace_exit_fn, &[]);
-        }
+        emit_owned_execution_frame_exit(
+            owned_frame_entered,
+            &mut self.module,
+            &mut self.import_ids,
+            &mut builder,
+            &mut import_refs,
+            &mut sealed_blocks,
+        );
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
         // exit-teardown is the memory-phi arm of the native value-tracking RC — it

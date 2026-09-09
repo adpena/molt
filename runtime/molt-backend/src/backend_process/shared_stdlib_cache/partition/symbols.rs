@@ -1,42 +1,6 @@
 use molt_backend::SimpleIR;
 
-fn emitted_module_symbol(name: &str) -> Option<&str> {
-    name.strip_prefix("molt_init_")
-}
-
-fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
-    if let Some(rest) = name.strip_prefix("molt_init_") {
-        return rest == module_symbol;
-    }
-    name.starts_with(&format!("{module_symbol}__"))
-}
-
-pub(crate) fn is_user_owned_symbol(
-    name: &str,
-    entry_module: &str,
-    stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
-) -> bool {
-    let entry_init = format!("molt_init_{entry_module}");
-    if name == "molt_main"
-        || name == "molt_host_init"
-        || name.starts_with(&format!("{entry_module}__"))
-        || name == entry_init
-        || name == "molt_init___main__"
-        || name == "molt_isolate_import"
-        || name == "molt_isolate_bootstrap"
-    {
-        return true;
-    }
-    if let Some(stdlib_module_symbols) = stdlib_module_symbols {
-        if let Some(module_symbol) = emitted_module_symbol(name) {
-            return !stdlib_module_symbols.contains(module_symbol);
-        }
-        return !stdlib_module_symbols
-            .iter()
-            .any(|module_symbol| emitted_name_matches_module_symbol(name, module_symbol));
-    }
-    false
-}
+pub(crate) use molt_backend::stdlib_module_symbols::is_user_owned_symbol;
 
 pub(crate) fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
@@ -54,15 +18,21 @@ pub(crate) fn prune_and_partition_native_stdlib(
     // are dead-function-elimination roots here (invariant I5).
     molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
     molt_backend::eliminate_dead_imports(ir);
+    let module_context = molt_backend::SimpleBackend::prepare_module_context(&mut ir.functions);
     molt_backend::eliminate_dead_ops(
         ir,
         &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
     );
-    let module_context = molt_backend::SimpleBackend::build_module_context(&ir.functions);
     let user_func_set: std::collections::BTreeSet<String> = ir
         .functions
         .iter()
-        .filter(|f| is_user_owned_symbol(&f.name, entry_module, stdlib_module_symbols))
+        .filter(|f| {
+            is_user_owned_symbol(
+                module_context.original_function_name(&f.name),
+                entry_module,
+                stdlib_module_symbols,
+            )
+        })
         .map(|f| f.name.clone())
         .collect();
     let all_funcs: Vec<_> = ir.functions.drain(..).collect();

@@ -20,7 +20,14 @@ from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.python_module_names import encode_python_module_names
 from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
-from molt.cli.source_extension_target import source_extension_target_is_wasm
+from molt.cli.source_extension_target import (
+    SourceExtensionLinkDialect,
+    source_extension_link_dialect,
+    source_extension_target_is_wasm,
+)
+from molt.cli.source_extension_link_requirements import (
+    _forced_input_operand,
+)
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,
     resolve_source_extension_compile_language,
@@ -134,6 +141,7 @@ class _SourceExtensionArtifactSymbolInspection:
     wasm_function_import_signatures: tuple[tuple[str, str, tuple[str, ...], str], ...]
     wasm_function_exports: tuple[str, ...] = ()
     artifact_bytes: bytes | None = None
+    artifact_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -347,10 +355,12 @@ class _SourceExtensionCompileUnit:
     compiler: tuple[str, ...]
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
+    force_include: bool = False
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
             "source": str(self.source_path),
+            "force_include": self.force_include,
             "generated": self.generated,
             "language": self.language,
             "compiler": list(self.compiler),
@@ -380,8 +390,9 @@ class _SourceExtensionBuildPlan:
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
     link_args: tuple[str, ...]
-    folded_static_archives: tuple[str, ...]
     digest: str
+    consumed_forced_link_args: tuple[str, ...] = ()
+    lazy_static_target_ids: tuple[str, ...] = ()
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
@@ -411,7 +422,8 @@ class _SourceExtensionBuildPlan:
             "include_dirs": [str(path) for path in self.include_dirs],
             "compile_args": list(self.compile_args),
             "link_args": list(self.link_args),
-            "folded_static_archives": list(self.folded_static_archives),
+            "consumed_forced_link_args": list(self.consumed_forced_link_args),
+            "lazy_static_target_ids": list(self.lazy_static_target_ids),
         }
 
     def source_paths(self) -> tuple[Path, ...]:
@@ -473,10 +485,44 @@ def _is_compilable_source_path(path: Path) -> bool:
 
 
 def _meson_link_args(target: Mapping[str, Any]) -> tuple[str, ...]:
-    raw_args = target.get("linker_parameters") or target.get("link_args") or []
-    if not isinstance(raw_args, list):
-        return ()
-    return tuple(str(arg) for arg in raw_args)
+    """One ordered operand view, with equal mirrored metadata admitted once."""
+
+    views: list[tuple[str, ...]] = []
+
+    def add_view(raw: Any, *, field: str) -> None:
+        if raw is None:
+            return
+        if not isinstance(raw, list) or any(
+            not isinstance(argument, str) or not argument.strip() for argument in raw
+        ):
+            raise ValueError(f"Meson {field} must be a list of non-empty strings")
+        if raw:
+            views.append(tuple(raw))
+
+    for field in ("linker_parameters", "link_args"):
+        add_view(target.get(field), field=field)
+    groups = target.get("target_sources")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, Mapping) or "linker" not in group:
+                continue
+            linker = group["linker"]
+            if (
+                not isinstance(linker, list)
+                or not linker
+                or any(not isinstance(part, str) or not part.strip() for part in linker)
+            ):
+                raise ValueError(
+                    "Meson nested linker command must be a non-empty string list"
+                )
+            if "compiler" in group:
+                raise ValueError(
+                    "Meson source group mixes compiler and linker authority"
+                )
+            add_view(group.get("parameters"), field="nested linker parameters")
+    if any(view != views[0] for view in views[1:]):
+        raise ValueError("Meson linker operand views disagree in values or order")
+    return views[0] if views else ()
 
 
 def _meson_target_filename_names(filename: Any) -> set[str]:
@@ -505,7 +551,7 @@ def _meson_target_output_paths(filename: Any, *, build_root: Path) -> tuple[Path
     for raw_filename in raw_filenames:
         if not isinstance(raw_filename, str) or not raw_filename.strip():
             continue
-        target_path = Path(raw_filename).expanduser()
+        target_path = Path(raw_filename.replace("\\", "/")).expanduser()
         if not target_path.is_absolute():
             target_path = build_root / target_path
         outputs.append(target_path.resolve())
@@ -536,20 +582,12 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
             str(path) for path in plan.skipped_generated_sources
         ],
         "non_compiled_inputs": [str(path) for path in plan.non_compiled_inputs],
-        "compile_units": [
-            {
-                "source": str(unit.source_path),
-                "generated": unit.generated,
-                "language": unit.language,
-                "compiler": list(unit.compiler),
-                "include_dirs": [str(path) for path in unit.include_dirs],
-                "compile_args": list(unit.compile_args),
-            }
-            for unit in plan.compile_units
-        ],
+        "compile_units": [unit.manifest_payload() for unit in plan.compile_units],
         "include_dirs": [str(path) for path in plan.include_dirs],
         "compile_args": list(plan.compile_args),
         "link_args": list(plan.link_args),
+        "consumed_forced_link_args": list(plan.consumed_forced_link_args),
+        "lazy_static_target_ids": list(plan.lazy_static_target_ids),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -897,54 +935,6 @@ def _load_compile_command_units(
     return commands_by_source, []
 
 
-def _meson_link_archive_names(target: Mapping[str, Any]) -> set[str]:
-    """Static-library archive basenames referenced by a target's link line.
-
-    A Meson shared-module extension (e.g. numpy ``_multiarray_umath``) links
-    same-project ``static_library`` targets (``libunique_hash.a``,
-    ``libnpymath.a``, ...). Molt recompiles the extension from source for the
-    target triple, so the host-built ``.a`` archives are unusable; their source
-    translation units MUST join the extension's own compile closure or their
-    symbols are missing at link. This returns the archive basenames so the
-    matching static-library targets can be discovered in the intro-targets plan.
-    """
-    names: set[str] = set()
-
-    def _collect(values: Any) -> None:
-        if not isinstance(values, (list, tuple)):
-            return
-        for value in values:
-            text = str(value).strip()
-            if not text:
-                continue
-            # Archive references appear as paths like
-            # ``numpy/_core/libunique_hash.a``.
-            base = Path(text.replace("\\", "/")).name
-            if base.lower().endswith(".a"):
-                names.add(base)
-
-    # Meson intro-targets carry the link line inside each shared-module
-    # target_sources group's ``parameters``/``linker`` lists (the archive paths
-    # are linker inputs), not a top-level link_args key.
-    _collect(_meson_link_args(target))
-    target_sources = target.get("target_sources")
-    if isinstance(target_sources, list):
-        for group in target_sources:
-            if isinstance(group, Mapping):
-                _collect(group.get("parameters"))
-                _collect(group.get("linker"))
-    return names
-
-
-def _meson_target_archive_basenames(target: Mapping[str, Any]) -> set[str]:
-    raw = target.get("filename")
-    return {
-        base
-        for value in (raw if isinstance(raw, list) else (raw,))
-        if isinstance(value, str) and (base := Path(value.replace("\\", "/")).name)
-    }
-
-
 def _ninja_logical_lines(path: Path) -> tuple[str, ...]:
     try:
         raw_lines = path.read_text(encoding="utf-8").splitlines()
@@ -1060,90 +1050,275 @@ def _load_ninja_build_all_inputs(
     return _load_ninja_build_inputs(build_root, include_implicit=True)
 
 
-def _meson_linked_static_library_targets(
+@dataclass(frozen=True)
+class _MesonStaticLibraryProjection:
+    targets: tuple[Mapping[str, Any], ...]
+    excluded_targets: tuple[Mapping[str, Any], ...]
+    forced_target_ids: frozenset[str]
+    link_args: tuple[str, ...]
+    consumed_forced_args: tuple[str, ...]
+    lazy_static_target_ids: tuple[str, ...]
+
+
+class _MesonOutputIdentity:
+    """Declared output ownership; suffixes never establish static-library custody."""
+
+    def __init__(self, payload: Sequence[Any], *, build_root: Path) -> None:
+        self.build_root = build_root
+        self.outputs: dict[Path, Mapping[str, Any]] = {}
+        self.basenames: dict[str, list[Mapping[str, Any]]] = {}
+        self.aliases: dict[str, list[Mapping[str, Any]]] = {}
+        target_ids: set[str] = set()
+        for target in payload:
+            if not isinstance(target, Mapping):
+                continue
+            target_id = str(target.get("id", "")).strip()
+            if not target_id or target_id in target_ids:
+                raise ValueError(
+                    f"Meson target identity is missing or duplicated: {target_id!r}"
+                )
+            target_ids.add(target_id)
+            for output in _meson_target_output_paths(
+                target.get("filename"), build_root=build_root
+            ):
+                previous = self.outputs.get(output)
+                if previous is not None and previous is not target:
+                    raise ValueError(
+                        f"Meson output has multiple declared owners: {output}"
+                    )
+                self.outputs[output] = target
+                self._add(self.basenames, output.name, target)
+                if str(target.get("type", "")).strip() == "static library":
+                    for alias in (
+                        output.name,
+                        output.stem,
+                        os.path.normcase(output.stem).removeprefix("lib"),
+                        str(target.get("id", "")),
+                        str(target.get("name", "")),
+                    ):
+                        self._add(self.aliases, alias, target)
+
+    @staticmethod
+    def _add(
+        index: dict[str, list[Mapping[str, Any]]],
+        key: str,
+        target: Mapping[str, Any],
+    ) -> None:
+        if not key:
+            return
+        values = index.setdefault(os.path.normcase(key), [])
+        if not any(value is target for value in values):
+            values.append(target)
+
+    @staticmethod
+    def _unique(
+        matches: Sequence[Mapping[str, Any]], *, operand: str
+    ) -> Mapping[str, Any] | None:
+        if len(matches) > 1:
+            names = ", ".join(str(target.get("id", "")) for target in matches)
+            raise ValueError(
+                f"Meson output identity {operand!r} is ambiguous ({names})"
+            )
+        return matches[0] if matches else None
+
+    def resolve(
+        self, operand: str, *, exclusion: bool = False
+    ) -> Mapping[str, Any] | None:
+        normalized = operand.replace("\\", "/")
+        path = Path(normalized).expanduser()
+        qualified = "/" in normalized or path.is_absolute()
+        resolved = (path if path.is_absolute() else self.build_root / path).resolve()
+        exact = self.outputs.get(resolved)
+        if exact is not None or qualified:
+            return exact
+        matches = (self.aliases if exclusion else self.basenames).get(
+            os.path.normcase(normalized), ()
+        )
+        return self._unique(matches, operand=operand)
+
+
+def _meson_static_library_projection(
     *,
     primary_target: Mapping[str, Any],
     payload: Sequence[Any],
     build_root: Path,
-) -> list[Mapping[str, Any]]:
-    """In-project ``static_library`` targets linked by ``primary_target``.
+    exclude_linked_static_libraries: Sequence[str] = (),
+) -> _MesonStaticLibraryProjection:
+    """Fold only metadata-owned outputs and preserve ordered external operands.
 
-    Follows the primary target's link archives to the ``static library`` targets
-    in the same intro-targets plan whose output filename matches. Molt compiles
-    those targets' sources into the extension closure so linked-in symbols
-    (e.g. numpy ``unique.cpp`` in ``libunique_hash.a``) are present. If a linked
-    archive is an aggregate with no intro sources, expand its Ninja member
-    objects back to the Meson static targets that own those object roots.
+    Forced archives become explicit source-object roots. Lazy target identities
+    remain as provenance for the canonical typed final-link admission gate.
     """
-    archive_names = _meson_link_archive_names(primary_target)
-    if not archive_names:
-        return []
-    static_targets: list[Mapping[str, Any]] = []
-    for entry in payload:
-        if not isinstance(entry, Mapping):
-            continue
-        if str(entry.get("type", "")).strip() == "static library":
-            static_targets.append(entry)
-
+    identity = _MesonOutputIdentity(payload, build_root=build_root)
     linked: list[Mapping[str, Any]] = []
-    seen_ids: set[int] = set()
+    linked_ids: set[int] = set()
+    forced_ids: set[int] = set()
+    excluded_ids: set[int] = set()
+    for exclusion in exclude_linked_static_libraries:
+        if not isinstance(exclusion, str) or not exclusion.strip():
+            raise ValueError(
+                "Meson static-library exclusions must be non-empty strings"
+            )
+        excluded = identity.resolve(exclusion, exclusion=True)
+        if excluded is None:
+            raise ValueError(
+                f"Meson static-library exclusion has no declared owner: {exclusion!r}"
+            )
+        if str(excluded.get("type", "")).strip() != "static library":
+            raise ValueError(
+                f"Meson exclusion is not a static-library target: {exclusion!r}"
+            )
+        excluded_ids.add(id(excluded))
 
-    def append_target(entry: Mapping[str, Any]) -> bool:
-        entry_id = id(entry)
-        if entry_id in seen_ids:
-            return False
-        seen_ids.add(entry_id)
-        linked.append(entry)
-        return True
+    def append_target(target: Mapping[str, Any], *, forced: bool) -> None:
+        if id(target) not in linked_ids:
+            linked_ids.add(id(target))
+            linked.append(target)
+        if forced:
+            forced_ids.add(id(target))
 
-    for entry in static_targets:
-        entry_filenames = entry.get("filename")
-        raw_filenames = (
-            entry_filenames if isinstance(entry_filenames, list) else (entry_filenames,)
+    retained: list[str] = []
+    consumed_forced_args: list[str] = []
+    whole_archive = False
+    paired_framework = False
+    for argument in _meson_link_args(primary_target):
+        if paired_framework:
+            retained.append(argument)
+            paired_framework = False
+            continue
+        if argument == "-framework":
+            retained.append(argument)
+            paired_framework = True
+            continue
+        if argument in {"-Wl,--whole-archive", "--whole-archive"}:
+            if whole_archive:
+                raise ValueError("Meson whole-archive scopes cannot be nested")
+            whole_archive = True
+            retained.append(argument)
+            continue
+        if argument in {"-Wl,--no-whole-archive", "--no-whole-archive"}:
+            if not whole_archive:
+                raise ValueError("Meson whole-archive end has no start")
+            whole_archive = False
+            retained.append(argument)
+            continue
+        forced_operand = next(
+            (
+                operand
+                for dialect in SourceExtensionLinkDialect
+                if (operand := _forced_input_operand(argument, dialect=dialect))
+                is not None
+            ),
+            None,
         )
-        for raw_filename in raw_filenames:
-            if not isinstance(raw_filename, str):
-                continue
-            if Path(raw_filename.replace("\\", "/")).name in archive_names:
-                append_target(entry)
-                break
-    if not linked:
-        return []
+        operand = forced_operand if forced_operand is not None else argument
+        # Search directives and linker flags are not positive output custody.
+        explicit_input = forced_operand is not None or not (
+            argument.startswith("-")
+            or argument.upper().startswith(
+                ("/DEFAULTLIB:", "/INCLUDE:", "/WHOLEARCHIVE:")
+            )
+        )
+        owner = identity.resolve(operand) if explicit_input else None
+        if owner is not None and str(owner.get("type", "")).strip() == "static library":
+            append_target(owner, forced=whole_archive or forced_operand is not None)
+            if forced_operand is not None:
+                consumed_forced_args.append(argument)
+            continue
+        retained.append(argument)
+    if whole_archive:
+        raise ValueError("Meson whole-archive start has no end")
+    if paired_framework:
+        raise ValueError("Meson -framework is missing its paired name")
 
+    # Aggregate archives carry object ownership in Ninja, not intro source lists.
+    static_targets = [
+        target
+        for target in payload
+        if isinstance(target, Mapping)
+        and str(target.get("type", "")).strip() == "static library"
+    ]
     archive_edges = _load_ninja_build_explicit_inputs(build_root)
-    if not archive_edges:
-        return linked
-
-    target_object_roots: list[tuple[Path, Mapping[str, Any]]] = []
-    for entry in static_targets:
+    object_roots = [
+        (root, target)
+        for target in static_targets
         for root in _meson_target_object_roots(
-            entry.get("filename"),
-            build_root=build_root,
-        ):
-            target_object_roots.append((root, entry))
-
-    queue = list(linked)
-    for target in queue:
-        target_outputs = _meson_target_output_paths(
-            target.get("filename"),
-            build_root=build_root,
+            target.get("filename"), build_root=build_root
         )
-        member_inputs = [
-            member
-            for output in target_outputs
-            for member in archive_edges.get(output, ())
-            if member.suffix.lower() in _NINJA_OBJECT_SUFFIXES
-        ]
-        for member in member_inputs:
-            for root, owner in target_object_roots:
-                if owner is target:
+    ]
+    queue = list(linked)
+    expanded: set[tuple[int, bool]] = set()
+    for target in queue:
+        forced = id(target) in forced_ids
+        state = (id(target), forced)
+        if state in expanded or id(target) in excluded_ids:
+            continue
+        expanded.add(state)
+        outputs = _meson_target_output_paths(
+            target.get("filename"), build_root=build_root
+        )
+        own_roots = _meson_target_object_roots(
+            target.get("filename"), build_root=build_root
+        )
+        declared_sources = any(
+            _is_compilable_source_path(Path(str(source)))
+            for group in target.get("target_sources") or ()
+            if isinstance(group, Mapping)
+            for field in ("sources", "generated_sources")
+            for source in group.get(field) or ()
+        )
+        if (
+            forced
+            and not declared_sources
+            and not any(archive_edges.get(output) for output in outputs)
+        ):
+            raise ValueError(
+                "Meson forced aggregate has neither declared source members nor "
+                "Ninja member custody: " + ", ".join(str(output) for output in outputs)
+            )
+        for output in outputs:
+            for member in archive_edges.get(output, ()):
+                if member.suffix.lower() not in _NINJA_OBJECT_SUFFIXES:
                     continue
-                if not _path_is_within(member, root):
+                if any(_path_is_within(member, root) for root in own_roots):
+                    if forced and not declared_sources:
+                        raise ValueError(
+                            "Meson forced member lacks declared source custody: "
+                            + str(member)
+                        )
                     continue
-                if append_target(owner):
-                    queue.append(owner)
-                break
-    return linked
+                owners: list[Mapping[str, Any]] = []
+                for root, candidate in object_roots:
+                    if _path_is_within(member, root) and not any(
+                        owner is candidate for owner in owners
+                    ):
+                        owners.append(candidate)
+                owner = identity._unique(owners, operand=str(member))
+                if owner is None:
+                    if forced:
+                        raise ValueError(
+                            "Meson forced member has no declared source owner: "
+                            + str(member)
+                        )
+                    continue
+                append_target(owner, forced=forced)
+                queue.append(owner)
+
+    targets = tuple(target for target in linked if id(target) not in excluded_ids)
+    return _MesonStaticLibraryProjection(
+        targets=targets,
+        excluded_targets=tuple(
+            target for target in linked if id(target) in excluded_ids
+        ),
+        forced_target_ids=frozenset(
+            str(target["id"]) for target in targets if id(target) in forced_ids
+        ),
+        link_args=tuple(retained),
+        consumed_forced_args=tuple(consumed_forced_args),
+        lazy_static_target_ids=tuple(
+            str(target["id"]) for target in targets if id(target) not in forced_ids
+        ),
+    )
 
 
 def _filter_meson_source_group_to_existing(
@@ -1270,75 +1445,43 @@ def _load_meson_intro_targets_source_extension_plan(
         errors.append(f"Meson target {target_name or target_id!r} lacks target_sources")
         target_sources = []
 
-    # Follow linked in-project static libraries: a shared-module extension links
-    # same-project static_library targets whose host ``.a`` archives are unusable
-    # for the recompiled target triple, so their source translation units must
-    # join this extension's compile closure (else linked-in symbols like numpy
-    # ``unique.cpp`` in ``libunique_hash.a`` are missing). The primary target's
-    # own sources come first so its compile metadata wins on any overlap.
-    linked_static_targets = _meson_linked_static_library_targets(
-        primary_target=target,
-        payload=payload,
-        build_root=resolved_build_root,
-    )
-    # A SECONDARY extension in a multi-extension package (e.g. numpy's
-    # ``_umath_linalg``) links a same-project static library (``libnpymath.a``)
-    # that the PRIMARY extension (``_multiarray_umath``) already statically
-    # embeds and exports. In real CPython each extension is its own ``.so`` so a
-    # private npymath copy per extension is fine, but Molt links every sealed
-    # relocatable object of a statically-linked package into ONE wasm module, so
-    # a second private copy of those global ``npy_*`` definitions is a fatal
-    # ``wasm-ld: duplicate symbol`` at the final witness link. Excluding the
-    # shared static library here keeps its symbols UNDEFINED in this artifact.
-    # Final package planning must prove each symbol against a concrete sibling
-    # object/archive owner; ``runtime_symbols`` remains solely the generated
-    # Molt-runtime projection. This is the same thin shape
-    # ``scipy.ndimage._nd_image`` already relies on for numpy's C-API.
-    excluded: set[str] = set()
-    if excluded_linked_static_libraries:
-        excluded = {name.strip().lower() for name in excluded_linked_static_libraries}
-
-        def _target_archive_names(entry: Mapping[str, Any]) -> set[str]:
-            names: set[str] = set()
-            for base in _meson_target_archive_basenames(entry):
-                names.add(base.lower())
-                # Also accept the bare library stem (``npymath`` for
-                # ``libnpymath.a``) so callers can name it either way.
-                stem = base
-                if stem.lower().startswith("lib"):
-                    stem = stem[3:]
-                if stem.lower().endswith(".a"):
-                    stem = stem[:-2]
-                if stem:
-                    names.add(stem.lower())
-            return names
-
-        linked_static_targets = [
-            linked_target
-            for linked_target in linked_static_targets
-            if not (_target_archive_names(linked_target) & excluded)
-        ]
-    link_args = tuple(
-        arg
-        for arg in _meson_link_args(target)
-        if not (
-            excluded
-            & {
-                Path(arg).name.lower(),
-                Path(arg).stem.lower(),
-                Path(arg).stem.removeprefix("lib").lower(),
-            }
+    # One metadata authority owns source folding, exclusions and remaining operands.
+    try:
+        projection = _meson_static_library_projection(
+            primary_target=target,
+            payload=payload,
+            build_root=resolved_build_root,
+            exclude_linked_static_libraries=excluded_linked_static_libraries,
         )
-    )
-    folded_static_archives = tuple(
-        sorted(
-            {
-                archive
-                for linked_target in linked_static_targets
-                for archive in _meson_target_archive_basenames(linked_target)
-            }
-        )
-    )
+    except ValueError as exc:
+        return None, [str(exc)]
+    linked_static_targets = projection.targets
+    link_args = projection.link_args
+    forced_sources: set[Path] = set()
+    for linked_target in linked_static_targets:
+        if str(linked_target["id"]) not in projection.forced_target_ids:
+            continue
+        for group in linked_target.get("target_sources") or ():
+            if not isinstance(group, Mapping):
+                continue
+            for field, prefer_build in (
+                ("sources", False),
+                ("generated_sources", True),
+            ):
+                for raw_source in group.get(field) or ():
+                    source_path = _resolve_meson_plan_artifact_path(
+                        raw_source,
+                        source_root=resolved_source_root,
+                        build_root=resolved_build_root,
+                        prefer_build_root=prefer_build,
+                    )
+                    if _is_compilable_source_path(source_path):
+                        forced_sources.add(source_path.resolve())
+                        if not source_path.is_file():
+                            errors.append(
+                                "Meson forced static-library member source is missing: "
+                                + str(source_path)
+                            )
     combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
     skipped_generated_sources: list[Path] = []
     for linked_target in linked_static_targets:
@@ -1444,6 +1587,7 @@ def _load_meson_intro_targets_source_extension_plan(
             compiler=unit_compiler,
             include_dirs=unit_includes,
             compile_args=unit_args,
+            force_include=resolved_source_path in forced_sources,
         )
         existing = compile_units_by_source.get(resolved_source_path)
         if existing is not None:
@@ -1623,7 +1767,8 @@ def _load_meson_intro_targets_source_extension_plan(
         include_dirs=_dedupe_paths(include_dirs),
         compile_args=tuple(compile_args),
         link_args=link_args,
-        folded_static_archives=folded_static_archives,
+        consumed_forced_link_args=projection.consumed_forced_args,
+        lazy_static_target_ids=projection.lazy_static_target_ids,
         digest="",
     )
     return (
@@ -1647,7 +1792,8 @@ def _load_meson_intro_targets_source_extension_plan(
             include_dirs=plan.include_dirs,
             compile_args=plan.compile_args,
             link_args=plan.link_args,
-            folded_static_archives=plan.folded_static_archives,
+            consumed_forced_link_args=plan.consumed_forced_link_args,
+            lazy_static_target_ids=plan.lazy_static_target_ids,
             digest=_source_extension_build_plan_digest(plan),
         ),
         [],
@@ -1725,6 +1871,19 @@ def _validate_source_extension_build_plan_target(
 ) -> list[str]:
     require_explicit = source_extension_target_is_wasm(target_triple)
     errors: list[str] = []
+    dialect = source_extension_link_dialect(target_triple)
+    for argument in plan.consumed_forced_link_args:
+        if _forced_input_operand(argument, dialect=dialect) is None:
+            errors.append(
+                f"Source-plan forced loading operand is invalid for {dialect.value}: {argument!r}"
+            )
+    if dialect is SourceExtensionLinkDialect.ELF_GNU and any(
+        unit.force_include for unit in plan.compile_units
+    ):
+        errors.append(
+            "ELF forced source members require a final extension-artifact loading "
+            "policy; lazy archive publication cannot preserve whole-archive semantics"
+        )
     for unit in plan.compile_units:
         try:
             explicit = validate_compiler_target(
@@ -1806,11 +1965,16 @@ def _source_extension_object_fact(
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
-    symbol_inspection = _inspect_source_extension_artifact_symbols(
-        object_path,
-        nm_command=nm_command,
-        target_triple=target_triple,
-    )
+    from molt.cli.backend_cache import NativeSymbolInspectionError
+
+    try:
+        symbol_inspection = _inspect_source_extension_artifact_symbols(
+            object_path,
+            nm_command=nm_command,
+            target_triple=target_triple,
+        )
+    except NativeSymbolInspectionError as error:
+        return None, str(error)
     if symbol_inspection is None:
         return (
             None,
@@ -1853,13 +2017,22 @@ def _source_extension_object_fact(
                 sha256=_sha256_file(dependency),
             )
         )
+    inspected_digest = symbol_inspection.artifact_digest
+    try:
+        if inspected_digest is None or _sha256_file(object_path) != inspected_digest:
+            return (
+                None,
+                f"compiled extension object changed after symbol inspection: {object_path}",
+            )
+    except OSError as error:
+        return None, f"cannot verify inspected extension object {object_path}: {error}"
     return (
         _SourceExtensionObjectFact(
             source_path=source_path.resolve(),
             language=language,
             object_path=object_path,
             source_sha256=_sha256_file(source_path),
-            object_sha256=_sha256_file(object_path),
+            object_sha256=inspected_digest,
             defined_symbols=tuple(sorted(defined)),
             undefined_symbols=tuple(sorted(undefined)),
             defined_function_symbols=tuple(
@@ -1918,6 +2091,7 @@ def _inspect_source_extension_artifact_symbols(
                 sorted(export.name for export in interface.function_exports)
             ),
             artifact_bytes=artifact_bytes,
+            artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
         )
 
     # Reading a native object file's global symbols is a backend/native-link
@@ -1931,8 +2105,6 @@ def _inspect_source_extension_artifact_symbols(
         nm_command=nm_command,
         target_triple=target_triple,
     )
-    if symbol_facts is None:
-        return None
     defined = set(symbol_facts.defined)
     undefined = set(symbol_facts.undefined)
     if aggregate_linker_closure:
@@ -1944,6 +2116,7 @@ def _inspect_source_extension_artifact_symbols(
         symbol_authority=SOURCE_EXTENSION_NATIVE_SYMBOL_AUTHORITY,
         wasm_imports=None,
         wasm_function_import_signatures=(),
+        artifact_digest=symbol_facts.artifact_digest,
     )
 
 
@@ -1996,19 +2169,35 @@ def validate_source_extension_artifact_object_closure(
         actual_defined_functions = set(inspection.defined_function_symbols)
     elif artifact_kind == "static_archive":
         if inspection is not None:
+            if (
+                inspection.artifact_digest is None
+                or inspection.artifact_digest != manifest.get("extension_sha256")
+            ):
+                return [
+                    f"Native inspected bytes differ from extension_sha256: {artifact_path.name}"
+                ]
             actual_defined = set(inspection.defined_symbols)
             actual_undefined = set(inspection.undefined_symbols) - actual_defined
             actual_defined_functions = set(inspection.defined_function_symbols)
         else:
-            from molt.cli.backend_cache import _native_archive_global_symbol_facts
-
-            symbol_facts = _native_archive_global_symbol_facts(
-                artifact_path,
-                target_triple=target_triple,
+            from molt.cli.backend_cache import (
+                NativeSymbolInspectionError,
+                _native_archive_global_symbol_facts,
             )
-            if symbol_facts is None:
+
+            try:
+                symbol_facts = _native_archive_global_symbol_facts(
+                    artifact_path,
+                    target_triple=target_triple,
+                )
+            except NativeSymbolInspectionError as error:
+                return [str(error)]
+            if (
+                symbol_facts.artifact_digest is None
+                or symbol_facts.artifact_digest != manifest.get("extension_sha256")
+            ):
                 return [
-                    f"cannot read static archive symbol closure from {artifact_path.name}"
+                    f"Native inspected bytes differ from extension_sha256: {artifact_path.name}"
                 ]
             actual_defined = set(symbol_facts.defined)
             actual_undefined = set(symbol_facts.undefined) - actual_defined
@@ -2692,12 +2881,22 @@ def _compute_source_extension_object_closure(
     *,
     init_symbol: str,
     object_facts: Sequence[_SourceExtensionObjectFact],
+    forced_object_paths: Sequence[Path] = (),
+    retained_symbols: Sequence[str] = (),
 ) -> tuple[_SourceExtensionObjectClosure | None, list[str]]:
-    errors: list[str] = []
+    """Resolve all admitted roots through one compiled-object dependency graph."""
+    errors: set[str] = set()
     owners: dict[str, list[_SourceExtensionObjectFact]] = {}
+    objects_by_path: dict[Path, _SourceExtensionObjectFact] = {}
     for fact in object_facts:
+        path = fact.object_path.resolve()
+        if path in objects_by_path:
+            errors.add(f"source extension object identity is duplicated: {path}")
+        objects_by_path[path] = fact
         for symbol in fact.defined_symbols:
             owners.setdefault(symbol, []).append(fact)
+    if errors:
+        return None, sorted(errors)
 
     init_owners = owners.get(init_symbol, [])
     if not init_owners:
@@ -2718,42 +2917,71 @@ def _compute_source_extension_object_closure(
         ]
 
     included: set[Path] = set()
-    pending: list[_SourceExtensionObjectFact] = [init_owners[0]]
+    pending: list[_SourceExtensionObjectFact] = []
     undefined_symbols: set[str] = set()
+
+    def include(fact: _SourceExtensionObjectFact) -> None:
+        # Schedule each object only once even with diamonds, cycles, and repeated
+        # roots. Preserve source-plan order separately when publishing the result.
+        if fact.object_path not in included:
+            included.add(fact.object_path)
+            pending.append(fact)
+
+    def require(symbol: str) -> None:
+        symbol_owners = owners.get(symbol)
+        if not symbol_owners:
+            # A retained external symbol is a real linker requirement even if
+            # no selected source object references it.
+            undefined_symbols.add(symbol)
+        elif len(symbol_owners) != 1:
+            owner_names = ", ".join(owner.object_path.name for owner in symbol_owners)
+            errors.add(
+                f"source extension symbol {symbol!r} is ambiguously defined by "
+                f"{owner_names}"
+            )
+        else:
+            include(symbol_owners[0])
+
+    include(init_owners[0])
+    for path in forced_object_paths:
+        fact = objects_by_path.get(path.resolve())
+        if fact is None:
+            errors.add(
+                f"source extension forced object {str(path)!r} has no compiled fact"
+            )
+        else:
+            include(fact)
+    for symbol in retained_symbols:
+        require(symbol)
     while pending:
         fact = pending.pop()
-        if fact.object_path in included:
-            continue
-        included.add(fact.object_path)
         for symbol in fact.undefined_symbols:
-            symbol_owners = owners.get(symbol)
-            if not symbol_owners:
-                undefined_symbols.add(symbol)
-                continue
-            if len(symbol_owners) != 1:
-                owner_names = ", ".join(
-                    owner.object_path.name for owner in symbol_owners
-                )
-                errors.append(
-                    f"source extension symbol {symbol!r} is ambiguously defined by "
-                    f"{owner_names}"
-                )
-                continue
-            pending.append(symbol_owners[0])
+            require(symbol)
 
+    # Forced members may introduce overlapping definitions without any use of
+    # the symbol. The current symbol authority has no weak/COMDAT selection
+    # facts, so it cannot silently choose a winner.
+    for symbol, symbol_owners in owners.items():
+        if len(symbol_owners) < 2:
+            continue
+        selected = [owner for owner in symbol_owners if owner.object_path in included]
+        if len(selected) > 1:
+            owner_names = ", ".join(owner.object_path.name for owner in selected)
+            errors.add(
+                f"source extension selected symbol {symbol!r} is ambiguously "
+                f"defined by {owner_names}"
+            )
     if errors:
-        return None, errors
+        return None, sorted(errors)
 
-    closure_objects = tuple(
-        fact for fact in object_facts if fact.object_path in included
-    )
-    undefined_symbols_sorted = tuple(sorted(undefined_symbols))
     return (
         _SourceExtensionObjectClosure(
             init_symbol=init_symbol,
             init_symbol_owner=init_owners[0],
-            objects=closure_objects,
-            undefined_symbols=undefined_symbols_sorted,
+            objects=tuple(
+                fact for fact in object_facts if fact.object_path in included
+            ),
+            undefined_symbols=tuple(sorted(undefined_symbols)),
         ),
         [],
     )

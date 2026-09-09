@@ -1102,6 +1102,7 @@ mod tests {
             param_types: Some(vec!["int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: crate::ExecutionContextPolicy::None,
         };
 
@@ -1263,6 +1264,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: crate::ExecutionContextPolicy::None,
         };
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
@@ -1345,6 +1347,7 @@ mod tests {
             param_types: None,
             source_file: Some("policy.py".to_string()),
             is_extern: false,
+            codegen_partition: false,
             execution_context: crate::ExecutionContextPolicy::None,
         };
         let hash = |policy| {
@@ -1410,6 +1413,7 @@ mod tests {
             param_types: None,
             source_file: Some("app.py".to_string()),
             is_extern: false,
+            codegen_partition: false,
             execution_context: crate::ExecutionContextPolicy::Inherited,
         }];
         let target_info = TargetInfo::native_release_fast();

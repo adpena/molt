@@ -19,7 +19,7 @@ from molt.file_publication import (
     is_link_like,
     resolve_owned_path,
 )
-from molt.cli.build_locks import _FileLockHandle, _in_process_lock_key
+from molt.file_locks import _FileLockHandle, _in_process_lock_key
 from molt.cli.source_extension_set_validation import (
     ValidatedSourceExtensionSetSeal,
     rebind_source_extension_set_receipt,

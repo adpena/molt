@@ -33,6 +33,7 @@ fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -72,6 +73,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -117,6 +119,7 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -172,6 +175,7 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -239,6 +243,7 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

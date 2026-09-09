@@ -860,6 +860,39 @@ def extension_build(
     )
     wheel_path = output_root / wheel_name
 
+    try:
+        link_requirements = source_extension_link_requirements(
+            link_args,
+            target_triple=target_plan.target_triple,
+            path_roots=(
+                *(
+                    (
+                        loaded_source_plan.build_root,
+                        loaded_source_plan.source_root,
+                    )
+                    if loaded_source_plan is not None
+                    else ()
+                ),
+                project_root,
+            ),
+            publish_root=output_root / module_parts[0],
+        )
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-build")
+
+    if (
+        loaded_source_plan is not None
+        and loaded_source_plan.lazy_static_target_ids
+        and link_requirements.items
+    ):
+        return _fail(
+            "Source-plan lazy static targets lack external member undefined-symbol "
+            "custody for typed link requirements: "
+            + ", ".join(loaded_source_plan.lazy_static_target_ids),
+            json_output,
+            command="extension-build",
+        )
+
     build_env = os.environ.copy()
     # Reproducibility is a build input, never ambient policy.
     if deterministic or profile == "release":
@@ -1211,10 +1244,32 @@ def extension_build(
                 assert object_fact is not None
                 object_facts.append(object_fact)
 
+        direct_symbols = sorted(
+            {
+                str(export.get("symbol"))
+                for export in callable_exports
+                if export.get("binding") == "direct_symbol"
+                and isinstance(export.get("symbol"), str)
+                and str(export.get("symbol")).strip()
+            }
+        )
+        forced_object_paths = (
+            tuple(
+                fact.object_path
+                for fact, unit in zip(
+                    object_facts, loaded_source_plan.compile_units, strict=True
+                )
+                if unit.force_include
+            )
+            if loaded_source_plan is not None
+            else ()
+        )
         source_plan_object_closure, object_closure_errors = (
             _source_extensions._compute_source_extension_object_closure(
                 init_symbol=init_symbol,
                 object_facts=object_facts,
+                forced_object_paths=forced_object_paths,
+                retained_symbols=(*link_requirements.retained_symbols, *direct_symbols),
             )
         )
         if object_closure_errors:
@@ -1270,31 +1325,6 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-
-        try:
-            link_requirements = source_extension_link_requirements(
-                link_args,
-                target_triple=target_plan.target_triple,
-                folded_static_archives=(
-                    loaded_source_plan.folded_static_archives
-                    if loaded_source_plan is not None
-                    else ()
-                ),
-                path_roots=(
-                    *(
-                        (
-                            loaded_source_plan.build_root,
-                            loaded_source_plan.source_root,
-                        )
-                        if loaded_source_plan is not None
-                        else ()
-                    ),
-                    project_root,
-                ),
-                publish_root=output_root / module_parts[0],
-            )
-        except ValueError as exc:
-            return _fail(str(exc), json_output, command="extension-build")
 
         built_extension = build_tmp / module_rel
         built_extension.parent.mkdir(parents=True, exist_ok=True)
@@ -1377,14 +1407,17 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-        artifact_symbol_inspection = (
-            _source_extensions._inspect_source_extension_artifact_symbols(
-                built_extension,
-                nm_command=effective_tool_commands.get("nm"),
-                target_triple=target_triple,
-                aggregate_linker_closure=True,
+        try:
+            artifact_symbol_inspection = (
+                _source_extensions._inspect_source_extension_artifact_symbols(
+                    built_extension,
+                    nm_command=effective_tool_commands.get("nm"),
+                    target_triple=target_triple,
+                    aggregate_linker_closure=True,
+                )
             )
-        )
+        except OSError as error:
+            return _fail(str(error), json_output, command="extension-build")
         if artifact_symbol_inspection is None:
             return _fail(
                 "Unable to read the emitted extension artifact global symbol table",
@@ -1410,21 +1443,22 @@ def extension_build(
                     json_output,
                     command="extension-build",
                 )
-        direct_symbols = sorted(
-            {
-                str(export.get("symbol"))
-                for export in callable_exports
-                if export.get("binding") == "direct_symbol"
-                and isinstance(export.get("symbol"), str)
-                and str(export.get("symbol")).strip()
-            }
-        )
-        extension_bytes = (
-            artifact_symbol_inspection.artifact_bytes
-            if artifact_symbol_inspection.artifact_bytes is not None
-            else built_extension.read_bytes()
-        )
+        try:
+            extension_bytes = (
+                artifact_symbol_inspection.artifact_bytes
+                if artifact_symbol_inspection.artifact_bytes is not None
+                else built_extension.read_bytes()
+            )
+        except OSError as error:
+            return _fail(str(error), json_output, command="extension-build")
         extension_sha = hashlib.sha256(extension_bytes).hexdigest()
+        if extension_sha != artifact_symbol_inspection.artifact_digest:
+            return _fail(
+                "Extension artifact changed after symbol inspection: "
+                f"{built_extension}",
+                json_output,
+                command="extension-build",
+            )
         extension_archive_path = module_rel.as_posix()
         runtime_linkage = "static_link"
         artifact_kind = target_plan.artifact_kind

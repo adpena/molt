@@ -263,7 +263,7 @@ the implementation. For forward-looking priorities, use
   UnboxVal inference. `type_refine.rs` owns only the rule semantics and live
   operand/attribute parsing, not opcode membership.
 - Operand-independent result-type facts are registry-owned through
-  `operand_independent_result_type` rows and generated
+  indexed `operand_independent_result_types` rows and generated
   `opcode_operand_independent_result_tir_type`. Type refine, block versioning,
   branchless counting, fast-math type seeding, strength-reduction type seeding,
   and GVN consume that helper instead of carrying private

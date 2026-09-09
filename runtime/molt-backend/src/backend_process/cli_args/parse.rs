@@ -11,6 +11,7 @@ impl<'a> BackendCliArgs<'a> {
             is_luau: false,
             use_ir_pipeline: false,
             target_triple: None,
+            native_output_kind: None,
             output_path: None,
             native_batch_job_file: None,
             ir_file_path: None,
@@ -57,6 +58,14 @@ impl<'a> BackendCliArgs<'a> {
                 "--output" if !saw_output_flag => {
                     saw_output_flag = true;
                     parsed.output_path = value_after(args, idx);
+                }
+                "--native-output-kind" => {
+                    // A missing value remains an invalid value, not the default.
+                    parsed.native_output_kind = Some(if parsed.native_output_kind.is_some() {
+                        ""
+                    } else {
+                        value_after(args, idx).unwrap_or("")
+                    });
                 }
                 "--native-batch-job-file" if !saw_native_batch_job_file_flag => {
                     saw_native_batch_job_file_flag = true;

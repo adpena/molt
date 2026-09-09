@@ -168,64 +168,9 @@ pub(crate) fn collect_slice_indices(start: isize, stop: isize, step: isize) -> V
 pub(crate) fn collect_iterable_values(
     _py: &PyToken<'_>,
     bits: u64,
-    err_msg: &str,
+    _err_msg: &str,
 ) -> Option<Vec<u64>> {
-    let iter_bits = molt_iter(bits);
-    if obj_from_bits(iter_bits).is_none() {
-        if exception_pending(_py) {
-            return None;
-        }
-        return raise_exception::<_>(_py, "TypeError", err_msg);
-    }
-    let mut out = Vec::new();
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        if exception_pending(_py) {
-            for item in out.drain(..) {
-                dec_ref_bits(_py, item);
-            }
-            return None;
-        }
-        let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
-            for item in out.drain(..) {
-                dec_ref_bits(_py, item);
-            }
-            return None;
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                for item in out.drain(..) {
-                    dec_ref_bits(_py, item);
-                }
-                return None;
-            }
-            let Some((item, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr) else {
-                for item in out.drain(..) {
-                    dec_ref_bits(_py, item);
-                }
-                return None;
-            };
-            let done = is_truthy(_py, obj_from_bits(done_bits));
-            if exception_pending(_py) {
-                for item in out.drain(..) {
-                    dec_ref_bits(_py, item);
-                }
-                return None;
-            }
-            if done {
-                break;
-            }
-            if out.len() == out.capacity() && out.try_reserve(1).is_err() {
-                for item in out.drain(..) {
-                    dec_ref_bits(_py, item);
-                }
-                return raise_exception::<_>(_py, "MemoryError", "iterable allocation failed");
-            }
-            inc_ref_bits(_py, item);
-            out.push(item);
-        }
-    }
-    Some(out)
+    crate::object::iterable::collect(_py, bits, crate::object::iterable::LengthHint::Consult)
 }
 
 pub(crate) fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
@@ -1060,6 +1005,14 @@ fn trace_len_enabled() -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_len(val: u64) -> u64 {
+    len_impl(val, false)
+}
+
+pub(crate) extern "C" fn molt_len_builtin(val: u64) -> u64 {
+    len_impl(val, true)
+}
+
+fn len_impl(val: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if trace_len_enabled() {
@@ -1073,130 +1026,114 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_STRING {
-                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                    let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
-                    return MoltObject::from_int(count).bits();
-                }
-                if type_id == TYPE_ID_BYTES {
-                    return MoltObject::from_int(bytes_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_BYTEARRAY {
-                    return MoltObject::from_int(bytes_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_MEMORYVIEW {
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
+                if builtin_only || crate::object::iterable::builtin_receiver(_py, ptr) {
+                    if type_id == TYPE_ID_STRING {
+                        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                        let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                        return MoltObject::from_int(count).bits();
                     }
-                    if memoryview_ndim(ptr) == 0 {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "0-dim memory has no length",
-                        );
+                    if type_id == TYPE_ID_BYTES {
+                        return MoltObject::from_int(bytes_len(ptr) as i64).bits();
                     }
-                    return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
+                    if type_id == TYPE_ID_BYTEARRAY {
+                        return MoltObject::from_int(bytes_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_MEMORYVIEW {
+                        if memoryview_released(ptr) {
+                            return raise_released_memoryview(_py);
+                        }
+                        if memoryview_ndim(ptr) == 0 {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "0-dim memory has no length",
+                            );
+                        }
+                        return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_LIST
+                        || type_id == TYPE_ID_LIST_INT
+                        || type_id == TYPE_ID_LIST_BOOL
+                    {
+                        return MoltObject::from_int(list_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_TUPLE {
+                        return MoltObject::from_int(tuple_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_INTARRAY {
+                        return MoltObject::from_int(intarray_len(ptr) as i64).bits();
+                    }
+                    if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                            return MoltObject::none().bits();
+                        };
+                        return MoltObject::from_int(dict_len(dict_ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_SET {
+                        return MoltObject::from_int(set_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_FROZENSET {
+                        return MoltObject::from_int(set_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_DICT_KEYS_VIEW
+                        || type_id == TYPE_ID_DICT_VALUES_VIEW
+                        || type_id == TYPE_ID_DICT_ITEMS_VIEW
+                    {
+                        return MoltObject::from_int(dict_view_len(ptr) as i64).bits();
+                    }
+                    if type_id == TYPE_ID_RANGE {
+                        let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                            return MoltObject::none().bits();
+                        };
+                        let len = range_len_bigint(&start, &stop, &step);
+                        return int_bits_from_bigint(_py, len);
+                    }
                 }
-                if type_id == TYPE_ID_LIST
-                    || type_id == TYPE_ID_LIST_INT
-                    || type_id == TYPE_ID_LIST_BOOL
-                {
-                    return MoltObject::from_int(list_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_TUPLE {
-                    return MoltObject::from_int(tuple_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_INTARRAY {
-                    return MoltObject::from_int(intarray_len(ptr) as i64).bits();
-                }
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                if !builtin_only {
+                    let call_bits =
+                        crate::builtins::attr::lookup_special_method(_py, val, b"__len__");
+                    if exception_pending(_py) {
+                        if let Some(bits) = call_bits {
+                            dec_ref_bits(_py, bits);
+                        }
                         return MoltObject::none().bits();
-                    };
-                    return MoltObject::from_int(dict_len(dict_ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_SET {
-                    return MoltObject::from_int(set_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_FROZENSET {
-                    return MoltObject::from_int(set_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_DICT_KEYS_VIEW
-                    || type_id == TYPE_ID_DICT_VALUES_VIEW
-                    || type_id == TYPE_ID_DICT_ITEMS_VIEW
-                {
-                    return MoltObject::from_int(dict_view_len(ptr) as i64).bits();
-                }
-                if type_id == TYPE_ID_RANGE {
-                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
-                        return MoltObject::none().bits();
-                    };
-                    let len = range_len_bigint(&start, &stop, &step);
-                    return int_bits_from_bigint(_py, len);
-                }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__len__") {
-                    let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
-                    dec_ref_bits(_py, name_bits);
+                    }
                     if let Some(call_bits) = call_bits {
                         exception_stack_push();
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             exception_stack_pop(_py);
+                            dec_ref_bits(_py, res_bits);
                             return MoltObject::none().bits();
                         }
                         exception_stack_pop(_py);
-                        let res_obj = obj_from_bits(res_bits);
-                        if let Some(i) = to_i64(res_obj) {
-                            if i < 0 {
-                                if res_obj.as_ptr().is_some() {
-                                    dec_ref_bits(_py, res_bits);
-                                }
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "__len__() should return >= 0",
-                                );
-                            }
-                            if res_obj.as_ptr().is_some() {
-                                dec_ref_bits(_py, res_bits);
-                            }
-                            return MoltObject::from_int(i).bits();
-                        }
-                        if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                            let big = bigint_ref(big_ptr);
-                            if big.is_negative() {
-                                dec_ref_bits(_py, res_bits);
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "__len__() should return >= 0",
-                                );
-                            }
-                            let Some(len) = big.to_usize() else {
-                                dec_ref_bits(_py, res_bits);
-                                return raise_exception::<_>(
-                                    _py,
-                                    "OverflowError",
-                                    "cannot fit 'int' into an index-sized integer",
-                                );
-                            };
-                            if len > i64::MAX as usize {
-                                dec_ref_bits(_py, res_bits);
-                                return raise_exception::<_>(
-                                    _py,
-                                    "OverflowError",
-                                    "cannot fit 'int' into an index-sized integer",
-                                );
-                            }
-                            dec_ref_bits(_py, res_bits);
-                            return MoltObject::from_int(len as i64).bits();
-                        }
-                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                        let msg =
-                            format!("'{}' object cannot be interpreted as an integer", res_type);
+                        let message = format!(
+                            "'{}' object cannot be interpreted as an integer",
+                            type_name(_py, obj_from_bits(res_bits))
+                        );
+                        let value = crate::builtins::numbers::index_bigint_from_obj(
+                            _py, res_bits, &message,
+                        );
                         dec_ref_bits(_py, res_bits);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        let Some(value) = value else {
+                            return MoltObject::none().bits();
+                        };
+                        if value.is_negative() {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "__len__() should return >= 0",
+                            );
+                        }
+                        let Some(value) = value.to_isize() else {
+                            return raise_exception::<_>(
+                                _py,
+                                "OverflowError",
+                                "cannot fit 'int' into an index-sized integer",
+                            );
+                        };
+                        return int_bits_from_i64(_py, value as i64);
                     }
                 }
             }

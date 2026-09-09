@@ -2,15 +2,8 @@ use super::*;
 
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "molt-llvm-stdlib-extern-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+    use object::{BinaryFormat, Object, ObjectSymbol};
+
     let caller = FunctionIR {
         name: "molt_main".to_string(),
         params: vec![],
@@ -29,6 +22,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let provider = FunctionIR {
@@ -41,9 +35,11 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
-    let module_context = SimpleBackend::build_module_context(&[caller.clone(), provider.clone()]);
+    let module_context =
+        SimpleBackend::prepare_module_context(&mut vec![caller.clone(), provider.clone()]);
     let mut declaration = provider;
     declaration
         .externalize_with_signature()
@@ -56,31 +52,32 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
     let mut backend = SimpleBackend::new();
     backend.set_module_context(module_context);
     let bytes = backend.compile_llvm(ir).bytes;
-    let output = tmp_dir.join("out.o");
-    std::fs::write(&output, &bytes).expect("write llvm object");
-    let nm = std::process::Command::new("nm")
-        .args(["-g", output.to_str().expect("utf8 object path")])
-        .output()
-        .expect("run nm");
-    assert!(
-        nm.status.success(),
-        "nm failed: {}",
-        String::from_utf8_lossy(&nm.stderr)
-    );
-    let symbols = String::from_utf8_lossy(&nm.stdout);
+    let object = object::File::parse(bytes.as_slice()).expect("parse LLVM output object");
+    let expected = if object.format() == BinaryFormat::MachO {
+        "_molt_init_sys"
+    } else {
+        "molt_init_sys"
+    };
+    let symbols: Vec<_> = object
+        .symbols()
+        .filter(|symbol| symbol.name().expect("read LLVM object symbol name") == expected)
+        .map(|symbol| {
+            (
+                symbol.is_global(),
+                symbol.is_weak(),
+                symbol.is_definition(),
+                symbol.is_undefined(),
+            )
+        })
+        .collect();
     assert!(
         symbols
-            .lines()
-            .any(|line| line.contains(" U _molt_init_sys")
-                || line == "                 U molt_init_sys"),
-        "shared stdlib symbol must be an undefined external, got:\n{symbols}"
+            .iter()
+            .any(|&(global, weak, _, undefined)| global && !weak && undefined),
+        "shared stdlib symbol {expected} must be a strong undefined external: {symbols:?}"
     );
     assert!(
-        !symbols
-            .lines()
-            .any(|line| line.contains(" T _molt_init_sys") || line.contains(" T molt_init_sys")),
-        "LLVM output object must not define shared stdlib symbol, got:\n{symbols}"
+        !symbols.iter().any(|&(_, _, defined, _)| defined),
+        "LLVM output must not define shared stdlib symbol {expected}: {symbols:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

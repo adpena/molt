@@ -14,7 +14,7 @@ SRC_ROOT = TOOLS_ROOT.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from molt.cli.build_locks import (  # noqa: E402
+from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )

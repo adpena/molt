@@ -225,6 +225,20 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                     "non-empty string"
                 )
 
+    # A predicate alias is the same callback-capable operation, not an exact
+    # operand proof. Every spelling must keep its observer before specialization.
+    predicates = {row["name"] for row in opcodes if row.get("predicate_semantics")}
+    for row in data.get("kind", []):
+        if row.get("mapper_opcode") not in predicates:
+            continue
+        for spelling in [row["canonical"], *row.get("aliases", [])]:
+            kind = _frontend_wire_spelling_to_op_kind(spelling)
+            if kind not in seen_raising or kind in seen_skip:
+                raise OpKindTableError(
+                    f"predicate frontend kind {kind} requires a raising observer "
+                    "and cannot skip CHECK_EXCEPTION"
+                )
+
     # -- [[binary_op]] (EXHAUSTIVE over ast.operator) -----------------------
     binary = data.get("binary_op", [])
     if not isinstance(binary, list) or not binary:
@@ -284,12 +298,12 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "ADD": "pure",
         "SUB": "pure",
         "MUL": "pure",
-        "EQ": "pure",
-        "NE": "pure",
-        "LT": "pure",
-        "LE": "pure",
-        "GT": "pure",
-        "GE": "pure",
+        "EQ": "writes_heap",
+        "NE": "writes_heap",
+        "LT": "writes_heap",
+        "LE": "writes_heap",
+        "GT": "writes_heap",
+        "GE": "writes_heap",
         "NEG": "pure",
         "POS": "pure",
         "INVERT": "pure",
@@ -339,7 +353,7 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             )
 
     nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
-    for kind in ("ADD", "SUB", "MUL", "EQ", "NEG", "ABS", "INVERT"):
+    for kind in ("ADD", "SUB", "MUL", "NEG", "ABS", "INVERT"):
         if kind not in nothrow_on_primitives:
             raise OpKindTableError(
                 f"frontend primitive-nothrow invariant {kind}: missing opt-in"

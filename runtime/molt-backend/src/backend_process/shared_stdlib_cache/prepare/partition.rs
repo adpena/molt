@@ -5,9 +5,8 @@ use molt_backend::SimpleIR;
 
 use super::super::super::io_limits::ensure_output_parent_dir;
 use super::super::{
-    prune_and_partition_native_stdlib, remove_shared_stdlib_cache_artifacts,
-    shared_stdlib_partition_manifest, shared_stdlib_split_function_names,
-    validate_shared_stdlib_partition,
+    prune_and_partition_native_stdlib, shared_stdlib_partition_manifest,
+    shared_stdlib_split_function_names, validate_shared_stdlib_partition,
 };
 use super::request::NativeStdlibCachePrepare;
 
@@ -46,7 +45,6 @@ pub(crate) fn prepare_stdlib_partition(
         })?;
     let split_function_names = shared_stdlib_split_function_names(&user_remaining, &stdlib_funcs);
     if let Err(err) = validate_shared_stdlib_partition(&stdlib_funcs, &split_function_names) {
-        remove_shared_stdlib_cache_artifacts(stdlib_path);
         return Err(io::Error::new(
             err.kind(),
             format!("invalid shared stdlib partition: {err}"),

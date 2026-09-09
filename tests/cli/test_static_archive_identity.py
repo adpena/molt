@@ -6,10 +6,12 @@ import os
 import pytest
 
 from molt.cli.static_archive_identity import (
+    StaticArchiveMember,
     StaticArchiveIdentityError,
     artifact_content_identity,
     static_archive_identity,
     validate_artifact_content_identity,
+    visit_static_archive_members,
 )
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
@@ -167,13 +169,17 @@ def test_artifact_identity_observes_same_size_preserved_mtime_mutation(
 
 
 @pytest.mark.parametrize("name", ["//", "#1/16777217"])
+@pytest.mark.parametrize("reader", ["identity", "visitor"])
 def test_archive_name_metadata_is_bounded_before_allocation(
-    tmp_path: Path, name: str
+    tmp_path: Path, name: str, reader: str
 ) -> None:
     path = tmp_path / "oversized.a"
     path.write_bytes(b"!<arch>\n" + _header(name, 16_777_217, timestamp=0))
     with pytest.raises(StaticArchiveIdentityError, match="bounded input limit"):
-        artifact_content_identity(path)
+        if reader == "identity":
+            artifact_content_identity(path)
+        else:
+            visit_static_archive_members(path, visit_member=lambda member, stream: None)
 
 
 @pytest.mark.parametrize("style", ("coff", "gnu", "bsd"))
@@ -366,3 +372,61 @@ def test_fingerprint_and_manifest_share_semantic_archive_authority(
             target_triple=None,
             runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         )
+
+
+@pytest.mark.parametrize("reader", ["identity", "visitor"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"incomplete header",
+        _header("object.o/", 12, timestamp=0) + b"x" * 11,
+        _header("/", 12, timestamp=0) + b"x" * 11,
+        _header("object.o/", 1, timestamp=0) + b"x\0",
+        _member("/0", b"object", timestamp=0),
+        _member("//", b"name/\n", timestamp=0) + _member("/99", b"object", timestamp=0),
+        _member("//", b"name/\n", timestamp=0)
+        + _member("/bad", b"object", timestamp=0),
+        _member("//", b"\xff/\n", timestamp=0) + _member("/0", b"object", timestamp=0),
+        _member("#1/10", b"short", timestamp=0),
+        _member("#1/1", b"\xffobject", timestamp=0),
+        _member("/", b"index", timestamp=0) + b"bad trailing header",
+    ],
+)
+def test_identity_and_shape_visitor_share_strict_archive_envelope(
+    tmp_path, reader, body
+):
+    path = tmp_path / "malformed.a"
+    path.write_bytes(b"!<arch>\n" + body)
+    visited = []
+    with pytest.raises(StaticArchiveIdentityError):
+        if reader == "identity":
+            static_archive_identity(path)
+        else:
+            visit_static_archive_members(
+                path, visit_member=lambda member, stream: visited.append(member)
+            )
+    assert visited == [], "framing must be complete before any consumer sees a member"
+
+
+@pytest.mark.parametrize("magic", [b"!<thin>\n", b"invalid!", b"!<arch>"])
+def test_shape_visitor_rejects_thin_and_invalid_containers(tmp_path, magic):
+    path = tmp_path / "invalid.a"
+    path.write_bytes(magic)
+    with pytest.raises(StaticArchiveIdentityError):
+        visit_static_archive_members(path, visit_member=lambda member, stream: None)
+
+
+def test_shape_visitor_keeps_exact_member_extents_and_stable_handle_custody(tmp_path):
+    path = tmp_path / "archive.a"
+    path.write_bytes(b"!<arch>\n" + _member("object.o/", b"payload", timestamp=0))
+
+    def mutate_during_visit(member: StaticArchiveMember, stream):
+        assert member.name == "object.o"
+        assert member.content_offset == 68
+        assert member.size == 7
+        stream.seek(member.content_offset)
+        assert stream.read(member.size) == b"payload"
+        path.write_bytes(b"changed")
+
+    with pytest.raises(StaticArchiveIdentityError, match="changed"):
+        visit_static_archive_members(path, visit_member=mutate_during_visit)

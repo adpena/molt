@@ -41,11 +41,13 @@
 //!   overflows, the wrapped sums are carried to the header but the loop
 //!   breaks on the very next guard evaluation, and the slow loop is seeded
 //!   from the `prev_*` phis - the PRE-iteration values. The qualified body is
-//!   pure (Copies + Add/Mul + ConstInt only), so re-running the iteration on the boxed path
+//!   exact-integer pure (transparent Copies + exact Add/Mul + ConstInt), so replay
 //!   is observationally identical, and no bridge arithmetic exists that could
 //!   itself wrap. Wrapped values are never observed as Python ints: the only
 //!   op that can read them on the overflow pass is the guard compare, whose
-//!   result is then discarded by `And(_, Not(of=true)) = false`.
+//!   result is then discarded by `And(_, Not(of=true)) = false`. Guard replay
+//!   is admitted only by shared exact-scalar predicate facts proving a pure,
+//!   nothrow Bool result; annotations and opcode membership are insufficient.
 //! * **Unreachable header predecessors are retargeted, not deleted.** The
 //!   frontend leaves a vestigial unreachable loop-else block (`LoopEnd` role)
 //!   branching into the header with `ConstNone` args. It is loop METADATA
@@ -102,6 +104,10 @@ enum Refusal {
     NonBranchPreheader,
     /// A body/guard op is outside the pure {Copy, Add, guard-compare} set.
     ImpureBody,
+    /// Guard comparison can call Python or throw, so wrapped-value/replay observation is unsafe.
+    ObservableGuard,
+    /// Arithmetic operands lack exact integer provenance and may dispatch callbacks.
+    ObservableArithmetic,
     /// A header phi's init value does not chase to a ConstInt (e.g. a
     /// BigInt-seeded or parameter-seeded accumulator - must stay boxed).
     NonConstInit,

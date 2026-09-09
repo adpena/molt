@@ -4,7 +4,7 @@
 //! [`verify_function`] to get a list of [`VerifyError`]s; an empty list
 //! means the function is valid.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 
@@ -40,10 +40,6 @@ struct DominatorInfo {
 
 impl DominatorInfo {
     fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        if a == b {
-            return true;
-        }
-
         match (
             self.preorder.get(&a),
             self.preorder.get(&b),
@@ -54,30 +50,6 @@ impl DominatorInfo {
                 a_pre <= b_pre && b_post <= a_post
             }
             _ => false,
-        }
-    }
-}
-
-#[cfg(test)]
-fn dominates(idom: &HashMap<BlockId, Option<BlockId>>, a: BlockId, b: BlockId) -> bool {
-    if a == b {
-        return true;
-    }
-
-    let mut cur = b;
-    let mut seen: HashSet<BlockId> = HashSet::new();
-    loop {
-        if !seen.insert(cur) {
-            return false;
-        }
-        match idom.get(&cur).and_then(|x| *x) {
-            Some(parent) => {
-                if parent == a {
-                    return true;
-                }
-                cur = parent;
-            }
-            None => return false,
         }
     }
 }
@@ -537,9 +509,21 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 continue;
             };
             let Some(target) = exception_targets.get(label) else {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_index,
+                    format!("implicit exception edge label {label} has no unique target block"),
+                ));
                 continue;
             };
-            let expected = func.blocks[target].args.len();
+            let Some(expected) = arg_count(target) else {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_index,
+                    format!("implicit exception edge label {label} targets block ^{target} which does not exist"),
+                ));
+                continue;
+            };
             if op.operands.len() != expected {
                 errors.push(VerifyError::op(
                     *bid,
@@ -655,14 +639,13 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // ---------------------------------------------------------------------------
 
 fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
-    // Compute block ordering (BFS from entry) and build dominator tree.
+    // The strict dominator tree owns both reachability and dominance.
     let dom = compute_dominator_tree(func);
 
     // Only check reachable blocks. Unreachable blocks (dead code left by
     // optimization passes like SCCP branch folding) may reference values
     // whose definitions no longer dominate them. Checking them would report
     // false SSA dominance violations.
-    let reachable: HashSet<BlockId> = bfs_order(func).into_iter().collect();
 
     // Build a map: ValueId → BlockId where it is defined.
     let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
@@ -732,7 +715,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
         // Skip unreachable blocks — their ops may reference values whose
         // definitions no longer dominate them after optimization passes
         // changed the CFG (e.g., SCCP branch folding).
-        if !reachable.contains(bid) {
+        if !dom.preorder.contains_key(bid) {
             continue;
         }
         for (op_idx, op) in block.ops.iter().enumerate() {
@@ -829,15 +812,7 @@ fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
         return DominatorInfo::default();
     }
 
-    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity(idom.len());
-    for &block in idom.keys() {
-        children.entry(block).or_default();
-    }
-    for (&block, parent) in &idom {
-        if let Some(parent) = *parent {
-            children.entry(parent).or_default().push(block);
-        }
-    }
+    let children = dominators::build_dom_children(&idom);
 
     // Iterative DFS to assign preorder/postorder intervals for O(1) dominates checks.
     let mut preorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
@@ -873,50 +848,6 @@ fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
     DominatorInfo {
         preorder,
         postorder,
-    }
-}
-
-/// BFS from entry block, returning blocks in BFS (roughly RPO) order.
-fn bfs_order(func: &TirFunction) -> Vec<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut queue: VecDeque<BlockId> = VecDeque::new();
-    let mut order: Vec<BlockId> = Vec::new();
-
-    queue.push_back(func.entry_block);
-    visited.insert(func.entry_block);
-
-    while let Some(bid) = queue.pop_front() {
-        order.push(bid);
-        if let Some(block) = func.blocks.get(&bid) {
-            for succ in successors_of(block) {
-                if visited.insert(succ) {
-                    queue.push_back(succ);
-                }
-            }
-        }
-    }
-
-    order
-}
-
-/// Return the successor block IDs of a block based on its terminator.
-fn successors_of(block: &super::blocks::TirBlock) -> Vec<BlockId> {
-    match &block.terminator {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut succs = vec![*default];
-            for (_, target, _) in cases {
-                succs.push(*target);
-            }
-            succs
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
     }
 }
 
@@ -1306,6 +1237,50 @@ mod tests {
     }
 
     #[test]
+    fn implicit_exception_edges_reject_missing_or_ambiguous_targets_without_panicking() {
+        for opcode in [OpCode::CheckException, OpCode::TryStart] {
+            for labels in [vec![], vec![(99, 77)], vec![(0, 77), (99, 77)]] {
+                for reverse in [false, true] {
+                    let mut func =
+                        TirFunction::new("invalid_handler".into(), vec![], TirType::None);
+                    let mut labels = labels.clone();
+                    if reverse {
+                        labels.reverse();
+                    }
+                    func.label_id_map.extend(labels);
+                    let mut attrs = AttrDict::new();
+                    attrs.insert("value".into(), AttrValue::Int(77));
+                    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                    entry.ops.push(TirOp {
+                        dialect: Dialect::Molt,
+                        opcode,
+                        operands: vec![],
+                        results: vec![],
+                        attrs,
+                        source_span: None,
+                    });
+                    entry.terminator = Terminator::Return { values: vec![] };
+                    let errors =
+                        verify_function(&func).expect_err("invalid handler must be diagnosed");
+                    assert_eq!(errors.len(), 1, "{opcode:?}: {errors:?}");
+                    assert_eq!(errors[0].block, Some(func.entry_block));
+                    assert_eq!(errors[0].op_index, Some(0));
+                    assert!(
+                        errors[0]
+                            .message
+                            .contains("implicit exception edge label 77")
+                    );
+                    assert_eq!(
+                        dominators::executable_reverse_postorder(&func),
+                        vec![func.entry_block]
+                    );
+                    assert_eq!(dominators::build_pred_map(&func).len(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn implicit_exception_edge_arg_count_is_verified_for_the_full_opcode_family() {
         for opcode in [OpCode::CheckException, OpCode::TryStart] {
             let mut func = TirFunction::new(
@@ -1586,7 +1561,8 @@ mod tests {
         assert!(dom_tree.dominates(func.entry_block, bb_join));
         assert!(!dom_tree.dominates(bb_then, bb_join));
         assert!(!dom_tree.dominates(bb_else, bb_join));
-        assert!(dom_tree.dominates(bb_dead, bb_dead));
+        assert!(!dom_tree.dominates(bb_dead, bb_dead));
+        assert!(!dom_tree.dominates(BlockId(99), BlockId(99)));
         assert!(!dom_tree.dominates(func.entry_block, bb_dead));
     }
 
@@ -1657,7 +1633,7 @@ mod tests {
             for &b in &all_blocks {
                 assert_eq!(
                     dom_tree.dominates(a, b),
-                    dominates(&idom, a, b),
+                    dominators::dominates(a, b, &idom),
                     "dominance mismatch: {} -> {}",
                     a,
                     b

@@ -13,6 +13,7 @@ from molt.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
 from molt.compiler_analysis.static_truth import (
+    StaticExpressionResult,
     static_if_live_branch,
     static_test_truthiness,
 )
@@ -162,6 +163,9 @@ def _collect_static_source_executions(
     by accident.
     """
 
+    import_flow = analyze_module_import_flow(
+        tree, ModuleImportContext(module_name, source_path.name == "__init__.py")
+    )
     aliases: dict[str, str] = {
         "importlib": "importlib",
         "runpy": "runpy",
@@ -171,6 +175,8 @@ def _collect_static_source_executions(
 
     if isinstance(tree, ast.Module):
         for stmt in tree.body:
+            if not import_flow.states_for(stmt):
+                continue
             if isinstance(stmt, ast.Import):
                 for alias in stmt.names:
                     bound = alias.asname or alias.name.split(".", 1)[0]
@@ -240,6 +246,8 @@ def _collect_static_source_executions(
     # visible to calls nested in entry-module functions.
     if isinstance(tree, ast.Module):
         for stmt in tree.body:
+            if not import_flow.states_for(stmt):
+                continue
             assignment: tuple[ast.expr, ast.expr] | None = None
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 assignment = stmt.targets[0], stmt.value
@@ -262,6 +270,8 @@ def _collect_static_source_executions(
         tree, import_scan_mode, module_name=module_name
     ):
         if not isinstance(node, ast.Call):
+            continue
+        if not import_flow.states_for(node):
             continue
         target = qualified_name(node.func)
         request_name: str | None
@@ -326,7 +336,7 @@ def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
 def _statically_executed_boolop_values(
     node: ast.BoolOp,
     *,
-    fact_truth: Callable[[ast.expr], bool | None],
+    fact_result: Callable[[ast.expr], StaticExpressionResult | None],
 ) -> tuple[ast.expr, ...]:
     values: list[ast.expr] = []
     if isinstance(node.op, ast.And):
@@ -334,9 +344,7 @@ def _statically_executed_boolop_values(
             values.append(value)
             value_truth = static_test_truthiness(
                 value,
-                type_checking_names=(),
-                type_checking_module_aliases=(),
-                fact_truth=fact_truth,
+                fact_result=fact_result,
             )
             if value_truth is False:
                 return tuple(values)
@@ -349,9 +357,7 @@ def _statically_executed_boolop_values(
             values.append(value)
             value_truth = static_test_truthiness(
                 value,
-                type_checking_names=(),
-                type_checking_module_aliases=(),
-                fact_truth=fact_truth,
+                fact_result=fact_result,
             )
             if value_truth is True:
                 return tuple(values)
@@ -422,7 +428,7 @@ def _static_scan_nodes(
         if isinstance(node, ast.BoolOp):
             for value in _statically_executed_boolop_values(
                 node,
-                fact_truth=binding_index.static_truth,
+                fact_result=binding_index.expression_result,
             ):
                 visit(value, qualname_prefix)
             return
@@ -480,9 +486,7 @@ def _static_scan_nodes(
             visit(node.test, qualname_prefix)
             static_branch = static_if_live_branch(
                 node,
-                type_checking_names=(),
-                type_checking_module_aliases=(),
-                fact_truth=binding_index.static_truth,
+                fact_result=binding_index.expression_result,
             )
             if static_branch is not None:
                 for stmt in static_branch:
@@ -582,6 +586,7 @@ def _collect_imports(
             base_import_context.with_state(state)
             for state in import_flow.states_for(node)
         )
+
     module_body = list(getattr(tree, "body", []))
     function_walks: list[
         tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
@@ -631,9 +636,7 @@ def _collect_imports(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
     ) -> list[str] | None:
         value = _bound_static_value(node, bindings)
-        if isinstance(value, tuple) and all(
-            isinstance(item, str) for item in value
-        ):
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
             return [cast(str, item) for item in value]
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             return list(cast(list[str], value))
@@ -826,7 +829,10 @@ def _collect_imports(
         modules: list[str] = []
         seen: set[str] = set()
         for context in contexts:
-            if payload.target in {"importlib.import_module", "importlib.util.find_spec"}:
+            if payload.target in {
+                "importlib.import_module",
+                "importlib.util.find_spec",
+            }:
                 request = StaticImportRequest.import_module(
                     name,
                     metadata_value_from_expression(
@@ -916,6 +922,8 @@ def _collect_imports(
 
     if module_import_helper_scan:
         for stmt in module_body:
+            if not import_flow.states_for(stmt):
+                continue
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 stmt_nodes = tuple(ast.walk(stmt))
                 function_walks.append((stmt, stmt_nodes))
@@ -955,6 +963,8 @@ def _collect_imports(
             local_expr_bindings = _simple_function_local_expr_bindings(stmt)
             for node in stmt_nodes:
                 if not isinstance(node, ast.Call):
+                    continue
+                if not import_flow.states_for(node):
                     continue
                 target = _static_call_target(node, allow_possible=True)
                 if not _is_static_import_target(target):
@@ -996,13 +1006,6 @@ def _collect_imports(
     def _record_import_statement(
         node: ast.Import | ast.ImportFrom,
     ) -> None:
-        if (
-            isinstance(node, ast.ImportFrom)
-            and not node.level
-            and node.module in {"typing", "typing_extensions"}
-            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
-        ):
-            return
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
@@ -1020,15 +1023,15 @@ def _collect_imports(
             level=node.level,
             fromlist=tuple(alias.name for alias in node.names),
         )
-        imports.extend(
-            _sealed_import_modules(request, _import_contexts(node))
-        )
+        imports.extend(_sealed_import_modules(request, _import_contexts(node)))
 
-    def _collect_import_call(
-        node: ast.Call, *, allow_possible: bool = False
-    ) -> None:
+    def _collect_import_call(node: ast.Call) -> None:
+        if not import_flow.states_for(node):
+            return
         _record_helper_call_imports(node)
-        target = _static_call_target(node, allow_possible=allow_possible)
+        # Graph custody includes every admitted import alternative after a
+        # callback; exact callee identity is a lowering/specialization condition.
+        target = _static_call_target(node, allow_possible=True)
         if not _is_static_import_target(target):
             return
         assert target is not None
@@ -1053,6 +1056,8 @@ def _collect_imports(
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         nonlocal needs_string_templatelib, needs_typing
+        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
+            return
         if isinstance(node, ast.Module):
             _visit_many(node.body)
             return
@@ -1080,9 +1085,7 @@ def _collect_imports(
             _visit(node.test, qualname_prefix)
             static_branch = static_if_live_branch(
                 node,
-                type_checking_names=(),
-                type_checking_module_aliases=(),
-                fact_truth=binding_index.static_truth,
+                fact_result=binding_index.expression_result,
             )
             if static_branch is not None:
                 _visit_many(static_branch, qualname_prefix)
@@ -1097,7 +1100,7 @@ def _collect_imports(
         if isinstance(node, ast.BoolOp):
             for value in _statically_executed_boolop_values(
                 node,
-                fact_truth=binding_index.static_truth,
+                fact_result=binding_index.expression_result,
             ):
                 _visit(value, qualname_prefix)
             return
@@ -1105,9 +1108,7 @@ def _collect_imports(
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
-                _visit_many(
-                    node.decorator_list, qualname_prefix
-                )
+                _visit_many(node.decorator_list, qualname_prefix)
                 _visit_many(node.bases, qualname_prefix)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
@@ -1121,9 +1122,7 @@ def _collect_imports(
                 _visit_many(node.body, class_prefix)
                 return
             _visit_many(node.decorator_list, qualname_prefix)
-            _visit_many(
-                list(node.args.defaults), qualname_prefix
-            )
+            _visit_many(list(node.args.defaults), qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 qualname_prefix,
@@ -1160,9 +1159,7 @@ def _collect_imports(
                 _visit_many(node.body, function_prefix)
             return
         if isinstance(node, ast.Lambda):
-            _visit_many(
-                list(node.args.defaults), qualname_prefix
-            )
+            _visit_many(list(node.args.defaults), qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 qualname_prefix,
@@ -1188,7 +1185,7 @@ def _collect_imports(
                             continue
                         fact = binding_index.call_fact(child)
                         if fact is not None and fact.exact_import_call_kind() is None:
-                            _collect_import_call(child, allow_possible=True)
+                            _collect_import_call(child)
             return
         if template_str_cls is not None and isinstance(node, template_str_cls):
             # PEP 750 t-strings desugar to string.templatelib.{Template,Interpolation}
@@ -1262,6 +1259,8 @@ def _runtime_import_alias_bindings(
             bindings[local_name] = qualified_name
 
     for node in scan_nodes:
+        if not import_flow.states_for(node):
+            continue
         if isinstance(node, ast.Import):
             for alias in node.names:
                 local_name = alias.asname or alias.name.split(".", 1)[0]
@@ -1298,6 +1297,8 @@ def _runtime_import_alias_bindings(
             _register_binding(local_name, preferred)
 
     for node in scan_nodes:
+        if not import_flow.states_for(node):
+            continue
         value: ast.expr | None = None
         target_names: list[str] = []
         if isinstance(node, ast.Assign):
@@ -1325,6 +1326,9 @@ def _tree_uses_runtime_import_protocol(
     is_package: bool,
     import_scan_mode: ImportScanMode = "full",
 ) -> bool:
+    import_flow = analyze_module_import_flow(
+        tree, ModuleImportContext(module_name, is_package)
+    )
     alias_bindings = _runtime_import_alias_bindings(
         tree,
         module_name=module_name,
@@ -1336,6 +1340,8 @@ def _tree_uses_runtime_import_protocol(
     )
     for node in scan_nodes:
         if not isinstance(node, ast.Call):
+            continue
+        if not import_flow.states_for(node):
             continue
         target = _resolve_runtime_import_expr_name(node.func, alias_bindings)
         if target in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
@@ -1557,7 +1563,15 @@ def _module_uses_runtime_import_protocol(
     scan_nodes = _scan_nodes_for_import_mode(
         tree, import_scan_mode, module_name=module_name
     )
+    import_flow = analyze_module_import_flow(
+        tree,
+        ModuleImportContext(
+            module_name, is_package, target_python=target_python.feature_version
+        ),
+    )
     for node in scan_nodes:
+        if not import_flow.states_for(node):
+            continue
         if isinstance(node, ast.Import):
             if any(alias.name != "_intrinsics" for alias in node.names):
                 return True

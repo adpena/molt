@@ -101,10 +101,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     # molt.cli.artifact_sync
     "_ARTIFACT_SYNC_STATE_CACHE": ("artifact_sync", "_ARTIFACT_SYNC_STATE_CACHE"),
     "_artifact_sync_state_matches": ("artifact_sync", "_artifact_sync_state_matches"),
-    "_artifact_sync_state_matches_stat": (
-        "artifact_sync",
-        "_artifact_sync_state_matches_stat",
-    ),
     "_artifact_sync_state_path": ("artifact_sync", "_artifact_sync_state_path"),
     "_read_artifact_sync_state": ("artifact_sync", "_read_artifact_sync_state"),
     "_write_artifact_sync_payload": ("artifact_sync", "_write_artifact_sync_payload"),
@@ -151,15 +147,15 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "_materialize_cached_backend_artifact",
     ),
     "_module_symbol_name": ("backend_cache", "_module_symbol_name"),
-    "_native_artifact_source_key": ("backend_cache", "_native_artifact_source_key"),
+    "_backend_artifact_source_key": ("backend_cache", "_backend_artifact_source_key"),
     "_native_nm_command": ("backend_cache", "_native_nm_command"),
     "_native_object_global_symbol_sets": (
         "backend_cache",
         "_native_object_global_symbol_sets",
     ),
-    "_native_object_global_symbols_result": (
+    "_read_native_global_symbol_facts": (
         "backend_cache",
-        "_native_object_global_symbols_result",
+        "_read_native_global_symbol_facts",
     ),
     "_native_object_has_unresolved_module_chunks": (
         "backend_cache",
@@ -356,10 +352,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     ),
     "_DEFAULT_BACKEND_FEATURES": ("backend_execution", "_DEFAULT_BACKEND_FEATURES"),
     "_NATIVE_CODEGEN_ENV_KNOBS": ("backend_execution", "_NATIVE_CODEGEN_ENV_KNOBS"),
-    "_NATIVE_RELOCATABLE_LINKER_ENV_KEYS": (
-        "backend_execution",
-        "_NATIVE_RELOCATABLE_LINKER_ENV_KEYS",
-    ),
     "_WASM_CODEGEN_ENV_KNOBS": ("backend_execution", "_WASM_CODEGEN_ENV_KNOBS"),
     "_backend_bin_path": ("backend_execution", "_backend_bin_path"),
     "_backend_bin_path_cached": ("backend_execution", "_backend_bin_path_cached"),
@@ -490,14 +482,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_execution",
         "_compile_with_backend_daemon",
     ),
-    "_native_relocatable_linker_identity": (
-        "backend_execution",
-        "_native_relocatable_linker_identity",
-    ),
-    "_native_relocatable_linker_selection": (
-        "backend_execution",
-        "_native_relocatable_linker_selection",
-    ),
     "_path_freshness_fingerprint": ("backend_execution", "_path_freshness_fingerprint"),
     "_pid_alive": ("backend_execution", "_pid_alive"),
     "_read_backend_daemon_identity": (
@@ -624,10 +608,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_resolve_native_linker_hint": (
         "native_link_command",
         "_resolve_native_linker_hint",
-    ),
-    "_windows_coff_library_command": (
-        "native_link_command",
-        "_windows_coff_library_command",
     ),
     # molt.cli.native_link_deps
     "_collect_cargo_native_link_deps": (
@@ -901,12 +881,8 @@ from molt.cli.artifact_state import (
     _runtime_target_fingerprint_path,
 )
 from molt.cli.build_locks import (
-    _acquire_file_lock,
     _build_lock,
     _build_lock_dir_cached,
-    _parse_lock_timeout,
-    _release_file_lock,
-    _try_acquire_file_lock,
 )
 from molt.cli.cache_fingerprints import (
     _backend_source_paths,

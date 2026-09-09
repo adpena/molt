@@ -2786,6 +2786,7 @@ dependencies = [
 name = "molt-backend"
 version = "0.1.0"
 dependencies = [
+ "ar_archive_writer",
  "ciborium",
  "cudarc",
  "egg",
@@ -2842,6 +2843,7 @@ dependencies = [
  "object 0.39.1",
  "rayon",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

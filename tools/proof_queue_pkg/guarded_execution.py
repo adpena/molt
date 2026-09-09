@@ -31,18 +31,71 @@ if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
         _loaded_molt.__path__.insert(0, _local_molt_root)
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
+from molt import file_locks  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
     command_identity,
+    cargo_cache_custody,
     custody_cas,
     execution_custody,
     execution_environment as environment,
+    execution_receipt_details,
     process_image_capture,
     supervisor_custody as supervisor,
     toolchain_capture,
 )
+
+
+def _run_supervisor_with_transcripts(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    result_path: Path,
+    result: dict[str, object],
+    execution_deadline: float,
+    timeout_seconds: float,
+    shutdown_reserve: float,
+) -> int:
+    """Publish opened output custody before launch and retain the owned wait."""
+    paths = command_identity.execution_transcript_paths(result_path)
+    with (
+        paths["stdout"].open("xb") as stdout_handle,
+        paths["stderr"].open("xb") as stderr_handle,
+    ):
+        result["live_command_transcript"] = {
+            "stdout": command_identity.opened_transcript_identity(
+                paths["stdout"], stdout_handle
+            ),
+            "stderr": command_identity.opened_transcript_identity(
+                paths["stderr"], stderr_handle
+            ),
+        }
+        result["phase"] = "command"
+        # Only these exclusive opened files may acquire this execution nonce.
+        # This is mutable observation custody, not a terminal content receipt.
+        supervisor._atomic_json(result_path, result)
+        remaining = execution_deadline - time.monotonic() - shutdown_reserve
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout_seconds)
+        process = admission._COMMANDS.start_owned(
+            command, cwd=cwd, env=env, stdout=stdout_handle, stderr=stderr_handle
+        )
+        result["command_started"] = True
+        try:
+            supervisor._atomic_json(result_path, result)
+        finally:
+            # Publication errors must not abandon a successfully launched child.
+            returncode = admission._COMMANDS.wait_owned(
+                process, timeout=remaining, terminate_timeout=shutdown_reserve
+            )
+        stdout_handle.flush()
+        stderr_handle.flush()
+        os.fsync(stdout_handle.fileno())
+        os.fsync(stderr_handle.fileno())
+    return returncode
 
 
 def execute_guarded_request(request_path: Path) -> int:
@@ -99,21 +152,24 @@ def execute_guarded_request(request_path: Path) -> int:
         "command_started": False,
     }
     custody_session: execution_custody.ExecutionCustodySession | None = None
+    cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
         inherited_env = dict(os.environ)
+        requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
             inherited_env, applied_cargo_policies = normalize_cargo_environment(
                 inherited_env
             )
-            # Proof-produced executables require run provenance. Ordinary developer
-            # builds keep the persistent target authority, while guarded proofs use
-            # a fresh target and retain shared compiler caches outside that tree.
-            run_target = (
-                result_path.parent / "derived" / execution_nonce / "cargo-target"
+            # A stable selection-only path avoids putting this run's nonce in
+            # toolchain discovery. No proof command runs here; after immutable
+            # input capture the cache authority selects an exclusively owned,
+            # empty or content-verified generation.
+            selection_target = result_path.parent / "cargo-cache-selection"
+            custody_cas._canonical_root(selection_target, create=True)
+            inherited_env["CARGO_TARGET_DIR"] = str(
+                selection_target.resolve(strict=True)
             )
-            run_target.mkdir(parents=True, exist_ok=False)
-            inherited_env["CARGO_TARGET_DIR"] = str(run_target.resolve(strict=True))
         canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             node_hook = (
@@ -137,12 +193,6 @@ def execute_guarded_request(request_path: Path) -> int:
         process_closure = envelope.get("process_closure")
         if not isinstance(process_closure, Mapping):
             raise ValueError("proof command envelope has no process closure")
-        derived_root_provenance = supervisor._derived_root_provenance(
-            descendants=process_closure.get("descendants"),
-            env=execution_env,
-            source_root=effective_cwd,
-            result_path=result_path,
-        )
         # Provisioning belongs before the custody snapshot.  No tool may change
         # after its bytes become the authority consumed by the proof command.
         from tools.proof_queue_pkg import policy
@@ -266,9 +316,16 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         custody_authority_paths = [
             Path(execution_custody.__file__).resolve(strict=True),
+            Path(cargo_cache_custody.__file__).resolve(strict=True),
+            Path(custody_cas.__file__).resolve(strict=True),
+            Path(execution_receipt_details.__file__).resolve(strict=True),
+            Path(command_identity.__file__).resolve(strict=True),
+            Path(environment.__file__).resolve(strict=True),
+            Path(file_locks.__file__).resolve(strict=True),
+            Path(supervisor.__file__).resolve(strict=True),
             supervisor_binary,
         ]
-        if "python" in envelope.get("toolchains", []):
+        if any(name in envelope.get("toolchains", []) for name in ("python", "cargo")):
             custody_authority_paths.extend(python_capture_authority_paths())
         supervisor_source = admission._REPO_ROOT / "tools" / "proof_supervisor"
         custody_authority_paths.extend(
@@ -385,6 +442,46 @@ def execute_guarded_request(request_path: Path) -> int:
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full
         )
+        source_content = None
+        source_content_telemetry = None
+        verify_source_content = None
+        if (
+            "cargo" in envelope.get("toolchains", [])
+            and process_closure.get("descendants") != "forbidden"
+        ):
+            source_content, source_content_telemetry, verify_source_content = (
+                environment.capture_source_content(
+                    source_root=Path(source_root_raw),
+                    env=execution_env,
+                    overlays=overlay_paths,
+                    cas_root=result_path.parent / "custody-cas",
+                )
+            )
+            cargo_cache = cargo_cache_custody.acquire(
+                result_root=result_path.parent,
+                source_root=Path(source_root_raw),
+                toolchains=toolchains_full,
+                command=execution_command,
+                env=execution_env,
+                requested_target=requested_cargo_target,
+                run_id=run_id,
+                timeout_s=execution_deadline - time.monotonic() - shutdown_reserve,
+                source_snapshot=pre_source,
+                source_content=source_content,
+            )
+            execution_env["CARGO_TARGET_DIR"] = str(cargo_cache.target)
+            print(
+                "cargo_target_selection="
+                + json.dumps(cargo_cache.provenance, sort_keys=True),
+                flush=True,
+            )
+        derived_root_provenance = supervisor._derived_root_provenance(
+            descendants=process_closure.get("descendants"),
+            env=execution_env,
+            source_root=effective_cwd,
+            result_path=result_path,
+            cargo_cache=cargo_cache.provenance if cargo_cache is not None else None,
+        )
         frozen = toolchain_capture.frozen_files(toolchains_full)
         uncovered = [
             row.path
@@ -432,7 +529,7 @@ def execute_guarded_request(request_path: Path) -> int:
             execution_env=execution_env,
             cwd=cwd,
             nonce=execution_nonce,
-            toolchains=toolchains,
+            toolchains=toolchains_full,
             environment_executables=environment_executables_pre,
             platform_process_images=platform_process_images_pre,
         )
@@ -568,6 +665,11 @@ def execute_guarded_request(request_path: Path) -> int:
                 "effective_cwd": str(effective_cwd),
                 "prelaunch": pre_source,
                 "overlay_inputs": {"prelaunch": overlay_pre},
+                "content": (
+                    {"prelaunch": source_content, "telemetry": source_content_telemetry}
+                    if source_content is not None
+                    else None
+                ),
             },
             "child_process_custody": {
                 "policy": child_policy,
@@ -595,15 +697,13 @@ def execute_guarded_request(request_path: Path) -> int:
         }
         result.update(
             {
-                "phase": "command",
                 "receipt_context": context,
                 "exact_command_sha256": context["exact_command_sha256"],
             }
         )
-        supervisor._atomic_json(result_path, result)
-        result["command_started"] = True
-        stdout_path = result_path.with_suffix(".stdout.bin")
-        stderr_path = result_path.with_suffix(".stderr.bin")
+        transcript_paths = command_identity.execution_transcript_paths(result_path)
+        stdout_path = transcript_paths["stdout"]
+        stderr_path = transcript_paths["stderr"]
         for transcript_path in (stdout_path, stderr_path):
             try:
                 transcript_path.unlink()
@@ -611,40 +711,23 @@ def execute_guarded_request(request_path: Path) -> int:
                 pass
         custody_session.mark_running()
         supervisor_started = time.perf_counter()
-        with (
-            stdout_path.open("xb") as stdout_handle,
-            stderr_path.open("xb") as stderr_handle,
-        ):
-            supervisor_process = admission._COMMANDS.start_owned(
-                (
-                    str(supervisor_binary),
-                    "run",
-                    "--policy",
-                    str(supervisor_policy_path),
-                    "--receipt",
-                    str(supervisor_receipt_path),
-                ),
-                cwd=cwd,
-                env=execution_env,
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-            )
-            supervisor_timeout = (
-                execution_deadline - time.monotonic() - shutdown_reserve
-            )
-            if supervisor_timeout <= 0:
-                raise subprocess.TimeoutExpired(
-                    [str(supervisor_binary), "run"], float(timeout_seconds)
-                )
-            supervisor_returncode = admission._COMMANDS.wait_owned(
-                supervisor_process,
-                timeout=supervisor_timeout,
-                terminate_timeout=shutdown_reserve,
-            )
-            stdout_handle.flush()
-            stderr_handle.flush()
-            os.fsync(stdout_handle.fileno())
-            os.fsync(stderr_handle.fileno())
+        supervisor_returncode = _run_supervisor_with_transcripts(
+            (
+                str(supervisor_binary),
+                "run",
+                "--policy",
+                str(supervisor_policy_path),
+                "--receipt",
+                str(supervisor_receipt_path),
+            ),
+            cwd=cwd,
+            env=execution_env,
+            result_path=result_path,
+            result=result,
+            execution_deadline=execution_deadline,
+            timeout_seconds=float(timeout_seconds),
+            shutdown_reserve=shutdown_reserve,
+        )
         supervisor_run_s = time.perf_counter() - supervisor_started
         supervisor_receipt = supervisor._validated_supervisor_receipt(
             binary=supervisor_binary,
@@ -703,6 +786,14 @@ def execute_guarded_request(request_path: Path) -> int:
         context["command_transcript"] = transcript
         custody_session.mark_verifying()
         post_source = environment._git_snapshot(effective_cwd, execution_env)
+        if verify_source_content is not None:
+            verify_source_content()
+            context["source_custody"]["content"].update(
+                {
+                    "postcompletion": source_content,
+                    "identical": True,
+                }
+            )
         overlay_post = [command_identity._file_identity(path) for path in overlay_paths]
         executable_post = command_identity._executable_identity(Path(exact[0]))
         payload_executable_post = command_identity._payload_executable_identity(
@@ -934,6 +1025,10 @@ def execute_guarded_request(request_path: Path) -> int:
                 "identical": platform_process_images_identical,
             }
         )
+        context = execution_receipt_details.compact_context(
+            context, cas_root=result_path.parent / "custody-cas"
+        )
+        result["receipt_context"] = context
         telemetry = capture_context["telemetry"]
         assert isinstance(telemetry, dict)
         # Reserve the fixed-width custody digest before measuring so telemetry
@@ -943,7 +1038,10 @@ def execute_guarded_request(request_path: Path) -> int:
             telemetry["receipt_context_bytes"] = len(
                 json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
             )
-        if int(telemetry["receipt_context_bytes"]) > 64 * 1024:
+        if (
+            int(telemetry["receipt_context_bytes"])
+            > execution_receipt_details.CONTEXT_LIMIT_BYTES
+        ):
             raise ValueError("compact proof receipt context exceeds 64 KiB")
         context["execution_custody_sha256"] = supervisor.execution_custody_sha256(
             context,
@@ -952,8 +1050,13 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         result["phase"] = "complete"
         supervisor._atomic_json(result_path, result)
+        if cargo_cache is not None:
+            result["cargo_cache_publication"] = cargo_cache.publish(result)
+            supervisor._atomic_json(result_path, result)
         return int(completed.returncode)
     except BaseException as exc:
+        if isinstance(exc, cargo_cache_custody.CargoInputClosureUnproven):
+            result["cargo_cache_admission"] = exc.diagnostic
         if custody_session is not None and custody_session.state != "DRAINED":
             try:
                 custody_session.__exit__(type(exc), exc, exc.__traceback__)
@@ -973,6 +1076,9 @@ def execute_guarded_request(request_path: Path) -> int:
             file=sys.stderr,
         )
         return 2
+    finally:
+        if cargo_cache is not None:
+            cargo_cache.close()
 
 
 def _main(argv: Sequence[str] | None = None) -> int:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+
 import contextlib
 import hashlib
 import importlib
@@ -18,6 +20,7 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import quality_commands as cli_commands
 from molt.cli import link_pipeline as cli_link_pipeline
+from molt.cli.native_link_plan import NativeArtifactKind
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY as TEST_RUNTIME_BUILD_IDENTITY,
     static_archive_bytes,
@@ -968,6 +971,8 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         sysroot_path: Path | None,
         profile: str,
         runtime_build_identity: object,
+        output_kind: NativeArtifactKind,
+        stdlib_kind: NativeArtifactKind,
         stdlib_obj_path: Path | None = None,
         external_static_archives: tuple[Path, ...] = (),
         external_link_requirements: tuple[SourceExtensionLinkRequirements, ...] = (),
@@ -977,6 +982,8 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         del stdlib_obj_path
         del bolt_requested
         assert runtime_build_identity is TEST_RUNTIME_BUILD_IDENTITY
+        assert output_kind is NativeArtifactKind.ARCHIVE
+        assert stdlib_kind is NativeArtifactKind.ARCHIVE
         assert not external_static_archives
         assert not external_link_requirements
         captured_runtime_libs.append(runtime_lib)
@@ -1054,6 +1061,9 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli._BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_enabled=True,
         cache_key=None,
         function_cache_key=None,
@@ -1133,6 +1143,9 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli._BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_enabled=True,
         cache_key=None,
         function_cache_key=None,
@@ -1234,6 +1247,9 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli._BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_enabled=True,
         cache_key=None,
         function_cache_key=None,

@@ -45,9 +45,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     const_map.insert(res, *v);
                 }
             }
-            if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode) {
-                for &res in &op.results {
-                    type_map.insert(res, ty.clone());
+            if !op.has_valid_result_arity() {
+                continue;
+            }
+            for (index, &res) in op.results.iter().enumerate() {
+                if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode, index) {
+                    type_map.insert(res, ty);
                 }
             }
         }

@@ -1,10 +1,12 @@
 import os
+from contextlib import contextmanager
 import hashlib
 import importlib
 import json
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 from typing import Mapping
 
 import pytest
@@ -13,14 +15,252 @@ import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.exact_json import canonical_json_sha256
 from tests.cli.process_guard import run_cli_test_process
+from tests.cli.native_link_test_support import static_archive_bytes
+from tests.native_artifact_fixtures import native_relocatable_object
+
+# Key algebra consumes explicit content identities. Filesystem fingerprinting has
+# separate producer tests; rereading the live compiler here both repeats expensive
+# work and races concurrent source edits unrelated to the semantic key contract.
+_KEY_FINGERPRINTS = {
+    "cache_compiler_fingerprint": "compiler-fixture",
+    "cache_tooling_fingerprint": "tooling-fixture",
+}
 
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
+
+
+@pytest.mark.parametrize(
+    "matches,actual_key,evicted",
+    [(False, "expected", True), (False, "other", False), (True, "expected", False)],
+)
+def test_stdlib_validation_and_eviction_share_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, matches, actual_key, evicted
+) -> None:
+    artifact = tmp_path / "stdlib.a"
+    _write_stdlib_archive_fixture(artifact, actual_key)
+    events: list[str] = []
+    locked = False
+
+    @contextmanager
+    def publication_lock(path):
+        nonlocal locked
+        assert path == artifact
+        assert not locked
+        locked = True
+        events.append("lock")
+        try:
+            yield
+        finally:
+            events.append("unlock")
+            locked = False
+            # A replacement can be published as soon as the lock is released.
+            artifact.write_bytes(b"next-generation")
+
+    def validate(*args, **kwargs):
+        assert locked
+        events.append("validate")
+        return matches
+
+    def read_key(path):
+        assert locked
+        events.append("key")
+        return actual_key
+
+    def remove(path):
+        assert locked
+        events.append("evict")
+        path.unlink()
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_matches_key", validate)
+    monkeypatch.setattr(BACKEND_CACHE, "_read_stdlib_cache_key", read_key)
+    monkeypatch.setattr(BACKEND_CACHE, "_remove_shared_stdlib_cache_artifacts", remove)
+    assert (
+        BACKEND_CACHE._validate_shared_stdlib_cache_contract(
+            artifact, tmp_path, "expected", expected_manifest=_manifest("expected")
+        )
+        is matches
+    )
+    assert ("evict" in events) is evicted
+    assert events[-1] == "unlock"
+    assert artifact.read_bytes() == b"next-generation"
+
+
+def _shared_stdlib_cleanup_paths(artifact: Path) -> tuple[Path, ...]:
+    return (
+        artifact,
+        BACKEND_CACHE._stdlib_object_count_sidecar_path(artifact),
+        BACKEND_CACHE._stdlib_object_key_sidecar_path(artifact),
+        BACKEND_CACHE._stdlib_object_manifest_sidecar_path(artifact),
+        BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path(artifact),
+        BACKEND_CACHE._stdlib_object_digest_sidecar_path(artifact),
+        BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(artifact),
+        BACKEND_CACHE._native_object_symbol_facts_sidecar_path(artifact),
+    )
+
+
+def test_stdlib_cleanup_attempts_all_paths_and_reports_every_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "stdlib.a"
+    paths = _shared_stdlib_cleanup_paths(artifact)
+    for path in paths:
+        path.write_bytes(b"owned-artifact")
+    paths[2].unlink()  # Already absent is the only ignorable deletion failure.
+    failures = {
+        paths[0]: PermissionError("archive is held open"),
+        paths[4]: OSError("partition metadata I/O failure"),
+    }
+    attempted: list[Path] = []
+    unlink = Path.unlink
+
+    def remove(path: Path, *args, **kwargs) -> None:
+        attempted.append(path)
+        if path in failures:
+            raise failures[path]
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", remove)
+    with pytest.raises(OSError, match="Failed to remove shared stdlib") as caught:
+        BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
+    assert attempted == list(paths)
+    assert {path for path in paths if path.exists()} == set(failures)
+    for path, failure in failures.items():
+        assert str(path) in str(caught.value)
+        assert str(failure) in str(caught.value)
+    assert isinstance(caught.value.__cause__, ExceptionGroup)
+    assert caught.value.__cause__.exceptions == tuple(failures.values())
+
+
+def test_stdlib_cleanup_is_idempotent_for_missing_owned_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "stdlib.a"
+    paths = _shared_stdlib_cleanup_paths(artifact)
+    attempted: list[Path] = []
+    unlink = Path.unlink
+
+    def remove(path: Path, *args, **kwargs) -> None:
+        attempted.append(path)
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", remove)
+    BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
+    BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
+    assert attempted == [*paths, *paths]
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_stdlib_staging_preserves_primary_error_and_cleanup_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool
+) -> None:
+    source = tmp_path / "cache" / "stdlib.a"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"admitted archive")
+    for sidecar in (
+        BACKEND_CACHE._stdlib_object_key_sidecar_path,
+        BACKEND_CACHE._stdlib_object_manifest_sidecar_path,
+        BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path,
+        BACKEND_CACHE._stdlib_object_digest_sidecar_path,
+    ):
+        sidecar(source).write_text("test metadata")
+    artifacts_root = tmp_path / "staged"
+    staged = artifacts_root / "shared-stdlib-link" / source.name
+    paths = _shared_stdlib_cleanup_paths(staged)
+    primary = OSError("primary archive copy failure")
+    cause = RuntimeError("underlying storage fault")
+    attempted: list[Path] = []
+
+    @contextmanager
+    def publication_lock(path: Path):
+        assert path == source
+        yield
+
+    def copy(source_path: Path, destination: Path, *, identity) -> None:
+        assert (source_path, destination) == (source, staged)
+        raise primary from cause
+
+    def remove(path: Path, *args, **kwargs) -> None:
+        assert path.parent == staged.parent
+        attempted.append(path)
+        if cleanup_fails and path in (paths[0], paths[4]):
+            raise PermissionError(f"cannot remove {path.name}")
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_shared_stdlib_cache_matches_key", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", copy)
+    monkeypatch.setattr(Path, "unlink", remove)
+    with pytest.raises(OSError, match="primary archive copy failure") as caught:
+        BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+            source,
+            stdlib_object_cache_key="expected",
+            stdlib_object_manifest="manifest",
+            artifacts_root=artifacts_root,
+        )
+    assert caught.value is primary
+    assert primary.__cause__ is cause
+    assert attempted == list(paths)
+    rendered = "".join(traceback.format_exception(primary))
+    assert "primary archive copy failure" in rendered
+    assert "underlying storage fault" in rendered
+    if cleanup_fails:
+        assert len(primary.__notes__) == 1
+        assert "staging cleanup also failed" in primary.__notes__[0]
+        for path in (paths[0], paths[4]):
+            assert str(path) in primary.__notes__[0]
+            assert f"cannot remove {path.name}" in rendered
+    else:
+        assert not getattr(primary, "__notes__", ())
+
+
+def test_stdlib_invalidation_propagates_cleanup_failure_under_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "stdlib.a"
+    attempted: list[Path] = []
+    locked = False
+
+    @contextmanager
+    def publication_lock(path: Path):
+        nonlocal locked
+        assert path == artifact
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def remove(path: Path, *args, **kwargs) -> None:
+        assert locked
+        attempted.append(path)
+        if path == artifact:
+            raise PermissionError("corrupt archive cannot be removed")
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_shared_stdlib_cache_matches_key", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_read_stdlib_cache_key", lambda path: "expected"
+    )
+    monkeypatch.setattr(Path, "unlink", remove)
+    with pytest.raises(OSError, match="corrupt archive cannot be removed"):
+        BACKEND_CACHE._validate_shared_stdlib_cache_contract(
+            artifact, tmp_path, "expected", expected_manifest="manifest"
+        )
+    assert attempted == list(_shared_stdlib_cleanup_paths(artifact))
+    assert not locked
 
 
 def _cache_variant(
@@ -57,19 +297,6 @@ def _ir_with_stdlib(*, user_ops: list[dict], stdlib_ops: list[dict]) -> dict:
     }
 
 
-def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
-    src = tmp_path / f"{name}.c"
-    obj = tmp_path / f"{name}.o"
-    src.write_text(source, encoding="utf-8")
-    run_cli_test_process(
-        ["clang", "-c", str(src), "-o", str(obj)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return obj
-
-
 def _manifest(cache_key: str) -> str:
     return f'{{"cache_key":"{cache_key}"}}'
 
@@ -82,6 +309,29 @@ def _write_object_digest_sidecar(stdlib_object: Path) -> None:
     cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
         cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
     )
+
+
+def _stdlib_archive_fixture(*, target_triple: str | None = None) -> bytes:
+    return static_archive_bytes(
+        native_relocatable_object(
+            target_triple=target_triple, symbols=("molt_init_sys",)
+        )
+    )
+
+
+def _write_stdlib_archive_fixture(
+    path: Path, key: str, *, target_triple: str | None = None
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_stdlib_archive_fixture(target_triple=target_triple))
+    cli._stdlib_object_key_sidecar_path(path).write_text(key, encoding="utf-8")
+    cli._stdlib_object_manifest_sidecar_path(path).write_text(
+        _manifest(key), encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(path).write_text(
+        _partition_manifest(), encoding="utf-8"
+    )
+    _write_object_digest_sidecar(path)
 
 
 def _payload_digest_cache_key(
@@ -110,9 +360,9 @@ def _payload_digest_cache_key(
         + b"|"
         + suffix.encode("utf-8")
         + b"|"
-        + cli._cache_fingerprint().encode("utf-8")
+        + b"compiler-fixture"
         + b"|"
-        + cli._cache_tooling_fingerprint().encode("utf-8")
+        + b"tooling-fixture"
         + b"|"
         + schema_version.encode("utf-8")
     ).hexdigest()
@@ -132,6 +382,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -139,6 +390,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -163,6 +415,7 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
     )
     assert cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple="aarch64-apple-darwin",
@@ -191,6 +444,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -198,6 +452,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -205,6 +460,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     )
     key_c = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple="aarch64-apple-darwin",
@@ -228,6 +484,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -236,6 +493,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -270,6 +528,7 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
 
     key_base = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -277,6 +536,7 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
     )
     key_caps = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -827,6 +1087,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -834,6 +1095,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -893,6 +1155,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -900,6 +1163,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -959,6 +1223,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -966,6 +1231,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -1025,6 +1291,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -1032,6 +1299,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -1085,6 +1353,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -1092,6 +1361,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
     )
     key_b = cli._shared_stdlib_cache_key(
         ir_b,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -1110,6 +1380,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=_explicit_stdlib_modules("sys"),
         target_triple=None,
@@ -1117,6 +1388,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=_explicit_stdlib_modules(
             "importlib", "importlib_machinery", "importlib_util", "sys"
@@ -1153,6 +1425,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
 
     key_base = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=base_symbols,
         target_triple=None,
@@ -1160,6 +1433,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
     )
     key_support = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=runtime_support_symbols,
         target_triple=None,
@@ -1169,6 +1443,9 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         ir,
         entry_module="app",
         stdlib_module_symbols=runtime_support_symbols,
+        compiler_fingerprint=BACKEND_CACHE._shared_stdlib_compiler_fingerprint(
+            **_KEY_FINGERPRINTS
+        ),
     )
     function_names = {func["name"] for func in payload["functions"]}
 
@@ -1183,8 +1460,8 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
 def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     tmp_path: Path,
 ) -> None:
-    stdlib_object = tmp_path / "stdlib_shared_test.o"
-    stdlib_object.write_bytes(b"fake")
+    stdlib_object = tmp_path / "stdlib_shared_test.a"
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
 
     assert not cli._shared_stdlib_cache_matches_key(
         stdlib_object,
@@ -1359,8 +1636,8 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
     (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     cache_root.mkdir(parents=True)
 
-    stdlib_object = cache_root / "stdlib_shared_active.o"
-    stdlib_object.write_bytes(b"stdlib")
+    stdlib_object = cache_root / "stdlib_shared_active.a"
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "active-key\n", encoding="utf-8"
     )
@@ -1410,7 +1687,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
 ) -> None:
     stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
     stdlib_object.parent.mkdir(parents=True)
-    stdlib_object.write_bytes(b"stdlib")
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "active-key\n", encoding="utf-8"
     )
@@ -1483,8 +1760,8 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
     (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     cache_root.mkdir(parents=True)
 
-    stdlib_object = cache_root / "stdlib_shared_target.o"
-    stdlib_object.write_bytes(b"stdlib")
+    stdlib_object = cache_root / "stdlib_shared_target.a"
+    stdlib_object.write_bytes(_stdlib_archive_fixture(target_triple=target_triple))
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "target-key\n", encoding="utf-8"
     )
@@ -1534,8 +1811,8 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
     cache_root = tmp_path / ".molt_cache"
     cache_root.mkdir(parents=True)
 
-    active = cache_root / "stdlib_shared_active.o"
-    active.write_bytes(b"active")
+    active = cache_root / "stdlib_shared_active.a"
+    active.write_bytes(_stdlib_archive_fixture())
     cli._stdlib_object_key_sidecar_path(active).write_text(
         "active-key\n", encoding="utf-8"
     )
@@ -1580,11 +1857,8 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
 def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_key_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    stdlib_object = _compile_c_object(
-        tmp_path,
-        "stdlib_shared_active",
-        "void molt_init_sys(void) {}\n",
-    )
+    stdlib_object = tmp_path / "stdlib_shared_active.a"
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
@@ -1610,11 +1884,8 @@ def test_shared_stdlib_cache_publish_lock_excludes_competing_process(
 ) -> None:
     if os.name != "posix":
         pytest.skip("publish-lock exclusion uses POSIX flock")
-    stdlib_object = _compile_c_object(
-        tmp_path,
-        "stdlib_shared_active",
-        "void molt_init_sys(void) {}\n",
-    )
+    stdlib_object = tmp_path / "stdlib_shared_active.a"
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
     key = "active-key"
     manifest = _manifest(key)
     partition_manifest = _partition_manifest()
@@ -1704,15 +1975,22 @@ finally:
 def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    stdlib_object = tmp_path / ".molt_cache" / f"stdlib_shared_active{contract.suffix}"
     stdlib_object.parent.mkdir(parents=True)
     stdlib_object.write_bytes(b"stdlib")
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
-    candidate = tmp_path / ".molt_cache" / "module_cache.o"
-    candidate.write_bytes(b"not inspected because stdlib mismatches")
-    output_artifact = tmp_path / "target" / "out.o"
+    candidate = tmp_path / ".molt_cache" / f"module_cache{contract.suffix}"
+    candidate.write_bytes(
+        static_archive_bytes(
+            native_relocatable_object(
+                target_triple=contract.target_triple, symbols=("molt_main",)
+            )
+        )
+    )
+    output_artifact = tmp_path / "target" / f"out{contract.suffix}"
     output_artifact.parent.mkdir(parents=True)
     output_artifact.write_bytes(b"old")
     warnings: list[str] = []
@@ -1726,7 +2004,7 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=contract,
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -1742,12 +2020,89 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
+@pytest.mark.parametrize("same_root", [False, True])
+def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_root: bool
+) -> None:
+    artifacts = tmp_path / "build"
+    source = (artifacts if same_root else tmp_path / "cache") / "stdlib.a"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"admitted archive")
+    for path_function, payload in (
+        (BACKEND_CACHE._stdlib_object_key_sidecar_path, "expected"),
+        (BACKEND_CACHE._stdlib_object_count_sidecar_path, "1"),
+        (BACKEND_CACHE._stdlib_object_manifest_sidecar_path, "manifest"),
+        (BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path, "partition"),
+        (BACKEND_CACHE._stdlib_object_digest_sidecar_path, "digest"),
+    ):
+        path_function(source).write_text(payload)
+    locked = False
+    validations = 0
+    original_copy = BACKEND_CACHE._copy_verified_backend_artifact
+
+    @contextmanager
+    def publication_lock(path):
+        nonlocal locked
+        assert path == source
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+            replacement = source.with_name("next-generation.a")
+            replacement.write_bytes(b"replacement archive")
+            replacement.replace(source)
+
+    def validate(*args, **kwargs):
+        nonlocal validations
+        assert locked
+        validations += 1
+        return True
+
+    def copy(source_path, destination, *, identity):
+        assert locked
+        assert source_path.resolve() != destination.resolve()
+        result = original_copy(source_path, destination, identity=identity)
+        assert not source_path.samefile(destination)
+        return result
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_matches_key", validate)
+    monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", copy)
+    staged = BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+        source,
+        stdlib_object_cache_key="expected",
+        stdlib_object_manifest="manifest",
+        artifacts_root=artifacts,
+    )
+    assert validations == 1
+    assert staged.parent == artifacts / "shared-stdlib-link"
+    assert staged.read_bytes() == b"admitted archive"
+    assert source.read_bytes() == b"replacement archive"
+
+
+def test_stdlib_snapshot_rejects_source_alias_without_invalidation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "shared-stdlib-link" / "stdlib.a"
+    source.parent.mkdir()
+    source.write_bytes(b"source must survive")
+    with pytest.raises(OSError, match="snapshot aliases its source"):
+        BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+            source,
+            stdlib_object_cache_key="expected",
+            stdlib_object_manifest="manifest",
+            artifacts_root=tmp_path,
+        )
+    assert source.read_bytes() == b"source must survive"
+
+
 def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sidecar(
     tmp_path: Path,
 ) -> None:
-    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.a"
     stdlib_object.parent.mkdir(parents=True)
-    stdlib_object.write_bytes(b"shared-stdlib")
+    stdlib_object.write_bytes(_stdlib_archive_fixture())
     artifacts_root = tmp_path / "artifacts"
 
     with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
@@ -1843,32 +2198,28 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    candidate = tmp_path / "cache" / "module.o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    candidate = tmp_path / "cache" / f"module{contract.suffix}"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"module-object")
-    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
-    stdlib_object.write_bytes(b"stdlib-object")
-    output_artifact = tmp_path / "dist" / "out.o"
+    application_bytes = static_archive_bytes(
+        native_relocatable_object(
+            target_triple=contract.target_triple, symbols=("molt_main",)
+        )
+    )
+    candidate.write_bytes(application_bytes)
+    stdlib_object = tmp_path / "cache" / f"stdlib_shared_test{contract.suffix}"
+    _write_stdlib_archive_fixture(
+        stdlib_object, "stdlib-key", target_triple=contract.target_triple
+    )
+    output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     warnings: list[str] = []
-
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
-        raising=True,
+    token = BACKEND_CACHE._shared_stdlib_cache_validation_token(
+        stdlib_object,
+        "stdlib-key",
+        stdlib_object_manifest=_manifest("stdlib-key"),
+        target_triple=contract.target_triple,
     )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_native_object_has_unresolved_module_chunks",
-        lambda candidate, stdlib_object_path: False,
-        raising=True,
-    )
-
-    token = ("contract-digest", ())
-
-    def token_matches(*args: object, **kwargs: object) -> bool:
-        del args, kwargs
-        return True
+    assert token is not None
 
     def unexpected_stdlib_revalidation(*args: object, **kwargs: object) -> bool:
         del args, kwargs
@@ -1876,13 +2227,7 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
 
     monkeypatch.setattr(
         BACKEND_CACHE,
-        "_shared_stdlib_cache_validation_token_matches",
-        token_matches,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_shared_stdlib_cache_matches_key_locked",
+        "_shared_stdlib_cache_matches_key",
         unexpected_stdlib_revalidation,
         raising=True,
     )
@@ -1891,7 +2236,7 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=contract,
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -1903,7 +2248,7 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
     )
 
     assert (cache_hit, tier) == (True, "module")
-    assert output_artifact.read_bytes() == b"module-object"
+    assert output_artifact.read_bytes() == application_bytes
     assert warnings == []
 
 
@@ -1911,18 +2256,25 @@ def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_pr
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output_artifact = tmp_path / "dist" / "out.o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"already-synced")
+    output_artifact.write_bytes(
+        native_relocatable_object(
+            target_triple=contract.target_triple, symbols=("molt_main",)
+        )
+    )
     state_path = BACKEND_CACHE._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     BACKEND_CACHE._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=BACKEND_CACHE._backend_artifact_source_key(
+            "module-key", stdlib_object_cache_key=None, artifact_contract=contract
+        ),
         tier="module",
         artifact=output_artifact,
     )
-    missing_candidate = tmp_path / "cache" / "missing-module.o"
+    missing_candidate = tmp_path / "cache" / f"missing-module{contract.suffix}"
     warnings: list[str] = []
     stage_timings_ms: dict[str, float] = {}
 
@@ -1941,7 +2293,7 @@ def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_pr
         project_root=tmp_path,
         cache_candidates=(("module", missing_candidate),),
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=contract,
         cache_key="module-key",
         function_cache_key=None,
         cache_path=missing_candidate,
@@ -1961,26 +2313,38 @@ def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_con
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output_artifact = tmp_path / "dist" / "out.o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"already-synced")
+    output_artifact.write_bytes(
+        static_archive_bytes(
+            native_relocatable_object(
+                target_triple=contract.target_triple, symbols=("molt_main",)
+            )
+        )
+    )
     state_path = BACKEND_CACHE._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     BACKEND_CACHE._write_artifact_sync_state(
         state_path,
-        source_key="module-key|stdlib:stdlib-key",
+        source_key=BACKEND_CACHE._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key="stdlib-key",
+            artifact_contract=contract,
+        ),
         tier="module",
         artifact=output_artifact,
     )
-    stdlib_object = tmp_path / "cache" / "stdlib_shared_current.o"
+    stdlib_object = tmp_path / "cache" / f"stdlib_shared_current{contract.suffix}"
     stdlib_object.parent.mkdir(parents=True)
     stdlib_object.write_bytes(b"stdlib")
     warnings: list[str] = []
     stage_timings_ms: dict[str, float] = {}
+    missing_candidate = tmp_path / "cache" / f"missing-module{contract.suffix}"
 
     monkeypatch.setattr(
         BACKEND_CACHE,
-        "_shared_stdlib_cache_matches_key_locked",
+        "_shared_stdlib_cache_matches_key",
         lambda *args, **kwargs: False,
         raising=True,
     )
@@ -1993,12 +2357,12 @@ def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_con
 
     cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
         project_root=tmp_path,
-        cache_candidates=(("module", tmp_path / "cache" / "missing-module.o"),),
+        cache_candidates=(("module", missing_candidate),),
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=contract,
         cache_key="module-key",
         function_cache_key=None,
-        cache_path=tmp_path / "cache" / "missing-module.o",
+        cache_path=missing_candidate,
         stdlib_object_path=stdlib_object,
         stdlib_object_cache_key="stdlib-key",
         stdlib_object_manifest=_manifest("stdlib-key"),
@@ -2017,48 +2381,41 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    candidate = tmp_path / "cache" / "module.o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    candidate = tmp_path / "cache" / f"module{contract.suffix}"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"module-object")
-    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
-    stdlib_object.write_bytes(b"stdlib-object")
-    output_artifact = tmp_path / "dist" / "out.o"
+    application_bytes = static_archive_bytes(
+        native_relocatable_object(
+            target_triple=contract.target_triple, symbols=("molt_main",)
+        )
+    )
+    candidate.write_bytes(application_bytes)
+    stdlib_object = tmp_path / "cache" / f"stdlib_shared_test{contract.suffix}"
+    _write_stdlib_archive_fixture(
+        stdlib_object, "stdlib-key", target_triple=contract.target_triple
+    )
+    output_artifact = tmp_path / "dist" / f"out{contract.suffix}"
     warnings: list[str] = []
     calls = {"revalidate": 0}
-
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
-        raising=True,
+    token = BACKEND_CACHE._shared_stdlib_cache_validation_token(
+        stdlib_object,
+        "stdlib-key",
+        stdlib_object_manifest=_manifest("stdlib-key"),
+        target_triple=contract.target_triple,
     )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_native_object_has_unresolved_module_chunks",
-        lambda candidate, stdlib_object_path: False,
-        raising=True,
+    assert token is not None
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest("replacement-generation"), encoding="utf-8"
     )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_shared_stdlib_cache_validation_token_matches",
-        lambda *args, **kwargs: False,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_shared_stdlib_cache_validation_token",
-        lambda *args, **kwargs: None,
-        raising=True,
-    )
+    validate = BACKEND_CACHE._shared_stdlib_cache_matches_key
 
     def revalidate(*args: object, **kwargs: object) -> bool:
-        del args, kwargs
         calls["revalidate"] += 1
-        return True
+        return validate(*args, **kwargs)
 
     monkeypatch.setattr(
         BACKEND_CACHE,
-        "_shared_stdlib_cache_matches_key_locked",
+        "_shared_stdlib_cache_matches_key",
         revalidate,
         raising=True,
     )
@@ -2067,7 +2424,7 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=contract,
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -2075,10 +2432,11 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
         stdlib_object_cache_key="stdlib-key",
         stdlib_object_manifest=_manifest("stdlib-key"),
         warnings=warnings,
-        stdlib_contract_validation_token=("stale-contract-digest", ()),
+        stdlib_contract_validation_token=token,
     )
 
     assert (cache_hit, tier) == (True, "module")
+    assert output_artifact.read_bytes() == application_bytes
     assert calls == {"revalidate": 1}
     assert warnings == []
 
@@ -2141,12 +2499,13 @@ def test_native_object_symbol_sets_accept_empty_objects(
     assert cli._native_object_global_symbol_sets(obj) == (set(), set())
 
 
-def test_native_object_symbol_sets_reuse_stat_keyed_result(
+def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_siblings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     obj = tmp_path / "module.o"
-    obj.write_bytes(b"coff")
+    obj.write_bytes(native_relocatable_object())
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
     calls = 0
 
     def fake_run_completed_command(
@@ -2169,9 +2528,60 @@ def test_native_object_symbol_sets_reuse_stat_keyed_result(
         fake_run_completed_command,
     )
 
-    assert cli._is_valid_cached_backend_artifact(obj, is_wasm=False)
-    assert not cli._native_object_has_unresolved_module_chunks(obj, None)
+    assert cli._is_valid_cached_backend_artifact(
+        obj,
+        artifact_contract=contract,
+    )
+    assert not cli._native_object_has_unresolved_module_chunks(
+        obj, None, target_triple=contract.target_triple
+    )
     assert calls == 1
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib"])
+@pytest.mark.parametrize(
+    "application_providers,stdlib_providers,references,unresolved",
+    [
+        ({1}, None, {1}, False),
+        (set(), {1}, {1}, False),
+        ({1}, {2}, {1, 2}, False),
+        ({1}, set(), {1, 2}, True),
+        (set(), None, {1}, True),
+    ],
+)
+def test_native_archive_chunk_closure_resolves_all_included_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    application_providers: set[int],
+    stdlib_providers: set[int] | None,
+    references: set[int],
+    unresolved: bool,
+) -> None:
+    application = tmp_path / f"application{suffix}"
+    stdlib = tmp_path / f"stdlib{suffix}" if stdlib_providers is not None else None
+
+    def chunk_symbols(indices: set[int]) -> set[str]:
+        return {f"demo__molt_module_chunk_{index}" for index in indices}
+
+    def symbols(
+        path: Path, *, target_triple: str | None = None, identity=None
+    ) -> tuple[set[str], set[str]]:
+        assert target_triple is None
+        if path == application:
+            return (
+                chunk_symbols(application_providers),
+                chunk_symbols(references) | {"molt_runtime_external"},
+            )
+        assert path == stdlib
+        assert stdlib_providers is not None
+        return chunk_symbols(stdlib_providers), set()
+
+    monkeypatch.setattr(BACKEND_CACHE, "_native_object_global_symbol_sets", symbols)
+    assert (
+        BACKEND_CACHE._native_object_has_unresolved_module_chunks(application, stdlib)
+        is unresolved
+    )
 
 
 def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
@@ -2221,18 +2631,13 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"object")
+    target_triple = "x86_64-unknown-linux-gnu"
+    backend_output.write_bytes(
+        native_relocatable_object(target_triple=target_triple, symbols=("molt_main",))
+    )
     output_artifact = tmp_path / "out" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
-    warmed: list[Path] = []
-
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_native_object_global_symbol_sets",
-        lambda path: warmed.append(path) or (set(), set()),
-    )
-
     err = BACKEND_CACHE._stage_backend_output_and_caches(
         tmp_path,
         backend_output,
@@ -2242,11 +2647,21 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=[],
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=target_triple
+        ),
     )
 
     assert err is None
     assert output_artifact.exists()
-    assert warmed == [cache_path, function_cache_path]
+    for path in (cache_path, function_cache_path):
+        facts = BACKEND_CACHE._read_native_object_symbol_facts(
+            path,
+            object_digest=cli._sha256_file(path),
+            target_triple=target_triple,
+        )
+        assert facts is not None
+        assert facts.defined_functions == {"molt_main"}
 
 
 def test_native_symbol_normalization_is_platform_explicit(
@@ -2269,7 +2684,7 @@ def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     obj = tmp_path / "module_cache.o"
-    obj.write_bytes(b"coff")
+    obj.write_bytes(native_relocatable_object())
     calls: list[str] = []
 
     def fake_run_completed_command(
@@ -2288,7 +2703,12 @@ def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
         BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
     )
 
-    assert cli._is_valid_cached_backend_artifact(obj, is_wasm=False)
+    assert cli._is_valid_cached_backend_artifact(
+        obj,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
+    )
     assert calls == ["broken-nm", "llvm-nm"]
 
 
@@ -2316,6 +2736,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
 
     key_a = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -2323,6 +2744,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     )
     key_b = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -2338,7 +2760,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
 
 
-def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
+def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
     tmp_path: Path,
 ) -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
@@ -2365,6 +2787,7 @@ def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
 
     key_a = cli._shared_stdlib_cache_key(
         ir,
+        **_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
@@ -2376,12 +2799,13 @@ def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
         stdlib_module_symbols=stdlib_modules,
         target_triple=None,
         cache_variant=variant_b,
+        **_KEY_FINGERPRINTS,
     )
 
-    assert key_a != key_b
+    assert key_a == key_b
     assert cli._stdlib_object_cache_path(
         Path("cache"), key_a
-    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
+    ) == cli._stdlib_object_cache_path(Path("cache"), key_b)
 
 
 def test_backend_binary_identity_tracks_content_and_fails_safe(tmp_path: Path) -> None:

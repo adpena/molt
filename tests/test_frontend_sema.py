@@ -12,17 +12,16 @@ the existing god-object dicts from SemaResult so the walk stays byte-identical.
 from __future__ import annotations
 
 import ast
+import pytest
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.sema import (
-    ClassFacts,
     ClassGraph,
     SemaResult,
     analyze_module,
     build_class_facts,
     build_class_graph,
     c3_merge,
-    class_facts_with_super_fold_sound_methods,
     class_body_needs_block_exec,
     collect_module_class_names,
     collect_module_func_defaults,
@@ -30,10 +29,7 @@ from molt.frontend.sema import (
     function_contains_yield,
     reachable_base_names,
     static_class_bases,
-    static_method_owner_after,
     static_mro_names,
-    super_fold_is_sound,
-    visible_subclasses_of,
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
 
@@ -101,26 +97,6 @@ def _method_classes(*rows: tuple[str, set[str]]) -> dict[str, dict[str, object]]
     }
 
 
-def _class_facts(
-    methods: dict[str, set[str]],
-    attrs: dict[str, set[str]] | None = None,
-    ambiguous: set[str] | None = None,
-    opaque: set[str] | None = None,
-) -> ClassFacts:
-    return ClassFacts(
-        method_names_by_class={
-            name: frozenset(method_names) for name, method_names in methods.items()
-        },
-        attr_names_by_class={
-            name: frozenset(attr_names) for name, attr_names in (attrs or {}).items()
-        },
-        opaque_member_class_names=frozenset(opaque or set()),
-        ambiguous_class_names=frozenset(ambiguous or set()),
-        block_exec_class_nodes=frozenset(),
-        super_fold_sound_methods_by_class={},
-    )
-
-
 def test_class_facts_collect_methods_and_attr_blockers() -> None:
     src = (
         "class C:\n"
@@ -137,7 +113,6 @@ def test_class_facts_collect_methods_and_attr_blockers() -> None:
     assert facts.attr_names_by_class == {"C": frozenset({"x", "y"})}
     assert facts.opaque_member_class_names == frozenset()
     assert facts.block_exec_class_nodes == frozenset()
-    assert facts.super_fold_sound_methods_by_class == {}
     assert facts.ambiguous_class_names == frozenset()
 
 
@@ -207,61 +182,6 @@ def test_class_body_needs_block_exec_tracks_non_straight_line_bodies() -> None:
     assert facts.block_exec_class_nodes == frozenset({id(looped), id(destructured)})
 
 
-def test_static_method_owner_after_fails_closed_on_unknown_owner() -> None:
-    facts = _class_facts({"Base": {"f"}, "Child": set()})
-    assert (
-        static_method_owner_after(facts, {}, ["Child", "Base", "object"], "Child", "f")
-        == "Base"
-    )
-    assert (
-        static_method_owner_after(facts, {}, ["Child", "Missing", "Base"], "Child", "f")
-        is None
-    )
-
-
-def test_static_method_owner_after_uses_imported_classes_after_local_facts() -> None:
-    facts = _class_facts({"Child": set()})
-    imported = _method_classes(("ImportedBase", {"f"}))
-    assert (
-        static_method_owner_after(
-            facts, imported, ["Child", "ImportedBase", "object"], "Child", "f"
-        )
-        == "ImportedBase"
-    )
-
-
-def test_static_method_owner_after_rejects_class_attr_interposition() -> None:
-    facts = _class_facts({"Child": set(), "Base": {"f"}}, {"Blocker": {"f"}})
-    assert (
-        static_method_owner_after(
-            facts, {}, ["Child", "Blocker", "Base", "object"], "Child", "f"
-        )
-        is None
-    )
-
-
-def test_static_method_owner_after_rejects_ambiguous_local_class() -> None:
-    facts = _class_facts(
-        {"Child": set(), "Base": {"f"}},
-        ambiguous={"Base"},
-    )
-    assert (
-        static_method_owner_after(facts, {}, ["Child", "Base", "object"], "Child", "f")
-        is None
-    )
-
-
-def test_static_method_owner_after_rejects_opaque_member_facts() -> None:
-    facts = _class_facts(
-        {"Child": set(), "Base": {"f"}},
-        opaque={"Base"},
-    )
-    assert (
-        static_method_owner_after(facts, {}, ["Child", "Base", "object"], "Child", "f")
-        is None
-    )
-
-
 def test_c3_merge_computes_diamond_linearization_tail() -> None:
     assert c3_merge(
         [
@@ -317,209 +237,6 @@ def test_static_mro_names_and_reachability_share_class_graph_authority() -> None
         "Base",
         "object",
     }
-
-
-def test_visible_subclasses_fails_closed_when_candidate_mro_is_uncertain() -> None:
-    graph = ClassGraph(
-        bases_by_class={"Base": [["<opaque>"]], "MaybeChild": [["Base"]]},
-        subclassed_names={"Base"},
-    )
-    assert visible_subclasses_of(graph, "Base", {}) is None
-
-
-def test_visible_subclasses_uses_static_mro() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Mid": [["Base"]],
-            "Leaf": [["Mid"]],
-        },
-        subclassed_names={"Base", "Mid"},
-    )
-    assert visible_subclasses_of(graph, "Base", {}) == ["Mid", "Leaf"]
-
-
-def test_super_fold_sound_for_linear_visible_hierarchy() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Mid": [["Base"]],
-            "Leaf": [["Mid"]],
-        },
-        subclassed_names={"Base", "Mid"},
-    )
-    assert super_fold_is_sound(
-        "Mid",
-        "f",
-        class_facts=_class_facts({"Base": {"f"}, "Mid": {"g"}, "Leaf": set()}),
-        imported_classes={},
-        class_graph=graph,
-        module_name="__main__",
-        entry_module=None,
-    )
-
-
-def test_super_fold_rejects_diamond_subclass_interposition() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Left": [["Base"]],
-            "Right": [["Base"]],
-            "Final": [["Left", "Right"]],
-        },
-        subclassed_names={"Base", "Left", "Right"},
-    )
-    assert not super_fold_is_sound(
-        "Left",
-        "who",
-        class_facts=_class_facts(
-            {"Base": {"who"}, "Right": {"who"}, "Left": set(), "Final": set()}
-        ),
-        imported_classes={},
-        class_graph=graph,
-        module_name="__main__",
-        entry_module=None,
-    )
-
-
-def test_super_fold_rejects_non_method_class_attr_interposition() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Left": [["Base"]],
-            "Right": [["Base"]],
-            "Final": [["Left", "Right"]],
-        },
-        subclassed_names={"Base", "Left", "Right"},
-    )
-    assert not super_fold_is_sound(
-        "Left",
-        "who",
-        class_facts=_class_facts(
-            {"Base": {"who"}, "Left": set(), "Right": set(), "Final": set()},
-            {"Right": {"who"}},
-        ),
-        imported_classes={},
-        class_graph=graph,
-        module_name="__main__",
-        entry_module=None,
-    )
-
-
-def test_super_fold_rejects_non_entry_module() -> None:
-    graph = ClassGraph(
-        bases_by_class={"Base": [["object"]], "Child": [["Base"]]},
-        subclassed_names={"Base"},
-    )
-    assert not super_fold_is_sound(
-        "Child",
-        "f",
-        class_facts=_class_facts({"Base": {"f"}, "Child": set()}),
-        imported_classes={},
-        class_graph=graph,
-        module_name="library_mod",
-        entry_module="__main__",
-    )
-
-
-def test_super_fold_rejects_dynamic_class_body_interposer() -> None:
-    src = (
-        "class Base:\n"
-        "    def who(self): pass\n"
-        "class Left(Base):\n"
-        "    pass\n"
-        "class Right(Base):\n"
-        "    if FLAG:\n"
-        "        def who(self): pass\n"
-        "class Final(Left, Right):\n"
-        "    pass\n"
-    )
-    module = ast.parse(src)
-    assert not super_fold_is_sound(
-        "Left",
-        "who",
-        class_facts=build_class_facts(module),
-        imported_classes={},
-        class_graph=build_class_graph(module),
-        module_name="__main__",
-        entry_module=None,
-    )
-
-
-def test_super_fold_rejects_decorated_method_interposer() -> None:
-    src = (
-        "class Base:\n"
-        "    def who(self): pass\n"
-        "class Left(Base):\n"
-        "    pass\n"
-        "class Right(Base):\n"
-        "    @decorator\n"
-        "    def who(self): pass\n"
-        "class Final(Left, Right):\n"
-        "    pass\n"
-    )
-    module = ast.parse(src)
-    assert not super_fold_is_sound(
-        "Left",
-        "who",
-        class_facts=build_class_facts(module),
-        imported_classes={},
-        class_graph=build_class_graph(module),
-        module_name="__main__",
-        entry_module=None,
-    )
-
-
-def test_class_facts_precompute_super_fold_sound_methods() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Mid": [["Base"]],
-            "Leaf": [["Mid"]],
-        },
-        subclassed_names={"Base", "Mid"},
-    )
-    facts = _class_facts({"Base": {"f"}, "Mid": {"g"}, "Leaf": set()})
-    enriched = class_facts_with_super_fold_sound_methods(
-        class_graph=graph,
-        class_facts=facts,
-        imported_classes={},
-        module_name="__main__",
-        entry_module=None,
-    )
-    assert enriched.super_fold_sound_methods_by_class == {
-        "Base": frozenset(),
-        "Mid": frozenset({"f"}),
-        "Leaf": frozenset({"f", "g"}),
-    }
-
-
-def test_class_facts_precompute_rejects_diamond_super_fold() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Left": [["Base"]],
-            "Right": [["Base"]],
-            "Final": [["Left", "Right"]],
-        },
-        subclassed_names={"Base", "Left", "Right"},
-    )
-    facts = _class_facts(
-        {"Base": {"who"}, "Right": {"who"}, "Left": set(), "Final": set()}
-    )
-    enriched = class_facts_with_super_fold_sound_methods(
-        class_graph=graph,
-        class_facts=facts,
-        imported_classes={},
-        module_name="__main__",
-        entry_module=None,
-    )
-    assert "who" not in enriched.super_fold_sound_methods_by_class["Left"]
-
-
-# ---------------------------------------------------------------------------
-# const environment
-# ---------------------------------------------------------------------------
 
 
 def test_const_dicts_string_keyed_constant_values() -> None:
@@ -665,7 +382,6 @@ def test_analyze_module_aggregates_all_families() -> None:
     assert r.class_facts.attr_names_by_class == {"A": frozenset({"k"})}
     assert r.class_facts.opaque_member_class_names == frozenset()
     assert r.class_facts.block_exec_class_nodes == frozenset()
-    assert r.class_facts.super_fold_sound_methods_by_class == {}
     assert r.function_meta.defaults["f"]["params"] == 2
 
 
@@ -714,7 +430,6 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
     assert not hasattr(gen, "module_subclassed_names")
     assert gen._sema.class_facts.method_names_by_class == {"A": frozenset({"m"})}
     assert gen._sema.class_facts.block_exec_class_nodes == frozenset()
-    assert gen._sema.class_facts.super_fold_sound_methods_by_class == {"A": frozenset()}
     assert gen.module_func_defaults["f"]["params"] == 2
     assert gen._sema is sema
 
@@ -755,7 +470,7 @@ def test_collect_assigned_names_includes_walrus_targets() -> None:
     assert {"g", "y"} <= names3
 
 
-def test_free_var_analysis_memoizes_nested_subtrees(monkeypatch) -> None:
+def test_free_var_analysis_memoizes_nested_subtrees() -> None:
     mod = ast.parse(
         """
 module_value = 1
@@ -785,35 +500,94 @@ def outer():
     assert isinstance(sibling, ast.FunctionDef)
 
     gen = SimpleTIRGenerator()
-    function_calls: dict[ast.AST, int] = {}
-    lambda_calls: dict[ast.AST, int] = {}
-    original_function_compute = gen._compute_free_vars_raw
-    original_lambda_compute = gen._compute_free_vars_expr_raw
-
-    def counted_function_compute(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> frozenset[str]:
-        function_calls[node] = function_calls.get(node, 0) + 1
-        return original_function_compute(node)
-
-    def counted_lambda_compute(node: ast.Lambda) -> frozenset[str]:
-        lambda_calls[node] = lambda_calls.get(node, 0) + 1
-        return original_lambda_compute(node)
-
-    monkeypatch.setattr(gen, "_compute_free_vars_raw", counted_function_compute)
-    monkeypatch.setattr(gen, "_compute_free_vars_expr_raw", counted_lambda_compute)
-
+    authority = gen._lexical_dependencies()
     assert gen._collect_free_vars_raw(outer) == {"module_value"}
-    assert function_calls == {outer: 1, mid: 1, leaf: 1, sibling: 1}
-    assert lambda_calls == {helper: 1}
+    assert set(authority.summaries) == {outer, mid, leaf, helper, sibling}
+    assert authority.declaration_scans == 5
+    visits = authority.node_visits
 
     gen.locals = {"module_value": object(), "outer_value": object()}
     assert gen._collect_free_vars(mid) == ["module_value", "outer_value"]
     assert gen._collect_free_vars_expr(helper) == ["module_value", "outer_value"]
     assert gen._collect_free_vars_raw(leaf) == {"module_value", "outer_value"}
 
-    assert function_calls == {outer: 1, mid: 1, leaf: 1, sibling: 1}
-    assert lambda_calls == {helper: 1}
+    assert authority.declaration_scans == 5
+    assert authority.node_visits == visits
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("lambda: external", {"external"}),
+        ("lambda arg=default: arg + external", {"default", "external"}),
+        ("lambda shadow: (lambda: shadow + external)", {"external"}),
+        (
+            "[external for shadow in inputs if predicate(shadow)]",
+            {"external", "inputs", "predicate"},
+        ),
+        ("[(lambda: shadow + external) for shadow in inputs]", {"external", "inputs"}),
+    ],
+)
+def test_annotation_dependency_transport_is_transitive_and_scope_correct(
+    source: str, expected: set[str]
+) -> None:
+    from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
+
+    authority = PythonDependencyAuthority(
+        eager_annotations=False, future_annotations=False
+    )
+    expression = ast.parse(source, mode="eval").body
+    projection = authority.project((expression,), implicit_class_cell=True)
+    assert set(projection.lexical) == expected
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def inner(default=(lambda: value)):\n    pass",
+        "class Inner:\n    value = 0\n    type Alias = lambda: value",
+        "type Alias = lambda: value",
+        "return [(lambda: value) for value in inputs], value",
+    ],
+)
+def test_lexical_dependency_and_storage_planning_share_authority(
+    target: tuple[int, int], body: str
+) -> None:
+    gen = SimpleTIRGenerator(target_python=target)
+    nested = ast.parse(
+        "def middle():\n" + "\n".join("    " + line for line in body.splitlines())
+    )
+    middle = nested.body[0]
+    assert isinstance(middle, ast.FunctionDef)
+    # A comprehension target must not suppress the independent outer value.
+    assert "value" in gen._collect_free_vars_raw(middle)
+    if not body.startswith("return"):
+        assert "value" in gen._collect_scope_cell_vars(middle.body, {"value"})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "try:\n    pass\nexcept Error as bound:\n    return lambda: bound",
+        "match subject:\n    case {'key': bound}:\n        return lambda: bound",
+        "match subject:\n    case [*bound]:\n        return lambda: bound",
+        "match subject:\n    case {**bound}:\n        return lambda: bound",
+        "match subject:\n    case _ as bound:\n        return lambda: bound",
+    ],
+)
+def test_string_field_declarations_are_not_outer_closure_dependencies(
+    body: str,
+) -> None:
+    node = ast.parse(
+        "def function():\n" + "\n".join("    " + line for line in body.splitlines())
+    ).body[0]
+    assert isinstance(node, ast.FunctionDef)
+    gen = SimpleTIRGenerator()
+    authority = gen._lexical_dependencies()
+    assert "bound" in authority.declarations(node).bound
+    assert "bound" not in gen._collect_free_vars_raw(node)
+    assert gen._collect_scope_cell_vars(node.body, {"bound"}) == {"bound"}
 
 
 def test_free_var_cache_keeps_nested_super_classcell_projection() -> None:
@@ -832,9 +606,8 @@ class Child:
     assert isinstance(method, ast.FunctionDef)
 
     gen = SimpleTIRGenerator()
-    gen._active_classcell_cell = object()
     gen.locals = {"__class__": object()}
     gen.boxed_locals = {"__class__": object()}
 
-    assert gen._collect_free_vars_raw(method) == {"super"}
+    assert gen._collect_free_vars_raw(method) == {"__class__", "super"}
     assert gen._collect_free_vars(method) == ["__class__"]

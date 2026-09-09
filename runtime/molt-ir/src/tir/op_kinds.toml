@@ -1,4 +1,15 @@
 # @generated SEED — hand-reviewed; thereafter the SINGLE SOURCE OF TRUTH.
+
+# Exact primitive rich-comparison domains. Equality is total across domains;
+# ordering is nothrow only within an ordering-enabled domain. This policy is
+# projected into both frontend Python and shared native/WASM Rust consumers.
+comparison_scalar_domains = [
+    { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"], frontend_types = ["int", "float", "bool"] },
+    { name = "text", ordering = true, tir_types = ["Str"], frontend_types = ["str"] },
+    { name = "bytes", ordering = true, tir_types = ["Bytes"], frontend_types = ["bytes"] },
+    { name = "none", ordering = false, tir_types = ["None"], frontend_types = ["None"] },
+]
+
 # Op-kind registry (molt task #57, phase 2). See
 # docs/design/foundation/25_op_kind_registry.md.
 #
@@ -61,10 +72,10 @@
 #   - [[result_finalizer_source_kind]] — per-SPELLING extraction facts whose
 #                  fresh result may carry a finalizer-sensitive value from one
 #                  source operand (`list_pop` result from list operand 0).
-#   - operand_independent_result_type - optional single-result TirType fact for
-#                  opcodes whose result type is intrinsic to the opcode. Omitted
-#                  opcodes must be inferred from operands, attrs, or call/builtin
-#                  metadata by type_refine.rs.
+#   - operand_independent_result_types - optional indexed intrinsic TirType
+#                  facts, one per fixed result slot. "operand" leaves a slot
+#                  to operand inference; facts do not imply purity or validity
+#                  on every outgoing edge. Omitted slots are never broadcast.
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
@@ -388,8 +399,8 @@ simpleir_runtime_requirement_roles = [
     { table = "simpleir_async_runtime_semantics_kinds", constant = "ASYNC_RUNTIME", bit = 10, reason = "operation requires an exact async scheduler and suspension-state model" },
     { table = "simpleir_unstructured_control_semantics_kinds", constant = "UNSTRUCTURED_CONTROL", bit = 11, reason = "operation requires a target-proven unstructured control-flow lowering" },
     { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY", bit = 12, reason = "operation requires a target host filesystem or foreign-function capability" },
-    { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME", bit = 13, reason = "operation requires internal execution-frame stack and source-location custody" },
-    { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION", bit = 14, reason = "operation requires exact Python-visible frame objects, locals, globals, and tracing state" },
+    { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME", bit = 13, runtime_symbols = ["molt_frame_context_set", "molt_super_from_frame"], reason = "operation requires internal execution-frame stack and source-location custody" },
+    { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION", bit = 14, runtime_symbols = ["molt_getframe", "molt_inspect_currentframe", "molt_sys_settrace", "molt_sys_gettrace", "molt_sys_setprofile", "molt_sys_getprofile"], reason = "operation requires exact Python-visible frame objects, locals, globals, and tracing state" },
     { table = "simpleir_pending_call_eval_breaker_semantics_kinds", constant = "PENDING_CALL_EVAL_BREAKER", bit = 15, reason = "operation requires the target runtime's pending-call and eval-breaker polling boundary" },
 ]
 simpleir_target_runtime_profiles = [
@@ -401,14 +412,8 @@ simpleir_target_runtime_profiles = [
     { target = "mlir", rust_variant = "Mlir", supported = [] },
 ]
 
-# Canonical runtime-call spellings that expose the same Python-visible frame
-# and tracing surface when carried by call/builtin metadata rather than a
-# dedicated SimpleIR opcode.
-simpleir_frame_introspection_runtime_symbols = [
-    "molt_getframe", "molt_inspect_currentframe",
-    "molt_sys_settrace", "molt_sys_gettrace",
-    "molt_sys_setprofile", "molt_sys_getprofile",
-]
+# Runtime-call requirements live on the semantic role rows above, alongside
+# their opcode requirements. Call carriers consume the same generated masks.
 simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
 simpleir_runtime_qualified_callable = [
     { qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe" },
@@ -1318,7 +1323,7 @@ gvn_numberable_attr_key_opcodes = [
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
 # useful as a proven-map seed. This is intentionally separate from
-# operand_independent_result_type: comparisons, module loads, and builders have
+# operand_independent_result_types: comparisons, module loads, and builders have
 # intrinsic result types, but the proven map tracks guard-removal proof seeds.
 proven_result_type_seed_opcodes = [
     "ConstInt",
@@ -1349,7 +1354,6 @@ type_refine_operand_type_rules = [
     { opcode = "Sub", rule = "numeric_arithmetic" },
     { opcode = "InplaceSub", rule = "numeric_arithmetic" },
     { opcode = "Mod", rule = "numeric_arithmetic" },
-    { opcode = "Pow", rule = "numeric_arithmetic" },
     { opcode = "FloorDiv", rule = "numeric_arithmetic" },
     { opcode = "Div", rule = "true_division" },
     { opcode = "Neg", rule = "unary_numeric" },
@@ -1512,12 +1516,6 @@ repr_raw_i64_full_deopt_seed_rules = [
 
 repr_projectable_bool_result_rules = [
     { opcode = "ConstBool", rule = "always" },
-    { opcode = "Eq", rule = "always" },
-    { opcode = "Ne", rule = "always" },
-    { opcode = "Lt", rule = "always" },
-    { opcode = "Le", rule = "always" },
-    { opcode = "Gt", rule = "always" },
-    { opcode = "Ge", rule = "always" },
     { opcode = "Is", rule = "always" },
     { opcode = "IsNot", rule = "always" },
     { opcode = "Not", rule = "always" },
@@ -2711,6 +2709,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedAdd"
+operand_independent_result_types = ["i64", "bool"]
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -2720,6 +2719,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedMul"
+operand_independent_result_types = ["i64", "bool"]
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -2790,6 +2790,10 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 result_arity = "one"
+# Exact int/float operands alone do not prove the result carrier: negative
+# integer exponents produce float and fractional powers can produce complex.
+# Value-specific rewrites may replace Pow, but generic Pow stays boxed.
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -2813,101 +2817,107 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Eq"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "equality"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Ne"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "equality"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Lt"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "ordering"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Le"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "ordering"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Gt"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "ordering"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Ge"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "ordering"
 result_arity = "one"
-operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Is"
+frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "IsNot"
+frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "In"
-may_throw = false
-side_effecting = false
+frontend_intrinsic_scalar_arity = 2
+may_throw = true
+side_effecting = true
 purity = "impure"
+predicate_semantics = "containment"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "NotIn"
-may_throw = false
-side_effecting = false
+frontend_intrinsic_scalar_arity = 2
+may_throw = true
+side_effecting = true
 purity = "impure"
+predicate_semantics = "containment"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -2973,9 +2983,9 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "And"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2983,9 +2993,9 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Or"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2993,21 +3003,25 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Not"
-may_throw = false
-side_effecting = false
-purity = "pure"
+frontend_intrinsic_scalar_arity = 1
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "truth"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Bool"
-may_throw = false
-side_effecting = false
-purity = "pure"
+frontend_intrinsic_scalar_arity = 1
+may_throw = true
+side_effecting = true
+purity = "impure"
+predicate_semantics = "truth"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3188,11 +3202,12 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "OrdAt"
+frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = false
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "i64"
+operand_independent_result_types = ["i64"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3259,7 +3274,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "list_dynbox"
+operand_independent_result_types = ["list_dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -3269,7 +3284,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dict_dynbox_dynbox"
+operand_independent_result_types = ["dict_dynbox_dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -3288,7 +3303,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "set_dynbox"
+operand_independent_result_types = ["set_dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -3321,6 +3336,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNextUnboxed"
+operand_independent_result_types = ["operand", "bool"]
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3456,6 +3472,8 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ExceptionPending"
+operand_independent_result_types = ["bool"]
+frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3517,16 +3535,19 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstInt"
+frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "i64"
+operand_independent_result_types = ["i64"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBigInt"
+frontend_intrinsic_scalar_arity = 1
+exact_scalar_result_type = "BigInt"
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3534,57 +3555,62 @@ result_arity = "one"
 # ConstBigInt is semantically `int`, but its value exceeds the raw i64 window.
 # The carrier is always boxed (DynBox; repr axis says MaybeBigInt). Typing it
 # I64 would license trusted-unbox on a heap BigInt pointer.
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstFloat"
+frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "f64"
+operand_independent_result_types = ["f64"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstStr"
+frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "str"
+operand_independent_result_types = ["str"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBool"
+frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "bool"
+operand_independent_result_types = ["bool"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstNone"
+frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "none"
+operand_independent_result_types = ["none"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBytes"
+frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
-operand_independent_result_type = "bytes"
+operand_independent_result_types = ["bytes"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3621,7 +3647,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3649,7 +3675,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3659,7 +3685,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3669,7 +3695,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3679,7 +3705,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -4691,41 +4717,55 @@ nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "EQ"
-reason = "pre-specialization: OpCode::Eq is the nothrow typed lane, but a pre-spec `a == b` may lower to a boxed __eq__ which raises"
-nothrow_on_primitives = true
+opcode = "Eq"
+
+[[frontend_raising_kind]]
+kind = "STRING_EQ"
+opcode = "Eq"
 
 [[frontend_raising_kind]]
 kind = "NE"
-reason = "pre-specialization: OpCode::Ne is the nothrow typed lane, but a pre-spec `a != b` may lower to a boxed __ne__ which raises"
-nothrow_on_primitives = true
+opcode = "Ne"
 
 [[frontend_raising_kind]]
 kind = "LT"
-reason = "pre-specialization: OpCode::Lt is the nothrow typed lane, but a pre-spec `a < b` may lower to a boxed __lt__ which raises"
-nothrow_on_primitives = true
+opcode = "Lt"
 
 [[frontend_raising_kind]]
 kind = "LE"
-reason = "pre-specialization: OpCode::Le is the nothrow typed lane, but a pre-spec `a <= b` may lower to a boxed __le__ which raises"
-nothrow_on_primitives = true
+opcode = "Le"
 
 [[frontend_raising_kind]]
 kind = "GT"
-reason = "pre-specialization: OpCode::Gt is the nothrow typed lane, but a pre-spec `a > b` may lower to a boxed __gt__ which raises"
-nothrow_on_primitives = true
+opcode = "Gt"
 
 [[frontend_raising_kind]]
 kind = "GE"
-reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-spec `a >= b` may lower to a boxed __ge__ which raises"
-nothrow_on_primitives = true
+opcode = "Ge"
 
 [[frontend_raising_kind]]
 kind = "IN"
-reason = "pre-specialization: OpCode::In is the nothrow typed container lane, but a pre-spec `a in b` dispatches __contains__ or iteration and raises on non-containers"
+opcode = "In"
 
 [[frontend_raising_kind]]
 kind = "NOT_IN"
-reason = "pre-specialization: OpCode::NotIn is the nothrow typed container lane, but a pre-spec `a not in b` dispatches __contains__ or iteration and raises on non-containers"
+opcode = "NotIn"
+
+[[frontend_raising_kind]]
+kind = "NOT"
+opcode = "Not"
+
+[[frontend_raising_kind]]
+kind = "BOOL"
+opcode = "Bool"
+
+[[frontend_raising_kind]]
+kind = "CAST_BOOL"
+opcode = "Bool"
+
+[[frontend_raising_kind]]
+kind = "BUILTIN_BOOL"
+opcode = "Bool"
 
 # FRONTEND-SPECIFIC (a') unary-operator pre-specialization: the unary analogues
 # of the binary arithmetic/bitwise family above. The typed OpCode (Neg/Pos/
@@ -4862,8 +4902,8 @@ reason = "frontend intrinsic: observe value type tag for optimizer guards"
 
 [[frontend_effect_kind]]
 kind = "CONTAINS"
-effect = "reads_heap"
-reason = "frontend predicate: membership test reads container state and must not be DCE-pure"
+effect = "writes_heap"
+reason = "membership may invoke __contains__, iteration, equality and truth callbacks"
 
 [[frontend_effect_kind]]
 kind = "EXCEPTION_MATCH_BUILTIN"
@@ -5242,10 +5282,6 @@ opcode = "Is"
 [[frontend_check_exception_skip]]
 kind = "IS_NOT"
 opcode = "IsNot"
-
-[[frontend_check_exception_skip]]
-kind = "NOT"
-opcode = "Not"
 
 [[frontend_check_exception_skip]]
 kind = "COPY"

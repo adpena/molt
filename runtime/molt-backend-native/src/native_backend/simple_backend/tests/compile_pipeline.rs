@@ -22,6 +22,7 @@ fn native_compiles_canonical_bare_get_attr() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     // Must not panic at the dispatch's no-codegen catch-all; the canonical
@@ -35,35 +36,32 @@ fn native_compiles_canonical_bare_get_attr() {
 }
 
 #[test]
-fn native_backend_skips_trace_imports_by_default() {
-    let bytes = compile_trace_probe_object(None);
-
-    assert!(
-        !bytes
-            .windows(b"molt_trace_enter_slot".len())
-            .any(|window| window == b"molt_trace_enter_slot")
-    );
-    assert!(
-        !bytes
-            .windows(b"molt_trace_exit".len())
-            .any(|window| window == b"molt_trace_exit")
-    );
+fn native_backend_preserves_semantic_frames_without_optional_tracing() {
+    for setting in [None, Some("0"), Some("1")] {
+        let bytes = compile_trace_probe_object(setting, crate::ir::ExecutionContextPolicy::Local);
+        for symbol in [
+            b"molt_trace_enter_slot".as_slice(),
+            b"molt_trace_exit".as_slice(),
+        ] {
+            assert!(bytes.windows(symbol.len()).any(|window| window == symbol));
+        }
+    }
 }
 
 #[test]
-fn native_backend_can_opt_in_trace_imports() {
-    let bytes = compile_trace_probe_object(Some("1"));
-
-    assert!(
-        bytes
-            .windows(b"molt_trace_enter_slot".len())
-            .any(|window| window == b"molt_trace_enter_slot")
-    );
-    assert!(
-        bytes
-            .windows(b"molt_trace_exit".len())
-            .any(|window| window == b"molt_trace_exit")
-    );
+fn native_backend_does_not_mint_frames_for_frameless_or_inherited_bodies() {
+    for policy in [
+        crate::ir::ExecutionContextPolicy::None,
+        crate::ir::ExecutionContextPolicy::Inherited,
+    ] {
+        let bytes = compile_trace_probe_object(None, policy);
+        for symbol in [
+            b"molt_trace_enter_slot".as_slice(),
+            b"molt_trace_exit".as_slice(),
+        ] {
+            assert!(!bytes.windows(symbol.len()).any(|window| window == symbol));
+        }
+    }
 }
 
 #[test]
@@ -159,6 +157,7 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -214,6 +213,7 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -259,6 +259,7 @@ fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         name,
@@ -416,6 +417,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -560,6 +562,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -691,6 +694,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

@@ -526,6 +526,14 @@ impl TirOp {
             && self.results.len() == 1
             && self.attrs.is_empty()
     }
+
+    /// Admit fixed result shapes using the same generated schema as verification.
+    /// Variable-result opcodes still require their instance-specific checks.
+    #[inline]
+    pub fn has_valid_result_arity(&self) -> bool {
+        super::op_kinds_generated::opcode_fixed_result_count_table(self.opcode)
+            .is_none_or(|expected| self.results.len() == expected)
+    }
 }
 
 /// Build a representation-matched dead placeholder constant for an SSA edge.

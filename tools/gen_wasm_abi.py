@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import ast
 import hashlib
 import json
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import MappingProxyType
 
 from generator_io import generated_file_matches, write_generated_text
 
@@ -372,7 +374,7 @@ def _rust_pascal_variant(value: str) -> str:
     return "".join(part.capitalize() for part in value.split("_"))
 
 
-def _runtime_import_variants(data: dict) -> dict[str, str]:
+def _runtime_import_variants(data: dict) -> Mapping[str, str]:
     variants: dict[str, str] = {}
     seen_variants: dict[str, str] = {}
     for entry in data["import"]:
@@ -385,17 +387,10 @@ def _runtime_import_variants(data: dict) -> dict[str, str]:
             )
         seen_variants[variant] = name
         variants[name] = variant
-    return variants
+    return MappingProxyType(variants)
 
 
-def _rust_runtime_import(data: dict, import_name: str) -> str:
-    variants = _runtime_import_variants(data)
-    return _rust_runtime_import_from_variants(variants, import_name)
-
-
-def _rust_runtime_import_from_variants(
-    variants: dict[str, str], import_name: str
-) -> str:
+def _rust_runtime_import(variants: Mapping[str, str], import_name: str) -> str:
     return f"WasmRuntimeImport::{variants[import_name]}"
 
 
@@ -560,7 +555,7 @@ def _render_rs_callable_table_layout(data: dict) -> str:
     )
 
 
-def _render_rs_const_policy(data: dict) -> str:
+def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -639,7 +634,7 @@ def _render_rs_const_policy(data: dict) -> str:
                 + (
                     "None"
                     if entry.get("materializer_import") is None
-                    else f"Some({_rust_runtime_import(data, entry['materializer_import'])})"
+                    else f"Some({_rust_runtime_import(import_variants, entry['materializer_import'])})"
                 )
                 + ",\n",
                 f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
@@ -759,8 +754,7 @@ def _render_rs_static_types(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_import_tokens(data: dict) -> str:
-    import_variants = _runtime_import_variants(data)
+def _render_rs_import_tokens(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -778,8 +772,7 @@ def _render_rs_import_tokens(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_import_metadata(data: dict) -> str:
-    import_variants = _runtime_import_variants(data)
+def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -828,9 +821,8 @@ def _render_rs_import_metadata(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_import_registry(data: dict) -> str:
+def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
-    import_variants = _runtime_import_variants(data)
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n",
@@ -849,7 +841,7 @@ def _render_rs_import_registry(data: dict) -> str:
             [
                 "    RuntimeImportSpec {\n",
                 "        import: "
-                f"{_rust_runtime_import_from_variants(import_variants, entry['name'])},\n",
+                f"{_rust_runtime_import(import_variants, entry['name'])},\n",
                 f'        name: "{entry["name"]}",\n',
                 f"        type_idx: {entry['type']},\n",
                 "    },\n",
@@ -866,7 +858,7 @@ def _render_rs_import_registry(data: dict) -> str:
     for entry in data["import"]:
         lines.append(
             f'        "{entry["name"]}" => Some('
-            f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
+            f"{_rust_runtime_import(import_variants, entry['name'])}),\n"
         )
         # Reserved callable rows deliberately keep their derived [[import]]
         # transport-only, so they do not duplicate callable metadata such as
@@ -877,7 +869,7 @@ def _render_rs_import_registry(data: dict) -> str:
         if runtime_name != entry["name"]:
             lines.append(
                 f'        "{runtime_name}" => Some('
-                f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
+                f"{_rust_runtime_import(import_variants, entry['name'])}),\n"
             )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
     lines.extend(
@@ -953,7 +945,7 @@ def _render_op_loop_arg(arg: str) -> str:
     raise AssertionError(f"unknown op-loop runtime arg {arg!r}")
 
 
-def _render_rs_lir_runtime_calls(data: dict) -> str:
+def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str]) -> str:
     entries = data["lir_runtime_call"]
     preserved_entries = [
         entry for entry in entries if "preserved_copy_operand_count" in entry
@@ -994,7 +986,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
     )
     for entry in entries:
         lines.append(
-            f"            Self::{entry['variant']} => {_rust_runtime_import(data, entry['import_name'])},\n"
+            f"            Self::{entry['variant']} => {_rust_runtime_import(import_variants, entry['import_name'])},\n"
         )
     lines.extend(
         [
@@ -1099,7 +1091,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             lines.extend(
                 [
                     f'        "{entry["kind"]}"{guard or ""} => Some(OpLoopRuntimeCallSpec {{\n',
-                    f"            import: {_rust_runtime_import(data, import_name)},\n",
+                    f"            import: {_rust_runtime_import(import_variants, import_name)},\n",
                     "            args: &[\n",
                 ]
             )
@@ -1113,7 +1105,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             )
             for required in required_imports:
                 lines.append(
-                    f"                {_rust_runtime_import(data, required)},\n"
+                    f"                {_rust_runtime_import(import_variants, required)},\n"
                 )
             lines.extend(
                 [
@@ -1220,7 +1212,9 @@ def render_native_exception_observer_abi_rs(data: dict) -> str:
     return _rustfmt("exception_observer_abi.rs", "".join(lines))
 
 
-def _render_rs_container_runtime_selector(data: dict) -> str:
+def _render_rs_container_runtime_selector(
+    data: dict, import_variants: Mapping[str, str]
+) -> str:
     selectors = data.get("container_runtime_selector", [])
     op_variants = {
         op: _rust_pascal_variant(op) for op in sorted(CONTAINER_RUNTIME_SELECTOR_OPS)
@@ -1279,7 +1273,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
                 f"        op: WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
                 f"        fact: WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
                 "        selection: WasmContainerRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        },\n",
                 "    },\n",
@@ -1319,7 +1313,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
                 f"            WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
                 f"            WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
                 "        ) => Some(WasmContainerRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        }),\n",
             ]
@@ -1334,7 +1328,9 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_method_ic_selector(data: dict) -> str:
+def _render_rs_method_ic_selector(
+    data: dict, import_variants: Mapping[str, str]
+) -> str:
     selectors = data.get("method_ic_selector", [])
     selector_by_key = {
         (entry["family"], entry["extra_arg_count"]): entry for entry in selectors
@@ -1380,7 +1376,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
                     f"        family: WasmMethodIcFamily::{family_variants[family]},\n",
                     f"        extra_arg_count: {extra_arg_count},\n",
                     "        selection: WasmMethodIcSelection {\n",
-                    f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                    f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                     "        },\n",
                     "    },\n",
                 ]
@@ -1404,7 +1400,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
                 [
                     f"        (WasmMethodIcFamily::{family_variants[family]}, {extra_arg_count}) => {{\n",
                     "            WasmMethodIcSelection {\n",
-                    f"                import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                    f"                import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                     "            }\n",
                     "        }\n",
                 ]
@@ -1419,7 +1415,9 @@ def _render_rs_method_ic_selector(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_numeric_runtime_selector(data: dict) -> str:
+def _render_rs_numeric_runtime_selector(
+    data: dict, import_variants: Mapping[str, str]
+) -> str:
     selectors = data.get("numeric_runtime_selector", [])
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -1463,7 +1461,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
                 "    WasmNumericRuntimeSelectorSpec {\n",
                 f'        kind: "{entry["kind"]}",\n',
                 "        selection: WasmNumericRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        },\n",
@@ -1471,7 +1469,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
             ]
         )
         for dep in entry["deps"]:
-            lines.append(f"            {_rust_runtime_import(data, dep)},\n")
+            lines.append(f"            {_rust_runtime_import(import_variants, dep)},\n")
         lines.extend(
             [
                 "        ],\n",
@@ -1497,7 +1495,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
         lines.extend(
             [
                 f'        "{entry["kind"]}" => Some(WasmNumericRuntimeSelection {{\n',
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
+                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        }),\n",
@@ -1587,7 +1585,7 @@ def _render_rs_runtime_surface(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_runtime_callables(data: dict) -> str:
+def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
     poll_imports = sorted(
         (
@@ -1598,7 +1596,6 @@ def _render_rs_runtime_callables(data: dict) -> str:
         key=lambda item: item[0],
     )
     reserved_callables = _shared_runtime_callables(data)
-    import_variants = _runtime_import_variants(data)
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
@@ -1615,7 +1612,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             [
                 "    PollTableImportSpec {\n",
                 f"        table_slot: {slot},\n",
-                f"        import: {_rust_runtime_import(data, name)},\n",
+                f"        import: {_rust_runtime_import(import_variants, name)},\n",
                 "    },\n",
             ]
         )
@@ -1628,7 +1625,9 @@ def _render_rs_runtime_callables(data: dict) -> str:
         ]
     )
     for slot, name in poll_imports:
-        lines.append(f"        {_rust_runtime_import(data, name)} => Some({slot}),\n")
+        lines.append(
+            f"        {_rust_runtime_import(import_variants, name)} => Some({slot}),\n"
+        )
     lines.extend(
         [
             "        _ => None,\n",
@@ -1657,7 +1656,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             [
                 "    RuntimeCallableImportSpec {\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f"        import: {_rust_runtime_import(data, entry['name'])},\n",
+                f"        import: {_rust_runtime_import(import_variants, entry['name'])},\n",
                 f"        arity: {entry['callable_arity']},\n",
                 f"        result: RuntimeCallableResult::{result},\n",
                 "    },\n",
@@ -1698,9 +1697,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
-        import_token = _rust_runtime_import_from_variants(
-            import_variants, entry["import_name"]
-        )
+        import_token = _rust_runtime_import(import_variants, entry["import_name"])
         lines.extend(
             [
                 "    ReservedRuntimeCallableSpec {\n",
@@ -1730,12 +1727,12 @@ def _render_rs_runtime_callables(data: dict) -> str:
         if "callable_arity" not in entry:
             continue
         lines.append(
-            f'        "{entry["runtime_name"]}" => Some({_rust_runtime_import(data, entry["name"])}),\n'
+            f'        "{entry["runtime_name"]}" => Some({_rust_runtime_import(import_variants, entry["name"])}),\n'
         )
     for entry in reserved_callables:
         lines.append(
             f'        "{entry["runtime_name"]}" => Some('
-            f"{_rust_runtime_import_from_variants(import_variants, entry['import_name'])}),\n"
+            f"{_rust_runtime_import(import_variants, entry['import_name'])}),\n"
         )
     lines.extend(
         [
@@ -2253,22 +2250,29 @@ def _render_rs_pure_profile(data: dict) -> str:
 
 
 def render_rs_modules(data: dict) -> dict[str, str]:
+    # Derive and validate once per render transaction, never once per reference.
+    # This snapshot is immutable and not retained on the mutable input manifest.
+    import_variants = _runtime_import_variants(data)
     modules = {
         "mod.rs": _render_rs_mod(),
         "bulk_memory_ops.rs": _render_rs_bulk_memory_ops(data),
         "callable_table.rs": _render_rs_callable_table_layout(data),
         "call_indirect.rs": _render_rs_call_indirect(data),
-        "container_runtime_selector.rs": _render_rs_container_runtime_selector(data),
-        "const_policy.rs": _render_rs_const_policy(data),
+        "container_runtime_selector.rs": _render_rs_container_runtime_selector(
+            data, import_variants
+        ),
+        "const_policy.rs": _render_rs_const_policy(data, import_variants),
         "static_types.rs": _render_rs_static_types(data),
-        "import_tokens.rs": _render_rs_import_tokens(data),
-        "import_metadata.rs": _render_rs_import_metadata(data),
-        "import_registry.rs": _render_rs_import_registry(data),
-        "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
-        "method_ic_selector.rs": _render_rs_method_ic_selector(data),
-        "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),
+        "import_tokens.rs": _render_rs_import_tokens(data, import_variants),
+        "import_metadata.rs": _render_rs_import_metadata(data, import_variants),
+        "import_registry.rs": _render_rs_import_registry(data, import_variants),
+        "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data, import_variants),
+        "method_ic_selector.rs": _render_rs_method_ic_selector(data, import_variants),
+        "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(
+            data, import_variants
+        ),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
-        "runtime_callables.rs": _render_rs_runtime_callables(data),
+        "runtime_callables.rs": _render_rs_runtime_callables(data, import_variants),
         "pure_profile.rs": _render_rs_pure_profile(data),
     }
     return _rustfmt_many(modules)

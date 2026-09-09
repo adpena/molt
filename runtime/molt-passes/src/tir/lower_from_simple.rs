@@ -9,11 +9,10 @@ mod type_inference;
 
 use self::loop_structure::{detect_loop_cond_blocks, detect_loop_structure};
 use self::pre_ssa::{rewrite_cell_locals_to_store_load, rewrite_loop_index_to_store_load};
+use self::type_inference::param_string_to_tir_type;
 #[cfg(test)]
 use self::type_inference::string_to_tir_type;
-use self::type_inference::{
-    infer_return_type, param_string_to_tir_type, propagate_arithmetic_types,
-};
+use super::type_refine::infer_return_type;
 use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
@@ -132,6 +131,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
         param_types: ir.param_types.clone(),
         source_file: ir.source_file.clone(),
         is_extern: false,
+        codegen_partition: ir.codegen_partition,
         execution_context: ir.execution_context,
     };
     let mut tir_func =
@@ -221,11 +221,9 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         ir.params.iter().map(|_| TirType::DynBox).collect()
     };
 
-    // Propagate parameter types to the entry block arguments in the types map.
-    // This is critical for SCCP: without it, parameters default to DynBox and
-    // the type inference can't prove that `n + 1` produces I64 even when
-    // the function signature says `n: int`. Entry block args correspond 1:1
-    // to function parameters.
+    // Preserve annotation metadata on entry block arguments. Entry arguments
+    // correspond 1:1 to function parameters, but their annotations admit
+    // overriding subclasses and cannot seed exact scalar return contracts.
     if let Some(entry) = tir_blocks.first() {
         for (arg_val, param_ty) in entry.args.iter().zip(param_types.iter()) {
             if *param_ty != TirType::DynBox {
@@ -240,14 +238,6 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
             }
         }
     }
-
-    // Forward type propagation: when all operands of an Add/Sub/Mul/etc. are
-    // known-typed from constants or parameter signatures, infer the result
-    // type before deriving the function return contract.
-    propagate_arithmetic_types(&tir_blocks, &mut types);
-
-    // Infer a return type from the SSA output by inspecting return terminators.
-    let return_type = infer_return_type(&tir_blocks, &types);
 
     // Build the block map keyed by BlockId.
     let mut block_map: HashMap<BlockId, TirBlock> = HashMap::with_capacity(tir_blocks.len());
@@ -296,18 +286,24 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg);
     let loop_cond_blocks = detect_loop_cond_blocks(ir, cfg);
 
-    TirFunction {
+    let mut function = TirFunction {
         name: ir.name.clone(),
         execution_context: ir.execution_context,
         param_names: ir.params.clone(),
         param_types,
-        return_type,
+        return_type: TirType::DynBox,
         blocks: block_map,
         entry_block,
         next_value,
         next_block,
         attrs: {
             let mut a = super::ops::AttrDict::new();
+            if ir.codegen_partition {
+                a.insert(
+                    super::function::CODEGEN_PARTITION_ATTR.into(),
+                    super::ops::AttrValue::Bool(true),
+                );
+            }
             if ir
                 .ops
                 .iter()
@@ -335,7 +331,13 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         loop_pairs,
         loop_break_kinds,
         loop_cond_blocks,
-    }
+    };
+    let exact = super::type_refine::extract_exact_scalar_map(&function);
+    function
+        .value_types
+        .extend(exact.iter().map(|(&value, ty)| (value, ty.clone())));
+    function.return_type = infer_return_type(function.blocks.values(), &exact);
+    function
 }
 
 // Use shared is_structural from parent module (ensures SSA and lower_from_simple

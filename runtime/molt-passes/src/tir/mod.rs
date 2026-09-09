@@ -19,8 +19,8 @@ pub mod type_refine;
 
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, clone_support, dominators, effect_proof, function, numeric_facts,
-    op_kinds_generated, ops, printer, serialize, ssa, target_info, types, value_range, values,
-    verify,
+    op_kinds_generated, ops, predicate_semantics, printer, serialize, ssa, target_info, types,
+    value_range, values, verify,
 };
 
 /// Pass-layer access to the canonical SimpleIR structural classifier.

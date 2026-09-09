@@ -754,9 +754,11 @@ fn mismatched_counted_loop_direction_does_not_prove_update_range() {
 fn bool_primary_projection_is_tir_value_owned() {
     let func = function(
         "bool_primary_projection",
-        &["lhs", "rhs"],
-        Some(vec!["int", "int"]),
+        &[],
+        None,
         vec![
+            const_int("lhs", 1),
+            const_int("rhs", 2),
             const_bool("flag", true),
             op("copy_var", Some("flag_copy"), Some("flag"), &[]),
             op("eq", Some("cmp"), None, &["lhs", "rhs"]),
@@ -1212,4 +1214,28 @@ fn cold_module_chunk_functions_have_empty_primary_sets() {
     assert_eq!(plan.name_scalar_kind("value"), None);
     assert_eq!(plan.name_scalar_kind("flag"), None);
     assert_eq!(plan.name_container_kind("items"), None);
+}
+
+#[test]
+fn annotation_only_comparisons_do_not_mint_raw_bool_carriers() {
+    for comparison in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        let func = function(
+            "annotation_comparison",
+            &["lhs", "rhs"],
+            Some(vec!["int", "int"]),
+            vec![
+                op(comparison, Some("cmp"), None, &["lhs", "rhs"]),
+                op("not", Some("negated"), None, &["cmp"]),
+            ],
+        );
+        let primary = native_representation_plan(&func).primary_name_sets();
+        assert!(
+            !primary.bool_.contains("cmp"),
+            "{comparison} can return an arbitrary object"
+        );
+        assert!(
+            primary.bool_.contains("negated"),
+            "truth conversion has an actual Bool result"
+        );
+    }
 }

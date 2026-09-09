@@ -47,17 +47,31 @@ Key flags:
 - `--pgo-profile <molt_profile.json>` (profile-guided optimization hints; expects MPA v0.1)
 
 Outputs:
-- `output.o` + linked binary (native, unless `--emit obj`)
+- A typed application archive (`.a`/`.lib`) + linked binary (native, unless `--emit obj`)
+- `cli/backend_artifact_contract.py` owns the requested artifact kind and target:
+  native object/archive, WASM, or UTF-8 Rust/Luau/MLIR source. Output names,
+  temporary files, cache/sync identities, and daemon requests are projections of
+  that contract, not suffix or non-WASM inference. Native admission validates
+  every archive member's relocatable header against the exact requested target;
+  text outputs never enter native symbol inspection. Shared-stdlib extraction
+  requires native archive output. One lazy encoder owns full and probe daemon
+  requests; callers cannot substitute unbound preencoded payloads.
 - `output.wasm` (WASM)
 - `output_linked.wasm` when `--linked` is enabled (single-module WASM)
 - When `--require-linked` is enabled, the linked artifact becomes the primary output and the unlinked `output.wasm` is removed after linking.
-- Intermediate artifacts (`main_stub.c`, importer stubs, `output.o` for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
+- Intermediate artifacts (`main_stub.c`, importer stubs, application/shared-stdlib archives for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
+- Native links consume a build-owned `shared-stdlib-link/` snapshot, never the
+  mutable shared cache path. Cache validation and snapshotting hold the same
+  publication lock; a missing or mismatched configured input fails admission.
 - Final outputs (binary/wasm/object) are placed under `--out-dir` when provided; otherwise wasm/object outputs default to `dist/` and native binaries default to `$MOLT_BIN/<entry>_molt`.
 - Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
-- `--emit obj` skips executable linking and returns the native object artifact.
-  On PE/COFF targets, the artifact is a COFF static-library object bundle
-  because the platform has no sound `ld -r` equivalent for combining user and
-  shared-stdlib objects.
+- `--emit obj` skips executable linking and returns one real relocatable native
+  object on every supported object format. The complete graph uses one object
+  module with shared-stdlib extraction disabled; per-function splitting remains
+  enabled. Normal executable builds use explicitly typed deterministic archives
+  whose members are whole-loaded by the final linker. An archive is never
+  returned as an object artifact. See the native artifact boundary in
+  [the IR specification](../compiler/0100_MOLT_IR.md).
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
 - Cache keys are computed from the IR payload plus backend/runtime/tooling source fingerprints, rustc/RUSTFLAGS metadata, and source-tree metadata (path, size, mtime, ctime). Source metadata changes intentionally invalidate object caches so long-lived CLI/batch processes cannot reuse stale compiler outputs after local source edits.
 - Backend executable bytes additionally bind probe receipts, object-cache keys,

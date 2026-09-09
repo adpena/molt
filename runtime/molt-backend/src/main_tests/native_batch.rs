@@ -2,26 +2,9 @@ use super::*;
 
 #[test]
 fn daemon_native_path_written_output_skips_oversized_memory_cache() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let tracked_env = [
-        "MOLT_BACKEND_BATCH_SIZE",
-        "MOLT_LINKER",
-        "MOLT_STDLIB_OBJ",
-        "MOLT_STDLIB_CACHE_KEY",
-        "MOLT_STDLIB_CACHE_MANIFEST",
-        "MOLT_STDLIB_MODULE_SYMBOLS",
-        "MOLT_RUNTIME_CALLABLE_SYMBOLS",
-        "MOLT_ENTRY_MODULE",
-    ];
-    let prior_env: Vec<_> = tracked_env
-        .iter()
-        .map(|name| (*name, std::env::var(name).ok()))
-        .collect();
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
-        std::env::set_var("MOLT_LINKER", "ld");
         std::env::remove_var("MOLT_STDLIB_OBJ");
         std::env::remove_var("MOLT_STDLIB_CACHE_KEY");
         std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
@@ -39,11 +22,12 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let output = tmp_dir.join("out.o");
+    let output = tmp_dir.join("out.a");
     let job = DaemonJobRequest {
         id: "job0".to_string(),
         is_wasm: false,
         target_triple: None,
+        native_output_kind: NativeArtifactKind::Archive,
         wasm_link: false,
         wasm_data_base: None,
         wasm_table_base: None,
@@ -76,6 +60,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -88,6 +73,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        codegen_partition: false,
                         execution_context: Default::default(),
                     },
                 ],
@@ -115,12 +101,6 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         result.warnings
     );
 
-    for (name, value) in prior_env {
-        match value {
-            Some(value) => unsafe { std::env::set_var(name, value) },
-            None => unsafe { std::env::remove_var(name) },
-        }
-    }
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -148,10 +128,7 @@ fn native_batch_temp_cleanup_reports_non_directory_path() {
 #[cfg(feature = "native-backend")]
 #[test]
 fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prior_debug_artifact_dir = std::env::var("MOLT_DEBUG_ARTIFACT_DIR").ok();
+    let _env_guard = TestEnvGuard::capture(&["MOLT_DEBUG_ARTIFACT_DIR"]);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -217,18 +194,14 @@ fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
         "artifact manifest must describe replay command"
     );
 
-    match prior_debug_artifact_dir {
-        Some(value) => unsafe { std::env::set_var("MOLT_DEBUG_ARTIFACT_DIR", value) },
-        None => unsafe { std::env::remove_var("MOLT_DEBUG_ARTIFACT_DIR") },
-    }
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use object::{BinaryFormat, Object, ObjectSymbol, SymbolKind};
+
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-batch-chunk-{}-{}",
         std::process::id(),
@@ -238,8 +211,8 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let output = tmp_dir.join("out.o");
-    let stdlib = tmp_dir.join("stdlib.o");
+    let output = tmp_dir.join("out.a");
+    let stdlib = tmp_dir.join("stdlib.a");
     // The main application object emits the per-app callable resolver, which
     // requires the linked runtime staticlib's `molt_*` callable-symbol set
     // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
@@ -269,6 +242,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
         "jobs": [{
             "id": "job0",
             "is_wasm": false,
+            "native_output_kind": "archive",
             "output": output.to_string_lossy(),
             "cache_key": "",
             "function_cache_key": "",
@@ -309,52 +283,38 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     let result = compile_single_job(job, &mut cache);
 
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
-    assert!(output.exists(), "output object missing");
+    assert!(output.exists(), "application archive missing");
 
-    let nm_output = std::process::Command::new("nm")
-        .args(["-g", output.to_str().expect("utf8 output path")])
-        .output()
-        .expect("run nm");
-    assert!(
-        nm_output.status.success(),
-        "nm failed: {}",
-        String::from_utf8_lossy(&nm_output.stderr)
-    );
-    let text = String::from_utf8_lossy(&nm_output.stdout);
-    let has_defined_chunk = text.lines().any(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 2 {
-            return false;
-        }
-        let sym = fields
-            .last()
-            .copied()
-            .unwrap_or_default()
-            .trim_start_matches('_');
-        sym == "demo__molt_module_chunk_1" && fields[fields.len().saturating_sub(2)] == "T"
-    });
-    let has_undefined_chunk = text.lines().any(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() != 2 {
-            return false;
-        }
-        let sym = fields
-            .last()
-            .copied()
-            .unwrap_or_default()
-            .trim_start_matches('_');
-        sym == "demo__molt_module_chunk_1" && fields[0] == "U"
-    });
-
-    assert!(has_defined_chunk, "expected defined chunk symbol:\n{text}");
-    assert!(
-        !has_undefined_chunk,
-        "unexpected undefined chunk symbol:\n{text}"
+    let bytes = std::fs::read(&output).expect("read daemon application archive");
+    let archive = object::read::archive::ArchiveFile::parse(bytes.as_slice())
+        .expect("parse daemon native archive");
+    let mut definitions = 0;
+    for member in archive.members() {
+        let member = member.expect("read native archive member");
+        let data = member
+            .data(bytes.as_slice())
+            .expect("read native member bytes");
+        let object = object::File::parse(data).expect("parse native member object");
+        let expected = if object.format() == BinaryFormat::MachO {
+            "_demo__molt_module_chunk_1"
+        } else {
+            "demo__molt_module_chunk_1"
+        };
+        definitions += object
+            .symbols()
+            .filter(|symbol| {
+                symbol.name().expect("symbol name") == expected
+                    && symbol.kind() == SymbolKind::Text
+                    && symbol.is_global()
+                    && !symbol.is_weak()
+                    && symbol.is_definition()
+            })
+            .count();
+    }
+    assert_eq!(
+        definitions, 1,
+        "ordinary archive members must retain exactly one strong chunk definition"
     );
 
-    // The daemon env-passthrough mutated the process environment; clear the
-    // resolver symbol-set var so it does not leak into sibling tests that
-    // share `ENV_TEST_MUTEX`.
-    unsafe { std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS") };
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

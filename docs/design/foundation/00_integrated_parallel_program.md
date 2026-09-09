@@ -136,10 +136,9 @@ CallFacts table.
 
 ### RC-2 — LLVM exception-CFG handler reachability — **DONE**
 
-The first LLVM exception-CFG blocker is closed in current code. LLVM's
-`compute_function_rpo` no longer walks terminator edges alone: it routes through
-the same `tir::dominators::exception_label_to_block` /
-`exception_successors` authority as the TIR analyses, so
+The first LLVM exception-CFG blocker is closed in current code. LLVM lowering
+consumes `tir::dominators::executable_reverse_postorder` directly, sharing the
+same traversal and exception-edge authority as the TIR analyses, so
 `CheckException`/`TryStart` handler blocks that are reachable only by a
 mid-block exception edge are included in the LLVM lowering order instead of
 being stamped with a bare `unreachable`.
@@ -148,12 +147,20 @@ Guarded evidence:
 
 - `runtime/molt-ir/src/tir/dominators.rs` owns the single
   label-to-handler and exception-successor extraction path.
-- `runtime/molt-backend/src/llvm_backend/lowering.rs::compute_function_rpo`
-  appends terminator successors and exception successors in one traversal.
-- `runtime/molt-backend/tests/llvm_rpo.rs` includes regression tests for
-  exception-edge-only reachable handlers and transitively reachable handler
-  bodies.
-- `runtime/molt-backend/src/llvm_backend/lowering.rs` includes the
+  Reachability and immediate dominators share an iterative reverse-postorder
+  traversal over existing block records only. Empty/phase-only functions have
+  no executable nodes; missing entries and dangling targets remain verifier
+  errors rather than becoming phantom nodes in analysis. Predecessor maps use
+  the same block domain, and traversal depth does not consume the compiler's
+  call stack. Ambiguous handler labels cannot select a hash-dependent target;
+  referenced missing or ambiguous labels are diagnosed at their transfer op.
+- `runtime/molt-ir/src/tir/traversal.rs` also owns dense pre-SSA/SSA traversal.
+  LLVM has no separate RPO implementation. Verifier reachability is a projection
+  of its strict dominator tree, with no second walk or edge classifier.
+- `runtime/molt-ir/src/tir/dominators/tests/rpo_tests.rs` contains the harvested
+  graph-order tests, including deep chains and exception-only handler bodies,
+  without an LLVM feature gate.
+- `runtime/molt-backend-native/src/llvm_backend/lowering.rs` includes the
   `check_exception_edge_feeds_handler_phi` lowering/verifier regression.
 
 The remaining exception-CFG work is not the old "handler block is never

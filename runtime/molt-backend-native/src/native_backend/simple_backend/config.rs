@@ -255,6 +255,7 @@ impl SimpleBackend {
             external_function_names: std::collections::BTreeSet::new(),
             module_registry: None,
             module_context: None,
+            partition_sources: BTreeMap::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
@@ -263,11 +264,13 @@ impl SimpleBackend {
         }
     }
 
-    pub fn build_module_context(functions: &[FunctionIR]) -> NativeBackendModuleContext {
+    pub fn prepare_module_context(functions: &mut Vec<FunctionIR>) -> NativeBackendModuleContext {
         NativeBackendModuleContext::from_functions(functions)
     }
 
     pub fn set_module_context(&mut self, context: NativeBackendModuleContext) {
+        self.partition_sources
+            .extend(context.partition_sources.clone());
         self.module_context = Some(context);
     }
 }

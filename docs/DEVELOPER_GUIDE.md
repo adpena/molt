@@ -298,9 +298,13 @@ Interpretation:
   its own child process group/session, and timeout/RSS cleanup records the child
   pid/pgid/sid, protected control-plane pgids, watched pids, SIGTERM/SIGKILL
   actions, RSS peaks/limits, cwd, command, sanitized env deltas, and repro
-  payload. Harness profiles live under `logs/harness_memory_guard/commands.jsonl`
-  by default; direct `tools/memory_guard.py` incidents without `--summary-json`
-  write bounded summaries under `tmp/memory_guard/incidents/`.
+  payload. Default harness profiles and events share `tmp/harness_memory_guard/`
+  (`commands.jsonl` for profiles). These paths project from the canonical
+  memory-guard state root: proof-queue runs keep them beside their external
+  `MOLT_MEMORY_GUARD_STATE_ROOT`, never inside watched source. Explicit
+  `MOLT_GUARD_PROFILE_LOG` selections remain supported. Direct
+  `tools/memory_guard.py` incidents without `--summary-json` write bounded
+  summaries under the same authority's `memory_guard/incidents/` directory.
   If identity is ambiguous, cleanup skips the process and preserves evidence;
   it must never terminate Codex, Claude, app-server, renderer, node-repl, shell,
   Git, MCP/plugin, ancestor, or other host-control-plane processes.
@@ -382,6 +386,20 @@ Key controls:
   one-shot compile that duplicates backend memory.
 - Cacheable daemon compiles use a probe-first request path: full IR is only encoded and sent after a daemon-declared cache miss.
 - Native runtime verification/build starts asynchronously after cache/setup and is joined at the native link boundary; `emit=obj` intentionally skips that overlap because it never links a binary.
+- Native binary builds transport compiler output and shared stdlib batches as
+  deterministic static archives, with explicit archive identity through daemon
+  requests, caches, and final-link inputs. The final linker includes every member
+  using target-dialect whole-archive semantics; no intermediate partial linker or
+  platform librarian is required. Internal filenames identify archives (`.a` or
+  `.lib`), never archives disguised as `.o` files.
+  Publication, validation, staging, and exact-key corruption eviction share the
+  stdlib publication lock across Python and Rust; compilation runs outside it.
+  A failed input validation does not own or delete an existing cache generation.
+- `emit=obj` retains its literal contract: one real relocatable object containing
+  the complete compilation graph. It disables cross-object and shared-stdlib
+  partitioning while retaining per-function splitting and optimization. The backend
+  `--native-output-kind object|archive` and daemon `native_output_kind` field carry
+  the same explicit contract; filenames do not decide output semantics.
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum
   reuse; use the DX resolver's external root for maintainer/agent proof lanes
   when available, especially on Windows checkouts on `C:`. Lock/fingerprint

@@ -9,6 +9,9 @@ from typing import (
     Any,
 )
 
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
+
 from molt.frontend.visitors.call_dispatch_builtin_constructors import (
     CallNamedBuiltinConstructorDispatchMixin,
 )
@@ -42,6 +45,20 @@ class CallNamedBuiltinDispatchMixin(
     def _try_emit_named_builtin_call(
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any:
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            keyword.arg is None for keyword in node.keywords
+        ):
+            # Splat cardinality and duplicate/keyword errors belong to the
+            # runtime binder. Individual builtin lowerers only see explicit
+            # arguments; treating a starred operand as one argument is wrong.
+            # Residual user names take the same generic path, without relying
+            # on an incomplete builtin-name catalog to establish callability.
+            callee = self.visit(node.func)
+            if callee is None:
+                raise FrontendRejection(
+                    Diagnostic.CALL_TARGET, "Unsupported call target"
+                )
+            return self._emit_dynamic_call(node, callee, True)
         for lower in (
             self._try_emit_named_builtin_scalar_call,
             self._try_emit_named_builtin_iter_call,

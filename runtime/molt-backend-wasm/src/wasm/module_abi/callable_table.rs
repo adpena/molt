@@ -523,6 +523,7 @@ mod tests {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             }],
             profile: None,

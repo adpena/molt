@@ -411,6 +411,7 @@ def _scope_relpaths(root: Path) -> set[str]:
 _COMMAND_LAYER_OUT = (
     "cli/__init__.py",
     "cli/build_locks.py",
+    "file_locks.py",
     "cli/extension_seal.py",
     "cli/extension_scan.py",
     "cli/package_registry.py",

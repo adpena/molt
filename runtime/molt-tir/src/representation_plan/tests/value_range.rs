@@ -355,6 +355,31 @@ fn bool_select_range_proof_does_not_promote_to_raw_i64() {
     let repr = repr_by_value_for(&func, Some(&vr));
     assert_eq!(
         repr.get(&result),
+        Some(&Repr::DynBox),
+        "annotations do not prove exact bool operands"
+    );
+
+    let left = func.fresh_value();
+    let right = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].operands = vec![left, right];
+    entry
+        .ops
+        .insert(0, tir_op(TirOpCode::ConstBool, vec![], vec![left]));
+    entry
+        .ops
+        .insert(1, tir_op(TirOpCode::ConstBool, vec![], vec![right]));
+    entry.ops[0]
+        .attrs
+        .insert("value".into(), TirAttrValue::Bool(true));
+    entry.ops[1]
+        .attrs
+        .insert("value".into(), TirAttrValue::Bool(false));
+    crate::tir::type_refine::refine_types(&mut func);
+    let vr = value_range_for(&func);
+    let repr = repr_by_value_for(&func, Some(&vr));
+    assert_eq!(
+        repr.get(&result),
         Some(&Repr::Bool),
         "bool values can have [0,1] ranges but must stay in the Bool carrier, not RawI64Safe"
     );
@@ -795,4 +820,39 @@ fn wasm_and_llvm_derive_identical_repr_from_one_value_range() {
         wasm_map, llvm_facts.repr_by_value,
         "WASM and LLVM must derive the same Repr per ValueId from the same ValueRange"
     );
+}
+
+#[test]
+fn unknown_peeled_guard_result_is_not_a_raw_bool_carrier() {
+    let mut func = super::super::test_fixtures::peeled_compute_func_ir();
+    func.ops
+        .retain(|op| op.out.as_deref() != Some("_exact_bound"));
+    for op in &mut func.ops {
+        if let Some(args) = &mut op.args {
+            for arg in args {
+                if arg == "_exact_bound" {
+                    *arg = "n".to_string();
+                }
+            }
+        }
+    }
+    let primary = ScalarRepresentationPlan::for_function_ir_for_target(
+        &func,
+        &crate::tir::TargetInfo::native_release_fast(),
+    )
+    .primary_name_sets();
+    assert!(
+        !primary.bool_.contains("v111"),
+        "rich comparison can return an owned object"
+    );
+    assert!(
+        !primary.bool_.contains("_v45"),
+        "and preserves the non-bool false operand"
+    );
+    for flag in ["_v46", "_v47", "_v48", "_v40", "_v44", "_bb1_arg2"] {
+        assert!(
+            primary.bool_.contains(flag),
+            "checked flag {flag} remains a raw bool"
+        );
+    }
 }

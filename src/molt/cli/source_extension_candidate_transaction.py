@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Any
 
-from molt.cli.build_locks import _FileLockHandle, _in_process_lock_key
+from molt.file_locks import _FileLockHandle, _in_process_lock_key
 from molt.cli.source_package_seal import verify_source_package_seal
 from molt.exact_json import loads_exact, write_exact
 from molt.file_hashing import _sha256_file

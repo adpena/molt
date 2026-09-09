@@ -11,7 +11,6 @@ _NATIVE_LINK_COMMAND_NAMES = (
     "_resolve_available_fast_linker",
     "_resolve_dev_linker",
     "_resolve_native_linker_hint",
-    "_windows_coff_library_command",
 )
 
 _NATIVE_LINK_COMMAND_DEFINITIONS = (
@@ -20,7 +19,6 @@ _NATIVE_LINK_COMMAND_DEFINITIONS = (
     "def _resolve_available_fast_linker(",
     "def _resolve_dev_linker(",
     "def _resolve_native_linker_hint(",
-    "def _windows_coff_library_command(",
 )
 
 
@@ -31,6 +29,7 @@ def test_cli_native_link_command_authority_is_single_home() -> None:
     cli_source = inspect.getsource(cli)
     for marker in _NATIVE_LINK_COMMAND_DEFINITIONS:
         assert marker not in cli_source
+    assert not hasattr(native_link_command, "_windows_coff_library_command")
 
     command_source = inspect.getsource(native_link_command)
     assert "shutil.which" not in command_source

@@ -880,83 +880,14 @@ class CallNamedDispatchMixin(_MixinBase):
                 )
                 return res
             if func_id == "super":
-                if node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "super does not support keywords",
-                    )
-                if len(node.args) == 0:
-                    # Zero-arg ``super()`` reads the class object from the
-                    # implicit ``__class__`` closure cell (filled with the
-                    # finished class after the class is built) and binds it to
-                    # the method's first parameter — exactly mirroring CPython's
-                    # ``__build_class__`` / ``super.__init__`` zero-arg path.
-                    # Reading the cell rather than re-deriving the class by
-                    # module-attribute name makes ``super()`` correct for
-                    # function-local, nested, and module-level classes
-                    # (including metaclasses) alike.
-                    class_ref = (
-                        self._emit_free_var_load("__class__")
-                        if "__class__" in self.free_vars
-                        else None
-                    )
-                    if (
-                        class_ref is not None
-                        and self.current_method_first_param is not None
-                    ):
-                        obj = self._load_local_value(self.current_method_first_param)
-                        if (
-                            obj is None
-                            and self.current_method_first_param in self.free_vars
-                        ):
-                            obj = self._emit_free_var_load(
-                                self.current_method_first_param
-                            )
-                        if obj is None:
-                            raise FrontendRejection(
-                                Diagnostic.CALL_SIGNATURE,
-                                "super() missing method receiver",
-                            )
-                        super_hint = (
-                            f"super:{self.current_class}"
-                            if self.current_class is not None
-                            else "super"
-                        )
-                        res = MoltValue(self.next_var(), type_hint=super_hint)
-                        self.emit(
-                            MoltOp(kind="SUPER_NEW", args=[class_ref, obj], result=res)
-                        )
-                        return res
-                    if self.current_method_first_param is None:
-                        msg = "super(): no arguments"
-                    else:
-                        msg = "super(): __class__ cell not found"
-                    err_val = self._emit_exception_new("RuntimeError", msg)
+                if not node.args and not node.keywords:
+                    res = MoltValue(self.next_var(), type_hint="super")
                     self.emit(
-                        MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none"))
-                    )
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    return res
-                if len(node.args) == 2:
-                    type_val = self.visit(node.args[0])
-                    obj_val = self.visit(node.args[1])
-                    if type_val is None or obj_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "super expects type and object",
-                        )
-                    super_hint = "super"
-                    if isinstance(node.args[0], ast.Name):
-                        super_hint = f"super:{node.args[0].id}"
-                    res = MoltValue(self.next_var(), type_hint=super_hint)
-                    self.emit(
-                        MoltOp(kind="SUPER_NEW", args=[type_val, obj_val], result=res)
+                        MoltOp(kind="CALL", args=["molt_super_from_frame"], result=res)
                     )
                     return res
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "super expects 0 or 2 arguments"
-                )
+                # Constructor diagnostics follow ordinary argument evaluation.
+                return self._emit_dynamic_call(node)
             if func_id == "classmethod":
                 if len(node.args) != 1 or node.keywords:
                     raise FrontendRejection(
@@ -1110,63 +1041,16 @@ class CallNamedDispatchMixin(_MixinBase):
                 payload = self.visit(node.args[0])
                 return self._emit_closing(payload)
             if func_id == "print":
-                needs_bind = self._call_needs_bind(node)
-                if needs_bind:
-                    callargs, saw_name_error = self._emit_print_call_args_builder(node)
-                    if saw_name_error:
-                        return None
-                    callee = self._emit_builtin_function(func_id)
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
-                    )
-                    return res
-                if len(node.args) == 0:
-                    self.emit(
-                        MoltOp(kind="PRINT_NEWLINE", args=[], result=MoltValue("none"))
-                    )
-                    return None
-                args: list[MoltValue] = []
-                saw_name_error = False
-                for expr in node.args:
-                    arg = self.visit(expr)
-                    if arg is None:
-                        if isinstance(expr, ast.Name):
-                            exc_val = self._emit_exception_new(
-                                "NameError", f"name '{expr.id}' is not defined"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="RAISE",
-                                    args=[exc_val],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                            saw_name_error = True
-                            arg = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(MoltOp(kind="CONST_NONE", args=[], result=arg))
-                        else:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported call argument",
-                            )
-                    args.append(arg)
-                if saw_name_error:
-                    return None
-                if len(args) == 1:
-                    self.emit(
-                        MoltOp(kind="PRINT", args=[args[0]], result=MoltValue("none"))
-                    )
-                    return None
-                parts = [self._emit_str_from_obj(arg) for arg in args]
-                sep = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[" "], result=sep))
-                items = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind="TUPLE_NEW", args=parts, result=items))
-                joined = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="STRING_JOIN", args=[sep, items], result=joined))
-                self.emit(MoltOp(kind="PRINT", args=[joined], result=MoltValue("none")))
-                return None
+                # Print is an ordinary value-producing builtin call. Its runtime
+                # authority owns per-argument writes, conversion failures, stream
+                # lookup, keyword binding, and the Python None result.
+                callee = self._emit_builtin_function(func_id)
+                callargs = self._emit_call_args_builder(node)
+                result = MoltValue(self.next_var(), type_hint="None")
+                self.emit(
+                    MoltOp(kind="CALL_BIND", args=[callee, callargs], result=result)
+                )
+                return result
             elif func_id == "molt_spawn":
                 arg = self.visit(node.args[0])
                 self.emit(MoltOp(kind="SPAWN", args=[arg], result=MoltValue("none")))
@@ -2089,31 +1973,9 @@ class CallNamedDispatchMixin(_MixinBase):
                                                 inline_params = init_info.get(
                                                     "inline_params"
                                                 )
-                                                # Fail-closed cross-module gate
-                                                # (mirrors _try_inline_method_call):
-                                                # an __init__ value-expression that
-                                                # reads a defining-module global
-                                                # (recorded in inline_free_names)
-                                                # must not be spliced into a
-                                                # different module's scope, where
-                                                # the global would mis-resolve.
-                                                init_free_names = init_info.get(
-                                                    "inline_free_names"
-                                                )
-                                                init_cross_module = False
-                                                if init_free_names:
-                                                    init_owner_module = init_info.get(
-                                                        "inline_owner_module"
-                                                    )
-                                                    init_cross_module = (
-                                                        init_owner_module is not None
-                                                        and init_owner_module
-                                                        != self.module_name
-                                                    )
                                                 if (
                                                     init_assigns is not None
                                                     and inline_params is not None
-                                                    and not init_cross_module
                                                     and self._try_inline_init_assigns(
                                                         init_assigns,
                                                         inline_params,

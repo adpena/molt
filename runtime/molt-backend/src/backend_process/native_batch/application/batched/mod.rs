@@ -8,17 +8,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use molt_backend::SimpleIR;
 
-use super::super::{NativeApplicationObjectOptions, NativeApplicationObjectResult};
+use super::super::{NativeApplicationArtifactOptions, NativeApplicationArtifactResult};
 use plan::NativeApplicationBatchPlan;
 
-pub(crate) fn compile_batched_native_application_object_to_path(
+pub(crate) fn compile_batched_native_application_archive_to_path(
     ir: SimpleIR,
     output_path: &Path,
-    options: &mut NativeApplicationObjectOptions<'_>,
+    options: &mut NativeApplicationArtifactOptions<'_>,
     function_count: usize,
     batch_size: usize,
     batch_ops_budget: usize,
-) -> io::Result<NativeApplicationObjectResult> {
+) -> io::Result<NativeApplicationArtifactResult> {
     let mut plan = NativeApplicationBatchPlan::from_ir(
         ir,
         batch_size,
@@ -54,7 +54,7 @@ pub(crate) fn compile_batched_native_application_object_to_path(
         function_count,
         total_batches
     );
-    Ok(NativeApplicationObjectResult {
+    Ok(NativeApplicationArtifactResult {
         function_count,
         batch_count: total_batches,
     })

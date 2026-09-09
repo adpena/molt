@@ -8,6 +8,7 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) is_wasm: bool,
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) target_triple: Option<String>,
+    pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     pub(crate) wasm_link: bool,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]

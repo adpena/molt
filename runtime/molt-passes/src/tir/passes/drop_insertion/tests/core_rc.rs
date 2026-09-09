@@ -291,6 +291,7 @@ fn loop_slot_accumulator_no_double_drop() {
         param_types: Some(vec!["Any".into()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

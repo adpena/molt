@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_write_json
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    read_stable_regular_file,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
+)
 
 # Low-level artifact-sync state primitives.
 #
@@ -18,10 +23,13 @@ from molt.cli.atomic_io import _atomic_write_json
 # the whole native/wasm backend), so any lowering-context module that needed them
 # dragged the backend onto the frontend import path and cold-started the lowering
 # cache on unrelated backend edits. They live here instead: a leaf module that
-# imports only ``artifact_state`` and ``atomic_io``. The ``molt.cli`` facade points
+# uses the shared direct-file identity authority. The ``molt.cli`` facade points
 # to this leaf authority, so public imports do not route through backend_cache.
 
-_ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
+_ARTIFACT_SYNC_STATE_CACHE: dict[
+    Path, tuple[StableRegularFileIdentity, dict[str, Any] | None]
+] = {}
+_ARTIFACT_SYNC_STATE_VERSION = 2
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
@@ -35,31 +43,28 @@ def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
 
 
 def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
-    try:
-        stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-        return None
     cached = _ARTIFACT_SYNC_STATE_CACHE.get(path)
     if cached is not None:
-        cached_size, cached_mtime_ns, cached_payload = cached
-        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
+        identity, cached_payload = cached
+        try:
+            verify_stable_regular_file_identity(identity, label="artifact sync payload")
+        except (OSError, ValueError):
+            _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
+        else:
             return cached_payload
     try:
-        text = path.read_text().strip()
-    except OSError:
+        identity = stable_regular_file_identity(path, label="artifact sync payload")
+        data = read_stable_regular_file(identity, label="artifact sync payload")
+    except (OSError, ValueError):
         _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
         return None
-    if not text:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
-        return None
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
-        return None
-    payload = data if isinstance(data, dict) else None
-    _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, payload)
+        decoded = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    else:
+        payload = decoded if isinstance(decoded, dict) else None
+    _ARTIFACT_SYNC_STATE_CACHE[path] = (identity, payload)
     return payload
 
 
@@ -69,26 +74,22 @@ def _write_artifact_sync_state(
     source_key: str,
     tier: str,
     artifact: Path,
+    identity: StableRegularFileIdentity | None = None,
 ) -> None:
-    stat = artifact.stat()
+    try:
+        identity = _artifact_sync_identity(artifact, identity=identity)
+    except (OSError, ValueError) as error:
+        raise OSError(
+            f"Cannot attest backend artifact sync receipt: {error}"
+        ) from error
     payload = {
-        "version": 1,
+        "version": _ARTIFACT_SYNC_STATE_VERSION,
         "source_key": source_key,
         "tier": tier,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
+        "size": identity.size,
+        "sha256": identity.sha256,
     }
-    _atomic_write_json(path, payload, indent=2)
-    try:
-        written_stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-    else:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (
-            written_stat.st_size,
-            written_stat.st_mtime_ns,
-            dict(payload),
-        )
+    _write_artifact_sync_payload(path, payload)
 
 
 def _write_artifact_sync_payload(
@@ -98,16 +99,20 @@ def _write_artifact_sync_payload(
     default: Any | None = None,
 ) -> None:
     _atomic_write_json(path, payload, indent=2, default=default)
-    try:
-        written_stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-    else:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (
-            written_stat.st_size,
-            written_stat.st_mtime_ns,
-            dict(payload),
-        )
+    # Only a read of the published generation may populate the process cache;
+    # a peer can replace the path immediately after atomic publication.
+    _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
+
+
+def _artifact_sync_identity(
+    artifact: Path, *, identity: StableRegularFileIdentity | None
+) -> StableRegularFileIdentity:
+    if identity is None:
+        return stable_regular_file_identity(artifact, label="backend synced artifact")
+    if identity.path != artifact.expanduser().absolute():
+        raise ValueError("Backend sync identity belongs to a different artifact path")
+    verify_stable_regular_file_identity(identity, label="backend synced artifact")
+    return identity
 
 
 def _artifact_sync_state_matches(
@@ -116,30 +121,15 @@ def _artifact_sync_state_matches(
     source_key: str,
     tier: str,
     artifact: Path,
+    identity: StableRegularFileIdentity | None = None,
 ) -> bool:
-    try:
-        stat = artifact.stat()
-    except OSError:
-        return False
-    return _artifact_sync_state_matches_stat(
-        state,
-        source_key=source_key,
-        tier=tier,
-        stat=stat,
-    )
-
-
-def _artifact_sync_state_matches_stat(
-    state: dict[str, Any] | None,
-    *,
-    source_key: str,
-    tier: str,
-    stat: os.stat_result,
-) -> bool:
-    if state is None:
+    """Match one source receipt to bytes, reusing a transaction's validation hash."""
+    if state is None or state.get("version") != _ARTIFACT_SYNC_STATE_VERSION:
         return False
     if state.get("source_key") != source_key or state.get("tier") != tier:
         return False
-    return (
-        state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
-    )
+    try:
+        identity = _artifact_sync_identity(artifact, identity=identity)
+    except (OSError, ValueError):
+        return False
+    return state.get("size") == identity.size and state.get("sha256") == identity.sha256

@@ -17,13 +17,17 @@ from molt.compiler_analysis.python_binding_flow import (
     python_ast_digest,
 )
 from molt.compiler_analysis.python_imports import resolve_relative_import
-from molt.compiler_analysis.static_truth import static_if_live_branch
+from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
+from molt.compiler_analysis.static_truth import (
+    static_if_live_branch,
+    static_expression_result,
+)
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 from molt.frontend.sema import normalize_function_kind
 
 if TYPE_CHECKING:
@@ -36,32 +40,24 @@ else:
 
 
 class StatementScopeVisitorMixin(_MixinBase):
-    @staticmethod
-    def _module_static_sys_aliases(node: ast.Module) -> frozenset[str]:
-        aliases: set[str] = set()
-        for stmt in node.body:
-            if isinstance(stmt, ast.Import):
-                for alias in stmt.names:
-                    if alias.name == "sys":
-                        aliases.add(alias.asname or alias.name)
-        return frozenset(aliases)
-
     def _module_live_statements_for_target(
-        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+        self, statements: list[ast.stmt]
     ) -> list[ast.stmt]:
         live: list[ast.stmt] = []
         for stmt in statements:
             if isinstance(stmt, ast.If):
                 branch = static_if_live_branch(
                     stmt,
-                    **self._sys_platform_static_truth_kwargs(sys_aliases),
+                    **self._static_truth_kwargs(),
                 )
                 if branch is not None:
-                    live.extend(
-                        self._module_live_statements_for_target(
-                            list(branch), sys_aliases=sys_aliases
-                        )
-                    )
+                    if static_expression_result(
+                        stmt.test, **self._static_truth_kwargs()
+                    ).evaluation_required:
+                        # Discovery must retain the condition's observable work,
+                        # not reintroduce loads from the proven-dead branch.
+                        live.append(ast.copy_location(ast.Expr(value=stmt.test), stmt))
+                    live.extend(self._module_live_statements_for_target(list(branch)))
                     continue
             live.append(stmt)
         return live
@@ -90,38 +86,32 @@ class StatementScopeVisitorMixin(_MixinBase):
         return True
 
     def _module_elidable_deleted_functions(self, node: ast.Module) -> frozenset[str]:
-        sys_aliases = self._module_static_sys_aliases(node)
-        elidable = set(
-            self._module_elidable_deleted_functions_in_block(
-                list(node.body), sys_aliases=sys_aliases
+        # A leading underscore is not an accessibility boundary in Python.
+        # Only a proven unobserved lifetime ending in deletion can be elided.
+        counts, _, dynamic_bind = self._collect_module_assignments(node)
+        if dynamic_bind:
+            return frozenset()
+        return frozenset(
+            name
+            for name in self._module_elidable_deleted_functions_in_block(
+                list(node.body)
             )
+            if counts.get(name) == 2  # One definition and its one deletion only.
         )
-        elidable.update(
-            self._module_elidable_target_dead_private_functions(
-                list(node.body), sys_aliases=sys_aliases
-            )
-        )
-        return frozenset(elidable)
 
     def _module_elidable_deleted_functions_in_block(
-        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+        self, statements: list[ast.stmt]
     ) -> frozenset[str]:
-        live = self._module_live_statements_for_target(
-            statements, sys_aliases=sys_aliases
-        )
+        live = self._module_live_statements_for_target(statements)
         elidable = set(self._module_elidable_deleted_functions_in_live_block(live))
         for stmt in live:
             if not isinstance(stmt, ast.If):
                 continue
             elidable.update(
-                self._module_elidable_deleted_functions_in_block(
-                    list(stmt.body), sys_aliases=sys_aliases
-                )
+                self._module_elidable_deleted_functions_in_block(list(stmt.body))
             )
             elidable.update(
-                self._module_elidable_deleted_functions_in_block(
-                    list(stmt.orelse), sys_aliases=sys_aliases
-                )
+                self._module_elidable_deleted_functions_in_block(list(stmt.orelse))
             )
         return frozenset(elidable)
 
@@ -171,84 +161,7 @@ class StatementScopeVisitorMixin(_MixinBase):
             and live_def_index[name] < live_delete_index[name]
             and name not in collector.loads
             and not any(
-                live_def_index[name] < index < live_delete_index[name]
-                for index in globals_escape_indices
-            )
-        )
-
-    def _module_elidable_target_dead_private_functions(
-        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
-    ) -> frozenset[str]:
-        candidates: set[str] = set()
-        original_def_index: dict[str, int] = {}
-        for index, stmt in enumerate(statements):
-            if (
-                isinstance(stmt, ast.FunctionDef)
-                and stmt.name.startswith("_")
-                and not (stmt.name.startswith("__") and stmt.name.endswith("__"))
-                and self._side_effect_free_module_function_def(stmt)
-            ):
-                candidates.add(stmt.name)
-                original_def_index.setdefault(stmt.name, index)
-        if not candidates:
-            return frozenset()
-
-        live = self._module_live_statements_for_target(
-            statements, sys_aliases=sys_aliases
-        )
-        live_function_defs = {
-            stmt.name for stmt in live if isinstance(stmt, ast.FunctionDef)
-        }
-        if not live_function_defs:
-            return frozenset()
-
-        class LoadCollector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.loads: set[str] = set()
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                for decorator in node.decorator_list:
-                    self.visit(decorator)
-                for default in node.args.defaults:
-                    self.visit(default)
-                for default in node.args.kw_defaults:
-                    if default is not None:
-                        self.visit(default)
-                for body_stmt in node.body:
-                    self.visit(body_stmt)
-
-            def visit_Name(self, node: ast.Name) -> None:
-                if isinstance(node.ctx, ast.Load):
-                    self.loads.add(node.id)
-
-        collector = LoadCollector()
-        original_collector = LoadCollector()
-        for stmt in statements:
-            original_collector.visit(stmt)
-
-        globals_escape_indices: set[int] = set()
-        for index, stmt in enumerate(live):
-            collector.visit(stmt)
-            if self._module_globals_dict_escapes(
-                ast.Module(body=[stmt], type_ignores=[])
-            ):
-                globals_escape_indices.add(index)
-
-        live_index_by_stmt = {id(stmt): index for index, stmt in enumerate(live)}
-        live_def_index = {
-            stmt.name: live_index_by_stmt[id(stmt)]
-            for stmt in live
-            if isinstance(stmt, ast.FunctionDef) and stmt.name in candidates
-        }
-        return frozenset(
-            name
-            for name in candidates
-            if name in live_function_defs
-            and name in original_collector.loads
-            and name not in collector.loads
-            and not any(
-                index > live_def_index.get(name, original_def_index[name])
-                for index in globals_escape_indices
+                index < live_delete_index[name] for index in globals_escape_indices
             )
         )
 
@@ -289,6 +202,23 @@ class StatementScopeVisitorMixin(_MixinBase):
         return pruned
 
     def visit_Module(self, node: ast.Module) -> None:
+        future_annotations = self._module_has_future_annotations(node)
+        syntax_error = class_annotation_syntax_error(
+            node,
+            target_python=self.target_python,
+            future_annotations=future_annotations,
+        )
+        if syntax_error is not None:
+            error_node, message = syntax_error
+            raise_compatibility_error(
+                self.compat,
+                error_node,
+                FrontendRejection(
+                    Diagnostic.SYNTAX_FORM,
+                    message,
+                    "Use target Python 3.13+ or remove nested code from this annotation scope.",
+                ),
+            )
         node = self._prune_native_support_module_functions(node)
         # Generated SSA values and source bindings share a serialized string
         # field, so reserve every source-level identifier before emitting the
@@ -390,7 +320,7 @@ class StatementScopeVisitorMixin(_MixinBase):
         # module_func_defaults is populated by _populate_sema_state above (the
         # AST-derived defaults from SemaResult, with the known_func_defaults
         # runtime override applied in the shim).
-        self.future_annotations = self._module_has_future_annotations(node)
+        self.future_annotations = future_annotations
         self.module_annotations = None
         self.module_annotation_items = []
         self.module_annotation_ids = {}
@@ -618,16 +548,8 @@ class StatementScopeVisitorMixin(_MixinBase):
         if class_scope is None:
             alias_val = self._emit_type_alias_value(node)
         else:
-            class_scope_names = set(class_scope.attr_values) | class_scope.names
             alias_val = self._emit_type_alias_value(
                 node,
-                expression_rewriter=lambda expression: (
-                    self._rewrite_class_annotation_expr(
-                        expression,
-                        class_scope.class_name,
-                        class_scope_names,
-                    )
-                ),
                 module_override=class_scope.module_name,
             )
         self.locals[node.name.id] = alias_val
@@ -668,27 +590,20 @@ class StatementScopeVisitorMixin(_MixinBase):
                 else:
                     top_name = module_name.split(".")[0]
                     bound_val = self._emit_module_load(top_name)
-            self.exact_locals.pop(bind_name, None)
-            if self.current_func_name == "molt_main":
-                self.module_global_mutations.add(bind_name)
-                self.globals[bind_name] = bound_val
-                if bind_name in self.boxed_locals:
-                    self._store_local_value(bind_name, bound_val)
-                else:
-                    self.locals[bind_name] = bound_val
-            else:
-                self._store_local_value(bind_name, bound_val)
-            self._emit_module_attr_set(bind_name, bound_val)
-            self._set_imported_module_binding(bind_name, module_name)
-            self.module_intrinsic_globals.pop(bind_name, None)
-            if self.current_func_name == "molt_main":
-                self.global_imported_modules[bind_name] = module_name
-                self.global_imported_module_provenance[bind_name] = frozenset(
-                    (module_name,)
-                )
+            self._publish_import_binding(bind_name, bound_val)
+            self._record_import_binding_origin(bind_name, module_name)
         return None
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if any(alias.name == "*" for alias in node.names) and (
+            self.current_func_name != "molt_main" or self._class_ns_stack
+        ):
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
+                "import * only allowed at module level",
+                None,
+                "from ... import *",
+            )
         module_name = node.module
         transaction_name = node.module or ""
         transaction_level = node.level
@@ -766,14 +681,6 @@ class StatementScopeVisitorMixin(_MixinBase):
                 if alias.name == "*":
                     continue
                 bind_name = alias.asname or alias.name
-                self.imported_names[bind_name] = module_name
-                if self.current_func_name != "molt_main":
-                    self.local_imported_names.add(bind_name)
-                self.imported_attr_names[bind_name] = alias.name
-                if self.current_func_name == "molt_main":
-                    self.global_imported_names[bind_name] = module_name
-                    self.global_imported_attr_names[bind_name] = alias.name
-                    self.module_intrinsic_globals.pop(bind_name, None)
                 # Direct calls like `_require_intrinsic("name")` are rewritten
                 # to invoke the canonical runtime resolver by
                 # `_try_lower_intrinsic_lookup_call`. When the imported name is
@@ -804,14 +711,10 @@ class StatementScopeVisitorMixin(_MixinBase):
                 else:
                     bound_val = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=bound_val))
-                self._store_local_value(bind_name, bound_val)
-                self._emit_module_attr_set(bind_name, bound_val)
-                if self.current_func_name == "molt_main":
-                    self.module_global_mutations.add(bind_name)
-                    self.globals[bind_name] = bound_val
-                    self.locals.pop(bind_name, None)
-                else:
-                    self.locals[bind_name] = bound_val
+                self._publish_import_binding(bind_name, bound_val)
+                self._record_import_binding_origin(
+                    bind_name, module_name, attr_name=alias.name
+                )
             return None
         if not runtime_relative and module_name in self._STUB_IMPORT_MODULES:
             return None
@@ -826,13 +729,6 @@ class StatementScopeVisitorMixin(_MixinBase):
             module_val = self._emit_module_load_with_parents(module_name)
         for alias in node.names:
             if alias.name == "*":
-                if self.current_func_name != "molt_main":
-                    raise FrontendRejection(
-                        Diagnostic.IMPORT_RESOLUTION,
-                        "import * only allowed at module level",
-                        None,
-                        "from ... import *",
-                    )
                 if self.module_obj is None:
                     raise FrontendRejection(
                         Diagnostic.IMPORT_RESOLUTION,
@@ -882,49 +778,18 @@ class StatementScopeVisitorMixin(_MixinBase):
             )
             if _mod_resolvable:
                 if imported_child_is_module:
-                    self._set_imported_module_binding(bind_name, imported_child_module)
-                    self.imported_names.pop(bind_name, None)
-                    self.imported_attr_names.pop(bind_name, None)
-                    self.local_imported_names.discard(bind_name)
-                    if self.current_func_name == "molt_main":
-                        self.global_imported_modules[bind_name] = imported_child_module
-                        self.global_imported_module_provenance[bind_name] = frozenset(
-                            (imported_child_module,)
-                        )
-                        self.global_imported_names.pop(bind_name, None)
-                        self.global_imported_attr_names.pop(bind_name, None)
-                        self.module_intrinsic_globals.pop(bind_name, None)
+                    self._record_import_binding_origin(bind_name, imported_child_module)
                 else:
-                    self.imported_names[bind_name] = module_name
-                    # Track the original attr name so cross-module call targets
-                    # resolve to the canonical function name, not the alias.
-                    # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
-                    self.imported_attr_names[bind_name] = attr_name
-                    self._clear_imported_module_binding(bind_name)
-                    if self.current_func_name != "molt_main":
-                        self.local_imported_names.add(bind_name)
-                    if self.current_func_name == "molt_main":
-                        self.global_imported_names[bind_name] = module_name
-                        self.global_imported_attr_names[bind_name] = attr_name
-                        self.global_imported_modules.pop(bind_name, None)
-                        self.global_imported_module_provenance.pop(bind_name, None)
-                        self.module_intrinsic_globals.pop(bind_name, None)
-            self.exact_locals.pop(bind_name, None)
-            if self.current_func_name == "molt_main":
-                self.module_global_mutations.add(bind_name)
-                self.globals[bind_name] = attr_val
-                if bind_name in self.boxed_locals:
-                    self._store_local_value(bind_name, attr_val)
-                else:
-                    self.locals[bind_name] = attr_val
-            else:
-                self._store_local_value(bind_name, attr_val)
-            self._emit_module_attr_set(bind_name, attr_val)
-            self._record_imported_app_callable(
-                bind_name,
-                module_name=module_name,
-                attr_name=attr_name,
-                value=attr_val,
-                relative=bool(node.level),
-            )
+                    self._record_import_binding_origin(
+                        bind_name, module_name, attr_name=attr_name
+                    )
+            self._publish_import_binding(bind_name, attr_val)
+            if self._binding_targets_module_namespace(bind_name):
+                self._record_imported_app_callable(
+                    bind_name,
+                    module_name=module_name,
+                    attr_name=attr_name,
+                    value=attr_val,
+                    relative=bool(node.level),
+                )
         return None

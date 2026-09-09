@@ -2676,6 +2676,82 @@ pub extern "C" fn molt_module_import_from(module_bits: u64, attr_bits: u64) -> u
     })
 }
 
+/// LOAD_NAME/LOAD_CLASSDEREF mapping probe. Only KeyError means absence;
+/// __getitem__ callbacks and every other exception retain normal semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_namespace_get(
+    namespace_bits: u64,
+    name_bits: u64,
+    missing_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
+            && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
+        {
+            let value = unsafe { dict_get_in_place(_py, ptr, name_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let value = value.unwrap_or(missing_bits);
+            inc_ref_bits(_py, value);
+            return value;
+        }
+        let value = crate::molt_index(namespace_bits, name_bits);
+        if !exception_pending(_py) {
+            return value;
+        }
+        let exception = molt_exception_last_pending();
+        let absent =
+            crate::builtins::exceptions::exception_matches_builtin_name(_py, exception, "KeyError");
+        dec_ref_bits(_py, exception);
+        if !absent {
+            return value;
+        }
+        clear_exception(_py);
+        inc_ref_bits(_py, missing_bits);
+        missing_bits
+    })
+}
+
+/// DELETE_NAME translates any mapping-deletion failure into NameError. This
+/// intentionally differs from LOAD_NAME's KeyError-only fallback (CPython3.12+).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "namespace name must be a string");
+        };
+        let deleted = if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
+            && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
+        {
+            unsafe { dict_del_in_place(_py, ptr, name_bits) }
+        } else if let Some(method) = unsafe {
+            crate::builtins::attr::lookup_special_method(_py, namespace_bits, b"__delitem__")
+        } {
+            let result = unsafe { call_callable1(_py, method, name_bits) };
+            crate::call::discard_owned_call_result(_py, result);
+            dec_ref_bits(_py, method);
+            !exception_pending(_py)
+        } else {
+            false
+        };
+        if deleted && !exception_pending(_py) {
+            // DELETE_NAME has no result owner. The generic subscript deletion
+            // ABI returns its borrowed receiver; exposing that through an
+            // intrinsic result would manufacture an owner and release it twice.
+            return MoltObject::none().bits();
+        }
+        clear_exception(_py);
+        raise_exception::<u64>(_py, "NameError", &format!("name '{name}' is not defined"))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -3204,9 +3280,73 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "namespace_delete_tests.rs"]
+mod namespace_delete_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn namespace_del_normalizes_non_key_mapping_failures() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let key = MoltObject::from_ptr(alloc_string(_py, b"absent")).bits();
+            // A TypeError from the receiver is normalized, not just KeyError.
+            let _ = molt_namespace_del(MoltObject::none().bits(), key);
+            assert!(exception_pending(_py));
+            let error = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                error,
+                "NameError"
+            ));
+            clear_exception(_py);
+            dec_ref_bits(_py, error);
+            dec_ref_bits(_py, key);
+        });
+    }
+
+    #[test]
+    fn namespace_get_preserves_values_absence_and_non_key_errors() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let key = MoltObject::from_ptr(alloc_string(_py, b"bound")).bits();
+            let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
+            let ns = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
+            let missing = crate::missing_bits(_py);
+            let loaded = molt_namespace_get(ns, key, missing);
+            assert_eq!(loaded, value);
+            assert!(!exception_pending(_py));
+            dec_ref_bits(_py, loaded);
+
+            let absent = MoltObject::from_ptr(alloc_string(_py, b"absent")).bits();
+            assert_eq!(molt_namespace_get(ns, absent, missing), missing);
+            assert!(!exception_pending(_py));
+
+            // Only a KeyError from the namespace means fall through. TypeError
+            // from a non-mapping (or a bad hash) must remain pending.
+            let _ = molt_namespace_get(MoltObject::none().bits(), key, missing);
+            assert!(exception_pending(_py));
+            let error = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                error,
+                "TypeError"
+            ));
+            let _ = molt_namespace_get(ns, key, missing);
+            let retained = molt_exception_last_pending();
+            assert_eq!(retained, error, "a pending exception must not be consumed");
+            clear_exception(_py);
+            dec_ref_bits(_py, retained);
+            dec_ref_bits(_py, error);
+            dec_ref_bits(_py, absent);
+            dec_ref_bits(_py, ns);
+            dec_ref_bits(_py, value);
+            dec_ref_bits(_py, key);
+        });
+    }
 
     struct ModuleCacheRestore {
         name_bits: u64,

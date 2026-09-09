@@ -508,24 +508,11 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) {
             dec_ref_bits(_py, bits);
         }
     });
-    let _ = FRAME_STACK.try_with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let old = std::mem::take(&mut *stack);
-        for entry in old {
-            if entry.code_bits != 0 {
-                dec_ref_bits(_py, entry.code_bits);
-            }
-            if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
-                dec_ref_bits(_py, entry.locals_bits);
-            }
-            if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
-                dec_ref_bits(_py, entry.globals_bits);
-            }
-            if entry.builtins_bits != 0 && !obj_from_bits(entry.builtins_bits).is_none() {
-                dec_ref_bits(_py, entry.builtins_bits);
-            }
+    if let Ok(entries) = FRAME_STACK.try_with(|stack| std::mem::take(&mut *stack.borrow_mut())) {
+        for entry in entries {
+            entry.release(_py);
         }
-    });
+    }
     let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
         let _ = std::mem::take(&mut *stack.borrow_mut());
     });

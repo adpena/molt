@@ -15,6 +15,7 @@ from tools.proof_queue_pkg import (
 from tools.proof_queue_pkg.diagnostic_evidence import (
     _first_log_line_containing,
     _last_nonempty_log_line,
+    _live_command_evidence,
     _read_log_tail,
     _running_child_missing_diagnostic,
     _running_guard_timeout_diagnostic,
@@ -47,6 +48,22 @@ SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE = re.compile(
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    live = _live_command_evidence(row)
+    if live.unavailable_reason is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="live-command-transcript-unavailable",
+                severity="infra",
+                summary="Current command output cannot be read under exact execution custody.",
+                evidence=live.unavailable_reason,
+                next_action="Preserve the request/result and fix transcript observation custody; this signal does not terminate or rerun the proof.",
+                scopes=(
+                    "tools/proof_queue_pkg/guarded_execution.py",
+                    "tools/proof_queue_pkg/diagnostic_evidence.py",
+                ),
+                artifacts=live.artifacts,
+            )
+        )
     running_guard_timeout = _running_guard_timeout_diagnostic(row)
     if running_guard_timeout is not None:
         diagnostics.append(running_guard_timeout)
@@ -303,12 +320,36 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    live_rule_start = len(diagnostics)
     diagnostic_build_rules._append_diagnostics(
         row,
-        log_tail,
+        log_tail + "\n" + live.text,
         diagnostics,
         fatal_queue_failure=fatal_queue_failure,
     )
-    diagnostic_link_rules._append_diagnostics(row, log_tail, diagnostics)
-    diagnostic_runtime_rules._append_diagnostics(row, log_tail, diagnostics)
+    diagnostic_link_rules._append_diagnostics(
+        row, log_tail + "\n" + live.text, diagnostics
+    )
+    diagnostic_runtime_rules._append_diagnostics(
+        row, log_tail + "\n" + live.text, diagnostics
+    )
+    if live.text:
+        for diagnostic in diagnostics[live_rule_start:]:
+            diagnostic["observation_state"] = "running"
+            diagnostic["summary"] = "Observed while run remains running: " + str(
+                diagnostic["summary"]
+            )
+            diagnostic["next_action"] = (
+                "This is provisional output, not terminal proof; do not cancel or start another execution from this observation. "
+                + str(diagnostic["next_action"])
+            )
+            diagnostic["transcript_observations"] = list(live.observations)
+            diagnostic["artifacts"] = list(
+                dict.fromkeys(
+                    [
+                        *diagnostic.get("artifacts", []),
+                        *live.artifacts,
+                    ]
+                )
+            )
     return diagnostics

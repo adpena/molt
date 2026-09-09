@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.native_target_shape import native_artifact_shape
+
 import hashlib
 import json
 import os
@@ -720,24 +722,15 @@ def _source_extension_meson_host_machine(
     assert target_plan.native_target is not None
     target = target_plan.native_target
     system = "darwin" if target.os == "macos" else target.os
-    cpu_family = {
-        "amd64": "x86_64",
-        "arm64": "aarch64",
-        "i386": "x86",
-        "i486": "x86",
-        "i586": "x86",
-        "i686": "x86",
-    }.get(target.arch, target.arch)
-    endian = (
-        "big"
-        if cpu_family in {"powerpc", "powerpc64", "s390x", "sparc", "sparc64"}
-        else "little"
+    shape = native_artifact_shape(
+        target.arch, target_triple=target.triple, object_format=target.object_format
     )
+    cpu_family = shape.meson_cpu_family
     return {
         "system": system,
         "cpu_family": cpu_family,
         "cpu": cpu_family,
-        "endian": endian,
+        "endian": shape.byte_order,
     }
 
 

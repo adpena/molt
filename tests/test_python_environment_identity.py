@@ -257,6 +257,22 @@ def test_capture_envelope_separates_semantic_identity_from_telemetry():
     assert capture.validate_python_capture(second)["identity"] == first["identity"]
 
 
+@pytest.mark.parametrize("packages", [[], [("example", "1.0")]])
+def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    environment = realized_environment_manifest(runtime_identity_manifest(), packages)
+    directories = {
+        row["path"]
+        for row in environment["tree"]["entries"]
+        if row["kind"] == "directory"
+    }
+    assert environment["scripts_root"] in directories
+    assert set(environment["site_roots"]).issubset(directories)
+    assert len(environment["distributions"]) == len(packages)
+    assert environment["tree"]["file_count"] == 2 + len(packages)
+
+
 def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_path):
     from molt.exact_json import canonical_json_sha256
     from tests.python_environment_test_support import realized_environment_manifest

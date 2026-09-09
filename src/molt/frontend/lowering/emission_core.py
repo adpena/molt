@@ -21,6 +21,7 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 from molt.frontend.lowering.op_kinds_generated import (
     CHECK_EXCEPTION_SKIP_KINDS,
+    FRONTEND_REPOLL_KINDS,
     RAISING_KIND_NAMES,
 )
 
@@ -120,6 +121,12 @@ class EmissionCoreMixin(_MixinBase):
         if op.result is not None and op.result.name not in ("none", ""):
             self._op_by_result[op.result.name] = op
         self.current_ops.append(op)
+        if self.python_frame_context_active and (
+            op.kind == "STATE_LABEL" or op.kind in FRONTEND_REPOLL_KINDS
+        ):
+            # Explicit states and implicit post-await continuations re-enter
+            # fresh runtime frames before any resumed Python callback.
+            self._publish_python_frame_context()
         if (
             self.try_suppress_depth is not None
             and len(self.try_end_labels) <= self.try_suppress_depth

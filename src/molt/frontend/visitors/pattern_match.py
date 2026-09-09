@@ -9,6 +9,7 @@ references resolve through the SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_source_keys import python_pattern_irrefutable_reason
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -84,27 +85,6 @@ class PatternMatchMixin(_MixinBase):
         self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
         self._store_scratch_cell(temp_cell, value)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-    def _match_irrefutable_reason(
-        self, pattern: ast.pattern
-    ) -> tuple[str, str | None] | None:
-        if isinstance(pattern, ast.MatchAs):
-            if pattern.pattern is None:
-                if pattern.name is None:
-                    return ("wildcard", None)
-                return ("capture", pattern.name)
-            inner = self._match_irrefutable_reason(pattern.pattern)
-            if inner is None:
-                return None
-            if inner[0] == "wildcard":
-                return ("wildcard", None)
-            return inner
-        if isinstance(pattern, ast.MatchOr):
-            for sub in pattern.patterns:
-                reason = self._match_irrefutable_reason(sub)
-                if reason is not None:
-                    return reason
-        return None
 
     def _validate_match_pattern(self, pattern: ast.pattern) -> None:
         if isinstance(pattern, ast.MatchOr):
@@ -756,7 +736,7 @@ class PatternMatchMixin(_MixinBase):
         for idx, case in enumerate(node.cases):
             is_last = idx == len(node.cases) - 1
             if case.guard is None and not is_last:
-                reason = self._match_irrefutable_reason(case.pattern)
+                reason = python_pattern_irrefutable_reason(case.pattern)
                 if reason is not None:
                     kind, name = reason
                     if kind == "wildcard":
@@ -787,7 +767,7 @@ class PatternMatchMixin(_MixinBase):
                 self._store_local_value(name, temp_val)
 
             if case.guard is not None:
-                guard_val = self.visit(case.guard)
+                guard_val = self._emit_condition(case.guard)
                 if guard_val is None:
                     raise FrontendRejection(
                         Diagnostic.SYNTAX_FORM, "Unsupported match guard"
