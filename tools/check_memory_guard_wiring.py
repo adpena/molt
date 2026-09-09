@@ -481,7 +481,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         (
             "test_custody_launch_env",
             "MOLT_PYTEST_CURRENT_TEST_FILE",
-            "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+            "active_guard_marker_dir",
+            "environ=child_env",
             "repro_context_payload",
         ),
         "memory guard must allocate test custody sidecars before child spawn "

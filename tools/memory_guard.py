@@ -170,7 +170,6 @@ from tools.memory_guard_core import repro_context as _repro_context  # noqa: E40
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
-    pytest_guard_summary_dir,
 )
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     sample_processes_posix as sample_processes_posix,
@@ -247,7 +246,6 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     watched_pids as watched_pids,
 )
 
-PYTEST_OUTER_GUARD_SUMMARY_DIR = pytest_guard_summary_dir(ROOT)
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -256,7 +254,6 @@ ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
 ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
 ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
-ACTIVE_GUARD_MARKER_DIR = active_guard_marker_dir(ROOT)
 ACTIVE_GUARD_MARKER_KEEP = 128
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
@@ -333,12 +330,14 @@ def _write_active_guard_marker(
     *,
     command: Sequence[str],
     cwd: str | Path | None,
+    environ: Mapping[str, str],
 ) -> tuple[str, Path]:
     if pid <= 0:
         raise ValueError("active guard marker requires a live pid")
     token = os.urandom(16).hex()
-    ACTIVE_GUARD_MARKER_DIR.mkdir(parents=True, exist_ok=True)
-    marker_path = ACTIVE_GUARD_MARKER_DIR / f"guard-{pid}-{token}.json"
+    marker_dir = active_guard_marker_dir(ROOT, environ)
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker_path = marker_dir / f"guard-{pid}-{token}.json"
     cwd_path = Path.cwd() if cwd is None else Path(cwd).expanduser()
     payload = {
         "schema_version": 1,
@@ -352,7 +351,7 @@ def _write_active_guard_marker(
         "updated_at": _utc_timestamp(),
     }
     _write_json_atomic(marker_path, payload)
-    _prune_active_guard_markers()
+    _prune_active_guard_markers(marker_dir)
     return token, marker_path
 
 
@@ -376,10 +375,10 @@ def _update_active_guard_marker(
         _write_json_atomic(marker_path, payload)
 
 
-def _prune_active_guard_markers() -> None:
+def _prune_active_guard_markers(marker_dir: Path) -> None:
     with contextlib.suppress(OSError):
         markers = sorted(
-            ACTIVE_GUARD_MARKER_DIR.glob("guard-*.json"),
+            marker_dir.glob("guard-*.json"),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
@@ -672,6 +671,7 @@ def run_guarded(
         os.getpid(),
         command=command,
         cwd=cwd,
+        environ=child_env,
     )
     child_env[ACTIVE_GUARD_TOKEN_ENV] = guard_token
     child_env[ACTIVE_GUARD_MARKER_ENV] = str(guard_marker)
@@ -1963,33 +1963,6 @@ def _process_lineage_payload(
     )
 
 
-def _path_is_under(path: Path, root: Path) -> bool:
-    return _repro_context._path_is_under(path, root)
-
-
-def _pytest_custody_artifact_path(
-    kind: str,
-    suffix: str,
-    *,
-    pid: int | None = None,
-) -> Path:
-    return _repro_context._pytest_custody_artifact_path(
-        kind,
-        suffix,
-        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
-        pid=os.getpid() if pid is None else pid,
-    )
-
-
-def _canonical_pytest_current_test_file_path(raw_path: str | None = None) -> Path:
-    return _repro_context._canonical_pytest_current_test_file_path(
-        raw_path,
-        root=ROOT,
-        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
-        fallback_pid=os.getpid(),
-    )
-
-
 def _looks_like_repo_test_path(raw: str, cwd: str | Path | None) -> bool:
     return _repro_context._looks_like_repo_test_path(raw, cwd, root=ROOT)
 
@@ -2017,7 +1990,6 @@ def test_custody_launch_env(
         environ=os.environ if environ is None else environ,
         cwd=cwd,
         root=ROOT,
-        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
         fallback_pid=os.getpid(),
         current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
     )
@@ -2064,7 +2036,6 @@ def _pytest_current_test_file_payload(
         samples=samples,
         incident_pid=incident_pid,
         root=ROOT,
-        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
         current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
     )
 
@@ -2093,7 +2064,6 @@ def repro_context_payload(
         source_environ=source,
         baseline_environ=os.environ,
         root=ROOT,
-        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
         current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
         samples=samples,
         pid=pid,

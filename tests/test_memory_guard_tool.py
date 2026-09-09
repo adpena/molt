@@ -146,14 +146,15 @@ def test_active_guard_marker_records_death_capsule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker_dir = tmp_path / "active"
-    monkeypatch.setattr(memory_guard, "ACTIVE_GUARD_MARKER_DIR", marker_dir)
 
     token, marker = memory_guard._write_active_guard_marker(
         os.getpid(),
         command=("python", "-c", "print('ok')"),
         cwd=tmp_path,
+        environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
     )
 
+    assert marker.parent == marker_dir
     payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert payload["pid"] == os.getpid()
@@ -4408,7 +4409,6 @@ def test_main_reports_incident_repro_context(
     summary_path = tmp_path / "rss-summary.json"
     current_root = tmp_path / "pytest-memory-guard"
     current_test_path = current_root / "pytest-current-test.json"
-    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
     current_root.mkdir(parents=True)
     current_test_path.write_text(
         json.dumps(
@@ -4423,6 +4423,7 @@ def test_main_reports_incident_repro_context(
         encoding="utf-8",
     )
     env = {
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
         "CARGO_BUILD_JOBS": "2",
         "CARGO_INCREMENTAL": "1",
         "PATH": "/usr/bin",
@@ -4563,7 +4564,6 @@ def test_repro_context_reads_xdist_worker_current_test_sidecars(
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
     monkeypatch.setattr(
         memory_guard,
         "sample_processes",
@@ -4587,6 +4587,7 @@ def test_repro_context_reads_xdist_worker_current_test_sidecars(
         command=[sys.executable, "-m", "pytest", "-n", "2"],
         cwd=tmp_path,
         environ={
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
             "MOLT_PYTEST_CURRENT_TEST_FILE": str(aggregate_path),
             "PYTEST_XDIST_WORKER": "",
         },
@@ -4608,13 +4609,15 @@ def test_repro_context_rejects_noncanonical_current_test_file(
     outside_path = tmp_path / "outside" / "pytest-current-test.json"
     outside_path.parent.mkdir()
     outside_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
 
     repro = memory_guard.repro_context_payload(
         command=[sys.executable, "-m", "pytest"],
         cwd=tmp_path,
-        environ={"MOLT_PYTEST_CURRENT_TEST_FILE": str(outside_path)},
+        environ={
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
+            "MOLT_PYTEST_CURRENT_TEST_FILE": str(outside_path),
+        },
     )
 
     current_test = repro["pytest"]["current_test_file"]

@@ -52,10 +52,18 @@ authorize loading the main checkout's source. Hook refreshes retain foreign-hook
 chains across idempotent installation and source updates.
 
 Python startup guarding is owned by `src/molt/pytest_memory_guard_bootstrap.py`;
-state paths are owned by `src/molt/memory_guard_paths.py`. Source and test-local
-`sitecustomize.py` files are adapters into that package, not repository-wide
-import-path authorities. Non-test startup must leave the checkout root absent
-unless the caller already selected it. Only a confirmed pytest, test-module, or
+state paths are owned by `src/molt/memory_guard_paths.py`. Current-test
+allocation, active-guard markers, child validation, and parent repro
+reads derive their paths from the effective command environment at use time,
+never import-time directory constants. Hosted CI custody projection can occur
+after guard modules import; the parent and child must still select the same root.
+The current-test snapshot names the active or last-observed node, not prior
+failures. Portability CI uses unbuffered verbose pytest output so completed
+node outcomes survive in the CI transcript even if timeout prevents the final
+summary. Full tracebacks may still require replay of the named failed nodes.
+Source and test-local `sitecustomize.py` files are adapters into that package,
+not repository-wide import-path authorities. Non-test startup must leave the
+checkout root absent unless the caller already selected it. Only a confirmed pytest, test-module, or
 direct-test invocation may expose repository tooling and enter the existing
 memory-guard handoff. Keep this distinction intact: making the whole checkout
 importable forces isolated Python custody to inventory artifacts and unrelated
