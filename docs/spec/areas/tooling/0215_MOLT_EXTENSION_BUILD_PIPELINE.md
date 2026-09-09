@@ -190,6 +190,48 @@ exclusive installation and quarantine moves for CLI, package-seal and proof-CAS
 consumers. Post-commit durability/cleanup failures are reported without claiming
 that a successful namespace commit rolled back.
 
+Physical retirement uses that same authority: an exclusive same-parent rename
+removes the live leaf before any recursive reclamation can destroy its journal.
+The bounded retired name encodes the exact caller scope and no-follow root
+device/file/type identity; it is not a second deletion journal or registry.
+Candidate recovery reclaims only its attestation scope under the candidate lock;
+publication recovery reclaims only its destination's produce/promote scopes
+under the publication lock, before reading live journals. Private package-store
+staging/copy and recorded commit candidates use the same primitive and replay.
+Recovery touches only already-retired identities, never a new live generation at
+the former spelling. No unrelated scope, malformed name, indirect root, special
+entry, zero identity or replaced identity grants reclamation authority.
+
+Windows uses the existing no-replace write-through rename; Linux/macOS use their
+no-replace rename followed by a same-parent durability barrier. Unsupported
+platforms fail closed rather than emulating exclusive rename. Reclamation
+cannot begin before that barrier succeeds. A later deletion/barrier failure
+raises `RetirementError` with `namespace_committed`, `phase`, and
+`retired_path`; direct retirement also identifies its former `source_path`.
+Callers report committed retirement and retain scoped retry custody, not a
+preserved live transaction or fictitious rollback. The next scoped recovery
+retries the parent barrier and physical reclamation without loading a partially
+deleted journal. Package scratch finally blocks retain both primary publication
+failure and secondary retirement failure. A tombstone may remain after a crash
+until its owning recovery next runs; successful recovery leaves no tombstone.
+Caller locks/private namespace ownership are required throughout; encoded
+identity detects substitution but is not permission to mutate an unowned parent.
+Producer success is emitted only after the shared publication-transaction
+completion consumer returns. A cleanup failure returns structured non-success
+with `publication_committed=true` and `cleanup_complete=false`, plus the
+retirement phase/path for the failing residue. The current transaction's
+`namespace_retirement_committed` is true only when the exception's direct
+`source_path` matches that transaction; prior-residue failures leave it false. It cannot print an earlier
+ok result and then reduce cleanup failure to a finally warning. The outer finally
+only releases its existing lock; it neither retries physical cleanup nor
+overwrites primary failure evidence. Promotion and recovery use the same
+publication completion scope authority. Promotion reports `publication_committed`
+as false before entering its publication call, null when that call fails with an
+unknown outcome requiring recovery, and true immediately when it returns
+successfully, including subsequent verification/rebinding/cleanup failures. An
+unknown outcome retains its transaction-root recovery pointer; path existence
+does not decide whether publication committed.
+
 These artifact/custody checks do not establish compiled native/WASM conformance:
 execution claims still require replayable target/version/OS/architecture receipts.
 

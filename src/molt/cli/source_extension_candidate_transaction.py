@@ -18,6 +18,7 @@ from molt.file_publication import (
     resolve_owned_path,
     durable_publish_directory_exclusive,
     durable_remove_path,
+    reclaim_retired_paths,
     is_link_like,
 )
 
@@ -363,7 +364,9 @@ def complete_source_extension_candidate_transaction(
             f"candidate transaction is not committed: {root}"
         )
     _verify_bundle(custody.candidate_output, record)
-    durable_remove_path(root)
+    durable_remove_path(
+        root, retirement_scope=f".{custody.candidate_output.name}.attest-"
+    )
 
 
 def recover_and_prune_source_extension_candidate_transactions(
@@ -381,8 +384,11 @@ def recover_and_prune_source_extension_candidate_transactions(
         )
     timestamp = _timestamp(now_ns)
     retention_ns = failed_retention_seconds * 1_000_000_000
-    pruned: list[Path] = []
     prefix = f".{custody.candidate_output.name}.attest-"
+    reclaim_retired_paths(custody.candidate_output.parent, retirement_scope=prefix)
+    # Preserve the API: results name live transactions retired by THIS call,
+    # not physical residues reclaimed from an earlier committed retirement.
+    pruned: list[Path] = []
     for transaction_root in sorted(custody.candidate_output.parent.iterdir()):
         if not transaction_root.name.startswith(prefix):
             continue
@@ -404,6 +410,6 @@ def recover_and_prune_source_extension_candidate_transactions(
             _write_record(transaction_root, record)
         age_ns = timestamp - int(record["updated_at_ns"])
         if age_ns >= retention_ns:
-            durable_remove_path(transaction_root)
+            durable_remove_path(transaction_root, retirement_scope=prefix)
             pruned.append(transaction_root)
     return tuple(pruned)

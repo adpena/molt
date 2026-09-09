@@ -352,3 +352,96 @@ def test_quarantine_does_not_inspect_corrupt_payloads_or_replace_rival(
     with pytest.raises(FileExistsError):
         file_publication.durable_namespace_publish_directory_exclusive(source, target)
     assert source.exists()
+
+
+def test_seal_commit_recovery_reclaims_partially_deleted_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seal = _stage_fixture(tmp_path)
+    store = tmp_path / "publication"
+    destination = tmp_path / "installed"
+    commit = prepare_source_package_seal_commit(store, seal, destination)
+    # Another publisher installs the identical admitted seal before this commit.
+    seal_api._copy_seal_candidate(seal.root, destination, seal.seal_sha256)
+    real_remove = file_publication.shutil.rmtree
+    with monkeypatch.context() as faults:
+
+        def partial_remove(path, *args, **kwargs):
+            if path.parent == commit.candidate_root.parent:
+                (path / "source-package-seal.json").unlink()
+                raise OSError("injected after candidate manifest unlink")
+            return real_remove(path, *args, **kwargs)
+
+        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        with pytest.raises(file_publication.RetirementError) as caught:
+            seal_api.commit_source_package_seal(commit)
+    assert not commit.candidate_root.exists()
+    assert caught.value.retired_path.exists()
+    recovered = recover_source_package_seal_commits(
+        store, expected_destination=destination
+    )
+    assert len(recovered) == 1 and recovered[0].state == "committed"
+    assert not caught.value.retired_path.exists()
+    assert verify_source_package_seal(destination).seal_sha256 == seal.seal_sha256
+
+
+@pytest.mark.parametrize("family", ["staging", "copy"])
+def test_private_seal_scratch_recovery_owns_retired_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    seal = _stage_fixture(tmp_path)
+    store = tmp_path / "private"
+    parent = store / ("staging" if family == "staging" else "commit-candidates")
+    root = parent / "old-private-scratch"
+    root.mkdir(parents=True)
+    (root / "journal").write_bytes(b"old")
+    scope = (
+        seal_api._STAGING_RETIREMENT_SCOPE
+        if family == "staging"
+        else seal_api._COPY_RETIREMENT_SCOPE
+    )
+    with monkeypatch.context() as faults:
+
+        def partial_remove(path):
+            (path / "journal").unlink()
+            raise OSError("injected physical interruption")
+
+        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        with pytest.raises(file_publication.RetirementError) as caught:
+            file_publication.durable_remove_path(root, retirement_scope=scope)
+    live = parent / "new-private-scratch"
+    live.mkdir()
+    (live / "payload").write_bytes(b"preserve")
+    assert recover_source_package_seal_commits(store) == ()
+    assert not caught.value.retired_path.exists()
+    assert (live / "payload").read_bytes() == b"preserve"
+    assert verify_source_package_seal(seal.root).seal_sha256 == seal.seal_sha256
+
+
+def test_copy_failure_keeps_primary_and_retirement_failure_then_reclaims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seal = _stage_fixture(tmp_path)
+    candidate = tmp_path / "bundle" / "candidate"
+    primary = OSError("injected payload copy failure")
+    with monkeypatch.context() as faults:
+
+        def fail_copy(*_args, **_kwargs):
+            raise primary
+
+        def partial_remove(path):
+            (path / "files").rmdir()
+            raise OSError("injected scratch removal failure")
+
+        faults.setattr(seal_api, "_copy_staged_file", fail_copy)
+        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        with pytest.raises(seal_api.SourcePackageSealCleanupError) as caught:
+            seal_api._copy_seal_candidate(seal.root, candidate, seal.seal_sha256)
+    assert caught.value.primary_error is primary
+    assert caught.value.__cause__ is primary
+    assert isinstance(caught.value.cleanup_error, file_publication.RetirementError)
+    retired = caught.value.cleanup_error.retired_path
+    assert retired.exists() and not candidate.exists()
+    seal_api._copy_seal_candidate(seal.root, candidate, seal.seal_sha256)
+    assert not retired.exists()
+    assert verify_source_package_seal(candidate).seal_sha256 == seal.seal_sha256

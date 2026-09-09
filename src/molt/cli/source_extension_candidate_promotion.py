@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from molt.file_publication import durable_remove_path, is_link_like
+from molt.file_publication import RetirementError, is_link_like
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
@@ -21,6 +21,7 @@ from molt.cli.source_extension_candidate_attestation import (
     validate_source_extension_candidate_attestation_payload,
 )
 from molt.cli.source_extension_publication import (
+    complete_source_extension_publication_transaction,
     _source_extension_publication_custody,
     publish_source_extension_candidate,
     recover_and_prune_source_extension_transactions,
@@ -91,6 +92,7 @@ def publish_source_extension_set_candidate(
     """Promote one exact candidate; never build or recompute package content."""
 
     transaction_root: Path | None = None
+    publication_committed: bool | None = False
     producer_lock = None
     try:
         candidate_root = resolve_existing_source_extension_candidate_output(candidate)
@@ -194,6 +196,7 @@ def publish_source_extension_set_candidate(
         if destination.exists():
             assert expected_incumbent_identity_sha256 is not None
             assert expected_incumbent_seal_sha256 is not None
+            publication_committed = None
             publication = publish_source_extension_candidate(
                 custody=publication_custody,
                 destination=destination,
@@ -203,6 +206,7 @@ def publish_source_extension_set_candidate(
                 expected_incumbent_identity_sha256=(expected_incumbent_identity_sha256),
                 expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
             )
+            publication_committed = True
             no_op = bool(publication["no_op"])
             upgraded = bool(publication["upgraded"])
         else:
@@ -212,7 +216,9 @@ def publish_source_extension_set_candidate(
                 validated_candidate.seal,
                 destination,
             )
+            publication_committed = None
             commit_source_package_seal(commit)
+            publication_committed = True
         published_seal = verify_source_package_seal(
             destination,
             expected_sha256=validated_candidate.seal.seal_sha256,
@@ -232,10 +238,15 @@ def publish_source_extension_set_candidate(
             "abi_tier": variant.abi_tier,
         }
         try:
-            durable_remove_path(transaction_root)
+            complete_source_extension_publication_transaction(
+                transaction_root, custody=publication_custody
+            )
         except (OSError, ValueError) as exc:
+            cleanup_root = transaction_root
+            if isinstance(exc, RetirementError) and exc.source_path == cleanup_root:
+                transaction_root = None
             raise SourceExtensionCandidatePromotionError(
-                f"candidate publication committed at {destination}; promotion transaction cleanup failed: {transaction_root}: {exc}"
+                f"candidate publication committed at {destination}; promotion transaction cleanup failed: {cleanup_root}: {exc}"
             ) from exc
         transaction_root = None
         if json_output:
@@ -267,6 +278,12 @@ def publish_source_extension_set_candidate(
             detail,
             json_output,
             command="extension-publish-set-candidate",
+            data={
+                "publication_committed": publication_committed,
+                "transaction_root": (
+                    str(transaction_root) if transaction_root is not None else None
+                ),
+            },
         )
     finally:
         if producer_lock is not None:
