@@ -3,17 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.backend_cache import (
-    _nm_candidate_binaries,
-    _normalize_native_symbol_name,
-)
-from molt.cli.command_runtime import _run_completed_command
+from molt.cli import native_symbol_inspection
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
@@ -36,83 +31,54 @@ def _record_runtime_callable_stage_ms(
 
 def _runtime_callable_symbols_file(
     runtime_lib: Path,
+    *,
+    target_triple: str | None = None,
 ) -> tuple[Path | None, str | None]:
-    """Materialize the `molt_*` callable symbols defined by a runtime staticlib.
+    """Project runtime callables from the shared, generation-bound archive facts.
 
-    The per-app callable resolver takes the address of every runtime callable
-    the app reaches by name. Those addresses are resolved against this staticlib
-    at link time, so the resolver must only reference callables the staticlib
-    actually defines; the native ``micro`` and ``full`` profiles intentionally
-    differ.
-
-    Extraction accepts the first ``nm`` candidate that exits cleanly and yields a
-    non-empty ``molt_*`` text-symbol set. That lets LLVM ``nm`` win when a system
-    ``nm`` cannot parse the staticlib's LTO bitcode.
+    The reader owns candidate selection, target decoration, typed failures and
+    artifact/reader identity. This stage owns only the callable projection and
+    its materialized input to native codegen.
     """
     try:
-        stat = runtime_lib.stat()
-    except OSError as exc:
-        return None, f"runtime staticlib unreadable: {runtime_lib} ({exc})"
-    non_callable_digest = hashlib.sha256(
-        "\0".join(sorted(WASM_NON_RUNTIME_CALLABLE_INTRINSICS)).encode("utf-8")
-    ).hexdigest()[:16]
-    cache_path = runtime_lib.with_name(
-        f"{runtime_lib.name}.callable_symbols.v2.{non_callable_digest}."
-        f"{stat.st_size}.{int(stat.st_mtime)}.txt"
-    )
-    if cache_path.exists():
-        return cache_path, None
-    # Use an absolute path so cwd=runtime_lib.parent cannot break path
-    # resolution. Keep the timeout generous: the native staticlib can be large.
-    runtime_lib_abs = runtime_lib.resolve()
-    failures: list[str] = []
-    symbols: set[str] = set()
-    for nm_bin in _nm_candidate_binaries():
-        try:
-            result = _run_completed_command(
-                [nm_bin, "--defined-only", str(runtime_lib_abs)],
-                capture_output=True,
-                timeout=120,
-                env=None,
-                cwd=runtime_lib_abs.parent,
-                memory_guard_prefix="MOLT_BUILD",
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            failures.append(f"{nm_bin}: {exc}")
-            continue
-        if result.returncode != 0:
-            stderr_lines = (result.stderr or "").strip().splitlines()
-            detail = stderr_lines[-1] if stderr_lines else "no stderr"
-            failures.append(f"{nm_bin}: exit {result.returncode} ({detail})")
-            continue
-        candidate_symbols: set[str] = set()
-        for raw_line in result.stdout.splitlines():
-            parts = raw_line.split()
-            if len(parts) < 2:
-                continue
-            kind = parts[-2]
-            name = _normalize_native_symbol_name(parts[-1])
-            if (
-                kind in ("T", "t")
-                and name.startswith("molt_")
-                and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
-            ):
-                candidate_symbols.add(name)
-        if not candidate_symbols:
-            failures.append(f"{nm_bin}: produced no molt_* text symbols")
-            continue
-        symbols = candidate_symbols
-        break
-    if not symbols:
-        return None, (
-            "no available nm could extract the staticlib's molt_* symbols - "
-            + "; ".join(failures or ["no nm candidates found"])
+        identity = native_symbol_inspection._native_symbol_artifact_identity(
+            runtime_lib
         )
-    try:
-        _atomic_write_text(cache_path, "\n".join(sorted(symbols)) + "\n")
+        facts = native_symbol_inspection._native_archive_global_symbol_facts(
+            runtime_lib,
+            target_triple=target_triple,
+            identity=identity,
+            requirement=native_symbol_inspection.NativeSymbolRequirement(
+                function_prefix="molt_",
+                excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
+            ),
+        )
+        symbols = sorted(
+            name
+            for name in facts.defined_functions
+            if name.startswith("molt_")
+            and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+        )
+        if not symbols:
+            return None, "runtime staticlib defines no molt_* callable symbols"
+        content = "\n".join(symbols) + "\n"
+        projection_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        cache_path = runtime_lib.with_name(
+            f"{runtime_lib.name}.callable_symbols.v3."
+            f"{identity.sha256}.{projection_digest}.txt"
+        )
+        try:
+            cached = cache_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            cached = None
+        if cached != content:
+            _atomic_write_text(cache_path, content)
+        native_symbol_inspection._require_unchanged_symbol_artifact(
+            runtime_lib, identity
+        )
+        return cache_path, None
     except OSError as exc:
-        return None, f"failed to write symbol cache {cache_path}: {exc}"
-    return cache_path, None
+        return None, f"runtime staticlib callable inspection failed: {exc}"
 
 
 def _runtime_callable_symbols_digest(symbols_file: Path | None) -> str:
@@ -203,7 +169,9 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             data=failure_data,
         )
     symbol_file_start = time.perf_counter()
-    symbols_file, symbols_failure = _runtime_callable_symbols_file(runtime_lib)
+    symbols_file, symbols_failure = _runtime_callable_symbols_file(
+        runtime_lib, target_triple=target_triple
+    )
     _record_runtime_callable_stage_ms(
         stage_timings_ms,
         "runtime_callable_symbols_file",

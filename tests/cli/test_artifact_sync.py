@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from molt.cli import native_symbol_inspection
 import pytest
 
 from molt.cli import artifact_sync as sync
@@ -23,12 +24,12 @@ from tests.native_artifact_fixtures import native_relocatable_object
 @pytest.fixture(autouse=True)
 def isolated_receipt_caches():
     sync._ARTIFACT_SYNC_STATE_CACHE.clear()
-    cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     yield
     sync._ARTIFACT_SYNC_STATE_CACHE.clear()
-    cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
 
 
 _NATIVE_TARGETS = (
@@ -215,9 +216,9 @@ def _stub_external_inspectors(monkeypatch):
     # Shape admission, stable hashing and receipt matching remain real. Only
     # external tool execution is controlled; these are custody, not nm/WASM proofs.
     monkeypatch.setattr(
-        cache,
+        native_symbol_inspection,
         "_read_native_global_symbol_facts",
-        lambda *args, **kwargs: cache._NativeGlobalSymbolFacts(
+        lambda *args, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             frozenset({"molt_main"}), frozenset(), frozenset({"molt_main"})
         ),
     )
@@ -438,10 +439,14 @@ def test_sync_matching_preserves_native_inspection_failure(tmp_path, monkeypatch
     state = {"version": 2, "source_key": source_key, "tier": "module"}
 
     def fail_inspection(*args, **kwargs):
-        raise cache.NativeSymbolInspectionError(artifact, ["reader unavailable"])
+        raise native_symbol_inspection.NativeSymbolInspectionError(
+            artifact, ["reader unavailable"]
+        )
 
     monkeypatch.setattr(cache, "_validate_backend_cache_artifact", fail_inspection)
-    with pytest.raises(cache.NativeSymbolInspectionError, match="reader unavailable"):
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError, match="reader unavailable"
+    ):
         cache._backend_daemon_skip_output_sync_flags(
             tmp_path,
             artifact,
@@ -518,9 +523,9 @@ def test_warm_output_and_daemon_share_native_chunk_closure(tmp_path, monkeypatch
         receipt, source_key=source_key, tier=tier, artifact=output
     )
     monkeypatch.setattr(
-        cache,
+        native_symbol_inspection,
         "_read_native_global_symbol_facts",
-        lambda *a, **kw: cache._NativeGlobalSymbolFacts(
+        lambda *a, **kw: native_symbol_inspection._NativeGlobalSymbolFacts(
             frozenset({"molt_main"}),
             frozenset({"user__molt_module_chunk_1"}),
             frozenset({"molt_main"}),

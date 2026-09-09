@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
 from molt.cli import runtime_wasm_build_timings as timings
 from molt.cli import wasm_toolchain
@@ -56,11 +57,11 @@ def _clear_sysroot_env(monkeypatch: pytest.MonkeyPatch, empty_root: Path) -> Non
     # Point the target root at an empty dir so no sysroot resolves from it, and
     # bust the lru_cache that memoised any earlier resolution.
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(empty_root))
-    wasm_toolchain._resolve_wasi_sysroot_cached.cache_clear()
+    wasm_link_inputs._resolve_wasi_sysroot_cached.cache_clear()
 
 
 def test_vendored_archives_match_pinned_provenance() -> None:
-    vendor_dir = wasm_toolchain.wasm_builtins_vendor_dir()
+    vendor_dir = wasm_link_inputs.wasm_builtins_vendor_dir()
     for name, (size, sha) in _VENDORED.items():
         archive = vendor_dir / name
         assert archive.exists(), f"vendored {name} missing from {vendor_dir}"
@@ -74,13 +75,13 @@ def test_archives_resolve_in_fresh_session_without_sysroot(
 ) -> None:
     """Part A: a fresh session with no resolvable sysroot still gets both archives."""
     _clear_sysroot_env(monkeypatch, tmp_path)
-    assert wasm_toolchain.resolve_wasi_sysroot() is None
-    longdouble = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_toolchain.wasm_clang_rt_builtins_archive()
+    assert wasm_link_inputs.resolve_wasi_sysroot() is None
+    longdouble = wasm_link_inputs.wasm_wasi_printscan_long_double_archive()
+    builtins = wasm_link_inputs.wasm_clang_rt_builtins_archive()
     assert longdouble is not None, "long-double archive did not resolve (no sysroot)"
     assert builtins is not None, "builtins archive did not resolve (no sysroot)"
     # Both came from the committed vendored copy.
-    vendor_dir = wasm_toolchain.wasm_builtins_vendor_dir()
+    vendor_dir = wasm_link_inputs.wasm_builtins_vendor_dir()
     assert longdouble.parent == vendor_dir
     assert builtins.parent == vendor_dir
 
@@ -98,20 +99,20 @@ def frozen_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ),
     )
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_libc_archive", lambda **_kwargs: inputs.libc.path
+        wasm_link_inputs, "wasm_wasi_libc_archive", lambda **_kwargs: inputs.libc.path
     )
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda **_kwargs: inputs.rust_builtins.path,
     )
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "wasm_wasi_printscan_long_double_archive",
         lambda **_kwargs: inputs.long_double.path,
     )
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "wasm_clang_rt_builtins_archive",
         lambda **_kwargs: inputs.clang_builtins.path,
     )
@@ -127,7 +128,7 @@ def test_every_runtime_family_requires_complete_archive_custody(
     monkeypatch: pytest.MonkeyPatch,
     missing: str,
 ) -> None:
-    monkeypatch.setattr(wasm_toolchain, missing, lambda **_kwargs: None)
+    monkeypatch.setattr(wasm_link_inputs, missing, lambda **_kwargs: None)
     timings._reset_runtime_wasm_build_timings()
     with pytest.raises(ValueError, match="long_double_not_supported") as caught:
         rb.resolve_runtime_wasm_link_inputs(
@@ -184,7 +185,7 @@ def test_runtime_link_capture_uses_effective_environment_and_selected_rust_root(
 
     monkeypatch.setattr(wasm_toolchain, "resolve_wasm_linker", linker)
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "rust_target_libdir",
         lambda *_a, **_k: pytest.fail("captured target must not query ambient rustc"),
     )
@@ -389,7 +390,7 @@ def test_split_app_fails_loud_when_longdouble_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "wasm_wasi_printscan_long_double_archive",
         lambda **_kwargs: None,
     )
@@ -403,7 +404,7 @@ def test_split_app_fails_loud_when_longdouble_absent(
 # overridden in EVERY wasm module that links it. These lock in that the reloc
 # runtime (wasm-ld), split app.wasm (wasm-ld), and deploy cdylib (rustc via
 # build.rs env) all resolve the same archives + ordering through the ONE
-# `wasm_toolchain` policy — so a future 4th link path can't reintroduce the trap
+# `wasm_link_inputs` policy — so a future 4th link path can't reintroduce the trap
 # by re-implementing resolution.
 
 
@@ -415,10 +416,12 @@ def _fake_archives(
     bi = tmp_path / "libclang_rt.builtins-wasm32.a"
     bi.write_bytes(b"!<arch>\n")
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda **_kwargs: ld
+        wasm_link_inputs,
+        "wasm_wasi_printscan_long_double_archive",
+        lambda **_kwargs: ld,
     )
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda **_kwargs: bi
+        wasm_link_inputs, "wasm_clang_rt_builtins_archive", lambda **_kwargs: bi
     )
     return ld, bi
 
@@ -429,7 +432,7 @@ def test_all_three_link_paths_share_the_one_authority(
     ld, bi = _fake_archives(monkeypatch, tmp_path)
 
     # (1) reloc arm — resolver delegates to the authority.
-    reloc = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    reloc = wasm_link_inputs.resolve_long_double_link_policy(required=True)
     assert reloc.printscan == ld
     assert reloc.builtins == bi
     assert reloc.error is None
@@ -457,8 +460,8 @@ def test_shared_argv_order_matches_reloc_policy(
     """The shared argv builder emits printscan in the whole-archive group ahead
     of the (lazy) libc, with builtins trailing — the proven override order."""
     ld, bi = _fake_archives(monkeypatch, tmp_path)
-    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
-    argv = wasm_toolchain.long_double_whole_archive_link_argv(
+    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True)
+    argv = wasm_link_inputs.long_double_whole_archive_link_argv(
         policy, whole_archive=["staticlib.a"], trailing=["libc.a"]
     )
     assert argv == [
@@ -478,12 +481,12 @@ def test_deploy_cdylib_env_absent_when_archive_unresolved(
     gate (plus the reloc/split-app numpy-tier fail-loud) is the effect backstop.
     """
     monkeypatch.setattr(
-        wasm_toolchain,
+        wasm_link_inputs,
         "wasm_wasi_printscan_long_double_archive",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda **_kwargs: None
+        wasm_link_inputs, "wasm_clang_rt_builtins_archive", lambda **_kwargs: None
     )
     env: dict[str, str] = {}
     rb._configure_wasm_long_double_env(env)

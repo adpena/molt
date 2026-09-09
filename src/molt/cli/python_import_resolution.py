@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import ast
-import tokenize
-from dataclasses import dataclass, field
+import hashlib
+import sys
+from dataclasses import asdict, dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from threading import RLock
 from typing import Literal
 
+from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
+    PythonBindingIndex,
     analyze_python_bindings,
     python_ast_digest,
 )
@@ -23,6 +27,7 @@ from molt.compiler_analysis.python_imports import (
     metadata_value_from_expression,
     project_static_import_request,
 )
+
 
 @dataclass(frozen=True)
 class PythonImportPolicy:
@@ -41,11 +46,107 @@ class PythonImportPolicy:
     allowed_prefix: str | None = None
 
 
+def _local_import_binding_policy() -> PythonBindingPolicy:
+    """Compiler/tool Python source executes on the parser's host interpreter."""
+    return PythonBindingPolicy(target_python=(sys.version_info[0], sys.version_info[1]))
+
+
+def local_import_analysis_identity() -> tuple[object, ...]:
+    """Use the parser and binding authority's own versions in persisted graphs."""
+    return (
+        sys.implementation.name,
+        tuple(sys.version_info),
+        python_binding_flow._ANALYSIS_SCHEMA,
+        asdict(_local_import_binding_policy()),
+    )
+
+
+@dataclass(frozen=True)
+class PythonSourceSnapshot:
+    """One captured byte generation supplies both the graph key and its AST."""
+
+    path: Path
+    content: bytes
+
+    @cached_property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.content).hexdigest()
+
+    @cached_property
+    def tree(self) -> ast.Module:
+        try:
+            # Parsing bytes honors PEP 263 without a second file read.
+            return ast.parse(self.content, filename=str(self.path))
+        except (SyntaxError, UnicodeError, ValueError) as exc:
+            raise ValueError(
+                f"cannot parse local Python source {self.path}: {exc}"
+            ) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPythonImportRequest:
+    """A projected request, retaining owner/fromlist grouping until resolution."""
+
+    kind: Literal["direct", "from", "dynamic", "manifest"]
+    candidates: tuple[str, ...]
+    line: int = 0
+    column: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPythonImportDiagnostic:
+    line: int
+    column: int
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPythonImportAnalysis:
+    requests: tuple[LocalPythonImportRequest, ...]
+    unresolved_dynamic_imports: tuple[LocalPythonImportDiagnostic, ...] = ()
+
+    def validate_dynamic_contract(
+        self, path: Path, policy: PythonImportPolicy, expected: int | None
+    ) -> None:
+        if policy.module_level_only:
+            return
+        count = len(self.unresolved_dynamic_imports)
+        if expected is not None and count != expected:
+            raise ValueError(
+                f"dynamic Python import manifest drift in {path}: expected "
+                f"{expected} non-literal calls, found {count}"
+            )
+        if expected is None and policy.fail_on_nonliteral_dynamic_import and count:
+            diagnostic = self.unresolved_dynamic_imports[0]
+            raise ValueError(
+                f"{diagnostic.message} at {path}:{diagnostic.line}:{diagnostic.column}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPythonModuleSource:
+    """An execution context; distinct import names may share captured bytes."""
+
+    name: str
+    path: Path
+
+
+def relative_python_module_name(path: Path, root: Path) -> str:
+    parts = list(path.relative_to(root).parts)
+    if not parts or not parts[-1].endswith(".py"):
+        raise ValueError(f"local Python source is not a .py file: {path}")
+    if parts[-1] == "__init__.py":
+        parts.pop()
+    else:
+        parts[-1] = parts[-1][:-3]
+    return ".".join(parts)
+
+
 @dataclass(frozen=True)
 class _ResolvedLocalModule:
-    source: Path | None
+    source: LocalPythonModuleSource | None
     package_locations: tuple[Path, ...]
-    parent_initializers: tuple[Path, ...]
+    parent_initializers: tuple[LocalPythonModuleSource, ...]
 
 
 @dataclass(frozen=True)
@@ -64,37 +165,33 @@ class LocalPythonModuleResolver:
             raise ValueError("local Python module resolver requires a search root")
         object.__setattr__(self, "search_roots", resolved)
 
-    def read_ast(self, path: Path) -> ast.Module:
+    def capture_source(self, path: Path) -> PythonSourceSnapshot:
         try:
-            with tokenize.open(path) as stream:
-                source = stream.read()
-            return ast.parse(source, filename=str(path))
-        except (OSError, SyntaxError, UnicodeError, ValueError) as exc:
-            raise ValueError(f"cannot parse local Python source {path}: {exc}") from exc
+            return PythonSourceSnapshot(path, path.read_bytes())
+        except OSError as exc:
+            raise ValueError(f"cannot read local Python source {path}: {exc}") from exc
 
     def module_identity(self, path: Path) -> tuple[str, str]:
         resolved = path.resolve()
         for root in self.search_roots:
             try:
-                relative = resolved.relative_to(root)
+                resolved.relative_to(root)
             except ValueError:
                 continue
-            parts = list(relative.parts)
-            is_package = parts[-1] == "__init__.py"
-            if is_package:
-                parts.pop()
-            elif parts[-1].endswith(".py"):
-                parts[-1] = parts[-1][: -len(".py")]
-            else:
-                raise ValueError(f"local Python source is not a .py file: {resolved}")
-            module = ".".join(parts)
-            package = module if is_package else module.rpartition(".")[0]
+            module = relative_python_module_name(resolved, root)
+            package = (
+                module if resolved.name == "__init__.py" else module.rpartition(".")[0]
+            )
             return module, package
         raise ValueError(f"Python source is outside local search roots: {resolved}")
 
     def source_for_module(self, module: str) -> Path | None:
         resolution = self._resolve_module(module)
-        return resolution.source if resolution is not None else None
+        return (
+            resolution.source.path
+            if resolution is not None and resolution.source is not None
+            else None
+        )
 
     def _owned_path(self, path: Path) -> Path | None:
         """Resolve a candidate only when it remains inside a search root."""
@@ -122,7 +219,7 @@ class LocalPythonModuleResolver:
             # segment's search. A regular package then owns the next segment's
             # search path, while a regular module cannot have children.
             locations = self.search_roots
-            parents: list[Path] = []
+            parents: list[LocalPythonModuleSource] = []
             for index, part in enumerate(parts):
                 namespace_locations: list[Path] = []
                 regular_source: Path | None = None
@@ -151,7 +248,7 @@ class LocalPythonModuleResolver:
                 if regular_source is not None:
                     if final_segment:
                         result = _ResolvedLocalModule(
-                            source=regular_source,
+                            source=LocalPythonModuleSource(module, regular_source),
                             package_locations=(
                                 (regular_package_location,)
                                 if regular_package_location is not None
@@ -164,7 +261,11 @@ class LocalPythonModuleResolver:
                     if not regular_is_package or regular_package_location is None:
                         self._resolution_cache[module] = None
                         return None
-                    parents.append(regular_source)
+                    parents.append(
+                        LocalPythonModuleSource(
+                            ".".join(parts[: index + 1]), regular_source
+                        )
+                    )
                     locations = (regular_package_location,)
                     continue
 
@@ -183,26 +284,26 @@ class LocalPythonModuleResolver:
 
             raise AssertionError("non-empty module resolution exhausted no segment")
 
-    def resolve_with_owner_fallback(self, module: str) -> tuple[str, Path] | None:
-        source = self.source_for_module(module)
-        if source is not None:
-            return module, source
-        owner, separator, _name = module.rpartition(".")
-        if not separator:
-            return None
-        source = self.source_for_module(owner)
-        return (owner, source) if source is not None else None
+    def resolve_import_sources(
+        self, module: str, *, include_parent_packages: bool
+    ) -> tuple[LocalPythonModuleSource, ...]:
+        """Resolve the requested context plus executed regular parents.
 
-    def parent_package_sources(self, module: str) -> tuple[Path, ...]:
-        """Existing parent ``__init__`` files in CPython execution order.
-
-        A missing initializer is a PEP 420 namespace package, not an error.
-        The requested module/package itself is excluded; its source is returned
-        separately by ``source_for_module``.
+        A namespace has no source of its own but may still execute a regular
+        ancestor's initializer. Missing fromlist members fall back to their
+        owner without discarding that namespace ancestry.
         """
-
         resolution = self._resolve_module(module)
-        return resolution.parent_initializers if resolution is not None else ()
+        if resolution is None:
+            owner, separator, _name = module.rpartition(".")
+            if separator:
+                resolution = self._resolve_module(owner)
+        if resolution is None:
+            return ()
+        parents = resolution.parent_initializers if include_parent_packages else ()
+        return (
+            (*parents, resolution.source) if resolution.source is not None else parents
+        )
 
 
 def _project_import_request(
@@ -316,47 +417,71 @@ def _dynamic_import_target(
     return ()
 
 
-def local_import_targets(
-    path: Path,
-    resolver: LocalPythonModuleResolver,
+def analyze_local_imports(
+    source: PythonSourceSnapshot,
+    module_source: LocalPythonModuleSource,
     policy: PythonImportPolicy,
     *,
     expected_nonliteral_dynamic_imports: int | None = None,
     nonliteral_dynamic_import_targets: tuple[str, ...] = (),
-) -> set[str]:
-    """Analyze one source into import targets according to ``policy``."""
+) -> LocalPythonImportAnalysis:
+    """Project source requests; demand binding facts only for semantic queries.
 
-    tree = resolver.read_ast(path)
-    module, _package = resolver.module_identity(path)
+    Absolute statement candidates do not depend on package metadata or alias
+    identity. Relative statements and every possible dynamic call continue to
+    use the canonical binding/import-flow authority, including deferred aliases.
+    This is a conservative dependency graph, not an execution-reachability proof.
+    """
+
+    path = source.path
+    tree = source.tree
+    if path != module_source.path:
+        raise ValueError(f"Python module context does not own captured source: {path}")
+    module = module_source.name
+    binding_policy = _local_import_binding_policy()
     base_context = ModuleImportContext(
         module_name=module,
         is_package=path.name == "__init__.py",
         spec_name=module,
+        target_python=binding_policy.target_python,
     )
-    binding_index = analyze_python_bindings(
-        tree,
-        source_digest=python_ast_digest(tree),
-        policy=PythonBindingPolicy(
-            module_name=module,
-            module_spec_name=module,
-            module_is_package=path.name == "__init__.py",
-            module_execution_kind="imported",
-            analyze_deferred_bodies=not policy.module_level_only,
-        ),
-    )
-    import_flow = binding_index.module_import_flow
+    binding_index: PythonBindingIndex | None = None
+
+    def bindings() -> PythonBindingIndex:
+        nonlocal binding_index
+        if binding_index is None:
+            binding_index = analyze_python_bindings(
+                tree,
+                source_digest=python_ast_digest(tree),
+                policy=replace(
+                    binding_policy,
+                    module_name=module,
+                    module_spec_name=module,
+                    module_is_package=path.name == "__init__.py",
+                    module_execution_kind="imported",
+                    analyze_deferred_bodies=not policy.module_level_only,
+                ),
+            )
+        return binding_index
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         return tuple(
-            base_context.with_state(state) for state in import_flow.states_for(node)
+            base_context.with_state(state)
+            for state in bindings().module_import_flow.states_for(node)
         )
+
     nodes: list[ast.AST] = (
         list(tree.body) if policy.module_level_only else list(ast.walk(tree))
     )
-    targets: set[str] = set()
+    requests: list[LocalPythonImportRequest] = []
     for node in nodes:
         if isinstance(node, ast.Import):
-            targets.update(alias.name for alias in node.names)
+            requests.extend(
+                LocalPythonImportRequest(
+                    "direct", (alias.name,), node.lineno, node.col_offset
+                )
+                for alias in node.names
+            )
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -368,23 +493,28 @@ def local_import_targets(
             level=node.level,
             fromlist=tuple(alias.name for alias in node.names),
         )
-        projected: set[str] = set()
         projection_errors: list[ValueError] = []
-        for context in contexts_for(node):
+        contexts = contexts_for(node) if node.level else (base_context,)
+        for context in contexts:
             try:
-                projected.update(_project_import_request(request, context, path))
+                candidates = _project_import_request(request, context, path)
+                if candidates:
+                    requests.append(
+                        LocalPythonImportRequest(
+                            "from", candidates, node.lineno, node.col_offset
+                        )
+                    )
             except ValueError as exc:
                 projection_errors.append(exc)
         if projection_errors:
             raise projection_errors[0]
-        targets.update(projected)
 
-    nonliteral_dynamic_imports = 0
+    diagnostics: list[LocalPythonImportDiagnostic] = []
     if not policy.module_level_only:
         for node in nodes:
             if not isinstance(node, ast.Call):
                 continue
-            fact = binding_index.call_fact(node)
+            fact = bindings().call_fact(node)
             kinds = fact.possible_import_call_kinds() if fact is not None else ()
             if not kinds:
                 continue
@@ -406,67 +536,84 @@ def local_import_targets(
                 if target is not None:
                     targets_for_call.update(target)
             if not projection_succeeded:
-                nonliteral_dynamic_imports += 1
-                if (
-                    policy.fail_on_nonliteral_dynamic_import
-                    and expected_nonliteral_dynamic_imports is None
-                ):
-                    raise errors[0]
+                diagnostics.append(
+                    LocalPythonImportDiagnostic(
+                        node.lineno,
+                        node.col_offset,
+                        str(errors[0]).removesuffix(f" in {path}"),
+                    )
+                )
                 continue
-            targets.update(targets_for_call)
-        if (
-            expected_nonliteral_dynamic_imports is not None
-            and nonliteral_dynamic_imports != expected_nonliteral_dynamic_imports
-        ):
-            raise ValueError(
-                f"dynamic Python import manifest drift in {path}: expected "
-                f"{expected_nonliteral_dynamic_imports} non-literal calls, found "
-                f"{nonliteral_dynamic_imports}"
+            requests.extend(
+                LocalPythonImportRequest(
+                    "dynamic", (target,), node.lineno, node.col_offset
+                )
+                for target in sorted(targets_for_call)
             )
-        targets.update(nonliteral_dynamic_import_targets)
+        requests.extend(
+            LocalPythonImportRequest("manifest", (target,))
+            for target in nonliteral_dynamic_import_targets
+        )
 
-    return targets
+    analysis = LocalPythonImportAnalysis(
+        tuple(dict.fromkeys(requests)), tuple(diagnostics)
+    )
+    analysis.validate_dynamic_contract(
+        path, policy, expected_nonliteral_dynamic_imports
+    )
+    return analysis
 
 
-def resolve_local_import_targets(
-    targets: set[str],
+def resolve_local_import_requests(
+    analysis: LocalPythonImportAnalysis,
     resolver: LocalPythonModuleResolver,
     policy: PythonImportPolicy,
-) -> set[Path]:
-    """Resolve analyzed targets against the live local module topology."""
+) -> set[LocalPythonModuleSource]:
+    """Resolve grouped requests against this traversal's live local topology."""
 
-    dependencies: set[Path] = set()
-    for target in targets:
-        if policy.allowed_prefix is not None and not (
-            target == policy.allowed_prefix
-            or target.startswith(f"{policy.allowed_prefix}.")
+    dependencies: set[LocalPythonModuleSource] = set()
+    for request in analysis.requests:
+        candidates = request.candidates
+        if (
+            request.kind == "from"
+            and not policy.include_parent_packages
+            and len(candidates) > 1
         ):
-            continue
-        resolved = resolver.resolve_with_owner_fallback(target)
-        if resolved is None:
-            continue
-        resolved_module, source = resolved
-        if policy.include_parent_packages:
-            dependencies.update(resolver.parent_package_sources(resolved_module))
-        dependencies.add(source)
+            # A named submodule wins over its aggregate package. Each unresolved
+            # member still independently falls back to its owner; do not discard
+            # an attribute provider just because another member is a submodule.
+            candidates = candidates[1:]
+        for target in candidates:
+            if policy.allowed_prefix is not None and not (
+                target == policy.allowed_prefix
+                or target.startswith(f"{policy.allowed_prefix}.")
+            ):
+                continue
+            dependencies.update(
+                resolver.resolve_import_sources(
+                    target, include_parent_packages=policy.include_parent_packages
+                )
+            )
     return dependencies
 
 
-def local_import_dependencies(
+def local_import_targets(
     path: Path,
     resolver: LocalPythonModuleResolver,
     policy: PythonImportPolicy,
     *,
     expected_nonliteral_dynamic_imports: int | None = None,
     nonliteral_dynamic_import_targets: tuple[str, ...] = (),
-) -> set[Path]:
-    """Analyze and resolve one source's local import edges."""
+) -> set[str]:
+    """Expose canonical candidate names without discarding graph grouping."""
 
-    targets = local_import_targets(
-        path,
-        resolver,
+    analysis = analyze_local_imports(
+        resolver.capture_source(path),
+        LocalPythonModuleSource(resolver.module_identity(path)[0], path),
         policy,
         expected_nonliteral_dynamic_imports=expected_nonliteral_dynamic_imports,
         nonliteral_dynamic_import_targets=nonliteral_dynamic_import_targets,
     )
-    return resolve_local_import_targets(targets, resolver, policy)
+    return {
+        candidate for request in analysis.requests for candidate in request.candidates
+    }

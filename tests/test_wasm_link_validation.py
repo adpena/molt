@@ -4552,7 +4552,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
     monkeypatch.setattr(
-        wasm_link.wasm_toolchain,
+        wasm_link.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda: compiler_rt_provider,
         raising=True,
@@ -6432,7 +6432,7 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
     provider.write_bytes(b"!<arch>\ncompiler-rt")
 
     monkeypatch.setattr(
-        wasm_link.wasm_toolchain,
+        wasm_link.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda: provider,
         raising=True,
@@ -6457,7 +6457,7 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
     native.write_bytes(_build_env_function_import_module(["__trunctfdf2"]))
 
     monkeypatch.setattr(
-        wasm_link.wasm_toolchain,
+        wasm_link.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda: None,
         raising=True,

@@ -10,6 +10,7 @@ import pytest
 import molt.dx as DX
 from molt.cli import cargo_execution as CARGO_EXEC
 from molt.cli import runtime_wasm_cache as cache
+from molt.cli import runtime_wasm_cache_diagnostics as diagnostics
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from tests.runtime_build_identity_helper import runtime_build_identity
 
@@ -25,7 +26,7 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "_shared_runtime_wasm_cache_root",
         lambda: tmp_path / "cache",
     )
-    cache._reset_runtime_wasm_cache_diagnostics()
+    diagnostics._reset_runtime_wasm_cache_diagnostics()
 
 
 def test_pair_cache_is_session_independent_and_hydrates_both(tmp_path: Path) -> None:
@@ -124,7 +125,7 @@ def test_pair_cache_diagnostics_attest_generation_activity(tmp_path: Path) -> No
         )
         is None
     )
-    snapshot = cache._runtime_wasm_cache_diagnostics_snapshot()
+    snapshot = diagnostics._runtime_wasm_cache_diagnostics_snapshot()
     assert snapshot is not None
     assert snapshot["publish_attempts"] == 1
     assert snapshot["publish_successes"] == 1

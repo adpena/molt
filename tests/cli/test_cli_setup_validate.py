@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
 import importlib
@@ -608,7 +609,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(
-        WASM_TOOLCHAIN,
+        wasm_link_inputs,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
@@ -656,12 +657,12 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     obj_path.write_bytes(b"")
 
     COMPILER_METADATA._rustc_version.cache_clear()
-    WASM_TOOLCHAIN.rust_target_libdir.cache_clear()
+    wasm_link_inputs.rust_target_libdir.cache_clear()
 
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     assert RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path) is None
-    assert WASM_TOOLCHAIN.rust_target_libdir("wasm32-wasip1") == Path(
+    assert wasm_link_inputs.rust_target_libdir("wasm32-wasip1") == Path(
         "/rust/target/lib"
     )
     assert (

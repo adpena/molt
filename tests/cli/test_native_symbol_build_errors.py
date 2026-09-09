@@ -10,7 +10,12 @@ from typing import Any
 import pytest
 
 from molt.capability_manifest import CapabilityManifest
-from molt.cli import backend_binary, backend_cache, backend_compile, backend_pipeline
+from molt.cli import (
+    backend_binary,
+    native_symbol_inspection,
+    backend_compile,
+    backend_pipeline,
+)
 from molt.cli.models import (
     _BackendCacheSetup,
     _BuildOutputLayout,
@@ -43,7 +48,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         )
     )
     # Reach the real reader's typed failure without launching nm or any build.
-    monkeypatch.setattr(backend_cache, "_nm_candidate_binaries", lambda: [])
+    monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"backend readiness fixture; never executed")
     runtime_state = _RuntimeArtifactState(runtime_lib=tmp_path / "runtime.a")
@@ -88,7 +93,9 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     unrelated_lease.write_text("other owner", encoding="utf-8")
 
     def fail_symbol_inspection() -> None:
-        backend_cache._native_object_global_symbol_sets(artifact, target_triple=target)
+        native_symbol_inspection._native_object_global_symbol_sets(
+            artifact, target_triple=target
+        )
         pytest.fail("missing symbol reader was silently admitted")
 
     def prepare_cache(**kwargs: Any) -> _BackendCacheSetup:

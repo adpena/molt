@@ -98,7 +98,7 @@ from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
     source_extension_wasm_import_receipts,
 )
-from molt.cli.wasm_toolchain import (
+from molt.cli.wasm_link_inputs import (
     normalize_wasi_sysroot,
     resolve_wasi_sysroot,
     wasi_libcxx_include_dir,

@@ -19,6 +19,7 @@ from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
 )
+from molt.cli import wasm_link_inputs
 from molt.cli.app_export_contract import load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
@@ -73,7 +74,6 @@ from molt.cli.wasm import (
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
 )
-from molt.cli import wasm_toolchain
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_browser_signature,
@@ -783,7 +783,7 @@ def _prepare_non_native_build_result(
                         staged_external_native_artifacts
                     )
                     if needs_wasm_libc_link:
-                        libc_provider = wasm_toolchain.wasm_wasi_libc_archive()
+                        libc_provider = wasm_link_inputs.wasm_wasi_libc_archive()
                         if libc_provider is None:
                             raise ValueError(
                                 "wasm_libc_link_import symbols require Rust "
@@ -800,7 +800,7 @@ def _prepare_non_native_build_result(
                         )
                     if needs_wasm_compiler_rt_link:
                         compiler_rt_provider = (
-                            wasm_toolchain.wasm_compiler_builtins_archive()
+                            wasm_link_inputs.wasm_compiler_builtins_archive()
                         )
                         if compiler_rt_provider is None:
                             raise ValueError(
@@ -820,7 +820,7 @@ def _prepare_non_native_build_result(
                         )
                     if needs_wasm_libcxx_link:
                         cxx_runtime_providers = (
-                            wasm_toolchain.wasm_cxx_runtime_archives()
+                            wasm_link_inputs.wasm_cxx_runtime_archives()
                         )
                         if cxx_runtime_providers is None:
                             raise ValueError(

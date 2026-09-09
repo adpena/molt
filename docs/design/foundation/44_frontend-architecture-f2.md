@@ -658,6 +658,84 @@ The *cross-process* contract (the JSON wire kind) is explicit and now registry-g
 
 ---
 
+## Tooling dependency graph authority
+
+Frontend semantic fingerprints and executable-tool input discovery share
+`cli/python_source_closure.py`'s policy-keyed source graph. Lowering supplies its
+frontend/analysis directories, frontend/module-driver naming rule, shared semantic
+seeds, and module-level `molt` policy. Executable tooling retains full lexical
+imports, deferred dynamic aliases, parent-package execution and checked dynamic
+import manifests. These are projections of one graph, not separate scanners.
+
+`python_import_resolution.py` captures each source once: the same bytes determine
+its digest and PEP 263-aware AST. Grouped import requests retain owner/fromlist
+alternatives until live filesystem resolution. Lowering prefers an existing named
+submodule over the package aggregate; each unresolved member independently falls
+back to its owner. Executable tooling additionally includes the package ancestors.
+Absolute statement candidates demand no binding analysis. Relative package state
+and dynamic-call identity still come from the canonical binding/import-flow facts;
+this optimization does not invent a lexical alias or metadata-purity classifier.
+
+Persistent records replace the current source/dynamic-contract/analysis generation
+within each module/policy variant. Parser version and the binding authority's
+schema are admission inputs. One host-source binding policy supplies both the
+analysis and cache identity: compiler/tool sources execute under the host Python
+parser, not the target version of a user's compiled program. Lowering retains its
+conservative module-level lexical inclusion policy. Unresolved dynamic sites remain explicit records,
+including source locations, and manifest contracts are validated on cache hits.
+Malformed or unresolved transitive sources fail with their owner diagnostic;
+they never become an empty dependency set. Candidate names are resolved against
+fresh topology so a new submodule or package initializer needs no importer edit.
+The previous lowering-only clean-tree cache and root-only closure LRU are removed.
+Whole-query reuse lasts only through the existing build fingerprint transaction;
+later builds rediscover bytes and topology without manual cache invalidation.
+
+Executable roots follow bound tooling imports: tools, src, then repository.
+Repository-qualified and bare tool imports retain distinct (source path, module
+name) graph nodes; one captured byte generation is shared by their contexts.
+Regular package initializers remain dependencies through namespace descendants,
+and manifest module-tree expansion retains the declared qualified prefix.
+Schema 5 persists each module/policy variant without an alternate root-alias walker.
+
+Native object/archive inspection is owned by
+`cli/native_symbol_inspection.py`: typed facts, exact target decoration,
+reader/artifact generation custody, parser, and object/archive fact caches move
+together. External admission, source-extension closure, backend artifact caches
+and runtime callable projection consume that authority. The backend cache keeps
+publication and locking, not a second symbol reader. Runtime callable materialization
+passes an immutable callable requirement (function prefix and exclusions) into
+the shared reader, then projects its admitted function facts. A successfully
+parsed but incompatible candidate advances the same reader ladder; the requirement
+is part of object/archive cache identity. Materialization keys its file by artifact and projection
+digests, not size or rounded modification time. Target spelling is likewise owned
+by `cli/compiler_target.py`, not the native tool launcher. These semantic leaf
+authorities remain in lowering's source closure; backend publication does not.
+
+WASM header and provider-archive selection is owned by `cli/wasm_link_inputs.py`,
+including Rust target library lookup, WASI sysroot selection, libc/compiler-rt/
+libc++ and long-double input policy. Admission and every link path consume those
+same inputs. `wasm_toolchain.py` retains tool installation and linker executable
+validation; the shared input authority does not import that aggregate.
+
+Runtime-source traversal is imported only inside the runtime-fingerprint stage.
+Debug command helpers resolve through the existing explicit CLI command registry.
+Runtime WASM cache observations live in `runtime_wasm_cache_diagnostics.py`;
+frontend diagnostics read that leaf while generation publication/hydration records
+into it. Reading counters therefore does not import runtime identity or Cargo.
+Neither change suppresses source analysis or hides an admission dependency.
+`compiler_metadata.py` owns the loaded Python source layout: checkout `src`
+or the installed package parent. Both broad and semantic Python fingerprints and
+their graph seeds consume that exact root. Selecting an explicit alternate compiler
+checkout does not relocate the captured installed package: source roots stay paired
+with their actual layout rather than the mutable selected compiler root. A read-only installation may skip
+optional graph persistence, but still captures and hashes its real sources.
+
+Escaping `globals()` invalidates package metadata even when passed to a function
+spelled `require` or `_intrinsics.require`. No callee name grants metadata-purity
+authority. Assigned, direct, and joined calls obey the same binding-flow rule;
+subsequent unresolved relative imports require explicit runtime import-scan
+custody. The binding schema invalidates persisted graph facts when this rule changes.
+
 ## 7. Cross-references and relevant paths
 
 | Arc | Relationship to F2 |
