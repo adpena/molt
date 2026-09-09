@@ -16,6 +16,7 @@ use crate::tir::values::ValueId;
 ///
 /// A type is proven if it comes from:
 /// - A constant op (ConstInt, ConstFloat, etc.)
+/// - An operand-independent intrinsic scalar result slot, including status flags
 /// - A TypeGuard success path
 /// - Arithmetic on proven values
 ///
@@ -23,7 +24,8 @@ use crate::tir::values::ValueId;
 /// redundant guards for values in this map.
 pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let exact = super::extract_exact_scalar_map(func);
-    // Start with constants — they are always proven.
+    // Seed each valid result slot independently. An exact status result neither
+    // proves a neighboring payload nor changes the producer's effects.
     let mut proven: HashMap<ValueId, TirType> = HashMap::new();
 
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();

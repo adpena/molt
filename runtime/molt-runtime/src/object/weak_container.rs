@@ -1063,7 +1063,11 @@ fn entry_slots_detach_owned_edges(
 }
 
 fn py_eq_checked(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Result<bool, u64> {
-    match crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(lhs_bits), obj_from_bits(rhs_bits)) {
+    match crate::object::ops_compare::compare_object_eq_bool(
+        _py,
+        obj_from_bits(lhs_bits),
+        obj_from_bits(rhs_bits),
+    ) {
         crate::object::ops_compare::CompareBoolOutcome::True => Ok(true),
         crate::object::ops_compare::CompareBoolOutcome::False => Ok(false),
         _ => Err(MoltObject::none().bits()),

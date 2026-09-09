@@ -170,6 +170,10 @@ operand/attr facts. Checked arithmetic declares `[i64, bool]`; unboxed iteration
 declares `[operand, bool]`, preserving the dependent payload and exact status
 separately. Exception-pending reads are exact Boolean producers but remain
 impure mutable-state observations. No result fact licenses code motion.
+The exact and proven maps consume each intrinsic scalar result slot before and
+after type refinement: an unknown iterator still produces a proven Boolean
+status, not a proven element or a nonthrowing/pure iteration operation. The
+shared result-slot regression family owns this distinction across producers.
 `block_versioning.rs`, `fast_math.rs`, and `strength_reduction.rs` consume the generated intrinsic
 table instead of private opcode matches; `gvn.rs` also consumes it as part of
 value-key/type gating. Branchless counting consumes the shared exact-scalar map

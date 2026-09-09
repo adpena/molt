@@ -46,29 +46,4 @@ fn arithmetic_on_proven_is_proven() {
     assert_eq!(proven.get(&ValueId(2)), Some(&TirType::I64));
 }
 
-#[test]
-fn iter_next_unboxed_done_flag_not_proven_without_proven_iterator() {
-    let iter = ValueId(0);
-    let elem = ValueId(1);
-    let done = ValueId(2);
-    let ops = vec![make_op(
-        OpCode::IterNextUnboxed,
-        vec![iter],
-        vec![elem, done],
-        AttrDict::new(),
-    )];
-    let mut func = single_block_func(ops, 3);
-    func.value_types.insert(iter, TirType::DynBox);
-
-    refine_types(&mut func);
-    let proven = extract_proven_map(&func);
-
-    assert_eq!(proven.get(&elem), None);
-    assert_eq!(
-        proven.get(&done),
-        None,
-        "done flag type is inferred but not proven unless the iterator operand is proven"
-    );
-}
-
 // ---- Test: parse_guard_type handles various type strings ----
