@@ -24,6 +24,10 @@ molt_memory_guard = "molt.pytest_memory_guard_bootstrap"
 
 [tool.uv]
 managed = true
+constraint-dependencies = [
+    "pip>=26.2",  # PYSEC-2026-3721; transitive through pip-audit.
+    "sqlparse>=0.6.0",  # PYSEC-2026-3696..3699 and CVE-2026-84305.
+]
 
 [tool.ruff]
 line-length = 88
@@ -199,7 +203,7 @@ dev = [
     "ruff>=0.15.19",
     "ty>=0.0.53",
     "setuptools>=83.0.0",
-    "django>=6.0.7",
+    "django>=6.0.8",
     "idna>=3.18",
     "stdlib-list>=0.12.0",
     "coverage>=7.14.3",
@@ -210,7 +214,7 @@ dev = [
     "pytest-xdist>=3.8.0",
 ]
 demo = [
-    "django>=6.0.7",
+    "django>=6.0.8",
     "gunicorn>=26.0.0",
     "msgpack>=1.2.1",
     "uvicorn>=0.49.0",

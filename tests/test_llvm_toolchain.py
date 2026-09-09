@@ -4,6 +4,7 @@ from tests.process_guard_common import run_guarded_test_process
 from pathlib import Path
 import json
 import os
+import re
 import sys
 from types import SimpleNamespace
 
@@ -532,9 +533,16 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     manifest = llvm_toolchain.load_llvm_releases(ROOT)
     installer = manifest.debian_installer
 
-    assert installer.url == "https://apt.llvm.org/llvm.sh"
+    commit = "c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea"
+    assert installer.url == (
+        "https://raw.githubusercontent.com/opencollab/"
+        f"llvm-jenkins.debian.net/{commit}/llvm.sh"
+    )
     assert installer.sha256 == (
-        "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+        "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"
+    )
+    assert installer.provenance_url == (
+        "https://github.com/opencollab/llvm-jenkins.debian.net/commit/" + commit
     )
     github_output = tmp_path / "github-output"
     assert (
@@ -546,6 +554,7 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     projected = github_output.read_text(encoding="utf-8")
     assert f"apt_installer_url={installer.url}\n" in projected
     assert f"apt_installer_sha256={installer.sha256}\n" in projected
+    assert f"apt_installer_provenance_url={installer.provenance_url}\n" in projected
     wasi = manifest.wasi_sysroot
     assert wasi.version == "33.0+m"
     assert wasi.llvm_version == "22.1.0"
@@ -557,6 +566,45 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     assert f"wasi_sysroot_size={wasi.size}\n" in projected
     assert f"wasi_sysroot_sha256={wasi.sha256}\n" in projected
     assert f"wasi_sysroot_archive_root={wasi.archive_root}\n" in projected
+
+
+@pytest.mark.parametrize(
+    ("url", "provenance_url"),
+    [
+        (
+            "https://apt.llvm.org/llvm.sh",
+            "https://github.com/opencollab/llvm-jenkins.debian.net/commit/"
+            "c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea",
+        ),
+        (
+            "https://raw.githubusercontent.com/opencollab/"
+            "llvm-jenkins.debian.net/"
+            "c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea/llvm.sh",
+            "https://github.com/opencollab/llvm-jenkins.debian.net/commit/"
+            "cf853fefa308484749df8a87004c580a6c0fe830",
+        ),
+    ],
+)
+def test_debian_installer_identity_rejects_mutable_or_mismatched_source(
+    tmp_path: Path, url: str, provenance_url: str
+) -> None:
+    manifest_text = (ROOT / "config/llvm_toolchain_releases.toml").read_text(
+        encoding="utf-8"
+    )
+    manifest_text = re.sub(
+        r"(?ms)^\[debian_installer\]\n.*?\n\n",
+        "[debian_installer]\n"
+        f'url = "{url}"\n'
+        'sha256 = "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"\n'
+        f'provenance_url = "{provenance_url}"\n\n',
+        manifest_text,
+    )
+    _write(tmp_path / "config/llvm_toolchain_releases.toml", manifest_text)
+
+    with pytest.raises(
+        LlvmToolchainConfigError, match="invalid Debian LLVM installer identity"
+    ):
+        llvm_toolchain.load_llvm_releases(tmp_path)
 
 
 def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(

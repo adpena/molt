@@ -114,6 +114,7 @@ class LlvmRelease:
 class LlvmDebianInstaller:
     url: str
     sha256: str
+    provenance_url: str
 
 
 @dataclass(frozen=True)
@@ -235,7 +236,7 @@ def _load_llvm_releases_cached(
         raise LlvmToolchainConfigError(
             f"invalid LLVM release manifest {path}: {exc}"
         ) from exc
-    if payload.get("schema_version") != 2:
+    if payload.get("schema_version") != 3:
         raise LlvmToolchainConfigError(
             f"unsupported LLVM release manifest schema at {path}"
         )
@@ -254,11 +255,27 @@ def _load_llvm_releases_cached(
         raise LlvmToolchainConfigError(f"incomplete LLVM release manifest: {path}")
     installer_url = debian_installer.get("url")
     installer_sha256 = debian_installer.get("sha256")
+    installer_provenance_url = debian_installer.get("provenance_url")
+    installer_source = (
+        re.fullmatch(
+            r"https://raw\.githubusercontent\.com/"
+            r"opencollab/llvm-jenkins\.debian\.net/"
+            r"(?P<commit>[0-9a-f]{40})/llvm\.sh",
+            installer_url,
+        )
+        if isinstance(installer_url, str)
+        else None
+    )
     if (
-        not isinstance(installer_url, str)
-        or not installer_url.startswith("https://")
+        installer_source is None
         or not isinstance(installer_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", installer_sha256) is None
+        or not isinstance(installer_provenance_url, str)
+        or installer_provenance_url
+        != (
+            "https://github.com/opencollab/llvm-jenkins.debian.net/commit/"
+            f"{installer_source.group('commit')}"
+        )
     ):
         raise LlvmToolchainConfigError(
             f"invalid Debian LLVM installer identity in {path}"
@@ -362,12 +379,13 @@ def _load_llvm_releases_cached(
             f"default LLVM release {default!r} is not declared in {path}"
         )
     return LlvmReleaseManifest(
-        schema_version=2,
+        schema_version=3,
         default_release=default,
         canonical_build_type=str(canonical_build_type),
         debian_installer=LlvmDebianInstaller(
             url=installer_url,
             sha256=installer_sha256,
+            provenance_url=installer_provenance_url,
         ),
         wasi_sysroot=WasiSysrootRelease(
             version=wasi_record["version"],
@@ -2119,6 +2137,10 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(f"apt_installer_url={release_manifest.debian_installer.url}\n")
             fh.write(
                 f"apt_installer_sha256={release_manifest.debian_installer.sha256}\n"
+            )
+            fh.write(
+                "apt_installer_provenance_url="
+                f"{release_manifest.debian_installer.provenance_url}\n"
             )
             wasi = release_manifest.wasi_sysroot
             fh.write(f"wasi_sysroot_version={wasi.version}\n")
