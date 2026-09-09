@@ -93,11 +93,11 @@ def _enforce_intrinsic_stdlib(
         except ValueError:
             continue
         stdlib_modules[name] = path
-    statuses = _classify_stdlib_module_statuses(
+    classification = _classify_stdlib_module_statuses(
         stdlib_modules,
         target_python=target_python,
     )
-    for name, status in statuses.items():
+    for name, status in classification.statuses.items():
         if status == "python-only":
             missing.append(name)
         elif status == "probe-only":
@@ -111,6 +111,15 @@ def _enforce_intrinsic_stdlib(
         "and must be lowered to Rust intrinsics (or become thin intrinsic wrappers):\n"
         + "\n".join(f"  - {name}" for name in missing)
     )
+    unresolved_missing = [
+        site
+        for site in classification.unresolved_imports_payload()
+        if site["module"] in missing
+    ]
+    if unresolved_missing:
+        message += "\nUnresolved imports cannot establish intrinsic support:"
+        for site in unresolved_missing:
+            message += f"\n  - {site['module']}: {site['path']}:{site['line']}"
     if probe_only:
         message += (
             "\n\nProbe-only modules in this build (thin wrappers + policy gate only):\n"

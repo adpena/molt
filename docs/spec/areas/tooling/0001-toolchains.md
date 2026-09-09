@@ -95,6 +95,18 @@ Rust via rustup:
   `tools/bootstrap_llvm.py` activate `VsDevCmd.bat` from an installed Build
   Tools instance.
 
+## Python runtime identity
+
+Python environment identity captures one immutable loader snapshot in
+`molt.python_native_locations`: loaded paths, loader aliases, non-file loader
+contracts, and observed Mach-O CPU identities. Dependency capture consumes and
+rechecks that same snapshot. On macOS, universal images are read through the
+exact slice already selected by dyld, never the first or generic matching slice.
+Missing files require an explicit shared-cache contract; census or slice changes
+invalidate the capture. This does not relax exact-target binary admission or
+claim support for another architecture. Synthetic fixtures project the selected
+executable from their realized environment, not the test runner's executable.
+
 ## Distribution boundary
 
 LLVM/MLIR is a developer and source-build dependency. Shipped Molt binaries

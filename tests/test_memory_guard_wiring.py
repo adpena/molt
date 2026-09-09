@@ -826,12 +826,59 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
     assert pytest_memory_guard_bootstrap.install_windows_pytest_custody_roots()
     temproot = Path(os.environ["PYTEST_DEBUG_TEMPROOT"])
     assert temproot.parent == tmp_path / "artifact-root" / "tmp"
-    assert temproot.name.startswith("pytest-temproot-")
+    assert temproot.name.startswith("pt-")
+    assert len(temproot.name) <= 16
     assert temproot.is_dir()
     assert any(temproot.iterdir())
     assert (
         tmp_path / "artifact-root" / "tmp" / "pytest-cache" / "v" / "cache"
     ).is_dir()
+
+
+def test_windows_pytest_temp_roots_are_short_and_exclusively_created(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    first = pytest_memory_guard_bootstrap.windows_pytest_temp_root()
+    second = pytest_memory_guard_bootstrap.windows_pytest_temp_root()
+    assert first != second
+    for path in (first, second):
+        assert path.parent == tmp_path / "tmp"
+        assert path.is_dir()
+        assert len(path.name) <= 16
+
+
+def test_windows_native_proof_scratch_layout_retains_linker_path_budget() -> None:
+    from pathlib import PureWindowsPath
+
+    # Replays the CI2 quote build-script output shape that failed with LNK1104.
+    # Long-path-aware Python does not make MSVC's output paths long-path-aware.
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    setup = workflow.split("- name: Configure verified ephemeral custody", 1)[1]
+    template = next(
+        line.strip().split('"')[1]
+        for line in setup.splitlines()
+        if line.strip().startswith("$name = ")
+    )
+    for key, value in {
+        "GITHUB_RUN_ID": "34386557914",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "RUNNER_OS": "Windows",
+        "RUNNER_ARCH": "X64",
+    }.items():
+        template = template.replace("${env:" + key + "}", value)
+    temp_name = (
+        pytest_memory_guard_bootstrap.WINDOWS_PYTEST_TEMP_ROOT_NAME + "-abcdefgh"
+    )
+    output = PureWindowsPath("D:/a/_temp", template, "tmp", temp_name) / (
+        "pytest-of-runneradmin/pytest-0/test_guarded_identity_timeout_0/"
+        "proof-supervisor-target/release/build/quote-529389acd85f5c85/"
+        "build_script_build-529389acd85f5c85.exe"
+    )
+    assert len(str(output)) < 240
 
 
 def test_windows_pytest_custody_roots_preserve_explicit_temproot(

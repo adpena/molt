@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import sys
+import tempfile
 import time
 import uuid
 
@@ -30,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTEST_OUTER_GUARD_SUMMARY_DIR = _pytest_guard_summary_dir(ROOT)
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
 PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
-WINDOWS_PYTEST_TEMP_ROOT_NAME = "pytest-temproot"
+WINDOWS_PYTEST_TEMP_ROOT_NAME = "pt"
 WINDOWS_PYTEST_CACHE_DIR_NAME = "pytest-cache"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
 TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
@@ -442,8 +443,12 @@ def _windows_pytest_artifact_base() -> Path:
 def windows_pytest_temp_root() -> Path:
     if not _is_windows_process_model():
         return PYTEST_TEMP_ROOT
-    token = f"{os.getpid()}-{uuid.uuid4().hex}"
-    return _windows_pytest_artifact_base() / f"{WINDOWS_PYTEST_TEMP_ROOT_NAME}-{token}"
+    # Test names and native compiler output names add their own suffixes.
+    # Reserve a short, atomically unique directory rather than spending the
+    # Windows native-tool path budget on a redundant PID plus full UUID.
+    base = _windows_pytest_artifact_base()
+    _ensure_windows_readable_dir(base)
+    return Path(tempfile.mkdtemp(prefix=f"{WINDOWS_PYTEST_TEMP_ROOT_NAME}-", dir=base))
 
 
 def windows_pytest_cache_dir() -> Path:

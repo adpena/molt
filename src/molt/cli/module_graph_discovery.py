@@ -11,7 +11,11 @@ from molt.cli import module_dependencies as _module_dependency_authority
 from molt.cli import module_graph_cache as _module_graph_cache
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
-from molt.cli.models import ImportScanMode, _ImportAdmissionPolicy
+from molt.cli.models import (
+    ImportScanMode,
+    _ImportAdmissionPolicy,
+    _RuntimeImportScanCustody,
+)
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -76,9 +80,26 @@ def _extend_module_graph_with_closure(
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> frozenset[str]:
     if not entry_paths:
         return frozenset()
+    if runtime_import_custody is not None:
+        # Only the explicitly supplied owner sources are newly admitted here.
+        # Every other catalog row must already belong to the enclosing graph.
+        owner_paths = set(runtime_import_custody.owners_by_module.values())
+        if not owner_paths.issubset(path.resolve() for path in entry_paths):
+            raise ValueError(
+                "runtime import custody owners are not closure entry sources"
+            )
+        for name, path in runtime_import_custody.catalog:
+            existing = module_graph.get(name)
+            if existing is None and name in runtime_import_custody.owners_by_module:
+                continue
+            if existing is None or existing.resolve() != path:
+                raise ValueError(
+                    f"runtime import catalog lacks graph admission: {name!r}"
+                )
     closure_graph, _ = _discover_module_graph_from_paths(
         entry_paths,
         list(roots),
@@ -94,10 +115,13 @@ def _extend_module_graph_with_closure(
         allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
         capability_config_digest=capability_config_digest,
+        runtime_import_custody=runtime_import_custody,
     )
     for name, path in closure_graph.items():
         _record_module_reason(module_reasons, name, reason)
         module_graph.setdefault(name, path)
+    if runtime_import_custody is not None:
+        runtime_import_custody.validate_graph(module_graph)
     return frozenset(closure_graph)
 
 
@@ -238,11 +262,25 @@ def _discover_module_graph_from_paths(
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
     entry_paths = tuple(entry_paths)
     if not entry_paths:
         return {}, set()
     graph: dict[str, Path] = {}
+    if runtime_import_custody is not None:
+        # Catalog dependencies already have graph admission. Re-scan only the
+        # protocol owners at full depth; do not reinterpret application sources
+        # under the stdlib closure's roots or leak custody into their scans.
+        owner_names = dict(runtime_import_custody.owners)
+        graph.update(
+            (name, path)
+            for name, path in runtime_import_custody.catalog
+            if name not in owner_names
+        )
+        # Persisted scans are strict. Their schema deliberately has no runtime
+        # custody lane; only the per-build, custody-keyed memory cache is used.
+        project_root = None
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
     stdlib_static_import_helper_modules = (
@@ -294,6 +332,10 @@ def _discover_module_graph_from_paths(
             dirty_persisted_modules = set(persisted_graph.dirty_modules)
 
     def resolve_candidate(candidate: str) -> Path | None:
+        if runtime_import_custody is not None:
+            catalog_path = runtime_import_custody.catalog_by_module.get(candidate)
+            if catalog_path is not None:
+                return catalog_path
         persisted_path = persisted_graph_paths.get(candidate)
         if persisted_path is not None and candidate not in dirty_persisted_modules:
             return persisted_path
@@ -407,6 +449,7 @@ def _discover_module_graph_from_paths(
                     stdlib_allowlist=stdlib_allowlist,
                     target_python=target_python,
                     capability_config_digest=capability_config_digest,
+                    runtime_import_custody=runtime_import_custody,
                 )
             else:
                 imports = persisted_imports
@@ -648,7 +691,14 @@ def _load_module_imports(
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[str, ...]:
+    if runtime_import_custody is not None and not runtime_import_custody.owns(
+        module_name, path.resolve()
+    ):
+        runtime_import_custody = None
+    if runtime_import_custody is not None:
+        project_root = None
     if project_root is not None:
         persisted_imports = _module_graph_cache._read_persisted_import_scan(
             project_root,
@@ -668,6 +718,7 @@ def _load_module_imports(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        runtime_import_custody=runtime_import_custody,
     )
     if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
         imports = _module_import_scanner._expand_imports_with_static_package_all_star_children(
@@ -681,6 +732,8 @@ def _load_module_imports(
             stdlib_allowlist=stdlib_allowlist,
             resolution_cache=resolution_cache,
             target_python=target_python,
+            runtime_import_custody=runtime_import_custody,
+            source_path=path.resolve(),
         )
     if project_root is not None:
         with contextlib.suppress(OSError):

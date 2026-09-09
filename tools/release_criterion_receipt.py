@@ -12,11 +12,22 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard, TypedDict
 
-from molt.exact_json import ExactJsonError, loads_exact, write_exact
-from molt.portable_paths import portable_path_identity, portable_relative_path
-from molt.toolchain_identity import stable_file_sha256
-from tools.git_identity import is_git_object_id
-from tools.command_execution import CommandExecutor
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+from molt.exact_json import ExactJsonError, loads_exact, write_exact  # noqa: E402
+from molt.portable_paths import (  # noqa: E402
+    portable_path_identity,
+    portable_relative_path,
+)
+from molt.toolchain_identity import stable_file_sha256  # noqa: E402
+from tools.git_identity import is_git_object_id  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 SCHEMA_VERSION = 1

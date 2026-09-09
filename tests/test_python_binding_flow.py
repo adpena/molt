@@ -38,6 +38,28 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+@pytest.mark.parametrize("target", ["Alias = A", "del Alias", "(Alias := A)"])
+def test_import_metadata_projection_is_independent_of_unrelated_deferred_return(
+    target: str,
+) -> None:
+    source = (
+        f"class A:\n    pass\nclass B(A):\n    pass\n{target}\nfrom . import child\n"
+    )
+    for suffix in ("", "def unrelated():\n    return 1\n"):
+        current = source + suffix
+        tree = ast.parse(current)
+        index = analyze_python_source_bindings(
+            current,
+            policy=PythonBindingPolicy(
+                module_name="pkg.entry", module_spec_name="pkg.entry"
+            ),
+        )
+        request = next(node for node in tree.body if isinstance(node, ast.ImportFrom))
+        states = index.module_import_flow.states_for(request)
+        assert states
+        assert {state.package.kind for state in states} == {"unknown"}
+
+
 @pytest.mark.parametrize(
     ("source", "observed"),
     [

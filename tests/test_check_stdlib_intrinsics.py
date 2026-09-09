@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "check_stdlib_intrinsics.py"
@@ -19,6 +20,36 @@ def _load_gate_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize(
+    "names, expected",
+    [
+        (("molt_a", "molt_b", "molt_a"), ("molt_a", "molt_b")),
+        (("molt_a", 1), None),
+        (("invalid",), None),
+        (("molt_stdlib_probe",), None),
+        (["molt_a"], None),
+    ],
+)
+def test_required_intrinsic_boundary_validates_and_deduplicates(
+    tmp_path, names, expected
+):
+    module = _load_gate_module()
+    manifest = tmp_path / "required.py"
+    manifest.write_text(
+        f"STDLIB_REQUIRED_INTRINSICS_BY_MODULE = {{'pkg': {names!r}}}\n",
+        encoding="utf-8",
+    )
+    if expected is None:
+        with pytest.raises(
+            RuntimeError, match="stdlib full-coverage manifest is invalid"
+        ):
+            module._load_full_coverage_required_intrinsics(manifest)
+    else:
+        assert module._load_full_coverage_required_intrinsics(manifest) == {
+            "pkg": expected
+        }
 
 
 def _seed_fallback_module(stdlib_root: Path) -> None:
@@ -332,9 +363,28 @@ def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
-    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+    classify = module.classify_stdlib_module_statuses
+    target_versions: list[str] = []
+
+    def classify_for_target(paths, *, target_python):
+        target_versions.append(target_python.short)
+        return classify(paths, target_python=target_python)
+
+    monkeypatch.setattr(module, "classify_stdlib_module_statuses", classify_for_target)
+    selected_target = f"3.{min(sys.version_info.minor, 14)}"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--target-python",
+            selected_target,
+        ],
+    )
 
     assert module.main() == 0
+    assert target_versions == [selected_target]
     audit_text = audit_doc.read_text(encoding="utf-8")
     assert (
         "### Intrinsic-backed modules (partial lowering pending)\n- `pkg`" in audit_text

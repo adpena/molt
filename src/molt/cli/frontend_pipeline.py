@@ -50,6 +50,7 @@ from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.compiler_analysis.python_imports import ModuleExecutionKind
 from molt.cli.models import (
+    _RuntimeImportScanCustody,
     BuildProfile,
     EmitMode,
     FallbackPolicy,
@@ -220,6 +221,7 @@ def _prepare_frontend_analysis(
     target_python: TargetPythonVersion,
     capability_config_digest: str = "",
     dependency_known_modules: Collection[str] = (),
+    runtime_import_scan_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
@@ -249,6 +251,7 @@ def _prepare_frontend_analysis(
                     module_name
                 ],
                 import_scan_mode="full",
+                runtime_import_custody=runtime_import_scan_custody,
                 source=None,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[
                     module_name
@@ -883,6 +886,7 @@ def _prepare_frontend_stage_state(
             target_python=prepared_build_config.target_python,
             capability_config_digest=prepared_build_config.capability_config_cache_digest,
             dependency_known_modules=set(import_plan.known_modules),
+            runtime_import_scan_custody=import_plan.runtime_import_scan_custody,
         )
     )
     if prepared_frontend_analysis_error is not None:

@@ -36,13 +36,12 @@ def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> N
     assert calls[1]["memory_guard_prefix"] == executor.prefix
 
 
-def test_executor_rebinds_loaded_molt_to_its_own_repo(monkeypatch) -> None:
+def test_executor_rejects_loaded_molt_from_another_repo(monkeypatch) -> None:
     foreign = SimpleNamespace(__path__=["C:/foreign/molt"])
     monkeypatch.setitem(sys.modules, "molt", foreign)
 
-    executor = command_execution.CommandExecutor.for_file(__file__)
-
-    assert foreign.__path__ == [str(executor.repo_root / "src" / "molt")]
+    with pytest.raises(RuntimeError, match="repository import custody mismatch"):
+        command_execution.CommandExecutor.for_file(__file__)
 
 
 def test_owned_wait_escalates_only_its_exact_process() -> None:

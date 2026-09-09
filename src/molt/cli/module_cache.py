@@ -27,6 +27,7 @@ from molt.cli.function_references import (
 )
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.models import (
+    _RuntimeImportScanCustody,
     FallbackPolicy,
     ImportScanMode,
     ModuleExecutionKind,
@@ -1156,6 +1157,7 @@ def _load_module_analysis(
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[
     ast.AST | None,
     tuple[str, ...],
@@ -1166,6 +1168,13 @@ def _load_module_analysis(
     bool,
     os.stat_result | None,
 ]:
+    if runtime_import_custody is not None:
+        if runtime_import_custody.owns(module_name, path.resolve()):
+            # Owner analysis embeds catalog-dependent edges. Persisted module
+            # analysis belongs exclusively to strict scans.
+            project_root = None
+        else:
+            runtime_import_custody = None
     if path_stat is None and project_root is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(path)
@@ -1258,6 +1267,7 @@ def _load_module_analysis(
             stdlib_allowlist=stdlib_allowlist,
             target_python=target_python,
             capability_config_digest=capability_config_digest,
+            runtime_import_custody=runtime_import_custody,
         )
     func_defaults = persisted_defaults
     if func_defaults is None:

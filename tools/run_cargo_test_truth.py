@@ -10,20 +10,22 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-import check_suite_honesty
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+ROOT = bind_repository_imports(__file__)
+
+from tools import check_suite_honesty  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
-
-ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_ROOT = ROOT / "proof-receipts" / "evidence"
 RUNS_ROOT = EVIDENCE_ROOT / "cargo-test-truth-runs"
 RECEIPT = EVIDENCE_ROOT / "cargo-test-truth.json"
@@ -45,7 +47,7 @@ CANONICAL_COMMAND = (
     "--no-fail-fast",
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-_ACTIVE_RUN_TERMINALIZER: object | None = None
+_ACTIVE_RUN_TERMINALIZER: Callable[[], None] | None = None
 _SOURCE_SUFFIXES = frozenset(
     {
         ".c",
@@ -1129,7 +1131,7 @@ def main() -> int:
     finally:
         terminalizer = _ACTIVE_RUN_TERMINALIZER
         _ACTIVE_RUN_TERMINALIZER = None
-        if callable(terminalizer):
+        if terminalizer is not None:
             terminalizer()
 
 

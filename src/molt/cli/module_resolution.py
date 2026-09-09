@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from molt.cli import module_source as _module_source
-from molt.cli.models import ImportScanMode
+from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -332,7 +332,8 @@ class _ModuleResolutionCache:
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
     import_scan_cache: dict[
-        tuple[Path, str | None, bool, ImportScanMode], tuple[str, ...]
+        tuple[Path, str | None, bool, ImportScanMode, _RuntimeImportScanCustody | None],
+        tuple[str, ...],
     ] = field(default_factory=dict)
     path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
     path_stat_error_cache: dict[Path, OSError] = field(default_factory=dict)
@@ -566,21 +567,42 @@ class _ModuleResolutionCache:
         module_name: str | None = None,
         is_package: bool = False,
         import_scan_mode: ImportScanMode = "full",
+        runtime_import_custody: _RuntimeImportScanCustody | None = None,
     ) -> tuple[str, ...]:
+        source_path = path.resolve() if runtime_import_custody is not None else path
+        if runtime_import_custody is not None:
+            if runtime_import_custody.owns(module_name, source_path):
+                from molt.compiler_analysis.python_binding_flow import python_ast_digest
+
+                runtime_import_custody.admits_scan(
+                    module_name, source_path, python_ast_digest(tree)
+                )
+            else:
+                runtime_import_custody = None
         cache_key = (
             self.resolved_path(path),
             module_name,
             is_package,
             import_scan_mode,
+            runtime_import_custody,
         )
         cached = self.import_scan_cache.get(cache_key)
         if cached is not None:
             return cached
+        custody_kwargs = (
+            {
+                "runtime_import_custody": runtime_import_custody,
+                "source_path": source_path,
+            }
+            if runtime_import_custody is not None
+            else {}
+        )
         imports = collector(
             tree,
             module_name,
             is_package,
             import_scan_mode=import_scan_mode,
+            **custody_kwargs,
         )
         cached_imports = tuple(imports)
         self.import_scan_cache[cache_key] = cached_imports

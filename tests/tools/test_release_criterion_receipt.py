@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import os
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -18,6 +20,27 @@ from tests.process_guard_common import run_guarded_test_process
 SOURCE_SHA = "a" * 40
 GENERATED_AT = "2026-08-14T12:00:00Z"
 VALIDATION_NOW = dt.datetime(2026, 8, 14, 12, 1, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "tool",
+    ("canonicalization_contract.py", "structural_audit.py"),
+)
+def test_receipt_consumers_run_directly_with_only_src_on_pythonpath(
+    tool: str,
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    completed = run_guarded_test_process(
+        [sys.executable, str(root / "tools" / tool), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _write(path: Path, data: str = "input\n") -> Path:

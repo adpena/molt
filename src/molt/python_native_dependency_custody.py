@@ -32,7 +32,7 @@ from molt.native_target_shape import native_artifact_shape, native_object_format
 from molt.python_file_node_custody import _FileNodePool
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_native_locations import (
-    _loaded_native_module_paths,
+    _loaded_native_module_snapshot,
     _loader_name,
     _macos_dyld_cache_contract,
     _native_contract_valid,
@@ -77,7 +77,11 @@ def _pe_rva_offset(
 
 
 def _dependency_header(
-    data: bytes, operating_system: str, architecture: str | None
+    data: bytes,
+    operating_system: str,
+    architecture: str | None,
+    *,
+    loaded_macho_identity: tuple[int, int] | None = None,
 ) -> NativeHeader:
     try:
         object_format = native_object_format_for_os(operating_system)
@@ -87,7 +91,10 @@ def _dependency_header(
             else None
         )
         return native_artifact_from_bytes(data).admit(
-            object_format=object_format, kinds=LOADED_IMAGE_KINDS, shape=shape
+            object_format=object_format,
+            kinds=LOADED_IMAGE_KINDS,
+            shape=shape,
+            loaded_macho_identity=loaded_macho_identity,
         )
     except (NativeArtifactError, RuntimeError) as exc:
         raise PythonEnvironmentIdentityError(str(exc)) from exc
@@ -272,9 +279,17 @@ def _elf_dependencies(
 
 
 def _macho_load_commands(
-    data: bytes, *, architecture: str | None = None
+    data: bytes,
+    *,
+    architecture: str | None = None,
+    loaded_macho_identity: tuple[int, int] | None = None,
 ) -> tuple[str, tuple[tuple[int, int, int], ...]]:
-    header = _dependency_header(data, "macos", architecture)
+    header = _dependency_header(
+        data,
+        "macos",
+        architecture,
+        loaded_macho_identity=loaded_macho_identity,
+    )
     metadata = header.metadata
     assert isinstance(metadata, MachOHeader)
     endian = header.endian
@@ -321,9 +336,16 @@ def _macho_command_string(
 
 
 def _macho_dependencies(
-    data: bytes, *, architecture: str | None = None
+    data: bytes,
+    *,
+    architecture: str | None = None,
+    loaded_macho_identity: tuple[int, int] | None = None,
 ) -> tuple[NativeDependency, ...]:
-    endian, commands = _macho_load_commands(data, architecture=architecture)
+    endian, commands = _macho_load_commands(
+        data,
+        architecture=architecture,
+        loaded_macho_identity=loaded_macho_identity,
+    )
     dylib_commands: dict[int, DependencyKind] = {
         0xC: "required",
         0x18: "weak",
@@ -350,8 +372,17 @@ def _macho_dependencies(
     return tuple(sorted(dependencies))
 
 
-def _macho_rpaths(data: bytes, *, architecture: str | None = None) -> tuple[str, ...]:
-    endian, commands = _macho_load_commands(data, architecture=architecture)
+def _macho_rpaths(
+    data: bytes,
+    *,
+    architecture: str | None = None,
+    loaded_macho_identity: tuple[int, int] | None = None,
+) -> tuple[str, ...]:
+    endian, commands = _macho_load_commands(
+        data,
+        architecture=architecture,
+        loaded_macho_identity=loaded_macho_identity,
+    )
     rpaths = {
         _macho_command_string(
             data,
@@ -446,12 +477,20 @@ def _loaded_path_object_index(paths: Iterable[Path]) -> dict[tuple[int, int], Pa
 
 
 def _native_dependencies(
-    data: bytes, operating_system: str, *, architecture: str | None = None
+    data: bytes,
+    operating_system: str,
+    *,
+    architecture: str | None = None,
+    loaded_macho_identity: tuple[int, int] | None = None,
 ) -> tuple[NativeDependency, ...]:
     if operating_system == "windows":
         return _pe_dependencies(data, architecture=architecture)
     if operating_system == "macos":
-        return _macho_dependencies(data, architecture=architecture)
+        return _macho_dependencies(
+            data,
+            architecture=architecture,
+            loaded_macho_identity=loaded_macho_identity,
+        )
     if operating_system == "linux":
         return _elf_dependencies(data, architecture=architecture)
     raise PythonEnvironmentIdentityError(
@@ -467,9 +506,11 @@ def _native_dependency_closure(
     policy: str,
     pool: _FileNodePool,
 ) -> dict[str, object]:
-    loaded, loader_aliases, loader_contracts = _loaded_native_module_paths(
-        operating_system
-    )
+    loader_snapshot = _loaded_native_module_snapshot(operating_system)
+    loaded = loader_snapshot.paths
+    loader_aliases = loader_snapshot.aliases
+    loader_contracts = loader_snapshot.contracts
+    macos_image_identities = loader_snapshot.macho_identities
     by_name: dict[str, Path] = dict(loader_aliases)
     if operating_system != "macos":
         for path in loaded:
@@ -533,13 +574,21 @@ def _native_dependency_closure(
         data = pool.read_bound(node, label="loaded native dependency")
         nodes[name] = node
         discovered[name] = path
+        loaded_macho_identity = macos_image_identities.get(path)
         rpaths = (
-            _macho_rpaths(data, architecture=architecture)
+            _macho_rpaths(
+                data,
+                architecture=architecture,
+                loaded_macho_identity=loaded_macho_identity,
+            )
             if operating_system == "macos"
             else ()
         )
         dependencies = _native_dependencies(
-            data, operating_system, architecture=architecture
+            data,
+            operating_system,
+            architecture=architecture,
+            loaded_macho_identity=loaded_macho_identity,
         )
         del data
         for declaration in dependencies:
@@ -671,14 +720,7 @@ def _native_dependency_closure(
     ]
 
     def verify_census() -> None:
-        after_loaded, after_aliases, after_contracts = _loaded_native_module_paths(
-            operating_system
-        )
-        if (
-            set(after_loaded) != set(loaded)
-            or after_aliases != loader_aliases
-            or set(after_contracts) != set(loader_contracts)
-        ):
+        if _loaded_native_module_snapshot(operating_system) != loader_snapshot:
             raise PythonEnvironmentIdentityError(
                 "loaded native image census changed during dependency capture"
             )
