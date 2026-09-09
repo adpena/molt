@@ -112,7 +112,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
                 if lhs_is_const
                     && !rhs_is_const
-                    && can_reorder_commutative(domain, lhs, rhs, &type_map)
+                    && can_reorder_commutative(domain, lhs, rhs, type_map)
                 {
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -127,7 +127,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let rhs = op.operands[1];
                 let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
-                if lhs_is_const && !rhs_is_const && can_reorder_comparison(lhs, rhs, &type_map) {
+                if lhs_is_const && !rhs_is_const && can_reorder_comparison(lhs, rhs, type_map) {
                     op.opcode = swapped;
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -211,7 +211,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let rhs_bool = bool_consts.get(&rhs).copied();
 
             if apply_canonicalize_binary_rules(
-                op, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, result, &type_map,
+                op, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, result, type_map,
             ) {
                 stats.values_changed += 1;
             }

@@ -83,7 +83,7 @@ pub(super) fn compute_block_entry_pending(
         for (bid, block) in &func.blocks {
             let starts_pending = entry_pending.get(bid).copied().unwrap_or(false);
             let exits_pending =
-                transfer_block_pending(&value_types, &const_ints, block, starts_pending);
+                transfer_block_pending(value_types, const_ints, block, starts_pending);
             if !exits_pending {
                 continue;
             }
