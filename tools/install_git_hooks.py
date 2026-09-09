@@ -30,10 +30,11 @@ import argparse
 import stat
 import sys
 from pathlib import Path
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+    from command_execution import CommandExecutor
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -75,7 +76,9 @@ def _chained_wrapper(source_text: str) -> str:
     # A Molt hook that first runs a preserved foreign hook (pre-push.local),
     # then the drift gate. Insert the chain call right after the shebang line.
     lines = source_text.splitlines(keepends=True)
-    shebang = lines[0] if lines and lines[0].startswith("#!") else "#!/usr/bin/env bash\n"
+    shebang = (
+        lines[0] if lines and lines[0].startswith("#!") else "#!/usr/bin/env bash\n"
+    )
     rest = "".join(lines[1:]) if lines and lines[0].startswith("#!") else source_text
     chain = (
         'local_hook="$(dirname "$0")/pre-push.local"\n'
@@ -107,7 +110,7 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
 
     existing = _read(target) if target.exists() else ""
     want = source_text
-    if target.exists() and not _is_molt_hook(existing):
+    if preserved.exists() or (target.exists() and not _is_molt_hook(existing)):
         # Foreign hook present -> we will chain it; the installed content wraps source.
         want = _chained_wrapper(source_text)
 
@@ -117,10 +120,16 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
         return 0
 
     if check:
-        state = "MISSING" if not target.exists() else (
-            "FOREIGN (uninstalled)" if not _is_molt_hook(existing) else "OUTDATED"
+        state = (
+            "MISSING"
+            if not target.exists()
+            else (
+                "FOREIGN (uninstalled)" if not _is_molt_hook(existing) else "OUTDATED"
+            )
         )
-        print(f"pre-push drift gate: {state} at {target} — run: python tools/install_git_hooks.py")
+        print(
+            f"pre-push drift gate: {state} at {target} — run: python tools/install_git_hooks.py"
+        )
         return 1
 
     hooks.mkdir(parents=True, exist_ok=True)
@@ -134,7 +143,9 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
     # Belt-and-suspenders: do NOT let core.hooksPath shadow us into the broken pre-commit.
     hp = _COMMANDS.run(
         ["git", "config", "--get", "core.hooksPath"],
-        cwd=str(repo_root), capture_output=True, text=True,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     note = ""
     if hp:
@@ -149,8 +160,12 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Install Molt's pre-push drift gate.")
-    ap.add_argument("--check", action="store_true", help="exit 1 if not installed/current")
-    ap.add_argument("--uninstall", action="store_true", help="remove the drift gate hook")
+    ap.add_argument(
+        "--check", action="store_true", help="exit 1 if not installed/current"
+    )
+    ap.add_argument(
+        "--uninstall", action="store_true", help="remove the drift gate hook"
+    )
     args = ap.parse_args()
     return install(check=args.check, uninstall=args.uninstall)
 
