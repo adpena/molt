@@ -661,7 +661,15 @@ def _canonical_leaf(path: Path, *, create_parent: bool) -> Path:
 
 
 def staged_file_path(destination: Path, *, purpose: str = "write") -> Path:
-    """Return a bounded, destination-bound staging path in the same directory."""
+    """Return a bounded, destination-bound staging path in the same directory.
+
+    Every file-publication consumer uses this naming authority, including when
+    its destination is another private stage. Hashing the leaf instead of
+    appending to it keeps nested verified copies within filesystem component
+    limits. The purpose is a short, fixed call-site label, never a source name.
+    This chooses an unreserved name; callers retain their creation/publication
+    protocol and must clean up their own stage on failure.
+    """
 
     destination = _canonical_leaf(destination, create_parent=True)
     identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]

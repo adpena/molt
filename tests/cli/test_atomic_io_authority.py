@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import stat
 from pathlib import Path
+import zipfile
 
 import pytest
 
 from molt.cli import atomic_io
+from molt.cli import backend_cache
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
+    BackendArtifactKind,
+)
 from molt import file_publication
 from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
 from molt.wasm_artifact import (
@@ -23,7 +30,7 @@ def test_verified_copy_checks_staged_bytes_before_publication(
 ) -> None:
     source = tmp_path / "source"
     source.write_bytes(b"expected")
-    destination = tmp_path / "destination"
+    destination = tmp_path / ("destination-" * 20)
     if existing:
         destination.write_bytes(b"previous")
     expected = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -44,6 +51,58 @@ def test_verified_copy_checks_staged_bytes_before_publication(
     monkeypatch.setattr(atomic_io.shutil, "copyfile", copyfile)
     atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
     assert destination.read_bytes() == b"expected"
+
+
+@pytest.mark.parametrize("name", ["x" * 234, "\u00e9" * 117])
+@pytest.mark.parametrize("operation", ["bytes", "copy", "link", "fallback", "zip"])
+def test_atomic_publication_accepts_long_destination_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, operation: str
+) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"payload")
+    destination = tmp_path / name
+    if operation == "bytes":
+        atomic_io._atomic_write_bytes(destination, b"payload")
+    elif operation == "copy":
+        atomic_io._atomic_copy_file(source, destination)
+    elif operation in {"link", "fallback"}:
+        if operation == "fallback":
+
+            def no_links(*_args, **_kwargs):
+                raise OSError(errno.EXDEV, "fixture has no hard links")
+
+            monkeypatch.setattr(atomic_io.os, "link", no_links)
+        atomic_io._atomic_link_or_copy_file(source, destination)
+    else:
+        with atomic_io._atomic_zip_file(destination) as archive:
+            archive.writestr("member", b"payload")
+    if operation == "zip":
+        with zipfile.ZipFile(destination) as archive:
+            assert archive.read("member") == b"payload"
+    else:
+        assert destination.read_bytes() == b"payload"
+    assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+def test_nested_backend_cache_publication_uses_bounded_stages(tmp_path: Path) -> None:
+    # Native cache keys carry three complete digests. The outer cache stage and
+    # inner verified copy must not each append another nonce to that basename.
+    digest = hashlib.sha256(b"cache-key").hexdigest()
+    destination = tmp_path / f"{digest}.artifact-{digest}.stdlib-{digest}.a"
+    source = tmp_path / "source.rs"
+    source.write_bytes(b"fn alpha() {}\n")
+    warnings: list[str] = []
+    identity = backend_cache._publish_immutable_backend_cache_artifact(
+        source,
+        destination,
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        warnings=warnings,
+    )
+    assert identity.path == destination
+    assert identity.sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert not source.samefile(destination)
+    assert not warnings
+    assert not list(tmp_path.glob(".molt-*.tmp"))
 
 
 def test_every_atomic_publication_has_one_file_fsync_per_staged_file(

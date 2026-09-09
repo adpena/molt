@@ -36,12 +36,12 @@ from molt.python_native_dependency_custody import (
 )
 from molt.python_native_locations import _native_contract_valid
 
-PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v4"
+PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
 _NATIVE_DEPENDENCY_POLICIES = {
-    "windows": "pe-loaded-import-closure-v2",
-    "macos": "mach-o-loaded-dylib-closure-v3",
-    "linux": "elf-loaded-needed-closure-v2",
+    "windows": "pe-loaded-import-closure-v3",
+    "macos": "mach-o-loaded-dylib-closure-v4",
+    "linux": "elf-loaded-needed-closure-v3",
 }
 _RUNTIME_IDENTITY_FIELDS = frozenset(
     {
@@ -782,6 +782,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     if not isinstance(dependency, Mapping) or set(dependency) != {
         "status",
         "policy",
+        "executable_component",
         "root_components",
         "observed_components",
         "observed_contracts",
@@ -820,7 +821,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         )
     component_ids: set[str] = set()
     component_roles: set[str] = set()
-    filenames: set[str] = set()
+    filenames_by_id: dict[str, str] = {}
     component_keys: set[tuple[str, int]] = set()
     role_nodes = {
         str(row["role"]): row["node"]
@@ -857,7 +858,6 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             or any(separator in filename for separator in ("/", "\\", "\0"))
             or component_key < prior_component_key
             or component_key in component_keys
-            or (payload["operating_system"] != "macos" and filename_key in filenames)
             or not isinstance(node, str)
             or node not in nodes_by_id
             or not isinstance(roles, list)
@@ -872,7 +872,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             )
         prior_component_key = component_key
         component_keys.add(component_key)
-        filenames.add(str(filename_key))
+        filenames_by_id[str(component_id)] = str(filename_key)
         component_ids.add(str(component_id))
         component_roles.update(cast(list[str], roles))
         referenced_nodes.add(str(component.get("node")))
@@ -913,6 +913,21 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             raise PythonEnvironmentIdentityError(
                 "Python runtime native dependency observed census is not canonical"
             )
+    observed_image_ids = set(cast(list[str], observed_components))
+    executable_component = dependency.get("executable_component")
+    if (
+        not isinstance(executable_component, str)
+        or executable_component not in observed_image_ids
+    ):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime executable is not an observed native component"
+        )
+    if payload["operating_system"] != "macos" and len(
+        {filenames_by_id[component] for component in observed_image_ids}
+    ) != len(observed_image_ids):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime observed native loader names are ambiguous"
+        )
     deferred = dependency.get("deferred_imports")
     if not isinstance(deferred, list):
         raise PythonEnvironmentIdentityError(
@@ -932,7 +947,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         source, name, kind = (declaration.get(key) for key in ("from", "name", "kind"))
         if (
             not isinstance(source, str)
-            or source not in component_ids
+            or source not in observed_image_ids
             or not isinstance(name, str)
             or not name
             or "\0" in name
@@ -972,8 +987,8 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         typed_edge = cast(Mapping[str, object], edge)
         pair = (str(typed_edge["from"]), str(typed_edge["to"]))
         if (
-            pair[0] not in component_ids
-            or (pair[1] not in component_ids and pair[1] not in valid_contracts)
+            pair[0] not in observed_image_ids
+            or (pair[1] not in observed_image_ids and pair[1] not in valid_contracts)
             or pair in seen_edge_pairs
         ):
             raise PythonEnvironmentIdentityError(

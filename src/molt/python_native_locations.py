@@ -3,12 +3,19 @@
 This module does not import the content scanner. On macOS its single loader
 snapshot reads the selected thin image headers needed to bind universal files
 to the exact slices already chosen by dyld.
+
+The census owns the OS-loaded executable (PSAPI, dyld image zero, or the ELF
+main image verified against AT_PHDR and its kernel file mapping). Configured
+CPython base/venv launchers are separate file inputs, not evidence of a loaded
+image. A framework launcher therefore
+keeps content custody without impersonating dyld's @executable_path scope.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import stat
 import struct
 import sys
 import unicodedata
@@ -28,12 +35,17 @@ _MACOS_DYLD_CACHE_CONTRACT_PREFIX = "macos-dyld-cache-image:"
 class LoadedNativeModuleSnapshot:
     """One loader census shared by path, contract, and content custody."""
 
+    executable: Path
     paths: tuple[Path, ...]
     aliases: Mapping[str, Path]
     contracts: tuple[str, ...]
     macho_identities: Mapping[Path, tuple[int, int]]
 
     def __post_init__(self) -> None:
+        if self.executable not in self.paths:
+            raise PythonEnvironmentIdentityError(
+                "loaded executable is absent from the native image census"
+            )
         object.__setattr__(self, "aliases", MappingProxyType(dict(self.aliases)))
         object.__setattr__(
             self,
@@ -82,6 +94,58 @@ def _loader_name(name: str, operating_system: str) -> str:
     return name.casefold() if operating_system == "windows" else name
 
 
+def _linux_program_header_file_identity(address: int) -> tuple[int, int]:
+    """Read only the kernel mapping covering the main image's program headers."""
+    if sys.platform != "linux":
+        raise PythonEnvironmentIdentityError(
+            "Linux kernel image mapping identity requires a Linux host"
+        )
+    try:
+        with Path("/proc/self/maps").open(
+            "r", encoding="ascii", errors="surrogateescape"
+        ) as mappings:
+            for line in mappings:
+                fields = line.split(maxsplit=5)
+                start, end = (int(value, 16) for value in fields[0].split("-"))
+                if start <= address < end:
+                    major, minor = (int(value, 16) for value in fields[3].split(":"))
+                    inode = int(fields[4])
+                    if inode <= 0:
+                        raise ValueError("main ELF program headers are not file-backed")
+                    return os.makedev(major, minor), inode
+                if start > address:
+                    break
+    except (OSError, IndexError, TypeError, ValueError) as exc:
+        raise PythonEnvironmentIdentityError(
+            f"cannot identify kernel backing for main ELF program headers: {exc}"
+        ) from exc
+    raise PythonEnvironmentIdentityError(
+        "main ELF program headers have no kernel file mapping"
+    )
+
+
+def _linux_main_image_path(candidate: Path, program_headers: int) -> Path:
+    """Admit a loader spelling only when it names the mapped main image file."""
+    mapped_identity = _linux_program_header_file_identity(program_headers)
+    try:
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as exc:
+        raise PythonEnvironmentIdentityError(
+            f"main ELF image has no readable file identity: {candidate}"
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != mapped_identity
+    ):
+        raise PythonEnvironmentIdentityError(
+            f"main ELF image file disagrees with its kernel mapping: {candidate}; "
+            "an explicit interpreter or replaced executable cannot be attributed "
+            "through this loader spelling"
+        )
+    return resolved
+
+
 def _loaded_native_module_snapshot(
     operating_system: str,
 ) -> LoadedNativeModuleSnapshot:
@@ -90,6 +154,7 @@ def _loaded_native_module_snapshot(
     import ctypes
 
     paths: list[Path] = []
+    executable: Path | None = None
     raw_macho_identities: dict[str, tuple[int, int]] = {}
     macos_shared_cache_contains: Any | None = None
     if operating_system == "windows":
@@ -136,6 +201,13 @@ def _loaded_native_module_snapshot(
             wintypes.DWORD,
         )
         get_name.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_name(process, None, buffer, len(buffer))
+        if not length or length >= len(buffer):
+            raise PythonEnvironmentIdentityError(
+                "cannot identify the loaded Windows executable"
+            )
+        executable = Path(buffer.value)
         for module in modules[:count]:
             buffer = ctypes.create_unicode_buffer(32768)
             length = get_name(process, module, buffer, len(buffer))
@@ -179,6 +251,8 @@ def _loaded_native_module_snapshot(
                     "cannot identify an enumerated macOS native module header"
                 )
             raw = Path(os.fsdecode(raw_name))
+            if index == 0:
+                executable = raw
             fixed = ctypes.string_at(address, 12)
             try:
                 endian = magics[fixed[:4]]
@@ -196,6 +270,24 @@ def _loaded_native_module_snapshot(
             raw_macho_identities[key] = identity
             paths.append(raw)
     elif operating_system == "linux":
+        if sys.platform != "linux":
+            raise PythonEnvironmentIdentityError(
+                "cannot enumerate Linux runtime dependencies on a non-Linux host"
+            )
+        process = ctypes.CDLL(None)
+        try:
+            get_auxiliary_value = process.getauxval
+        except AttributeError as exc:
+            raise PythonEnvironmentIdentityError(
+                "Linux loader cannot attest main ELF image without getauxval(AT_PHDR)"
+            ) from exc
+        get_auxiliary_value.argtypes = (ctypes.c_ulong,)
+        get_auxiliary_value.restype = ctypes.c_ulong
+        main_program_headers = int(get_auxiliary_value(3))  # Linux AT_PHDR.
+        if not main_program_headers:
+            raise PythonEnvironmentIdentityError(
+                "Linux loader has no AT_PHDR main ELF image identity"
+            )
 
         class _DlPhdrInfo(ctypes.Structure):
             _fields_ = [
@@ -209,23 +301,41 @@ def _loaded_native_module_snapshot(
             ctypes.c_int, ctypes.POINTER(_DlPhdrInfo), ctypes.c_size_t, ctypes.c_void_p
         )
         callback_errors: list[str] = []
+        image_count = 0
 
         @callback_type
         def collect(info: object, _size: int, _data: object) -> int:
+            nonlocal executable, image_count
             # ctypes discards exceptions escaping callbacks. Preserve a typed
             # failure and stop iteration instead of publishing a partial list.
             try:
                 if _size < ctypes.sizeof(_DlPhdrInfo):
                     raise ValueError("truncated dl_phdr_info")
                 typed = cast(Any, info).contents
+                if typed.phdr == main_program_headers:
+                    # Both glibc and musl enumerate the program main first.
+                    # Require the auxv and loader authorities to agree: direct
+                    # interpreter launches must not designate a later ld.so as main.
+                    if executable is not None or image_count != 0:
+                        raise ValueError(
+                            "AT_PHDR does not identify the first main ELF image"
+                        )
+                    executable = (
+                        Path(os.fsdecode(typed.name))
+                        if typed.name
+                        else Path("/proc/self/exe")
+                    )
                 if typed.name:
                     paths.append(Path(os.fsdecode(typed.name)))
+                elif typed.phdr != main_program_headers:
+                    raise ValueError("unnamed ELF image is not the AT_PHDR main image")
+                image_count += 1
             except (OSError, TypeError, ValueError) as exc:
                 callback_errors.append(str(exc))
                 return 1
             return 0
 
-        iterator = ctypes.CDLL(None).dl_iterate_phdr
+        iterator = process.dl_iterate_phdr
         iterator.argtypes = (callback_type, ctypes.c_void_p)
         iterator.restype = ctypes.c_int
         if iterator(collect, None) != 0 or callback_errors:
@@ -233,12 +343,22 @@ def _loaded_native_module_snapshot(
                 "cannot enumerate loaded Linux runtime dependencies"
                 + (f": {callback_errors[0]}" if callback_errors else "")
             )
+        if executable is None:
+            raise PythonEnvironmentIdentityError(
+                "Linux loader census has no main image matching AT_PHDR"
+            )
+        executable = _linux_main_image_path(executable, main_program_headers)
     else:  # guarded by _platform_identity
         raise PythonEnvironmentIdentityError(
             f"native dependency enumeration is unsupported on {operating_system}"
         )
-    base = Path(getattr(sys, "_base_executable", None) or sys.executable)
-    paths.append(base)
+    if executable is None:
+        raise PythonEnvironmentIdentityError(
+            "native loader census has no executable image"
+        )
+    # Only the OS-reported executable belongs in the observed image census.
+    # Python's base/venv launchers remain separately bound runtime file inputs.
+    paths.append(executable)
     canonical: dict[str, Path] = {}
     aliases: dict[str, Path] = {}
     contracts: set[str] = set()
@@ -301,6 +421,7 @@ def _loaded_native_module_snapshot(
         sorted(canonical.values(), key=lambda path: os.path.normcase(str(path)))
     )
     return LoadedNativeModuleSnapshot(
+        executable=executable.resolve(strict=True),
         paths=ordered,
         aliases=aliases,
         contracts=tuple(sorted(contracts)),

@@ -252,21 +252,26 @@ schema is unchanged by this cut.
 
 The path-only locator runs before proof watches are armed. Native files outside
 environment roots receive exact-file watches, never broad system-directory watches.
-Runtime closure v4, PE/ELF loaded-dependency policies v2 and Mach-O policy v3
+Runtime closure v5, PE/ELF loaded-dependency policies v3 and Mach-O policy v4
 attest all observed native file components and loader-provided virtual contracts,
 not just runtime-root reachability. PE eager imports, ELF `DT_NEEDED` (including
 lazy symbol binding), and Mach-O required/reexport/upward loads remain mandatory.
 PE delay and Mach-O weak/lazy declarations are recorded separately with their
 importer and kind; a matching loaded basename never proves that importer's
-optional binding. macOS components use resolved full-path identity, so distinct
-framework images may share a `Python` basename. Direct, `@loader_path`,
+optional binding. Components use resolved full-path identity on every OS;
+configured launchers remain content-bound roots but cannot impersonate loaded
+importers or providers, even with equal basenames. Observed PE/ELF loader names
+must be unambiguous; distinct macOS framework images may share a `Python`
+basename. The OS-loaded executable designation is an observed component bound
+into the closure digest, not inferred from the configured base launcher.
+Direct, `@loader_path`,
 `@executable_path`, and importer-local `LC_RPATH` bindings resolve only to the
 observed file-object census. Inherited dyld run-path stacks are not inferred and
 fail closed. Dyld shared-cache contracts carry canonical absolute install paths;
 an equal basename at a different path cannot satisfy a dependency. Optional
 targets already in the census retain independent byte custody, without invented
 dependency edges. Components are ordered by loader filename and file-node index,
-preserving duplicate macOS basenames without a second identity authority. The
+preserving distinct file components without a second identity authority. The
 parser fences capture with a second loader census and retains that fence through
 outer custody publication.
 This is a snapshot of observed files and declarations, not an attestation of

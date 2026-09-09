@@ -2478,7 +2478,10 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     )
     executable = context["command_executable"]
     assert executable["identical"] is True
-    assert executable["prelaunch"]["path"] == str(Path(sys.executable).resolve())
+    assert executable["prelaunch"]["path"] == str(Path(os.path.abspath(sys.executable)))
+    assert executable["prelaunch"]["resolved_path"] == str(
+        Path(sys.executable).resolve()
+    )
     assert executable["prelaunch"]["size_bytes"] > 0
     assert len(executable["prelaunch"]["sha256"]) == 64
     python_identity = context["toolchains"]["python"]
@@ -2921,11 +2924,10 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
         event.get("event") == "hook-start" and event.get("runtime") == "python"
         for event in receipt["events"]
     )
-    assert {event["surface"] for event in receipt["violations"]} >= {
-        "os.system",
-        "os.exec",
-        "os.spawn",
-    }
+    violation_surfaces = [event["surface"] for event in receipt["violations"]]
+    assert violation_surfaces[:2] == ["os.system", "os.exec"]
+    assert len(violation_surfaces) == 3
+    assert violation_surfaces[2] in {"os.spawn", "os.fork"}
     context = record["receipt_context"]
     supervisor = context["process_supervisor"]
     assert supervisor["schema"] == "molt.proof-process-supervision.v1"

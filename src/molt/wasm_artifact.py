@@ -6,7 +6,6 @@ import mmap
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Collection, Iterable, Literal, Mapping, Sequence
-import uuid
 
 from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
@@ -1979,9 +1978,9 @@ def transform_wasm_publication_file(
 ) -> WasmPublicationTransformMetrics:
     """Rewrite exports/custom sections with bounded memory and one output pass."""
 
-    from molt.file_publication import durable_replace
+    from molt.file_publication import durable_replace, staged_file_path
 
-    staged = path.with_name(f".{path.name}.{uuid.uuid4().hex}.publication")
+    staged = staged_file_path(path, purpose="wasm-transform")
     try:
         with (
             path.open("rb") as source,

@@ -711,6 +711,15 @@ digests, not size or rounded modification time. Target spelling is likewise owne
 by `cli/compiler_target.py`, not the native tool launcher. These semantic leaf
 authorities remain in lowering's source closure; backend publication does not.
 
+File publication uses `file_publication.staged_file_path` for same-parent,
+destination-digest-bound private names. Atomic writes, verified copies, hard-link
+staging, ZIP/TAR bundles, immutable backend caches, runtime WASM generations and
+link outputs, WASM publication transforms, and LLVM attestations share that rule.
+A private stage may itself be a copy destination: nesting never appends the
+original filename or another PID/nonce suffix, so valid long cache-key basenames
+remain publishable. Callers retain their existing verification, durability,
+collision handling, and failure cleanup; private names are not cache identities.
+
 WASM header and provider-archive selection is owned by `cli/wasm_link_inputs.py`,
 including Rust target library lookup, WASI sysroot selection, libc/compiler-rt/
 libc++ and long-double input policy. Admission and every link path consume those

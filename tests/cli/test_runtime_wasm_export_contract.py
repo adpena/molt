@@ -106,9 +106,7 @@ def test_direct_runtime_export_uses_generated_reverse_import_signature(
         )
     )
 
-    assert _runtime_wasm_typed_export_names(path, expected) == {
-        "molt_fast_list_append"
-    }
+    assert _runtime_wasm_typed_export_names(path, expected) == {"molt_fast_list_append"}
 
 
 def test_split_runtime_export_uses_generated_canonical_import_signature(
@@ -124,9 +122,7 @@ def test_split_runtime_export_uses_generated_canonical_import_signature(
         )
     )
 
-    assert _runtime_wasm_typed_export_names(path, expected) == {
-        "molt_PyLong_FromLong"
-    }
+    assert _runtime_wasm_typed_export_names(path, expected) == {"molt_PyLong_FromLong"}
 
 
 def test_unknown_runtime_export_signature_fails_closed(tmp_path: Path) -> None:
@@ -158,9 +154,7 @@ def test_direct_runtime_export_signature_mismatch_fails_closed(tmp_path: Path) -
     )
 
     assert (
-        _runtime_wasm_typed_export_names(
-            path, {"molt_fast_list_append": "function"}
-        )
+        _runtime_wasm_typed_export_names(path, {"molt_fast_list_append": "function"})
         == set()
     )
 
@@ -202,4 +196,4 @@ def test_publication_transform_has_one_bounded_buffered_pass(tmp_path: Path) -> 
     )
     assert not warm.changed
     assert warm.written_bytes == 0
-    assert not tuple(tmp_path.glob(".*.publication"))
+    assert not tuple(tmp_path.glob(".molt-wasm-transform-*.tmp"))

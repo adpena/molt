@@ -324,7 +324,7 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
     assert caught.value.stdout == "link-stdout"
     assert caught.value.stderr == "link-stderr"
     assert output.read_bytes() == b"old-publication"
-    assert not list(tmp_path.glob(".runtime.wasm.*.tmp"))
+    assert not list(tmp_path.glob(".molt-wasm-reloc-*.tmp"))
 
 
 @pytest.mark.parametrize("timeout", (False, True))
