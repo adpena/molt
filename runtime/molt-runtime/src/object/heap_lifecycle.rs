@@ -493,6 +493,7 @@ pub(crate) unsafe fn visit_owned_values(
             HeapLifecycleHandler::Super => {
                 visit_bits(super::layout::super_type_bits(ptr), visit);
                 visit_bits(super::layout::super_obj_bits(ptr), visit);
+                visit_bits(super::layout::super_receiver_class_bits(ptr), visit);
             }
             HeapLifecycleHandler::Enumerate => {
                 visit_bits(super::layout::enumerate_target_bits(ptr), visit);
@@ -1081,9 +1082,9 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::Reversed
             | HeapLifecycleHandler::Union => detach_slots(ptr, [0], sink),
             HeapLifecycleHandler::BoundMethod
-            | HeapLifecycleHandler::Super
             | HeapLifecycleHandler::GenericAlias
             | HeapLifecycleHandler::Filter => detach_slots(ptr, [0, 1], sink),
+            HeapLifecycleHandler::Super => detach_slots(ptr, [0, 1, 2], sink),
             HeapLifecycleHandler::Slice | HeapLifecycleHandler::Range => {
                 detach_slots(ptr, [0, 1, 2], sink)
             }

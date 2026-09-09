@@ -118,7 +118,10 @@ fn publish_wasm_link_facts_atomically(
     // single durable commit so input == output is a supported, atomic update.
     drop(bytes);
     drop(file);
-    let facts = result?;
+    let facts = match result {
+        Ok(facts) => facts,
+        Err(error) => return Err(publication.abort(io::Error::other(error)).to_string()),
+    };
     publication.commit().map_err(|error| {
         format!(
             "cannot commit atomic attested wasm output {}: {error}",
@@ -234,6 +237,7 @@ fn main() -> io::Result<()> {
         ));
     }
     let cli_args = BackendCliArgs::parse(&args);
+    let native_output_kind = cli_args.resolved_native_output_kind()?;
     if cli_args.wants_features {
         let features: &[&str] = &[
             #[cfg(feature = "native-backend")]
@@ -328,6 +332,7 @@ fn main() -> io::Result<()> {
         output_kind,
         use_ir_pipeline: cli_args.use_ir_pipeline,
         target_triple: cli_args.target_triple,
+        native_output_kind,
         wasm_options: cli_args.wasm_options,
     })?;
 

@@ -13,7 +13,7 @@ from molt.cli import source_extension_candidate_promotion as promotion
 from molt.cli import source_package_seal as seal_api
 from molt.cli import source_extension_candidate_transaction as transaction_authority
 from molt.cli import source_extension_set_validation as set_validation
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_set_registry import (
     SourceExtensionPackage,
     SourceExtensionRegistry,

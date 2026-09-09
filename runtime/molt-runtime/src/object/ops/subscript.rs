@@ -83,16 +83,39 @@ unsafe fn memoryview_strided_contains_bytes(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
+    index_impl(obj_bits, key_bits, false)
+}
+
+pub(crate) extern "C" fn molt_getitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
+    index_impl(obj_bits, key_bits, true)
+}
+
+fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             unsafe {
+                if !builtin_only && !crate::object::iterable::builtin_receiver(_py, obj_ptr) {
+                    if let Some(method) =
+                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__getitem__")
+                    {
+                        let result = call_callable1(_py, method, key_bits);
+                        dec_ref_bits(_py, method);
+                        return result;
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
                 if object_is_exact_builtin_dict(_py, obj_ptr) {
                     if let Some(val) = dict_get_in_place(_py, obj_ptr, key_bits) {
                         if obj_from_bits(val).as_ptr().is_some() {
                             inc_ref_bits(_py, val);
                         }
                         return val;
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
                     }
                     return raise_key_error_with_key(_py, key_bits);
                 }
@@ -723,46 +746,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let val = start + step * idx;
                     return int_bits_from_bigint(_py, val);
                 }
-                if type_id != TYPE_ID_DICT {
-                    let class_bits = object_class_bits(ptr);
-                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                        && let Some(getitem_name_bits) =
-                            attr_name_bits_from_bytes(_py, b"__getitem__")
-                    {
-                        let explicit_getitem = obj_from_bits(class_dict_bits(class_ptr))
-                            .as_ptr()
-                            .is_some_and(|dict_ptr| {
-                                object_type_id(dict_ptr) == TYPE_ID_DICT
-                                    && dict_get_in_place(_py, dict_ptr, getitem_name_bits).is_some()
-                            });
-                        if explicit_getitem {
-                            if let Some(call_bits) = class_attr_lookup(
-                                _py,
-                                class_ptr,
-                                class_ptr,
-                                Some(ptr),
-                                getitem_name_bits,
-                            ) {
-                                dec_ref_bits(_py, getitem_name_bits);
-                                exception_stack_push();
-                                let res = call_callable1(_py, call_bits, key_bits);
-                                dec_ref_bits(_py, call_bits);
-                                if exception_pending(_py) {
-                                    exception_stack_pop(_py);
-                                    return MoltObject::none().bits();
-                                }
-                                exception_stack_pop(_py);
-                                return res;
-                            }
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, getitem_name_bits);
-                                return MoltObject::none().bits();
-                            }
-                        }
-                        dec_ref_bits(_py, getitem_name_bits);
-                    }
-                }
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
@@ -774,12 +757,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return val;
                     }
-                    if !object_is_exact_builtin_dict(_py, ptr)
-                        && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__missing__")
-                    {
-                        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
-                        {
-                            dec_ref_bits(_py, name_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if !object_is_exact_builtin_dict(_py, ptr) {
+                        if let Some(call_bits) = crate::builtins::attr::lookup_special_method(
+                            _py,
+                            obj_bits,
+                            b"__missing__",
+                        ) {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
                             dec_ref_bits(_py, call_bits);
@@ -790,7 +776,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             exception_stack_pop(_py);
                             return res;
                         }
-                        dec_ref_bits(_py, name_bits);
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
                         }
@@ -858,21 +843,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             );
                         }
                     }
-                }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
-                    if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        exception_stack_push();
-                        let res = call_callable1(_py, call_bits, key_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            exception_stack_pop(_py);
-                            return MoltObject::none().bits();
-                        }
-                        exception_stack_pop(_py);
-                        return res;
-                    }
-                    dec_ref_bits(_py, name_bits);
                 }
             }
             let msg = if unsafe { object_type_id(ptr) } == TYPE_ID_TYPE {
@@ -1785,7 +1755,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getitem_method(obj_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { molt_index(obj_bits, key_bits) })
+    molt_index(obj_bits, key_bits)
 }
 
 /// Same as `molt_getitem_method` but the caller guarantees the index is
@@ -1848,10 +1818,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
                         return MoltObject::none().bits();
                     }
-                    let order = dict_order(dict_ptr);
-                    let hashes = dict_hashes(dict_ptr);
-                    let table = dict_table(dict_ptr);
-                    let found = dict_find_entry(_py, order, hashes, table, item_bits);
+                    let found = dict_find_entry(_py, dict_ptr, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }

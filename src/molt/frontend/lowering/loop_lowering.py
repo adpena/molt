@@ -804,24 +804,10 @@ class LoopLoweringMixin(_MixinBase):
             # loops.
             module_backed = set(names)
             if module_backed:
-                # Flush any values that were previously assigned (before
-                # this loop) into the module dict.  Without this, a
-                # variable assigned before the loop and then mutated inside
-                # the loop would lose its initial value when module_get_global
-                # reads find nothing in the module dict.
-                for name in sorted(module_backed):
-                    # Skip variables already flushed to the module dict
-                    # by an enclosing loop.  Re-flushing would overwrite
-                    # the current dynamic value with the stale SSA value
-                    # from the original definition, resetting accumulators
-                    # on every outer loop iteration.
-                    if name in self.module_global_mutations:
-                        continue
-                    existing = self.globals.get(name)
-                    if existing is None:
-                        existing = self.locals.get(name)
-                    if existing is not None and self.module_obj is not None:
-                        self._emit_module_attr_set_on(self.module_obj, name, existing)
+                # Only unpublished values need promotion. Replacing an already
+                # live entry repeats observable stores and can restore stale SSA
+                # state after callbacks. The deferred set owns that distinction.
+                self._flush_deferred_module_attrs(module_backed)
                 self.module_global_mutations.update(module_backed)
                 # Remove from self.locals so visit_Name falls through to
                 # the module_global_mutations check (module_get_global).

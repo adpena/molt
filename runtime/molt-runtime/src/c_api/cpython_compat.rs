@@ -1432,6 +1432,9 @@ pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char
 /// Returns 1 if true, 0 if false, -1 on error.
 pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        if a == b && matches!(op, 2 | 3) {
+            return i32::from(op == 2);
+        }
         let res = match op {
             0 => molt_lt(a, b), // Py_LT
             1 => molt_le(a, b), // Py_LE

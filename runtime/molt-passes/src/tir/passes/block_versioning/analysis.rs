@@ -51,13 +51,16 @@ pub(super) fn parse_guard_type(op: &TirOp) -> Option<TirType> {
     }
 }
 
-/// Build a map: ValueId -> OpCode that produced it (for ops, not block args).
-pub(super) fn build_producing_op_map(func: &TirFunction) -> HashMap<ValueId, OpCode> {
-    let mut map: HashMap<ValueId, OpCode> = HashMap::new();
+/// Preserve the producing opcode and result slot (not block argument hints).
+pub(super) fn build_producing_op_map(func: &TirFunction) -> HashMap<ValueId, (OpCode, usize)> {
+    let mut map = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            for &result in &op.results {
-                map.insert(result, op.opcode);
+            if !op.has_valid_result_arity() {
+                continue;
+            }
+            for (index, &result) in op.results.iter().enumerate() {
+                map.insert(result, (op.opcode, index));
             }
         }
     }
@@ -69,7 +72,7 @@ pub(super) fn build_producing_op_map(func: &TirFunction) -> HashMap<ValueId, OpC
 pub(super) fn value_proves_type(
     value: ValueId,
     expected: &TirType,
-    producing_ops: &HashMap<ValueId, OpCode>,
+    producing_ops: &HashMap<ValueId, (OpCode, usize)>,
     block_arg_types: &HashMap<ValueId, TirType>,
 ) -> bool {
     // Check block argument types first.
@@ -80,10 +83,10 @@ pub(super) fn value_proves_type(
     // Check the producing opcode against the generated intrinsic-result table.
     // Operand-dependent arithmetic stays out of this fast proof path; type_refine
     // owns those proofs after it has operand facts.
-    let opcode = match producing_ops.get(&value) {
+    let (opcode, index) = match producing_ops.get(&value) {
         Some(op) => op,
         None => return false,
     };
 
-    opcode_operand_independent_result_tir_type(*opcode).is_some_and(|ty| &ty == expected)
+    opcode_operand_independent_result_tir_type(*opcode, *index).is_some_and(|ty| &ty == expected)
 }

@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use super::*;
+use crate::TYPE_ID_FUNCTION;
 use crate::object::seq_access::{snapshot, with_immutable_tuple_slice};
 use crate::object::{
     ClassEdgeOwnership, object_init_class_edge_unpublished, object_replace_class_edge,
@@ -9,6 +10,10 @@ use crate::object::{
 mod hierarchy;
 
 pub use self::hierarchy::*;
+
+#[cfg(test)]
+#[path = "class_namespace_tests.rs"]
+mod class_namespace_tests;
 
 /// Consume structural metadata from a freshly copied class namespace.
 ///
@@ -21,6 +26,9 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     class_ptr: *mut u8,
     default_qualname_bits: u64,
 ) -> bool {
+    if exception_pending(_py) {
+        return false;
+    }
     let dict_bits = unsafe { class_dict_bits(class_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return false;
@@ -33,6 +41,9 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         &runtime_state(_py).interned.qualname_name,
         b"__qualname__",
     );
+    if exception_pending(_py) {
+        return false;
+    }
     let mut qualname_bits = default_qualname_bits;
     let mut qualname_owned = false;
     if let Some(bits) = unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) } {
@@ -45,16 +56,8 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
             return false;
         }
     }
-    if let Some(classdictcell_bits) = attr_name_bits_from_bytes(_py, b"__classdictcell__") {
-        unsafe { dict_del_in_place(_py, dict_ptr, classdictcell_bits) };
-        dec_ref_bits(_py, classdictcell_bits);
-        if exception_pending(_py) {
-            if qualname_owned {
-                dec_ref_bits(_py, qualname_bits);
-            }
-            return false;
-        }
-    }
+    // Validate identity before publishing either compiler cell: failed type
+    // construction must not expose a class through an otherwise valid cell.
     let qualname_obj = obj_from_bits(qualname_bits);
     if !qualname_obj
         .as_ptr()
@@ -75,6 +78,88 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     if qualname_owned {
         dec_ref_bits(_py, qualname_bits);
     }
+    // CPython only normalizes plain Python functions, never descriptors or
+    // native builtin-function objects supplied by a namespace provider.
+    for (name, static_method) in [
+        (b"__new__".as_slice(), true),
+        (b"__init_subclass__".as_slice(), false),
+        (b"__class_getitem__".as_slice(), false),
+    ] {
+        let Some(key_bits) = attr_name_bits_from_bytes(_py, name) else {
+            return false;
+        };
+        if let Some(function) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
+            let plain_function = obj_from_bits(function).as_ptr().is_some_and(|ptr| unsafe {
+                object_type_id(ptr) == TYPE_ID_FUNCTION
+                    && crate::object_class_bits(ptr)
+                        != builtin_classes(_py).builtin_function_or_method
+            });
+            if plain_function {
+                let descriptor = if static_method {
+                    molt_staticmethod_new(function)
+                } else {
+                    molt_classmethod_new(function)
+                };
+                if !exception_pending(_py) {
+                    unsafe { dict_set_in_place(_py, dict_ptr, key_bits, descriptor) };
+                }
+                dec_ref_bits(_py, descriptor);
+            }
+        }
+        dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            return false;
+        }
+    }
+    // The two compiler cells share validation, ownership, and publication.
+    // Populate the class cell first, matching type.__new__, then publish the
+    // finished dictionary; neither metadata key survives on the class itself.
+    for (name, value) in [
+        (
+            b"__classcell__".as_slice(),
+            MoltObject::from_ptr(class_ptr).bits(),
+        ),
+        (b"__classdictcell__".as_slice(), dict_bits),
+    ] {
+        let Some(key_bits) = attr_name_bits_from_bytes(_py, name) else {
+            return false;
+        };
+        if let Some(cell_bits) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
+            let cell_ptr = obj_from_bits(cell_bits).as_ptr().filter(|ptr| unsafe {
+                object_type_id(*ptr) == TYPE_ID_LIST && crate::list_len(*ptr) == 1
+            });
+            let Some(cell_ptr) = cell_ptr else {
+                dec_ref_bits(_py, key_bits);
+                let type_repr_bits = crate::molt_repr_builtin(type_of_bits(_py, cell_bits));
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, type_repr_bits);
+                    return false;
+                }
+                let type_repr = string_obj_to_owned(obj_from_bits(type_repr_bits));
+                dec_ref_bits(_py, type_repr_bits);
+                let Some(type_repr) = type_repr else {
+                    return false;
+                };
+                let message = format!(
+                    "{} must be a nonlocal cell, not {}",
+                    String::from_utf8_lossy(name),
+                    type_repr,
+                );
+                let _ = raise_exception::<u64>(_py, "TypeError", &message);
+                return false;
+            };
+            if unsafe { !crate::object::list_mutation::replace_one(_py, cell_ptr, 0, value) } {
+                dec_ref_bits(_py, key_bits);
+                return false;
+            }
+            unsafe { dict_del_in_place(_py, dict_ptr, key_bits) };
+        }
+        dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            return false;
+        }
+    }
+
     true
 }
 
@@ -224,6 +309,42 @@ pub extern "C" fn molt_type_new(
             }
         }
 
+        let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
+        let kwargs_obj = obj_from_bits(kwargs_bits);
+        if !kwargs_obj.is_none()
+            && let Some(kwargs_ptr) = kwargs_obj.as_ptr()
+        {
+            unsafe {
+                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
+                    let entries = dict_order(kwargs_ptr).clone();
+                    for pair in entries.chunks(2) {
+                        if pair.len() == 2 {
+                            kw_pairs.push((pair[0], pair[1]));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Own all keywords before namespace copying or cell replacement can
+        // invoke destructors, and before any construction callback can mutate
+        // a caller-visible kwargs dictionary.
+        let keyword_values: Vec<u64> = kw_pairs
+            .iter()
+            .flat_map(|&(name, value)| [name, value])
+            .collect();
+        let keyword_snapshot = if keyword_values.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            let snapshot = alloc_tuple(_py, &keyword_values);
+            if snapshot.is_null() {
+                return MoltObject::none().bits();
+            }
+            snapshot
+        };
+        let _keyword_owner = crate::PtrDropGuard::new(keyword_snapshot);
+        let (kw_names, kw_values): (Vec<_>, Vec<_>) = kw_pairs.into_iter().unzip();
+
         let mut bases_vec: Vec<u64> = Vec::new();
         let mut bases_tuple_bits = bases_bits;
         let mut bases_owned = false;
@@ -290,6 +411,9 @@ pub extern "C" fn molt_type_new(
             return MoltObject::none().bits();
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        // The unpublished class has one owner on every failure path, including
+        // namespace callbacks and metadata rejection. Transfer only on success.
+        let mut class_owner = crate::PtrDropGuard::new(class_ptr);
         unsafe {
             if !object_init_class_edge_unpublished(
                 _py,
@@ -297,7 +421,6 @@ pub extern "C" fn molt_type_new(
                 cls_bits,
                 ClassEdgeOwnership::Owned,
             ) {
-                dec_ref_bits(_py, class_bits);
                 if bases_owned {
                     dec_ref_bits(_py, bases_tuple_bits);
                 }
@@ -339,67 +462,24 @@ pub extern "C" fn molt_type_new(
             crate::object::class_finish_definition(_py, class_ptr);
         }
 
-        let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
-        let kwargs_obj = obj_from_bits(kwargs_bits);
-        if !kwargs_obj.is_none()
-            && let Some(kwargs_ptr) = kwargs_obj.as_ptr()
-        {
-            unsafe {
-                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    let entries = dict_order(kwargs_ptr).clone();
-                    for pair in entries.chunks(2) {
-                        if pair.len() == 2 {
-                            kw_pairs.push((pair[0], pair[1]));
-                        }
-                    }
-                }
+        if unsafe { !class_apply_descriptor_names(_py, class_ptr) } {
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
             }
+            return MoltObject::none().bits();
         }
-
-        let init_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.init_subclass_name,
-            b"__init_subclass__",
-        );
-        for base_bits in bases_vec.iter().copied() {
-            let Some(base_ptr) = obj_from_bits(base_bits).as_ptr() else {
-                continue;
-            };
-            let Some(init_bits) =
-                (unsafe { attr_lookup_ptr_allow_missing(_py, base_ptr, init_name_bits) })
-            else {
-                continue;
-            };
-            let builder_bits =
-                molt_callargs_new((1 + kw_pairs.len()) as u64, kw_pairs.len() as u64);
-            if builder_bits == 0 {
-                dec_ref_bits(_py, init_bits);
-                if bases_owned {
-                    dec_ref_bits(_py, bases_tuple_bits);
-                }
-                return MoltObject::none().bits();
+        if unsafe {
+            !crate::call::bind::dispatch_init_subclass_hooks(_py, class_bits, &kw_names, &kw_values)
+        } {
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
             }
-            unsafe {
-                let _ = molt_callargs_push_pos(builder_bits, class_bits);
-            }
-            for (name_bits, val_bits) in kw_pairs.iter().copied() {
-                unsafe {
-                    let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
-                }
-            }
-            crate::call::discard_owned_call_result(_py, molt_call_bind(init_bits, builder_bits));
-            dec_ref_bits(_py, init_bits);
-            if exception_pending(_py) {
-                if bases_owned {
-                    dec_ref_bits(_py, bases_tuple_bits);
-                }
-                return MoltObject::none().bits();
-            }
+            return MoltObject::none().bits();
         }
-
         if bases_owned {
             dec_ref_bits(_py, bases_tuple_bits);
         }
+        class_owner.release();
         class_bits
     })
 }

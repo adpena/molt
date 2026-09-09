@@ -6,6 +6,25 @@
 # This file is the authoritative map from specs/PEPs/APIs to differential tests.
 
 core:
+  expression_semantics:
+    tests:
+      - tests/differential/basic/expression_result_authority.py
+      - tests/differential/basic/condition_flow_truth_custody.py
+      - tests/differential/basic/branchless_count_semantics.py
+      - tests/differential/basic/rich_comparison_value_custody.py
+      - tests/differential/basic/print_stream_authority.py
+      - tests/differential/basic/call_argument_expansion_custody.py
+      - tests/differential/basic/class_argument_schedule.py
+      - tests/differential/basic/module_function_observation.py
+      - tests/differential/basic/class_namespace_lookup.py
+      - tests/differential/basic/class_annotation_namespace.py
+      - tests/differential/basic/class_annotation_namespace_313.py
+      - tests/differential/basic/class_constructor_cell_callbacks.py
+      - tests/differential/basic/super_comprehension_frame_ownership.py
+      - tests/differential/basic/super_runtime_frame_context.py
+      - tests/differential/basic/super_runtime_frame_mutating_receiver.py
+      - tests/differential/basic/annotation_frame_context.py
+      - tests/differential/basic/namespace_publication_release.py
   peps:
     "448":
       tests:

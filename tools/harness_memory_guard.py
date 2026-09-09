@@ -54,6 +54,7 @@ from molt.dx import (  # noqa: E402
     development_artifacts_requested,
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
@@ -348,10 +349,7 @@ def canonical_harness_env(
 
 
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
-    source = _effective_env(env)
-    explicit = source.get("MOLT_EXT_ROOT")
-    root = Path(explicit).expanduser() if explicit else _REPO_ROOT
-    return root / "tmp" / "harness_memory_guard"
+    return harness_guard_artifact_dir(_REPO_ROOT, _effective_env(env))
 
 
 def _env_bool(
@@ -694,7 +692,7 @@ def command_profile_log_path(
     if raw_path:
         path = Path(raw_path).expanduser()
         return path if path.is_absolute() else root / path
-    return root / "logs" / "harness_memory_guard" / "commands.jsonl"
+    return harness_guard_artifact_dir(root, source) / "commands.jsonl"
 
 
 def _max_bytes_from_mb(value: float | None) -> int | None:
@@ -2311,7 +2309,9 @@ class HarnessExecutionContext:
         root = (repo_root or _REPO_ROOT).resolve()
         canonical_env = canonical_harness_env(env, repo_root=root)
         resolved_limits = limits or limits_from_env(prefix, canonical_env)
-        resolved_artifact_root = artifact_root or _artifact_root_from_env(canonical_env)
+        resolved_artifact_root = artifact_root or harness_guard_artifact_dir(
+            root, canonical_env
+        )
         return cls(
             prefix=_normalize_prefix(prefix),
             repo_root=root,

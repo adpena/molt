@@ -43,7 +43,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     op: &OpIR,
     op_idx: usize,
-    emit_traces: bool,
+    owned_frame_entered: Option<Variable>,
     has_frame_slot: bool,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
@@ -730,7 +730,9 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[count_val]);
         }
-        "trace_enter_slot" if emit_traces => {
+        "trace_enter_slot" => {
+            let entered = owned_frame_entered
+                .expect("trace_enter_slot requires local execution-context ownership");
             let code_id = op.value.unwrap_or(0);
             let code_id_val = builder.ins().iconst(types::I64, code_id);
             let callee = SimpleBackend::import_func_id_split(
@@ -742,8 +744,9 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[code_id_val]);
+            let active = builder.ins().iconst(types::I8, 1);
+            builder.def_var(entered, active);
         }
-        "trace_enter_slot" => {}
         "trace_exit" => {}
         "frame_locals_set" => {
             let arg_names = op.args.as_deref().unwrap_or(&[]);

@@ -23,7 +23,7 @@ from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli import source_extension_publication as publication
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.extension_seal import (
     _resolve_declared_artifact,

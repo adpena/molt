@@ -43,11 +43,47 @@ _OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS = {
 }
 
 
+def _render_predicate_semantics(opcodes: list[dict], data: dict) -> str:
+    lines = [
+        "/// Python predicate result and callback-effect semantic category.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum PredicateSemantics { Equality, Ordering, Truth, Containment }\n\n",
+        "#[inline]\n",
+        "pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        category = row.get("predicate_semantics")
+        result = (
+            f"Some(PredicateSemantics::{category.title()})"
+            if category is not None else "None"
+        )
+        lines.append(f"        OpCode::{row['name']} => {result},\n")
+    lines.append("    }\n}\n\n")
+    lines.append("/// Exact scalar domain, never an annotation/subclass assertion.\n")
+    lines.append("pub fn comparison_scalar_domain(ty: &crate::tir::types::TirType) -> Option<(u8, bool)> {\n")
+    lines.append("    use crate::tir::types::TirType;\n    match ty {\n")
+    for index, domain in enumerate(data["comparison_scalar_domains"]):
+        patterns = " | ".join(f"TirType::{ty}" for ty in domain["tir_types"])
+        lines.append(f"        {patterns} => Some(({index}, {str(domain['ordering']).lower()})),\n")
+    lines.append("        TirType::Box(inner) => comparison_scalar_domain(inner),\n")
+    lines.append("        _ => None,\n    }\n}\n\n")
+    lines.append("pub fn comparison_scalar_pair_nothrow(category: PredicateSemantics, left: (u8, bool), right: (u8, bool)) -> bool {\n")
+    lines.append("    category == PredicateSemantics::Equality || (left == right && left.1)\n}\n\n")
+    lines.append("pub fn opcode_exact_scalar_result_tir_type(opcode: OpCode, result_index: usize) -> Option<crate::tir::types::TirType> {\n")
+    lines.append("    match (opcode, result_index) {\n")
+    for row in opcodes:
+        if "exact_scalar_result_type" in row:
+            lines.append(f"        (OpCode::{row['name']}, 0) => Some(crate::tir::types::TirType::{row['exact_scalar_result_type']}),\n")
+    lines.append("        _ => opcode_operand_independent_result_tir_type(opcode, result_index).filter(|ty| comparison_scalar_domain(ty).is_some()),\n    }\n}\n\n")
+    return "".join(lines)
+
+
 def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
     lines = [
-        "/// Operand-independent result type facts for opcodes whose single result\n",
-        "/// type is intrinsic to the opcode. Operand-, attr-, and builtin-dependent\n",
-        "/// opcodes deliberately return None and are inferred by type_refine.rs.\n",
+        "/// Result-indexed intrinsic types, independent of effect/scheduling purity.\n",
+        "/// Operand-dependent slots remain None; another result of the same opcode\n",
+        "/// can still have an exact type (for example an iterator status flag).\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
         "pub enum OperandIndependentResultType {\n",
         "    I64,\n",
@@ -89,27 +125,29 @@ def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
         "#[inline]\n",
         "pub fn opcode_operand_independent_result_type_table(\n",
         "    opcode: OpCode,\n",
+        "    result_index: usize,\n",
         ") -> Option<OperandIndependentResultType> {\n",
-        "    match opcode {\n",
+        "    let results: &[Option<OperandIndependentResultType>] = match opcode {\n",
     ]
     for row in opcodes:
         name = row["name"]
-        type_name = row.get("operand_independent_result_type")
-        variant = (
+        variants = [
+            "None" if type_name == "operand" else
             f"Some({_OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS[type_name]})"
-            if type_name is not None
-            else "None"
-        )
-        lines.append(f"        OpCode::{name} => {variant},\n")
+            for type_name in row.get("operand_independent_result_types", [])
+        ]
+        lines.append(f"        OpCode::{name} => &[{', '.join(variants)}],\n")
     lines.extend(
         [
-            "    }\n",
+            "    };\n",
+            "    results.get(result_index).copied().flatten()\n",
             "}\n\n",
             "#[inline]\n",
             "pub fn opcode_operand_independent_result_tir_type(\n",
             "    opcode: OpCode,\n",
+            "    result_index: usize,\n",
             ") -> Option<TirType> {\n",
-            "    opcode_operand_independent_result_type_table(opcode)\n",
+            "    opcode_operand_independent_result_type_table(opcode, result_index)\n",
             "        .map(OperandIndependentResultType::to_tir_type)\n",
             "}\n",
         ]
@@ -578,6 +616,10 @@ def _render_repr_projectable_result_rules(opcodes: list[dict], data: dict) -> st
         row["opcode"]: row["rule"]
         for row in data.get("repr_projectable_bool_result_rules", [])
     }
+    bool_rule_by_opcode.update(
+        (row["name"], "comparison_operands")
+        for row in opcodes if row.get("predicate_semantics") in {"equality", "ordering"}
+    )
     float_rule_by_opcode = {
         row["opcode"]: row["rule"]
         for row in data.get("repr_projectable_float_result_rules", [])

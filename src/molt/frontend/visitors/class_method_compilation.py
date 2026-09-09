@@ -11,14 +11,21 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Literal, cast
 
+from molt.compiler_analysis.python_inlining import (
+    inline_expression_is_frame_independent,
+)
 from molt.frontend._types import (
     GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
     MethodInfo,
+    MethodDescriptor,
     MoltOp,
     MoltValue,
+    _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     FunctionKind,
     async_generator_contains_return_value,
@@ -39,21 +46,70 @@ else:
 
 
 class ClassMethodCompilationMixin(_MixinBase):
-    def _function_needs_classcell(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> bool:
-        for child in ast.walk(node):
-            if isinstance(child, ast.Name) and child.id == "__class__":
-                return True
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id == "super"
-                and not child.args
-                and not child.keywords
-            ):
-                return True
-        return False
+    def _emit_class_function_definition(
+        self, scope: _ClassNsScope, item: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        """Create and publish one method at its actual class-body source point.
+
+        Direct definitions and definitions under control flow share this path.
+        Decorators/defaults observe the class mapping; bodies capture the
+        enclosing lexical frame and the class's single implicit cell.
+        """
+        class_node = scope.class_node
+        if class_node is None:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT, "Method definition has no class owner"
+            )
+        if self._has_typing_overload_decorator(item):
+            return
+        decorators: list[tuple[MoltValue, int | None]] = []
+        suspend = self.in_generator and signature_contains_yield(
+            decorators=item.decorator_list, args=item.args, returns=item.returns
+        )
+        for expression in item.decorator_list:
+            decorator = self.visit(expression)
+            if decorator is None:
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "Unsupported method decorator"
+                )
+            decorators.append(
+                (decorator, self._spill_async_value(decorator) if suspend else None)
+            )
+
+        previous_method = scope.methods.get(item.name)
+        if isinstance(item, ast.AsyncFunctionDef):
+            info = self._compile_class_async_method(class_node, item)
+        elif function_contains_yield(item):
+            info = self._compile_class_generator_method(class_node, item)
+        else:
+            info = self._compile_class_method(class_node, item)
+
+        _, _, kwonly, _, _ = self._split_function_args(item.args)
+        function = self._emit_function_defaults(
+            info["func"],
+            item.args.defaults,
+            item.args.kw_defaults,
+            [argument.arg for argument in kwonly],
+        )
+        info["func"] = function
+        self._emit_function_annotate(function, item)
+        value = function
+        for decorator, spill in reversed(decorators):
+            if spill is not None:
+                decorator = self._reload_async_value(spill, decorator.type_hint)
+            value = self._emit_call_bound_or_func(decorator, [value])
+        info["attr"] = value
+        self._class_ns_store(scope, item.name, value)
+        self.locals[item.name] = value
+        if (
+            item.name not in scope.global_names
+            and item.name not in scope.nonlocal_names
+        ):
+            if info["descriptor"] == "property_update" and previous_method is not None:
+                previous_method["attr"] = value
+                scope.methods[item.name] = previous_method
+            else:
+                scope.methods[item.name] = info
 
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:
@@ -87,184 +143,16 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         return func_val
 
-    def _method_needs_classcell_closure(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> bool:
-        """True when ``node`` (a class method body being compiled) must
-        receive the enclosing class's ``__class__`` cell as a closure free
-        variable.
-
-        This is the per-method companion to the class-level ``needs_classcell``
-        decision: a method participates in the ``__class__`` closure iff it
-        references zero-arg ``super()`` or ``__class__`` (directly or through a
-        nested function/comprehension/lambda) AND the enclosing class actually
-        created a ``__class__`` cell (``self._active_classcell_cell``).  When
-        true, the method is compiled as a closure even at module scope so the
-        cell — filled with the finished class object after the metaclass call —
-        is what ``super()``/``__class__`` reads, identical to CPython.
-        """
-        return (
-            self._active_classcell_cell is not None
-            and self._function_needs_classcell(node)
-        )
-
-    def _compute_method_closure(
-        self, item: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]:
-        """Compute the closure for a class method being compiled.
-
-        Returns ``(free_vars, free_var_hints, closure_val, has_closure)``.
-
-        Two cases produce a closure:
-
-        * The class body is itself nested inside a function (``current_func_name
-          != "molt_main"``): the method may close over enclosing-function locals
-          and, if it uses ``super()``/``__class__``, the injected ``__class__``
-          cell — both captured by ``_collect_free_vars``.
-        * The class body is at module scope (``molt_main``) but the method uses
-          ``super()``/``__class__``: module-level names resolve as globals (not
-          free vars), so the *only* closure variable is the implicit
-          ``__class__`` cell.  Capturing the general free-var set here would
-          wrongly demote module globals to free vars, so this case threads
-          exactly ``["__class__"]``.
-
-        Centralizing this here keeps the regular / generator / async / decorated
-        method-compilation paths byte-identical and avoids re-deriving the
-        ``molt_main`` vs nested decision four times.
-        """
-        free_vars: list[str] = []
-        if self.current_func_name != "molt_main":
-            free_vars = self._collect_free_vars(item)
-        elif self._method_needs_classcell_closure(item):
-            free_vars = ["__class__"]
-
-        free_var_hints: dict[str, str] = {}
-        closure_val: MoltValue | None = None
-        has_closure = False
-        if free_vars:
-            self.unbound_check_names.update(free_vars)
-            for name in free_vars:
-                self._box_local(name)
-                self.closure_locals.add(name)
-            for name in free_vars:
-                hint = self.boxed_local_hints.get(name)
-                if hint is None:
-                    value = self.locals.get(name)
-                    if value is not None and value.type_hint:
-                        hint = value.type_hint
-                free_var_hints[name] = hint or "Any"
-            closure_items = self._closure_cells_for(free_vars)
-            closure_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
-            has_closure = True
-        return free_vars, free_var_hints, closure_val, has_closure
-
-    def _method_inline_closure_ok(
-        self,
-        free_vars: list[str],
-        item: "ast.FunctionDef | ast.AsyncFunctionDef",
-    ) -> bool:
-        """True when a method that is technically a *closure* is still safe to
-        record as inline-eligible.
-
-        A method using zero-arg ``super()`` closes over the enclosing class's
-        implicit ``__class__`` cell, so its ``free_vars`` contains ``"__class__"``
-        even though it captures no *real* enclosing locals.  That cell exists
-        only to let the runtime dispatch path read the finished class object; at
-        an **inline** call site the recursive static ``super()`` fold (which sets
-        ``current_class`` / ``current_method_first_param`` to the inline owner)
-        resolves the super-chain at compile time and never reads the cell.  When
-        a ``super()`` in the inlined body cannot fold statically, the inline is
-        aborted via ``_InlineSuperFoldRequired`` and the call routes through the
-        cell-threaded dispatch path — so the cell is never needed at the inline
-        site.
-
-        The exception is a **bare ``__class__`` value load** (e.g.
-        ``__class__.__name__``): that reads the cell directly, and the inlined
-        body — spliced into a scope with no ``__class__`` cell — cannot reproduce
-        it, so such a method must NOT be inline-eligible.  ``super()`` calls
-        never appear as an ``ast.Name("__class__")`` (the cell binding is
-        implicit), so any ``ast.Name`` with id ``"__class__"`` in the body is a
-        bare value load that disqualifies the method.
-
-        So a closure method is inline-eligible iff (a) it captures nothing beyond
-        the implicit ``__class__`` cell, and (b) it contains no bare
-        ``__class__`` value load.  Any genuine enclosing-local capture forces the
-        CALL path, where the real closure tuple is threaded.
-        """
-        if not free_vars:
-            return True
-        real = [name for name in free_vars if name != "__class__"]
-        if real:
-            return False
-        # ``free_vars == ["__class__"]``: eligible only if the body uses the
-        # cell exclusively through ``super()`` (no bare ``__class__`` value).
-        for child in ast.walk(item):
-            if isinstance(child, ast.Name) and child.id == "__class__":
-                return False
-        return True
-
-    def _inline_body_external_names(
-        self, expr: "ast.expr", params: list[str]
-    ) -> "frozenset[str]":
-        """Collect the bare ``Name`` *loads* in an inline-body expression that
-        are neither substituted parameters nor builtins.
-
-        At inline time the body is spliced into the caller's scope and the
-        parameters are substituted (``self.locals = {param: arg_value}``).  A
-        bare ``Name`` that is NOT a parameter falls through ``visit_Name`` to
-        ``_emit_global_get`` and resolves against the **caller's** module
-        globals — which is only correct when the call site is compiled in the
-        method's *defining* module.  A reference to the defining module's own
-        global (a module-level constant, a sibling function, an intrinsic
-        binding such as ``_MOLT_ARRAY_TOLIST``) therefore silently mis-resolves
-        across a module boundary, yielding a ``NameError`` at runtime.
-
-        Builtins (``len``, ``super``, exception/type names, …) are excluded
-        because ``visit_Name`` materialises them statically and identically in
-        every scope, so they remain sound under cross-module splicing.
-
-        The returned set drives ``_try_inline_method_call``'s cross-module
-        refusal (the fail-closed soundness gate).
-        """
-        param_set = set(params)
-        external: set[str] = set()
-        for node in ast.walk(expr):
-            if not isinstance(node, ast.Name):
-                continue
-            if not isinstance(node.ctx, ast.Load):
-                continue
-            name = node.id
-            if name in param_set:
-                continue
-            if self._name_resolves_to_builtin(name):
-                continue
-            external.add(name)
-        return frozenset(external)
-
     def _extract_inline_return(
-        self, item: "ast.FunctionDef", params: list[str]
-    ) -> "ast.expr | None":
-        """Return the body's `return <expr>` AST iff the method is
-        trivially inlinable: body is a single Return statement (an
-        optional leading docstring is allowed), the returned expression
-        references only parameters, attributes-on-parameters,
-        constants, builtins, and pure operations (BinOp, UnaryOp,
-        Compare, BoolOp, IfExp, Tuple/List of inlinable elements), plus
-        nested Calls thereof.
-
-        The returned expression MAY reference globals of the *defining*
-        module (e.g. ``_MOLT_ARRAY_TOLIST(self._handle)``); such bodies
-        are still inline-eligible but ``_try_inline_method_call`` refuses
-        to splice them across a module boundary (where the global would
-        mis-resolve).  See ``_inline_body_external_names``.
-        """
+        self, item: ast.FunctionDef, params: list[str]
+    ) -> ast.expr | None:
+        """Project a complete callback-free, parameter-only return expression."""
         body = item.body
-        # Skip docstring if present.
         if (
             body
             and isinstance(body[0], ast.Expr)
             and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
         ):
             body = body[1:]
         if (
@@ -273,199 +161,115 @@ class ClassMethodCompilationMixin(_MixinBase):
             or body[0].value is None
         ):
             return None
-
-        def _safe(node: "ast.AST") -> bool:
-            if isinstance(node, ast.Constant):
-                return True
-            if isinstance(node, ast.Name):
-                # Builtin names like `super` are allowed even though
-                # they aren't params — visit_Call's Phase 4a / general
-                # path handles them correctly with the inline scope's
-                # current_class set.  Plain identifier refs that
-                # AREN'T params would fail at visit time (KeyError on
-                # the substituted self.locals), which the caller
-                # catches and bails on.
-                return True
-            if isinstance(node, ast.Attribute):
-                return _safe(node.value)
-            if isinstance(node, ast.BinOp):
-                return _safe(node.left) and _safe(node.right)
-            if isinstance(node, ast.UnaryOp):
-                return _safe(node.operand)
-            if isinstance(node, ast.Compare):
-                return _safe(node.left) and all(_safe(c) for c in node.comparators)
-            if isinstance(node, ast.BoolOp):
-                return all(_safe(v) for v in node.values)
-            if isinstance(node, ast.IfExp):
-                return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
-            if (
-                isinstance(node, (ast.Tuple, ast.List))
-                and not getattr(node, "ctx", None).__class__.__name__ == "Store"
-            ):
-                return all(_safe(e) for e in node.elts)
-            # Calls are allowed: when visited at inline time, Phase 4a's
-            # super() fold or Phase 1's user-method fold will recursively
-            # try inlining or emit a direct CALL.  Either way the body
-            # composes cleanly with the substitution model — the Names
-            # in arg positions get resolved against the inline locals.
-            if isinstance(node, ast.Call):
-                # Reject calls with kwargs / starred args — defensive,
-                # the substitution model handles only positional.
-                if node.keywords:
-                    return False
-                if any(isinstance(a, ast.Starred) for a in node.args):
-                    return False
-                return _safe(node.func) and all(_safe(a) for a in node.args)
-            return False
-
-        return body[0].value if _safe(body[0].value) else None
+        expression = body[0].value
+        return (
+            expression
+            if inline_expression_is_frame_independent(expression, params)
+            else None
+        )
 
     def _extract_inline_init_assigns(
-        self, item: "ast.FunctionDef", params: list[str]
-    ) -> "list[tuple[str, ast.expr]] | None":
-        """Detect `__init__`-style trivially-inlinable bodies.
-
-        Accepts a body that is a sequence of `self.attr = <pure expr>`
-        assignments (an optional leading docstring is allowed), where:
-          - the assignment target is `Attribute(Name(<first param>),
-            <attr>)` — i.e. `self.attr` for whatever `self` is named.
-          - the value expression is `_safe` per `_extract_inline_return`'s
-            criteria (constants, params, attributes-on-params, pure
-            BinOp/UnaryOp/Compare/etc., Calls).
-          - no other statement kinds (no `if`, no `for`, no `try`, no
-            extra `Assign` to non-self targets, no `Return` other than
-            implicit None).
-
-        Returns the list of `(attr_name, expr_AST)` pairs in order, or
-        ``None`` if the body doesn't match the pattern.
-
-        At inline time the caller substitutes params → call args and
-        emits a STORE_ATTR per pair on the freshly-allocated instance,
-        eliminating the __init__ CALL frame setup that dominates
-        bench_struct's per-iter cost.
-        """
+        self, item: ast.FunctionDef, params: list[str]
+    ) -> list[tuple[str, ast.expr]] | None:
+        """Project callback-free initialization with one first write per field."""
         if not params:
             return None
-        self_name = params[0]
         body = item.body
-        # Skip docstring if present.
         if (
             body
             and isinstance(body[0], ast.Expr)
             and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
         ):
             body = body[1:]
-        if not body:
-            # Empty body (only docstring) — equivalent to a no-op
-            # __init__.  Inline as zero stores; still a perf win since
-            # we skip the CALL.
-            return []
-
-        def _safe(node: "ast.AST") -> bool:
-            if isinstance(node, ast.Constant):
-                return True
-            if isinstance(node, ast.Name):
-                return True
-            if isinstance(node, ast.Attribute):
-                return _safe(node.value)
-            if isinstance(node, ast.BinOp):
-                return _safe(node.left) and _safe(node.right)
-            if isinstance(node, ast.UnaryOp):
-                return _safe(node.operand)
-            if isinstance(node, ast.Compare):
-                return _safe(node.left) and all(_safe(c) for c in node.comparators)
-            if isinstance(node, ast.BoolOp):
-                return all(_safe(v) for v in node.values)
-            if isinstance(node, ast.IfExp):
-                return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
-            if (
-                isinstance(node, (ast.Tuple, ast.List))
-                and not getattr(node, "ctx", None).__class__.__name__ == "Store"
-            ):
-                return all(_safe(e) for e in node.elts)
-            if isinstance(node, ast.Call):
-                if node.keywords:
-                    return False
-                if any(isinstance(a, ast.Starred) for a in node.args):
-                    return False
-                return _safe(node.func) and all(_safe(a) for a in node.args)
-            return False
-
         assigns: list[tuple[str, ast.expr]] = []
-        for stmt in body:
-            # Allow trailing `return` / `return None` — Python __init__
-            # implicitly returns None, but explicit `return None` is
-            # also legal.  Anything else fails the pattern.
-            if isinstance(stmt, ast.Return):
-                if stmt.value is None:
-                    continue
-                if isinstance(stmt.value, ast.Constant) and stmt.value.value is None:
-                    continue
+        seen: set[str] = set()
+        for statement in body:
+            if isinstance(statement, ast.Return):
+                if statement.value is None or (
+                    isinstance(statement.value, ast.Constant)
+                    and statement.value.value is None
+                ):
+                    break
                 return None
-            if not isinstance(stmt, ast.Assign):
+            if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
                 return None
-            if len(stmt.targets) != 1:
+            target = statement.targets[0]
+            if (
+                not isinstance(target, ast.Attribute)
+                or not isinstance(target.value, ast.Name)
+                or target.value.id != params[0]
+                or target.attr in seen
+                or not inline_expression_is_frame_independent(statement.value, params)
+            ):
                 return None
-            target = stmt.targets[0]
-            if not isinstance(target, ast.Attribute):
-                return None
-            if not isinstance(target.value, ast.Name):
-                return None
-            if target.value.id != self_name:
-                return None
-            if not _safe(stmt.value):
-                return None
-            assigns.append((target.attr, stmt.value))
+            seen.add(target.attr)
+            assigns.append((target.attr, statement.value))
         return assigns
+
+    def _class_method_receiver_hint(
+        self, class_name: str, descriptor: MethodDescriptor, parameter_index: int
+    ) -> str | None:
+        """Infer a receiver only when the descriptor proves its binding rule."""
+        if parameter_index == 0 and descriptor in {
+            "function",
+            "classmethod",
+            "property",
+            "property_update",
+        }:
+            return class_name
+        return None
+
+    def _class_method_descriptor(
+        self, class_node: ast.ClassDef, item: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[MethodDescriptor, Literal["setter", "deleter"] | None]:
+        """Project descriptor hints only from proved source bindings.
+
+        Runtime decorator evaluation remains authoritative; this classifier
+        never manufactures or applies a descriptor from its spelling.
+        """
+        if not item.decorator_list:
+            if item.name in {"__init_subclass__", "__class_getitem__"}:
+                return "classmethod", None
+            if item.name == "__new__":
+                return "staticmethod", None
+            return "function", None
+        if len(item.decorator_list) != 1 or self.classes[class_node.name].get(
+            "dynamic"
+        ):
+            return "decorated", None
+        decorator = item.decorator_list[0]
+        if isinstance(decorator, ast.Name) and decorator.id in {
+            "classmethod",
+            "staticmethod",
+            "property",
+        }:
+            index = self.python_binding_index
+            fact = index.expression_fact(decorator) if index is not None else None
+            if (
+                fact is not None
+                and not fact.binding_invalidated
+                and not fact.binding_is_bound
+            ):
+                return cast(MethodDescriptor, decorator.id), None
+        if (
+            isinstance(decorator, ast.Attribute)
+            and isinstance(decorator.value, ast.Name)
+            and decorator.value.id == item.name
+            and decorator.attr in {"setter", "deleter"}
+        ):
+            previous = self.classes[class_node.name]["methods"].get(item.name)
+            if previous is not None and previous["descriptor"] == "property":
+                return "property_update", cast(
+                    Literal["setter", "deleter"], decorator.attr
+                )
+        return "decorated", None
 
     def _compile_class_generator_method(
         self, class_node: ast.ClassDef, item: ast.FunctionDef
     ) -> MethodInfo:
-        descriptor: Literal[
-            "function",
-            "classmethod",
-            "staticmethod",
-            "property",
-            "decorated",
-            "property_update",
-        ] = "function"
         method_name = item.name
-        property_update: Literal["setter", "deleter"] | None = None
-        if item.decorator_list:
-            if len(item.decorator_list) == 1 and isinstance(
-                item.decorator_list[0], ast.Name
-            ):
-                deco = item.decorator_list[0]
-                if deco.id in {"classmethod", "staticmethod", "property"}:
-                    descriptor = cast(
-                        Literal[
-                            "function",
-                            "classmethod",
-                            "staticmethod",
-                            "property",
-                            "decorated",
-                        ],
-                        deco.id,
-                    )
-                else:
-                    descriptor = "decorated"
-            elif len(item.decorator_list) == 1 and isinstance(
-                item.decorator_list[0], ast.Attribute
-            ):
-                deco = item.decorator_list[0]
-                if (
-                    isinstance(deco.value, ast.Name)
-                    and deco.value.id == method_name
-                    and deco.attr in {"setter", "deleter"}
-                ):
-                    descriptor = "property_update"
-                    property_update = cast(Literal["setter", "deleter"], deco.attr)
-                else:
-                    descriptor = "decorated"
-            else:
-                descriptor = "decorated"
-        if descriptor == "function" and method_name == "__class_getitem__":
-            descriptor = "classmethod"
+        descriptor, property_update = self._class_method_descriptor(class_node, item)
         property_field = None
         if descriptor == "property":
             property_field = self._property_field_from_method(item)
@@ -494,7 +298,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         if item.args.kwarg is not None:
             arg_nodes.append(item.args.kwarg)
         free_vars, free_var_hints, closure_val, has_closure = (
-            self._compute_method_closure(item)
+            self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
@@ -561,7 +365,6 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        self._emit_function_annotate(func_val, item)
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
@@ -571,6 +374,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
+            python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
             type_facts_name=f"{class_node.name}.{method_name}",
@@ -590,11 +394,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
             self._async_local_offset(arg.arg)
-            hint = None
-            if i == 0 and descriptor == "classmethod":
-                hint = class_node.name
-            elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
-                hint = class_node.name
+            hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -613,6 +413,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
+        self._publish_python_frame_context()
         self._push_qualname(method_name, True)
         try:
             for stmt in item.body:
@@ -717,51 +518,8 @@ class ClassMethodCompilationMixin(_MixinBase):
     def _compile_class_method(
         self, class_node: ast.ClassDef, item: ast.FunctionDef
     ) -> MethodInfo:
-        descriptor: Literal[
-            "function",
-            "classmethod",
-            "staticmethod",
-            "property",
-            "decorated",
-            "property_update",
-        ] = "function"
         method_name = item.name
-        property_update: Literal["setter", "deleter"] | None = None
-        if item.decorator_list:
-            if len(item.decorator_list) == 1 and isinstance(
-                item.decorator_list[0], ast.Name
-            ):
-                deco = item.decorator_list[0]
-                if deco.id in {"classmethod", "staticmethod", "property"}:
-                    descriptor = cast(
-                        Literal[
-                            "function",
-                            "classmethod",
-                            "staticmethod",
-                            "property",
-                            "decorated",
-                        ],
-                        deco.id,
-                    )
-                else:
-                    descriptor = "decorated"
-            elif len(item.decorator_list) == 1 and isinstance(
-                item.decorator_list[0], ast.Attribute
-            ):
-                deco = item.decorator_list[0]
-                if (
-                    isinstance(deco.value, ast.Name)
-                    and deco.value.id == method_name
-                    and deco.attr in {"setter", "deleter"}
-                ):
-                    descriptor = "property_update"
-                    property_update = cast(Literal["setter", "deleter"], deco.attr)
-                else:
-                    descriptor = "decorated"
-            else:
-                descriptor = "decorated"
-        if descriptor == "function" and method_name == "__class_getitem__":
-            descriptor = "classmethod"
+        descriptor, property_update = self._class_method_descriptor(class_node, item)
         property_field = None
         if descriptor == "property":
             property_field = self._property_field_from_method(item)
@@ -783,7 +541,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         params = self._function_param_names(item.args)
         default_specs = self._default_specs_from_args(item.args)
         free_vars, free_var_hints, closure_val, has_closure = (
-            self._compute_method_closure(item)
+            self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
 
         func_hint = f"Func:{method_symbol}"
@@ -838,7 +596,6 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        self._emit_function_annotate(func_val, item)
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
@@ -852,6 +609,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         self.start_function(
             method_symbol,
+            python_first_arg=self._python_first_positional_arg(item.args),
             params=method_params,
             type_facts_name=f"{class_node.name}.{method_name}",
             needs_return_slot=False,
@@ -877,11 +635,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
         self.unbound_check_names = set(self.scope_assigned)
         for idx, arg in enumerate(arg_nodes):
-            hint = None
-            if idx == 0 and descriptor == "classmethod":
-                hint = class_node.name
-            elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
-                hint = class_node.name
+            hint = self._class_method_receiver_hint(class_node.name, descriptor, idx)
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -923,6 +677,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                         metadata={"var": arg.arg},
                     )
                 )
+        self._publish_python_frame_context()
         self._push_qualname(method_name, True)
         try:
             for stmt in item.body:
@@ -944,25 +699,12 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_class = prev_class
         self.current_method_first_param = prev_first_param
         method_attr = func_val
-        # Phase 2 — detect trivially-inlinable methods.
-        #
-        # If the body is a single `return <expr>` where `<expr>`
-        # references only parameters, attributes-on-parameters, and
-        # constants (no Calls, no Subscripts, no closure / global
-        # references), record the return-expression AST so the
-        # call site can substitute params → args and emit the body
-        # inline instead of a CALL.  Targets bench_class_hierarchy's
-        # call chain (`Base.compute(self, x): return x`,
-        # `Mid.compute(self, x): return ... + 1` — the latter is
-        # filtered out because the AST still contains a Call to
-        # super(); Phase 4a's fold runs at visit time, not at
-        # compile_method-time AST inspection).
+        # Elide only frames whose entire inline expression is proven unobservable.
         inline_return = None
         inline_init_assigns: list[tuple[str, ast.expr]] | None = None
-        inline_closure_ok = self._method_inline_closure_ok(free_vars, item)
         if (
             descriptor == "function"
-            and inline_closure_ok
+            and not free_vars
             and not (vararg is not None or varkw is not None)
             and not kwonly_names
         ):
@@ -990,14 +732,6 @@ class ClassMethodCompilationMixin(_MixinBase):
             "has_vararg": vararg is not None,
             "has_varkw": varkw is not None,
             "has_closure": has_closure,
-            # True when ``has_closure`` is purely the implicit ``__class__``
-            # super cell (no real enclosing-local capture).  The static
-            # devirt / super-fold sites may then take the *inline* path
-            # (whose recursive super-fold resolves the chain at compile
-            # time and never reads the cell), but must NOT emit a direct
-            # CALL to the closure symbol on inline failure — they fall back
-            # to the general dispatch which threads the real closure tuple.
-            "inline_closure_ok": inline_closure_ok,
             "property_field": property_field,
             "property_update": property_update,
             "inline_return": inline_return,
@@ -1006,79 +740,14 @@ class ClassMethodCompilationMixin(_MixinBase):
                 if (inline_return is not None or inline_init_assigns is not None)
                 else None
             ),
-            # Owner class — needed at inline time to set
-            # `self.current_class` so that Phase 4a's `super()`
-            # fold inside the inlined body resolves against the
-            # callee's MRO position, not the caller's.
-            "inline_owner_class": (
-                class_node.name
-                if (inline_return is not None or inline_init_assigns is not None)
-                else None
-            ),
-            # Module that defines this method, captured now (while compiling
-            # the owner class) so the inline site can compare it against the
-            # caller's module.  `inline_free_names` records the body's bare
-            # references to that module's globals; a non-empty set forbids a
-            # cross-module inline (the global would mis-resolve in the
-            # caller's scope).  __init__-style inline-assign bodies carry the
-            # same gate via the union over every assigned value-expression.
-            "inline_owner_module": (
-                self.module_name
-                if (inline_return is not None or inline_init_assigns is not None)
-                else None
-            ),
-            "inline_free_names": (
-                self._inline_body_external_names(inline_return, params)
-                if inline_return is not None
-                else (
-                    frozenset().union(
-                        *(
-                            self._inline_body_external_names(value_expr, params)
-                            for _attr, value_expr in inline_init_assigns
-                        )
-                    )
-                    if inline_init_assigns
-                    else frozenset()
-                )
-            ),
             "inline_init_assigns": inline_init_assigns,
         }
 
     def _compile_class_async_method(
         self, class_node: ast.ClassDef, item: ast.AsyncFunctionDef
     ) -> MethodInfo:
-        descriptor: Literal[
-            "function",
-            "classmethod",
-            "staticmethod",
-            "property",
-            "decorated",
-            "property_update",
-        ] = "function"
         method_name = item.name
-        property_update: Literal["setter", "deleter"] | None = None
-        if item.decorator_list:
-            if len(item.decorator_list) == 1 and isinstance(
-                item.decorator_list[0], ast.Name
-            ):
-                deco = item.decorator_list[0]
-                if deco.id in {"classmethod", "staticmethod", "property"}:
-                    descriptor = cast(
-                        Literal[
-                            "function",
-                            "classmethod",
-                            "staticmethod",
-                            "property",
-                            "decorated",
-                        ],
-                        deco.id,
-                    )
-                else:
-                    descriptor = "decorated"
-            else:
-                descriptor = "decorated"
-        if descriptor == "function" and method_name == "__class_getitem__":
-            descriptor = "classmethod"
+        descriptor, property_update = self._class_method_descriptor(class_node, item)
         is_async_gen = function_contains_yield(item)
         if is_async_gen:
             if async_generator_contains_yield_from(item):
@@ -1114,7 +783,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 arg_nodes.append(item.args.kwarg)
             default_specs = self._default_specs_from_args(item.args)
             free_vars, free_var_hints, closure_val, has_closure = (
-                self._compute_method_closure(item)
+                self._capture_lexical_closure(self._cached_free_vars_raw(item))
             )
             has_return = self._function_contains_return(item)
             frame_plan = stateful_function_frame_plan(
@@ -1133,6 +802,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.current_method_first_param = params[0] if params else None
             self.start_function(
                 poll_symbol,
+                python_first_arg=self._python_first_positional_arg(item.args),
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=f"{class_node.name}.{method_name}",
@@ -1153,11 +823,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
                 self._async_local_offset(arg.arg)
-                hint = None
-                if i == 0 and descriptor == "classmethod":
-                    hint = class_node.name
-                elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
-                    hint = class_node.name
+                hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
                     if explicit is None:
@@ -1176,6 +842,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                     hint = self.explicit_type_hints.get(arg.arg)
                     if hint is not None:
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
+            self._publish_python_frame_context()
             self._push_qualname(method_name, True)
             try:
                 for stmt in item.body:
@@ -1307,7 +974,6 @@ class ClassMethodCompilationMixin(_MixinBase):
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
-            self._emit_function_annotate(func_val, item)
             closure_size_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(kind="CONST", args=[closure_size], result=closure_size_val)
@@ -1328,6 +994,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             )
             self.start_function(
                 wrapper_symbol,
+                python_first_arg=self._python_first_positional_arg(item.args),
                 params=wrapper_params,
                 type_facts_name=f"{class_node.name}.{method_name}",
             )
@@ -1341,11 +1008,9 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.scope_assigned = set()
             self.del_targets = set()
             for idx, arg in enumerate(arg_nodes):
-                hint = None
-                if idx == 0 and descriptor == "classmethod":
-                    hint = class_node.name
-                elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
-                    hint = class_node.name
+                hint = self._class_method_receiver_hint(
+                    class_node.name, descriptor, idx
+                )
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
                     if explicit is None:
@@ -1432,7 +1097,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             arg_nodes.append(item.args.kwarg)
         default_specs = self._default_specs_from_args(item.args)
         free_vars, free_var_hints, closure_val, has_closure = (
-            self._compute_method_closure(item)
+            self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
@@ -1451,6 +1116,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
+            python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
             type_facts_name=f"{class_node.name}.{method_name}",
@@ -1470,11 +1136,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
             self._async_local_offset(arg.arg)
-            hint = None
-            if i == 0 and descriptor == "classmethod":
-                hint = class_node.name
-            elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
-                hint = class_node.name
+            hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -1493,6 +1155,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
+        self._publish_python_frame_context()
         self._push_qualname(method_name, True)
         try:
             for stmt in item.body:
@@ -1572,7 +1235,6 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        self._emit_function_annotate(func_val, item)
         closure_size_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[closure_size], result=closure_size_val))
         self.emit(
@@ -1591,6 +1253,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         self.start_function(
             wrapper_symbol,
+            python_first_arg=self._python_first_positional_arg(item.args),
             params=wrapper_params,
             type_facts_name=f"{class_node.name}.{method_name}",
         )
@@ -1604,11 +1267,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.scope_assigned = set()
         self.del_targets = set()
         for idx, arg in enumerate(arg_nodes):
-            hint = None
-            if idx == 0 and descriptor == "classmethod":
-                hint = class_node.name
-            elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
-                hint = class_node.name
+            hint = self._class_method_receiver_hint(class_node.name, descriptor, idx)
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:

@@ -11,7 +11,7 @@ import ast
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable
 
-from molt.compiler_analysis.static_truth import static_if_live_branch
+from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     ActiveException,
     MoltOp,
@@ -47,52 +47,37 @@ def _with_module_provenance_loop_flow(
 
 class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_If(self, node: ast.If) -> None:
-        static_branch = static_if_live_branch(
-            node, **self._sys_platform_static_truth_kwargs()
-        )
-        if static_branch is not None:
-            self._emit_static_if_live_branch(static_branch)
-            return None
+        decision = static_expression_result(node.test, **self._static_truth_kwargs())
+        # Result knowledge is not permission to erase condition evaluation.
+        # Required conditions keep the normal IF last-use/ownership boundary;
+        # no ad-hoc drop of a possibly borrowed result or extra truth callback.
+        if decision.truth is not None:
+            if not decision.evaluation_required:
+                self._emit_static_if_live_branch(
+                    node.body if decision.truth else node.orelse
+                )
+                return None
+            # Keep the original condition and normal ownership lowering while
+            # sharing successor reachability with import/metadata consumers.
+            # Copy only this control node; never mutate the analyzed AST.
+            node = ast.copy_location(
+                ast.If(
+                    test=node.test,
+                    body=node.body if decision.truth else [],
+                    orelse=[] if decision.truth else node.orelse,
+                ),
+                node,
+            )
         if not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)
             assigned |= set(self._collect_namedexpr_names(node.test))
             if self.current_func_name == "molt_main":
-                # Module-scope if-branch bindings use the module dict as their
-                # mutable store instead of synthesising boxed-local cells.
-                module_backed = assigned
-                if module_backed:
-                    # Flush any values that were previously assigned (before
-                    # this if-block) into the module dict.  Without this,
-                    # a variable assigned unconditionally *before* the if,
-                    # then conditionally reassigned *inside* the if, would
-                    # lose its initial value: the pre-if store only wrote to
-                    # self.globals (SSA cache), and the post-if eviction
-                    # removes the cache entry, so MODULE_GET_GLOBAL would find
-                    # nothing in the module dict.
-                    #
-                    # IMPORTANT: skip the flush for variables already tracked
-                    # in module_global_mutations — they were flushed by a
-                    # parent for/while loop's _prepare_mutable_control_flow_bindings
-                    # and re-flushing the stale SSA value would overwrite the
-                    # loop-carried accumulation on every iteration.
-                    for name in sorted(module_backed):
-                        if name in self.module_global_mutations:
-                            continue
-                        existing = self.globals.get(name)
-                        if existing is None:
-                            existing = self.locals.get(name)
-                        if existing is not None and self.module_obj is not None:
-                            self._emit_module_attr_set_on(
-                                self.module_obj, name, existing
-                            )
-                    self.module_global_mutations.update(module_backed)
-                for name in sorted(assigned - module_backed):
-                    self._box_local(name)
+                self._prepare_mutable_control_flow_bindings(assigned)
             else:
                 for name in sorted(assigned):
                     if name not in self.scope_assigned or name in self.closure_locals:
                         self._box_local(name)
-        cond = self.visit(node.test)
+        cond = self._emit_condition(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
         # Snapshot unbound_check_names on flow entry so per-branch
@@ -799,7 +784,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         def emit_loop_body() -> None:
             self._push_loop_static_class_refs(node.body)
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            cond = self.visit(node.test)
+            cond = self._emit_condition(node.test)
             self.emit(
                 MoltOp(
                     kind="LOOP_BREAK_IF_FALSE",
@@ -1986,7 +1971,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         return None
 
     def visit_Assert(self, node: ast.Assert) -> None:
-        test_val = self.visit(node.test)
+        test_val = self._emit_condition(node.test)
         if test_val is None:
             self._bridge_fallback(
                 node,

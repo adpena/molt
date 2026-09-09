@@ -7,12 +7,12 @@ use super::super::super::io_limits::write_json_artifact;
 use super::super::super::native_batch::{
     NativeBatchJobSpec, NativeBatchModuleMetadata, NativeBatchObjectJob,
     append_referenced_external_declarations, batch_external_function_names,
-    finish_native_batch_temp_dir, merge_relocatable_objects,
-    release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
+    finish_native_batch_temp_dir, release_native_backend_batch_memory_to_os,
+    run_native_batch_worker_with_failure_artifacts, write_native_archive_objects,
 };
 use super::plan::{StdlibBatchPlan, log_stdlib_batch, stdlib_batch_ops_budget};
 
-pub(super) fn compile_batched_stdlib_cache_object(
+pub(super) fn compile_batched_stdlib_cache_archive(
     stdlib_path: &Path,
     plan: StdlibBatchPlan,
     profile: Option<molt_backend::PgoProfileIR>,
@@ -91,7 +91,7 @@ pub(super) fn compile_batched_stdlib_cache_object(
             release_native_backend_batch_memory_to_os();
         }
 
-        merge_relocatable_objects(stdlib_path, &stdlib_batch_paths, None)
+        write_native_archive_objects(stdlib_path, &stdlib_batch_paths)
     })();
 
     finish_native_batch_temp_dir(

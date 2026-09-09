@@ -8,6 +8,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
         ops: vec![
             OpIR {
@@ -73,6 +74,7 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -112,6 +114,7 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_v0", 40),
@@ -152,6 +155,7 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_source", 40),
@@ -197,6 +201,7 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -229,6 +234,7 @@ fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -282,6 +288,7 @@ fn dead_op_elim_keeps_unused_untyped_arithmetic() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 make_arith("add", &["left", "right"], "_unused"),
@@ -311,6 +318,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![add, make_op("ret_void")],
         }],
@@ -335,6 +343,7 @@ fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() 
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 make_arith("add", &["left", "right"], "_unused"),
@@ -365,6 +374,7 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_v0", 40),

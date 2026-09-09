@@ -84,6 +84,7 @@ const MAX_COMPOUND_ELEMENTS: usize = 1000;
 /// `Shl`/`Shr`/`Pow` as non-throwing and let SCCP/DCE drop a dead `1 << -1`.
 fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
     let mut result_set = HashSet::new();
+    let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
     for block in func.blocks.values() {
         let mut try_depth: u32 = 0;
         for op in &block.ops {
@@ -92,7 +93,7 @@ fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
                 ExceptionRegionNestingRole::Exit => try_depth = try_depth.saturating_sub(1),
                 ExceptionRegionNestingRole::None => {}
             }
-            if try_depth > 0 && effects::op_may_throw(op) {
+            if try_depth > 0 && effects::op_may_throw_with_types(op, &value_types) {
                 for &r in &op.results {
                     result_set.insert(r);
                 }
@@ -374,21 +375,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // verification from reporting false SSA dominance violations.
     if stats.ops_removed > 0 {
         let reachable = metadata_preserving_reachable_blocks(func);
-        let dead_blocks: Vec<BlockId> = func
-            .blocks
-            .keys()
-            .copied()
-            .filter(|bid| !reachable.contains(bid))
-            .collect();
-        for bid in &dead_blocks {
-            func.blocks.remove(bid);
-            func.loop_roles.remove(bid);
-            func.loop_pairs.remove(bid);
-            func.loop_break_kinds.remove(bid);
-            func.loop_cond_blocks.remove(bid);
-            func.label_id_map.remove(&bid.0);
-        }
-        stats.ops_removed += dead_blocks.len();
+        stats.ops_removed += func
+            .retain_blocks(&reachable)
+            .expect("SCCP reachability must preserve live block and metadata references");
     }
 
     stats

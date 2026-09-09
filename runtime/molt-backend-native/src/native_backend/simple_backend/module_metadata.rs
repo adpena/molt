@@ -1,4 +1,5 @@
 use super::*;
+use crate::stdlib_module_symbols::{is_user_owned_symbol, original_partition_source};
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
@@ -28,6 +29,8 @@ pub struct NativeFunctionLinkageAbi {
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct NativeBackendModuleContext {
+    #[serde(default)]
+    pub(in crate::native_backend::simple_backend) partition_sources: BTreeMap<String, String>,
     pub(in crate::native_backend::simple_backend) function_arities: BTreeMap<String, usize>,
     pub(in crate::native_backend::simple_backend) function_has_ret: BTreeMap<String, bool>,
     pub(in crate::native_backend::simple_backend) closure_functions: BTreeSet<String>,
@@ -43,6 +46,10 @@ pub struct NativeBackendModuleContext {
 
 #[cfg(feature = "native-backend")]
 impl NativeBackendModuleContext {
+    pub fn original_function_name<'a>(&'a self, name: &'a str) -> &'a str {
+        original_partition_source(name, &self.partition_sources)
+    }
+
     pub fn function_linkage_abi(&self, name: &str) -> Option<&NativeFunctionLinkageAbi> {
         self.function_linkage_abis.get(name)
     }
@@ -88,15 +95,23 @@ impl NativeBackendModuleContext {
     }
 
     pub(in crate::native_backend::simple_backend) fn from_functions(
-        functions: &[FunctionIR],
+        functions: &mut Vec<FunctionIR>,
     ) -> Self {
+        // Capture source task/closure facts without constructing unbounded TIR.
+        let source_callables = molt_tir::trampolines::CallableMetadata::from_functions(functions);
+        let mut ir = SimpleIR {
+            functions: std::mem::take(functions),
+            profile: None,
+        };
+        let partition_sources = split_megafunctions(&mut ir);
+        *functions = ir.functions;
         let timing = crate::env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
         let started = timing.then(std::time::Instant::now);
         let mut unique_names = BTreeSet::new();
-        for function in functions {
+        for function in functions.iter() {
             assert!(
                 unique_names.insert(function.name.as_str()),
                 "duplicate FunctionIR name `{}` cannot own a deterministic native linkage ABI",
@@ -134,25 +149,29 @@ impl NativeBackendModuleContext {
                 )
             })
             .collect();
-        let mut analysis =
-            analyze_native_backend_functions(functions, /* compute_leaves */ false);
-        analysis.leaf_functions = compute_leaf_functions_from_tir(tir_functions);
-        if !analysis.leaf_functions.is_empty() {
+        let leaf_functions = compute_leaf_functions_from_tir(tir_functions);
+        if !leaf_functions.is_empty() {
             eprintln!(
                 "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
-                analysis.leaf_functions.len()
+                leaf_functions.len()
             );
         }
         let context = Self {
+            partition_sources,
             function_arities: functions
                 .iter()
                 .map(|func| (func.name.clone(), func.params.len()))
                 .collect(),
             function_has_ret: compute_function_has_ret(functions),
-            closure_functions: analysis.closure_functions,
-            task_kinds: analysis.task_kinds,
-            task_closure_sizes: analysis.task_closure_sizes,
-            leaf_functions: analysis.leaf_functions,
+            closure_functions: source_callables
+                .trampoline_specs
+                .iter()
+                .filter(|(_, (_, has_closure))| *has_closure)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            task_kinds: source_callables.task_kinds,
+            task_closure_sizes: source_callables.task_closure_sizes,
+            leaf_functions,
             function_linkage_abis,
         };
         if let Some(started) = started {
@@ -175,141 +194,32 @@ impl NativeBackendModuleContext {
 
 /// Analyze the native backend's SimpleIR function set.
 ///
-/// `compute_leaves` gates the whole-program TIR call-graph leaf-set computation
-/// (Tier-0 S4): it is a relatively heavy whole-program lift, so the callers that
-/// only need `task_kinds` / `task_closure_sizes` (the pre-megafunction-split
-/// task-annotation capture) pass `false` and leave `leaf_functions` empty, while
-/// the callers that actually consume the leaf set (the post-split analysis and
-/// the module-context builder) pass `true`.
+/// Source callable facts arrive from pipeline custody. Final bodies contribute
+/// constructor/escape facts only; lowered marker operands cannot re-author
+/// source task facts. `compute_leaves` controls the final TIR call-graph lift.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn analyze_native_backend_functions(
-    functions: &[FunctionIR],
+pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
+    ir: &SimpleIR,
     compute_leaves: bool,
+    mut callable_metadata: molt_tir::trampolines::CallableMetadata,
 ) -> NativeBackendIrAnalysis {
+    let functions = &ir.functions;
     let defined_functions: BTreeSet<String> = functions
         .iter()
         .filter(|func| !func.is_extern)
         .map(|func| func.name.clone())
         .collect();
-    let mut closure_functions: BTreeSet<String> = BTreeSet::new();
-    let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
-    let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
-    let mut has_task_attrs = false;
-
-    for func_ir in functions {
-        for op in &func_ir.ops {
-            match op.kind.as_str() {
-                "func_new_closure" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        closure_functions.insert(name.clone());
-                    }
-                }
-                "set_attr_generic_obj" => {
-                    if matches!(
-                        op.s_value.as_deref(),
-                        Some(
-                            "__molt_is_generator__"
-                                | "__molt_is_coroutine__"
-                                | "__molt_is_async_generator__"
-                                | "__molt_closure_size__"
-                        )
-                    ) {
-                        has_task_attrs = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if has_task_attrs {
-        for func_ir in functions {
-            let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
-            let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
-            let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
-            for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "const" => {
-                        let Some(out) = op.out.as_ref() else {
-                            continue;
-                        };
-                        let val = op.value.unwrap_or(0);
-                        const_values.insert(out.clone(), val);
-                    }
-                    "const_bool" => {
-                        let Some(out) = op.out.as_ref() else {
-                            continue;
-                        };
-                        let val = op.value.unwrap_or(0) != 0;
-                        const_bools.insert(out.clone(), val);
-                    }
-                    "func_new" | "func_new_closure" => {
-                        let Some(name) = op.s_value.as_ref() else {
-                            continue;
-                        };
-                        if let Some(out) = op.out.as_ref() {
-                            func_obj_names.insert(out.clone(), name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            for op in &func_ir.ops {
-                if op.kind != "set_attr_generic_obj" {
-                    continue;
-                }
-                let Some(attr) = op.s_value.as_deref() else {
-                    continue;
-                };
-                if attr != "__molt_is_generator__"
-                    && attr != "__molt_is_coroutine__"
-                    && attr != "__molt_is_async_generator__"
-                    && attr != "__molt_closure_size__"
-                {
-                    continue;
-                }
-                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
-                let Some(func_name) = func_obj_names.get(&args[0]) else {
-                    continue;
-                };
-                match attr {
-                    "__molt_is_generator__"
-                    | "__molt_is_coroutine__"
-                    | "__molt_is_async_generator__" => {
-                        let val_name = &args[1];
-                        let is_true = const_bools
-                            .get(val_name)
-                            .copied()
-                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
-                            .unwrap_or(false);
-                        if is_true {
-                            if !func_name.ends_with("_poll") {
-                                continue;
-                            }
-                            let kind = TrampolineTaskKind::from_marker_attr(attr)
-                                .expect("task marker was filtered above")
-                                .trampoline_kind();
-                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
-                                && prev != kind
-                            {
-                                panic!(
-                                    "conflicting task kinds for {func_name}: {:?} vs {:?}",
-                                    prev, kind
-                                );
-                            }
-                        }
-                    }
-                    "__molt_closure_size__" => {
-                        let val_name = &args[1];
-                        if let Some(size) = const_values.get(val_name) {
-                            task_closure_sizes.insert(func_name.clone(), *size);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    callable_metadata.merge(molt_tir::trampolines::CallableMetadata::from_definitions(
+        functions,
+    ));
+    let closure_functions = callable_metadata
+        .trampoline_specs
+        .iter()
+        .filter(|(_, (_, has_closure))| *has_closure)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let task_kinds = callable_metadata.task_kinds;
+    let task_closure_sizes = callable_metadata.task_closure_sizes;
 
     // Detect leaf functions via the whole-program TIR call graph (Tier-0 S4).
     // A leaf makes no call of any kind and therefore cannot recurse, so call
@@ -339,14 +249,6 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_function
         task_closure_sizes,
         leaf_functions,
     }
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
-    ir: &SimpleIR,
-    compute_leaves: bool,
-) -> NativeBackendIrAnalysis {
-    analyze_native_backend_functions(&ir.functions, compute_leaves)
 }
 
 /// Compute the leaf-function set over the whole-program TIR call graph
@@ -524,60 +426,24 @@ pub(in crate::native_backend::simple_backend) fn merge_leaf_functions(
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn emitted_module_symbol(name: &str) -> Option<&str> {
-    name.strip_prefix("molt_init_")
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn emitted_name_matches_module_symbol(
-    name: &str,
-    module_symbol: &str,
-) -> bool {
-    if let Some(rest) = name.strip_prefix("molt_init_") {
-        return rest == module_symbol;
-    }
-    name.starts_with(&format!("{module_symbol}__"))
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn is_user_owned_symbol(
-    name: &str,
-    entry_module: &str,
-    stdlib_module_symbols: Option<&BTreeSet<String>>,
-) -> bool {
-    let entry_init = format!("molt_init_{entry_module}");
-    if name == "molt_main"
-        || name.starts_with(&format!("{entry_module}__"))
-        || name == entry_init
-        || name == "molt_init___main__"
-        || name == "molt_isolate_import"
-        || name == "molt_isolate_bootstrap"
-    {
-        return true;
-    }
-    if let Some(stdlib_module_symbols) = stdlib_module_symbols {
-        if let Some(module_symbol) = emitted_module_symbol(name) {
-            return !stdlib_module_symbols.contains(module_symbol);
-        }
-        return !stdlib_module_symbols
-            .iter()
-            .any(|module_symbol| emitted_name_matches_module_symbol(name, module_symbol));
-    }
-    false
-}
-
-#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
     entry_module: &str,
     stdlib_module_symbols: Option<&BTreeSet<String>>,
     module_registry_roots: &BTreeSet<String>,
+    partition_sources: &BTreeMap<String, String>,
 ) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
     eliminate_dead_functions_with_roots(ir, module_registry_roots);
     let user_func_set: BTreeSet<String> = ir
         .functions
         .iter()
-        .filter(|f| is_user_owned_symbol(&f.name, entry_module, stdlib_module_symbols))
+        .filter(|f| {
+            is_user_owned_symbol(
+                original_partition_source(&f.name, partition_sources),
+                entry_module,
+                stdlib_module_symbols,
+            )
+        })
         .map(|f| f.name.clone())
         .collect();
     let all_funcs: Vec<_> = ir.functions.drain(..).collect();
@@ -611,6 +477,7 @@ pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdl
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
     ir: &SimpleIR,
+    partition_sources: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
     let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
         return BTreeSet::new();
@@ -627,7 +494,7 @@ pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
         .iter()
         .filter(|f| {
             !is_user_owned_symbol(
-                &f.name,
+                original_partition_source(&f.name, partition_sources),
                 &entry_module,
                 explicit_stdlib_module_symbols.as_ref(),
             )
@@ -640,6 +507,7 @@ pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
 pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_partition(
     ir: &mut SimpleIR,
     module_registry_roots: &BTreeSet<String>,
+    partition_sources: &BTreeMap<String, String>,
 ) {
     let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
         return;
@@ -658,6 +526,7 @@ pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_parti
         &entry_module,
         explicit_stdlib_module_symbols.as_ref(),
         module_registry_roots,
+        partition_sources,
     );
     let mut retained = std::mem::take(&mut user_remaining);
     for mut func in std::mem::take(&mut stdlib_funcs) {

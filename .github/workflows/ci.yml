@@ -278,6 +278,7 @@ jobs:
           uv: "false"
           cache-uv: "false"
           rust-toolchain: "1.96.1"
+          node-version: "24.16.0"
           rust-targets: wasm32-wasip1, aarch64-unknown-linux-gnu
           cache-cargo: "true"
 
@@ -289,6 +290,9 @@ jobs:
         with:
           profile: wasm
           wasi: "true"
+
+      - name: Install pinned executable Luau proof runner
+        run: cargo install lune --version 0.10.5 --locked
 
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json

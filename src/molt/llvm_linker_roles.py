@@ -36,17 +36,6 @@ def is_llvm_linker_role(value: str) -> TypeGuard[LlvmLinkerRole]:
     return value in _LINKER_ROLES
 
 
-def llvm_linker_role_for_object_format(object_format: str) -> LlvmLinkerRole:
-    normalized = object_format.strip().lower()
-    if normalized == "elf":
-        return "ld.lld"
-    if normalized in {"macho", "mach-o"}:
-        return "ld64.lld"
-    if normalized == "coff":
-        return "lld-link"
-    raise ValueError(f"unsupported LLVM linker object format: {object_format!r}")
-
-
 def host_llvm_linker_role(system: str) -> LlvmLinkerRole:
     normalized = system.strip().lower()
     if normalized == "windows":

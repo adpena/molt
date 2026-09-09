@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+#[cfg(feature = "stdlib_archive")]
 use std::io::Write;
 
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {

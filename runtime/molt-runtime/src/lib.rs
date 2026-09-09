@@ -652,8 +652,8 @@ pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_builtins_bits,
     frame_stack_active_globals_bits, frame_stack_pop, frame_stack_push_function,
-    frame_stack_push_owned, frame_stack_set_line, molt_getframe, molt_globals_builtin,
-    molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
+    frame_stack_push_owned, frame_stack_set_line, molt_frame_context_set, molt_getframe,
+    molt_globals_builtin, molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
     traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;

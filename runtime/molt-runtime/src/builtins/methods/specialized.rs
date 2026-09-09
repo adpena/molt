@@ -31,7 +31,7 @@ pub(crate) fn generator_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.generator_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__next__" => Some(builtin_func_bits(

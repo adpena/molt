@@ -28,6 +28,8 @@ else:
 
 class CallReductionMixin(_MixinBase):
     def _can_inline_sum_genexpr(self, node: ast.GeneratorExp | ast.ListComp) -> bool:
+        if not self._comprehension_frame_can_fuse(node):
+            return False
         if self.is_async():
             return False
         if not self._can_inline_simple_comp(node.generators, [node.elt]):
@@ -185,7 +187,7 @@ class CallReductionMixin(_MixinBase):
                 for tname, item_val in zip(tuple_target_names, item_vals):
                     self._store_comprehension_local_value(tname, item_val)
             for if_node in comp.ifs:
-                cond_val = self.visit(if_node)
+                cond_val = self._emit_condition(if_node)
                 not_cond = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
                 self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))
@@ -632,11 +634,7 @@ class CallReductionMixin(_MixinBase):
         ):
             return None
         genexpr = node.args[0]
-        if (
-            len(genexpr.generators) != 1
-            or genexpr.generators[0].is_async
-            or not isinstance(genexpr.generators[0].target, ast.Name)
-        ):
+        if not self._can_inline_any_all_genexpr(genexpr):
             return None
 
         comp = genexpr.generators[0]
@@ -703,7 +701,7 @@ class CallReductionMixin(_MixinBase):
             )
 
         for if_node in comp.ifs:
-            cond_val = self.visit(if_node)
+            cond_val = self._emit_condition(if_node)
             not_cond = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
             self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))

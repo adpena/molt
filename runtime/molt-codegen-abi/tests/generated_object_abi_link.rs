@@ -4,15 +4,29 @@ use molt_codegen_abi::{
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn rustc() -> Command {
-    Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+fn rustc(artifacts: &cargo_test_artifacts::CargoTestArtifacts) -> Command {
+    artifacts
+        .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .expect("resolve fixture compiler")
 }
 
 fn write(path: &Path, source: &str) {
     std::fs::write(path, source).expect("write link-contract fixture");
 }
 
-fn compile_backend(root: &Path, label: &str, expected_symbol: &str) -> PathBuf {
+fn compile_backend(
+    artifacts: &cargo_test_artifacts::CargoTestArtifacts,
+    label: &str,
+    expected_symbol: &str,
+) -> PathBuf {
+    let root = artifacts.path();
     let source = root.join(format!("backend_{label}.rs"));
     let output = root.join(format!("libbackend_{label}.rlib"));
     write(
@@ -32,7 +46,7 @@ pub fn backend_entry() {{ std::hint::black_box(&ANCHOR); }}
 "#,
         ),
     );
-    let result = rustc()
+    let result = rustc(artifacts)
         .args([
             "--edition=2024",
             "--crate-name",
@@ -40,9 +54,9 @@ pub fn backend_entry() {{ std::hint::black_box(&ANCHOR); }}
             "--crate-type",
             "rlib",
         ])
-        .arg(&source)
+        .arg(artifacts.argument("", &source).unwrap())
         .arg("-o")
-        .arg(&output)
+        .arg(artifacts.argument("", &output).unwrap())
         .output()
         .expect("run rustc for backend fixture");
     assert!(
@@ -53,7 +67,13 @@ pub fn backend_entry() {{ std::hint::black_box(&ANCHOR); }}
     output
 }
 
-fn link_runtime(root: &Path, label: &str, backend: &Path, actual_symbol: &str) -> Output {
+fn link_runtime(
+    artifacts: &cargo_test_artifacts::CargoTestArtifacts,
+    label: &str,
+    backend: &Path,
+    actual_symbol: &str,
+) -> Output {
+    let root = artifacts.path();
     let source = root.join(format!("runtime_{label}.rs"));
     let output = root.join(format!("runtime_{label}{}", std::env::consts::EXE_SUFFIX));
     write(
@@ -68,31 +88,27 @@ fn main() {{ backend::backend_entry(); }}
 "#,
         ),
     );
-    rustc()
+    rustc(artifacts)
         .args(["--edition=2024"])
-        .arg(&source)
+        .arg(artifacts.argument("", &source).unwrap())
         .arg("--extern")
-        .arg(format!("backend={}", backend.display()))
+        .arg(artifacts.argument("backend=", backend).unwrap())
         .arg("-o")
-        .arg(output)
+        .arg(artifacts.argument("", &output).unwrap())
         .output()
         .expect("run rustc for runtime fixture")
 }
 
 #[test]
 fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "molt-generated-object-link-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root).expect("create link-contract temp dir");
-
-    let gil_backend = compile_backend(&root, "gil", GENERATED_OBJECT_ABI_GIL_SYMBOL);
-    let free_backend = compile_backend(&root, "free", GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL);
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("generated-object-link")
+        .expect("create link-contract outputs within Cargo image custody");
+    let gil_backend = compile_backend(&artifacts, "gil", GENERATED_OBJECT_ABI_GIL_SYMBOL);
+    let free_backend = compile_backend(
+        &artifacts,
+        "free",
+        GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+    );
 
     for (label, backend, actual, should_link) in [
         (
@@ -120,7 +136,7 @@ fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() 
             false,
         ),
     ] {
-        let result = link_runtime(&root, label, backend, actual);
+        let result = link_runtime(&artifacts, label, backend, actual);
         assert_eq!(
             result.status.success(),
             should_link,
@@ -140,6 +156,4 @@ fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() 
             );
         }
     }
-
-    let _ = std::fs::remove_dir_all(root);
 }

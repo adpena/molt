@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, path::PathBuf};
 
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
 
-pub(crate) struct NativeApplicationObjectOptions<'a> {
+pub(crate) struct NativeApplicationArtifactOptions<'a> {
+    pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
     pub(crate) stdlib_split_enabled: bool,
     pub(crate) app_callable_manifest: Option<BTreeSet<String>>,
@@ -17,7 +18,7 @@ pub(crate) struct NativeApplicationObjectOptions<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NativeApplicationObjectResult {
+pub(crate) struct NativeApplicationArtifactResult {
     pub(crate) function_count: usize,
     pub(crate) batch_count: usize,
 }

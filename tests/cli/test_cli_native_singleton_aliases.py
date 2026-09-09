@@ -78,7 +78,7 @@ def test_windows_native_artifact_exports_aliases_not_duplicate_storage(
     monkeypatch, tmp_path: Path
 ) -> None:
     command = _command(monkeypatch, tmp_path, "win32")
-    assert any(arg.startswith("-Wl,/DEF:") for arg in command)
+    assert any(arg.startswith("/DEF:") for arg in command)
     exports = (tmp_path / ".molt_exports.def").read_text(encoding="utf-8")
     assert "_Py_NoneStruct=Py_None\n" in exports
     assert "_Py_NotImplementedStruct=Py_NotImplementedSentinel\n" in exports

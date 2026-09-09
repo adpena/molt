@@ -47,6 +47,7 @@ fn split_field_deforestation_preserves_source_site() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -94,6 +95,7 @@ fn fuse_method_dispatch_rewrites_getattr_call_idiom() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     func.ops[4].source_line = Some(44);
@@ -141,6 +143,7 @@ fn fuse_method_dispatch_skips_multi_use_getattr() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     let before: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
@@ -167,6 +170,7 @@ fn fuse_method_dispatch_rewrites_super_idiom() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     fuse_method_dispatch(&mut func);
@@ -206,6 +210,7 @@ fn fuse_method_dispatch_disabled_by_env() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     fuse_method_dispatch_inner(&mut func, true);

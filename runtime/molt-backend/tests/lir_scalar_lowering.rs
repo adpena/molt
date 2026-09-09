@@ -180,6 +180,7 @@ fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
         ],
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -221,6 +222,7 @@ fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
         ],
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

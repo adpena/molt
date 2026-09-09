@@ -22,6 +22,7 @@ pub(crate) struct BackendCliArgs<'a> {
     pub(crate) use_ir_pipeline: bool,
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) target_triple: Option<&'a str>,
+    pub(crate) native_output_kind: Option<&'a str>,
     pub(crate) output_path: Option<&'a str>,
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) native_batch_job_file: Option<&'a str>,

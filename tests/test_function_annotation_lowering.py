@@ -98,19 +98,23 @@ class C:
     }
     assert "__annotate__" in class_attr_names
     assert "__annotations__" not in class_attr_names
-    exec_map_keys = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "const_str"
-        and str(op.get("s_value", "")).startswith("__molt_annotations_exec_C_")
-    }
-    assert exec_map_keys
-    assert any(
-        op.get("kind") == "module_set_attr"
-        and len(op.get("args", ())) >= 2
-        and op["args"][1] in exec_map_keys
-        for op in main_ops
-    )
+    assert not any(str(op.get("s_value", "")).startswith("__molt_annotations_exec_C_") for op in main_ops)
+    definitions = {op["out"]: op for op in main_ops if "out" in op}
+    constructor = next(op for op in main_ops if op.get("kind") == "func_new_closure" and op.get("s_value") == annotate_name)
+    captures = definitions[constructor["args"][0]]["args"]
+    execution_maps = [name for name in captures if definitions[name]["kind"] == "dict_new"]
+    assert len(execution_maps) == 1
+    execution_map = execution_maps[0]
+    marks = [op for op in main_ops if op.get("kind") == "store_index" and op["args"][0] == execution_map]
+    assert len(marks) == 2
+    child_defs = {op["out"]: op for op in annotate_ops if "out" in op}
+    reads = [op for op in annotate_ops if op.get("kind") == "dict_get"]
+    assert len(reads) == 2
+    for read in reads:
+        capture = child_defs[read["args"][0]]
+        assert capture["kind"] == "index"
+        assert capture["args"][0] == "__molt_closure__"
+        assert child_defs[capture["args"][1]]["value"] == captures.index(execution_map)
 
 
 def test_python_314_module_annotation_execution_state_is_globally_resolvable() -> None:

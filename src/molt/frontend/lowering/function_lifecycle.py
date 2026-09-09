@@ -9,6 +9,7 @@ exit emission shared by function, async, module, and control-flow visitors.
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
@@ -22,7 +23,125 @@ else:
     _MixinBase = object
 
 
+@dataclass(frozen=True)
+class PythonFrameContextScope:
+    cleanup_label: int
+    done_label: int
+    outer_handler: int | None
+    outer_class_body: bool
+
+
 class FunctionLifecycleMixin(_MixinBase):
+    def _publish_python_frame_context(
+        self,
+        *,
+        argument_zero: MoltValue | None = None,
+        argument_kind: int | None = None,
+    ) -> None:
+        """Publish live Python argument custody, never inferred ABI/locals snapshots."""
+        with self._suppress_check_exception(emit_on_exit=False):
+            no_value = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=no_value))
+            class_body = self.python_class_body_context
+            name = None if class_body else self.current_python_first_arg
+            kind = 0
+            value = no_value
+            if name is not None:
+                if argument_zero is not None:
+                    value, kind = (
+                        argument_zero,
+                        argument_kind if argument_kind is not None else 1,
+                    )
+                elif isinstance(name, MoltValue):
+                    # A compiler-supplied Python argument (annotation format)
+                    # is an explicit SSA owner, never a source-name lookup.
+                    value, kind = name, 1
+                else:
+                    cell = self._load_boxed_cell(name)
+                    if cell is not None:
+                        value, kind = cell, 2
+                    else:
+                        loaded = self._load_python_first_arg()
+                        if loaded is None:
+                            raise AssertionError(
+                                f"Python argument-zero storage missing: {name}"
+                            )
+                        value, kind = loaded, 1
+            class_cell = None if class_body else self._load_free_var_cell("__class__")
+            mode = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[kind], result=mode))
+            self.emit(
+                MoltOp(
+                    kind="CALL",
+                    args=[
+                        "molt_frame_context_set",
+                        value,
+                        mode,
+                        class_cell or no_value,
+                    ],
+                    result=MoltValue(self.next_var(), type_hint="None"),
+                )
+            )
+        self.python_frame_context_active = True
+
+    def _update_python_argument_zero(
+        self, name: str, value: MoltValue, *, cell: bool = False
+    ) -> None:
+        if (
+            self.python_frame_context_active
+            and not self.python_class_body_context
+            and name == self.current_python_first_arg
+            and (cell or not self._python_argument_zero_is_cell(name))
+        ):
+            # Publish before STORE/DELETE releases the old local edge. A real
+            # cell is itself authoritative, including nonlocal replacement.
+            self._publish_python_frame_context(
+                argument_zero=value, argument_kind=2 if cell else 1
+            )
+
+    def _python_argument_zero_is_cell(self, name: str) -> bool:
+        binding = self.comprehension_bindings.get(name)
+        return binding.is_cell if binding is not None else name in self.boxed_locals
+
+    def _enter_python_frame_context_scope(
+        self, *, class_body: bool = False
+    ) -> PythonFrameContextScope:
+        scope = PythonFrameContextScope(
+            self.next_label(),
+            self.next_label(),
+            self.try_end_labels[-1]
+            if self.try_end_labels
+            else self.function_exception_label,
+            self.python_class_body_context,
+        )
+        if class_body:
+            self.python_class_body_context = True
+        self.try_end_labels.append(scope.cleanup_label)
+        self._publish_python_frame_context()
+        return scope
+
+    def _exit_python_frame_context_scope(self, scope: PythonFrameContextScope) -> None:
+        assert self.try_end_labels.pop() == scope.cleanup_label
+        self.python_class_body_context = scope.outer_class_body
+        # The caller has restored compiler scope before this emission. Both
+        # normal and exceptional runtime edges restore that same outer frame.
+        self._publish_python_frame_context()
+        self.emit(
+            MoltOp(kind="JUMP", args=[scope.done_label], result=MoltValue("none"))
+        )
+        self.emit(
+            MoltOp(kind="LABEL", args=[scope.cleanup_label], result=MoltValue("none"))
+        )
+        self._publish_python_frame_context()
+        if scope.outer_handler is None:
+            raise AssertionError("Python context scope has no exception continuation")
+        self.emit(
+            MoltOp(kind="JUMP", args=[scope.outer_handler], result=MoltValue("none"))
+        )
+        self.emit(
+            MoltOp(kind="LABEL", args=[scope.done_label], result=MoltValue("none"))
+        )
+
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
     ) -> int:
@@ -169,6 +288,7 @@ class FunctionLifecycleMixin(_MixinBase):
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
         has_exception_handlers: bool = True,
+        python_first_arg: str | MoltValue | None = None,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -188,6 +308,7 @@ class FunctionLifecycleMixin(_MixinBase):
             reset_locals_cache=True,
             reset_del_targets=True,
         )
+        self.current_python_first_arg = python_first_arg
         for param in compiler_params or ():
             self.compiler_bindings[param] = MoltValue(param, type_hint="Any")
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
@@ -246,6 +367,27 @@ class FunctionLifecycleMixin(_MixinBase):
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
+
+    @staticmethod
+    def _python_first_positional_arg(arguments: ast.arguments) -> str | None:
+        positional = arguments.posonlyargs or arguments.args
+        return positional[0].arg if positional else None
+
+    def _load_python_first_arg(self) -> MoltValue | None:
+        """Read the current source frame's live argument-zero slot.
+
+        PEP 709 bindings can temporarily shadow source names. A compiler-owned
+        Python argument has an explicit MoltValue identity; closure/task ABI
+        parameters are never inferred as candidates. Generator .0 remains mapped
+        through its live task slot at frame entry.
+        """
+        name = self.current_python_first_arg
+        if name is None or isinstance(name, MoltValue):
+            return name
+        value = self._load_local_value(name, guard_unbound=False)
+        if value is None:
+            value = self.compiler_bindings.get(name)
+        return value
 
     def _capture_function_state(self) -> dict[str, Any]:
         return self._capture_function_scope_state()

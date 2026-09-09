@@ -7,7 +7,6 @@ use crate::*;
 use molt_obj_model::MoltObject;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
-use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -2572,10 +2571,16 @@ pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if self_bits == other_bits {
-            return MoltObject::from_bool(false).bits();
+        let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+        let outcome = crate::object::ops_compare::rich_compare_method_value(
+            _py, obj_from_bits(self_bits), obj_from_bits(other_bits), name,
+        );
+        match crate::object::ops_compare::comparison_value_to_bool(_py, outcome) {
+            crate::object::ops_compare::CompareBoolOutcome::True => MoltObject::from_bool(false).bits(),
+            crate::object::ops_compare::CompareBoolOutcome::False => MoltObject::from_bool(true).bits(),
+            crate::object::ops_compare::CompareBoolOutcome::Error => MoltObject::none().bits(),
+            crate::object::ops_compare::CompareBoolOutcome::NotComparable => not_implemented_bits(_py),
         }
-        not_implemented_bits(_py)
     })
 }
 
@@ -2588,425 +2593,274 @@ pub extern "C" fn molt_print_builtin(
     flush_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        fn print_string_arg_bits(
-            _py: &PyToken<'_>,
-            bits: u64,
-            default: &[u8],
-            label: &str,
-        ) -> Option<u64> {
+        use crate::object::builders::PtrDropGuard;
+
+        fn guard_owned(bits: u64) -> PtrDropGuard {
+            PtrDropGuard::new(obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()))
+        }
+
+        fn separator(_py: &PyToken<'_>, bits: u64, default: &[u8], label: &str) -> Option<u64> {
             let obj = obj_from_bits(bits);
             if obj.is_none() {
                 let ptr = alloc_string(_py, default);
                 if ptr.is_null() {
-                    return None;
+                    return raise_exception::<_>(
+                        _py,
+                        "MemoryError",
+                        "print separator allocation failed",
+                    );
                 }
                 return Some(MoltObject::from_ptr(ptr).bits());
             }
-            let Some(ptr) = obj.as_ptr() else {
-                let msg = format!(
-                    "{} must be None or a string, not {}",
-                    label,
-                    type_name(_py, obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            };
-            unsafe {
-                if object_type_id(ptr) != TYPE_ID_STRING {
-                    let msg = format!(
-                        "{} must be None or a string, not {}",
-                        label,
+            if !obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!(
+                        "{label} must be None or a string, not {}",
                         type_name(_py, obj)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+                    ),
+                );
             }
             inc_ref_bits(_py, bits);
             Some(bits)
         }
 
-        fn string_bits_is_empty(bits: u64) -> bool {
-            let obj = obj_from_bits(bits);
-            let Some(ptr) = obj.as_ptr() else {
+        fn write_piece(_py: &PyToken<'_>, file: u64, value: u64) -> bool {
+            let name = intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            if exception_pending(_py) {
                 return false;
-            };
-            unsafe { string_len(ptr) == 0 }
-        }
-
-        fn string_bits_contains_newline(bits: u64) -> bool {
-            let obj = obj_from_bits(bits);
-            let Some(ptr) = obj.as_ptr() else {
+            }
+            // PyFile_WriteObject looks up the live writer before converting
+            // this piece. Either callback can replace the next piece's writer.
+            let writer = molt_get_attr_name(file, name);
+            let writer_guard = guard_owned(writer);
+            if exception_pending(_py) {
                 return false;
-            };
-            unsafe {
-                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                bytes.contains(&b'\n')
             }
+            let text = molt_str_from_obj(value);
+            let text_guard = guard_owned(text);
+            if exception_pending(_py) {
+                return false;
+            }
+            let result = unsafe { call_callable1(_py, writer, text) };
+            let result_guard = guard_owned(result);
+            // Match the consumer's release order, including callback results
+            // with finalizers; do not let a generic LIFO cleanup reorder it.
+            drop(text_guard);
+            drop(writer_guard);
+            drop(result_guard);
+            !exception_pending(_py)
         }
 
-        fn encode_print_bytes(
-            _py: &PyToken<'_>,
-            bits: u64,
-            encoding: &str,
-            errors: &str,
-        ) -> Result<Vec<u8>, u64> {
-            let obj = obj_from_bits(bits);
-            let Some(ptr) = obj.as_ptr() else {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "print expects a string",
-                ));
-            };
-            unsafe {
-                if object_type_id(ptr) != TYPE_ID_STRING {
-                    return Err(raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "print expects a string",
-                    ));
-                }
-                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                match encode_string_with_errors(bytes, encoding, Some(errors)) {
-                    Ok(out) => Ok(out),
-                    Err(EncodeError::UnknownEncoding(name)) => {
-                        let msg = format!("unknown encoding: {name}");
-                        Err(raise_exception::<_>(_py, "LookupError", &msg))
-                    }
-                    Err(EncodeError::UnknownErrorHandler(name)) => {
-                        let msg = format!("unknown error handler name '{name}'");
-                        Err(raise_exception::<_>(_py, "LookupError", &msg))
-                    }
-                    Err(EncodeError::InvalidChar {
-                        encoding,
-                        code,
-                        pos,
-                        limit,
-                    }) => {
-                        let reason = encode_error_reason(encoding, code, limit);
-                        Err(raise_unicode_encode_error::<_>(
-                            _py,
-                            encoding,
-                            bits,
-                            pos,
-                            pos + 1,
-                            &reason,
-                        ))
-                    }
-                }
-            }
-        }
-
-        let args_obj = obj_from_bits(args_bits);
-        let Some(args_ptr) = args_obj.as_ptr() else {
+        let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
         };
-        unsafe {
-            if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
-            }
-            let mut sep_bits_opt = match print_string_arg_bits(_py, sep_bits, b" ", "sep") {
-                Some(bits) => Some(bits),
-                None => return MoltObject::none().bits(),
-            };
-            let mut end_bits_opt = match print_string_arg_bits(_py, end_bits, b"\n", "end") {
-                Some(bits) => Some(bits),
-                None => {
-                    if let Some(bits) = sep_bits_opt {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-            };
-            if let Some(bits) = sep_bits_opt
-                && string_bits_is_empty(bits)
-            {
-                dec_ref_bits(_py, bits);
-                sep_bits_opt = None;
-            }
-            if let Some(bits) = end_bits_opt
-                && string_bits_is_empty(bits)
-            {
-                dec_ref_bits(_py, bits);
-                end_bits_opt = None;
-            }
+        let Some(args) = (unsafe { crate::object::seq_access::pin_tuple(_py, args_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
+        };
+        // CPython's argument converter tests flush before stream lookup and
+        // separator validation. Its exception must prevent all later effects.
+        let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
 
-            let mut resolved_file_bits = file_bits;
-            let mut file_from_sys = false;
-            if obj_from_bits(resolved_file_bits).is_none() {
-                let sys_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
-                if !obj_from_bits(sys_name_bits).is_none() {
-                    let sys_bits = molt_module_cache_get(sys_name_bits);
-                    if !obj_from_bits(sys_bits).is_none() {
-                        let stdout_name_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.stdout_name,
-                            b"stdout",
-                        );
-                        resolved_file_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
-                        dec_ref_bits(_py, sys_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        file_from_sys = true;
-                    }
-                }
-            }
-
-            let Some(elems) = crate::object::seq_access::snapshot(
-                _py,
-                args_ptr,
-                "print argument snapshot allocation failed",
-            ) else {
-                return MoltObject::none().bits();
-            };
-            let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
-
-            // Fall back to raw C stdio when the resolved file is None —
-            // this handles both "sys not imported" AND "sys.stdout is None"
-            // (e.g., during sys.py bootstrap before intrinsics register stdout).
-            if obj_from_bits(resolved_file_bits).is_none() {
-                let encoding = "utf-8";
-                let errors = "surrogateescape";
-                let mut stdout = std::io::stdout();
-                let mut wrote_newline = false;
-                let sep_bytes = if let Some(bits) = sep_bits_opt {
-                    match encode_print_bytes(_py, bits, encoding, errors) {
-                        Ok(bytes) => Some(bytes),
-                        Err(bits) => {
-                            if let Some(end_bits) = end_bits_opt {
-                                dec_ref_bits(_py, end_bits);
-                            }
-                            dec_ref_bits(_py, bits);
-                            return bits;
-                        }
-                    }
-                } else {
-                    None
-                };
-                let end_bytes = if let Some(bits) = end_bits_opt {
-                    match encode_print_bytes(_py, bits, encoding, errors) {
-                        Ok(bytes) => Some(bytes),
-                        Err(bits) => {
-                            if let Some(sep_bits) = sep_bits_opt {
-                                dec_ref_bits(_py, sep_bits);
-                            }
-                            dec_ref_bits(_py, bits);
-                            return bits;
-                        }
-                    }
-                } else {
-                    None
-                };
-                for (idx, &val_bits) in elems.iter().enumerate() {
-                    if idx > 0
-                        && let Some(bytes) = sep_bytes.as_deref()
-                    {
-                        if bytes.contains(&b'\n') {
-                            wrote_newline = true;
-                        }
-                        let _ = stdout.write_all(bytes);
-                    }
-                    let str_bits = molt_str_from_obj(val_bits);
-                    if exception_pending(_py) {
-                        if let Some(sep_bits) = sep_bits_opt {
-                            dec_ref_bits(_py, sep_bits);
-                        }
-                        if let Some(end_bits) = end_bits_opt {
-                            dec_ref_bits(_py, end_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    let bytes = match encode_print_bytes(_py, str_bits, encoding, errors) {
-                        Ok(bytes) => bytes,
-                        Err(bits) => {
-                            dec_ref_bits(_py, str_bits);
-                            if let Some(sep_bits) = sep_bits_opt {
-                                dec_ref_bits(_py, sep_bits);
-                            }
-                            if let Some(end_bits) = end_bits_opt {
-                                dec_ref_bits(_py, end_bits);
-                            }
-                            return bits;
-                        }
-                    };
-                    if bytes.contains(&b'\n') {
-                        wrote_newline = true;
-                    }
-                    let _ = stdout.write_all(&bytes);
-                    dec_ref_bits(_py, str_bits);
-                }
-                if let Some(bytes) = end_bytes.as_deref() {
-                    if bytes.contains(&b'\n') {
-                        wrote_newline = true;
-                    }
-                    let _ = stdout.write_all(bytes);
-                }
-                if do_flush || wrote_newline {
-                    let _ = stdout.flush();
-                }
-                if let Some(bits) = sep_bits_opt {
-                    dec_ref_bits(_py, bits);
-                }
-                if let Some(bits) = end_bits_opt {
-                    dec_ref_bits(_py, bits);
-                }
+        let file = if obj_from_bits(file_bits).is_none() {
+            let sys_name = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
+            if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-
-            let sep_bits = sep_bits_opt;
-            let end_bits = end_bits_opt;
-            let end_has_newline = end_bits.map(string_bits_contains_newline).unwrap_or(false);
-
-            let mut write_bits = MoltObject::none().bits();
-            let mut use_file_handle = false;
-            if let Some(ptr) = obj_from_bits(resolved_file_bits).as_ptr() {
-                use_file_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            let sys = molt_module_cache_get(sys_name);
+            let _sys_guard = guard_owned(sys);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
-            if !use_file_handle {
-                let write_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
-                write_bits = molt_get_attr_name(resolved_file_bits, write_name_bits);
+            if obj_from_bits(sys).is_none() {
+                // Early bootstrap uses the same cached native/WASM stream as
+                // sys initialization. Encoding, buffering and I/O errors have
+                // one owner; print never writes around the stream authority.
+                let stdout = molt_sys_stdout();
+                if obj_from_bits(stdout).is_none() && !exception_pending(_py) {
+                    return raise_exception::<_>(_py, "RuntimeError", "sys.stdout unavailable");
+                }
+                stdout
+            } else {
+                let name =
+                    intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
                 if exception_pending(_py) {
-                    if let Some(bits) = sep_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if let Some(bits) = end_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
                     return MoltObject::none().bits();
                 }
+                molt_module_get_attr(sys, name)
             }
+        } else {
+            inc_ref_bits(_py, file_bits);
+            file_bits
+        };
+        let _file_guard = guard_owned(file);
+        if exception_pending(_py) || obj_from_bits(file).is_none() {
+            // Explicitly disabled stdout is a no-op, even with invalid sep/end.
+            return MoltObject::none().bits();
+        }
+        let Some(sep) = separator(_py, sep_bits, b" ", "sep") else {
+            return MoltObject::none().bits();
+        };
+        let _sep_guard = guard_owned(sep);
+        let Some(end) = separator(_py, end_bits, b"\n", "end") else {
+            return MoltObject::none().bits();
+        };
+        let _end_guard = guard_owned(end);
 
-            for (idx, &val_bits) in elems.iter().enumerate() {
-                if idx > 0
-                    && let Some(bits) = sep_bits
-                {
-                    if use_file_handle {
-                        let _ = molt_file_write(resolved_file_bits, bits);
-                    } else {
-                        let res_bits = call_callable1(_py, write_bits, bits);
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    if exception_pending(_py) {
-                        if !use_file_handle {
-                            dec_ref_bits(_py, write_bits);
-                        }
-                        if let Some(bits) = sep_bits {
-                            dec_ref_bits(_py, bits);
-                        }
-                        if let Some(bits) = end_bits {
-                            dec_ref_bits(_py, bits);
-                        }
-                        if file_from_sys {
-                            dec_ref_bits(_py, resolved_file_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                }
-                let str_bits = molt_str_from_obj(val_bits);
-                if exception_pending(_py) {
-                    if !use_file_handle {
-                        dec_ref_bits(_py, write_bits);
-                    }
-                    if let Some(bits) = sep_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if let Some(bits) = end_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if use_file_handle {
-                    let _ = molt_file_write(resolved_file_bits, str_bits);
-                } else {
-                    let res_bits = call_callable1(_py, write_bits, str_bits);
-                    dec_ref_bits(_py, res_bits);
-                }
-                dec_ref_bits(_py, str_bits);
-                if exception_pending(_py) {
-                    if !use_file_handle {
-                        dec_ref_bits(_py, write_bits);
-                    }
-                    if let Some(bits) = sep_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if let Some(bits) = end_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
+        for (index, &value) in args.iter().enumerate() {
+            if index > 0 && !write_piece(_py, file, sep) {
+                return MoltObject::none().bits();
             }
-            if let Some(bits) = end_bits {
-                if use_file_handle {
-                    let _ = molt_file_write(resolved_file_bits, bits);
-                } else {
-                    let res_bits = call_callable1(_py, write_bits, bits);
-                    dec_ref_bits(_py, res_bits);
-                }
-                if exception_pending(_py) {
-                    if !use_file_handle {
-                        dec_ref_bits(_py, write_bits);
-                    }
-                    if let Some(bits) = sep_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    dec_ref_bits(_py, bits);
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
+            if !write_piece(_py, file, value) {
+                return MoltObject::none().bits();
             }
-            if !use_file_handle {
-                dec_ref_bits(_py, write_bits);
+        }
+        // Empty separators and terminators are still observable writes.
+        if !write_piece(_py, file, end) {
+            return MoltObject::none().bits();
+        }
+        if do_flush {
+            let name = intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
-            if let Some(bits) = sep_bits {
-                dec_ref_bits(_py, bits);
+            let flush = molt_get_attr_name(file, name);
+            let flush_guard = guard_owned(flush);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
-            if let Some(bits) = end_bits {
-                dec_ref_bits(_py, bits);
-            }
-
-            if do_flush || (file_from_sys && use_file_handle && end_has_newline) {
-                if use_file_handle {
-                    let _ = molt_file_flush(resolved_file_bits);
-                } else {
-                    let flush_name_bits =
-                        intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
-                    let flush_method_bits = molt_get_attr_name(resolved_file_bits, flush_name_bits);
-                    if exception_pending(_py) {
-                        if file_from_sys {
-                            dec_ref_bits(_py, resolved_file_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    let flush_res_bits = call_callable0(_py, flush_method_bits);
-                    dec_ref_bits(_py, flush_method_bits);
-                    dec_ref_bits(_py, flush_res_bits);
-                    if exception_pending(_py) {
-                        if file_from_sys {
-                            dec_ref_bits(_py, resolved_file_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                }
-            }
-            if file_from_sys {
-                dec_ref_bits(_py, resolved_file_bits);
-            }
+            let result = unsafe { call_callable0(_py, flush) };
+            let result_guard = guard_owned(result);
+            drop(flush_guard);
+            drop(result_guard);
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod print_stream_tests {
+    use super::*;
+
+    #[test]
+    fn print_uses_the_shared_memory_stream_and_preserves_return_value() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let none = MoltObject::none().bits();
+            let stream = molt_stringio_new(none, none, none);
+            assert!(!exception_pending(_py));
+            let args_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
+            );
+            assert!(!args_ptr.is_null());
+            let args = MoltObject::from_ptr(args_ptr).bits();
+            let result =
+                molt_print_builtin(args, none, none, stream, MoltObject::from_bool(true).bits());
+            assert_eq!(result, none);
+            assert!(!exception_pending(_py));
+            let text = molt_file_getvalue(stream);
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(text)).as_deref(),
+                Some("1 2\n")
+            );
+            dec_ref_bits(_py, text);
+            dec_ref_bits(_py, args);
+            dec_ref_bits(_py, stream);
+        });
+    }
+
+    #[test]
+    fn print_closed_stream_error_releases_owned_arguments() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let none = MoltObject::none().bits();
+            let stream = molt_stringio_new(none, none, none);
+            assert!(!exception_pending(_py));
+            dec_ref_bits(_py, molt_file_close(stream));
+            let sep_ptr = alloc_string(_py, b"unique-print-test-separator");
+            let end_ptr = alloc_string(_py, b"unique-print-test-terminator");
+            let args_ptr = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
+            assert!(!sep_ptr.is_null() && !end_ptr.is_null() && !args_ptr.is_null());
+            let sep = MoltObject::from_ptr(sep_ptr).bits();
+            let end = MoltObject::from_ptr(end_ptr).bits();
+            let args = MoltObject::from_ptr(args_ptr).bits();
+            let before = unsafe {
+                [
+                    (*header_from_obj_ptr(sep_ptr)).ref_count_snapshot(),
+                    (*header_from_obj_ptr(end_ptr)).ref_count_snapshot(),
+                    (*header_from_obj_ptr(args_ptr)).ref_count_snapshot(),
+                ]
+            };
+            let result =
+                molt_print_builtin(args, sep, end, stream, MoltObject::from_bool(false).bits());
+            assert_eq!(result, none);
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+            let after = unsafe {
+                [
+                    (*header_from_obj_ptr(sep_ptr)).ref_count_snapshot(),
+                    (*header_from_obj_ptr(end_ptr)).ref_count_snapshot(),
+                    (*header_from_obj_ptr(args_ptr)).ref_count_snapshot(),
+                ]
+            };
+            assert_eq!(after, before);
+            dec_ref_bits(_py, args);
+            dec_ref_bits(_py, end);
+            dec_ref_bits(_py, sep);
+            dec_ref_bits(_py, stream);
+        });
+    }
+
+    #[test]
+    fn print_disabled_stdout_returns_before_separator_validation() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(_py, {
+                let none = MoltObject::none().bits();
+                let name_ptr = alloc_string(_py, b"sys");
+                let stdout_ptr = alloc_string(_py, b"stdout");
+                assert!(!name_ptr.is_null() && !stdout_ptr.is_null());
+                let name = MoltObject::from_ptr(name_ptr).bits();
+                let stdout = MoltObject::from_ptr(stdout_ptr).bits();
+                let module = match molt_module_cache_get(name) {
+                    bits if obj_from_bits(bits).is_none() => {
+                        let module = molt_module_new(name);
+                        dec_ref_bits(_py, molt_module_cache_set(name, module));
+                        module
+                    }
+                    module => module,
+                };
+                dec_ref_bits(_py, molt_module_set_attr(module, stdout, none));
+                assert!(!exception_pending(_py));
+                let args_ptr = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
+                assert!(!args_ptr.is_null());
+                let args = MoltObject::from_ptr(args_ptr).bits();
+                let result = molt_print_builtin(
+                    args,
+                    MoltObject::from_int(123).bits(),
+                    none,
+                    none,
+                    MoltObject::from_bool(false).bits(),
+                );
+                assert_eq!(result, none);
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, args);
+                dec_ref_bits(_py, module);
+                dec_ref_bits(_py, stdout);
+                dec_ref_bits(_py, name);
+            });
+        });
+    }
 }
 
 #[unsafe(no_mangle)]

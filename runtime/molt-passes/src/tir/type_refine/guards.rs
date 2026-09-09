@@ -38,6 +38,7 @@ pub(super) fn propagate_guard_types(
     func: &TirFunction,
     env: &mut HashMap<ValueId, TirType>,
     idoms: &HashMap<BlockId, Option<BlockId>>,
+    exact_scalar_types: &HashMap<ValueId, TirType>,
 ) -> (usize, HashMap<ValueId, TirType>) {
     let mut proven_types: HashMap<ValueId, TirType> = HashMap::new();
     let mut refinements = 0usize;
@@ -247,12 +248,18 @@ pub(super) fn propagate_guard_types(
                         .unwrap_or_else(|| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 })
                 .collect();
-            let result_types = infer_result_types_with_attrs(
-                op.opcode,
-                &operand_types,
-                Some(&op.attrs),
-                op.results.len(),
-            );
+            let result_types = if let Some(facts) =
+                crate::tir::predicate_semantics::predicate_facts_for_op(op, exact_scalar_types)
+            {
+                vec![Some(facts.result_type); op.results.len()]
+            } else {
+                infer_result_types_with_attrs(
+                    op.opcode,
+                    &operand_types,
+                    Some(&op.attrs),
+                    op.results.len(),
+                )
+            };
             for (&result_id, result_ty) in op.results.iter().zip(result_types) {
                 if let Some(result_ty) = result_ty {
                     proven_types.insert(result_id, result_ty.clone());

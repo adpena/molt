@@ -106,6 +106,41 @@ Current status note:
 - contested runtime work, especially around call-bind ownership, must not be
   forced through while partner changes are active.
 
+## Backend cache sync receipts
+
+`molt.cli.artifact_sync` owns the persisted source-to-output receipt. Version 2
+binds the contract-namespaced source key and cache tier to output size and SHA-256;
+size and modification time alone never authorize cache reuse or daemon output
+suppression. Old version-1 receipts miss and regenerate through the normal build.
+Native, WASM and textual backend artifacts use this same receipt authority.
+
+Backend admission supplies its `StableRegularFileIdentity` to receipt matching,
+so shape, symbols and sync reuse share one content hash per validation transaction.
+Supplied identities are path-bound and checked with the shared direct-file mutation
+identity (including Windows ChangeTime). Cached JSON receipt/frontend payloads use
+that same direct-file identity; replacing a sidecar while restoring its size and
+mtime cannot preserve a warm payload hit. Publication invalidates the process
+payload cache rather than binding caller data to a possibly replaced path.
+
+Warm-output reuse and daemon suppression share native module-chunk closure
+admission and return the same generation-bound result. A self-consistent receipt
+does not override conflicting bytes produced for the same key: publication and
+materialization preserve the conflicting inputs and report the mismatch.
+Mutable output and shared-stdlib link snapshots own independent copies, never
+hard links to writable cache sources. Immutable publication captures its returned
+identity after private-link cleanup, which itself changes inode mutation metadata.
+Rust archive production validates the actual emitted container and every member's
+target before atomic commit, through the same parser used for cache admission.
+An upstream writer's automatic COFF-to-GNU/GNU64 promotion is an error, not an
+implicit target-format conversion; failed admission preserves the prior output.
+
+The hash count is distinct from bytes read: semantic/format validators and symbol
+tools may inspect bytes in addition to the one identity hash. Native archive
+shape admission visits bounded headers through the shared archive parser without
+hashing or reading opaque payloads; callers requesting semantic archive identity
+still hash every content member. Read-byte and hash-call regressions pin that
+distinction rather than treating hash-helper invocation counts as I/O profiles.
+
 ## Linear Workspace Hygiene
 - Refresh the repo-backed local Linear artifacts from current TODO contracts with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root .` to inspect drift.
 - Apply the refreshed local seed/manifests/index with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root . --apply`.

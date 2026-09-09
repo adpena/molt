@@ -340,6 +340,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     });
     assert!(
@@ -635,6 +636,7 @@ fn tir_round_trip_preserves_ret_args() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -704,6 +706,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -788,6 +791,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

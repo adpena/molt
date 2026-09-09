@@ -13,12 +13,17 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
     };
 
-    let analysis = analyze_native_backend_ir(&ir, true);
+    let analysis = analyze_native_backend_ir(
+        &ir,
+        true,
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+    );
 
     assert!(analysis.defined_functions.contains("molt_main"));
 }
@@ -64,12 +69,17 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
     };
 
-    let analysis = analyze_native_backend_ir(&ir, true);
+    let analysis = analyze_native_backend_ir(
+        &ir,
+        true,
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+    );
 
     assert!(analysis.closure_functions.contains("worker_poll"));
     assert_eq!(
@@ -90,7 +100,7 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 #[test]
 fn effective_metadata_unions_module_context_with_local_scan() {
     // A module context that knows ONLY a stdlib closure / task / leaf.
-    let stdlib_funcs = vec![FunctionIR {
+    let mut stdlib_funcs = vec![FunctionIR {
         name: "contextlib___inner".to_string(),
         params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
         ops: vec![OpIR {
@@ -102,9 +112,10 @@ fn effective_metadata_unions_module_context_with_local_scan() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }];
-    let ctx = SimpleBackend::build_module_context(&stdlib_funcs);
+    let ctx = SimpleBackend::prepare_module_context(&mut stdlib_funcs);
     assert!(ctx.closure_functions.contains("contextlib___inner"));
 
     // The current batch defines its OWN closure that the context never saw.
@@ -144,7 +155,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
 
 #[test]
 fn native_backend_module_context_preserves_cross_batch_function_metadata() {
-    let functions = vec![
+    let mut functions = vec![
         FunctionIR {
             name: "helper".to_string(),
             params: vec!["value".to_string(), "intrinsic".to_string()],
@@ -156,6 +167,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -169,11 +181,12 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ];
 
-    let context = SimpleBackend::build_module_context(&functions);
+    let context = SimpleBackend::prepare_module_context(&mut functions);
 
     assert_eq!(context.function_arities.get("helper"), Some(&2));
     assert_eq!(context.function_has_ret.get("helper"), Some(&true));
@@ -183,7 +196,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
 
 #[test]
 fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
-    let functions = vec![
+    let mut functions = vec![
         FunctionIR {
             name: "value_helper".to_string(),
             params: vec!["value".to_string()],
@@ -195,6 +208,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -207,12 +221,55 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ];
 
-    let context = SimpleBackend::build_module_context(&functions);
+    let context = SimpleBackend::prepare_module_context(&mut functions);
 
     assert_eq!(context.function_has_ret.get("value_helper"), Some(&true));
     assert_eq!(context.function_has_ret.get("void_helper"), Some(&false));
+}
+
+// This fixture exercises the production pre-batch preparation, not a proxy
+// splitter. The normal proof environment uses the default 2000-op boundary.
+#[test]
+fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
+    let mut ops = Vec::new();
+    for line in 0..1401 {
+        ops.push(OpIR {
+            kind: "line".into(),
+            value: Some(line),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "const".into(),
+            value: Some(line),
+            out: Some(format!("unused_{line}")),
+            ..OpIR::default()
+        });
+    }
+    ops.push(OpIR {
+        kind: "ret_void".into(),
+        ..OpIR::default()
+    });
+    let mut functions = vec![FunctionIR {
+        name: "app__large".into(),
+        execution_context: crate::ir::ExecutionContextPolicy::Inherited,
+        ops,
+        ..FunctionIR::default()
+    }];
+    let context = SimpleBackend::prepare_module_context(&mut functions);
+    assert!(
+        functions.len() > 1,
+        "production preparation must split before TIR"
+    );
+    assert!(functions.iter().all(|function| function.codegen_partition));
+    for function in &functions {
+        assert_eq!(context.original_function_name(&function.name), "app__large");
+        let abi = context.function_linkage_abi(&function.name).unwrap();
+        assert_eq!(abi.source_signature, function.function_signature().unwrap());
+    }
+    context.validate_function_linkage_abis(&functions).unwrap();
 }

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
+
+if TYPE_CHECKING:
+    from tools.win_job import (
+        WindowsJobAccounting,
+        WindowsJobCleanup,
+        WindowsSystemResources,
+    )
 
 
 def _rss_record_payload(record: Any | None) -> dict[str, object] | None:
@@ -73,7 +80,9 @@ def termination_reports_payload(
     return [termination_report_payload(report) for report in reports]
 
 
-def _windows_system_resources_payload(resources: Any) -> dict[str, object]:
+def _windows_system_resources_payload(
+    resources: WindowsSystemResources,
+) -> dict[str, object]:
     return {
         "process_count": resources.process_count,
         "thread_count": resources.thread_count,
@@ -88,7 +97,9 @@ def _windows_system_resources_payload(resources: Any) -> dict[str, object]:
     }
 
 
-def _windows_job_accounting_payload(accounting: Any) -> dict[str, object]:
+def _windows_job_accounting_payload(
+    accounting: WindowsJobAccounting,
+) -> dict[str, object]:
     return {
         "total_processes": accounting.total_processes,
         "active_processes": accounting.active_processes,
@@ -101,12 +112,17 @@ def _windows_job_accounting_payload(accounting: Any) -> dict[str, object]:
     }
 
 
-def windows_job_cleanup_payload(cleanup: Any | None) -> dict[str, object] | None:
+def windows_job_cleanup_payload(
+    cleanup: WindowsJobCleanup | None,
+) -> dict[str, object] | None:
     if cleanup is None:
         return None
     return {
         "completed": cleanup.completed,
         "terminated_remaining_processes": cleanup.terminated_remaining_processes,
+        "initial_process_ids": list(cleanup.initial_process_ids),
+        "escalation_process_ids": list(cleanup.escalation_process_ids),
+        "natural_exit_wait_s": cleanup.natural_exit_wait_s,
         "elapsed_s": cleanup.elapsed_s,
         "before": _windows_job_accounting_payload(cleanup.before),
         "after": _windows_job_accounting_payload(cleanup.after),

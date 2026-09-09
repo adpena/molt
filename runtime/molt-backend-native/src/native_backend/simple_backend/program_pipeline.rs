@@ -9,10 +9,8 @@ pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
         Option<crate::tir::target_info::TargetInfo>,
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
     pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
-    pub(in crate::native_backend::simple_backend) pre_split_task_kinds:
-        BTreeMap<String, TrampolineKind>,
-    pub(in crate::native_backend::simple_backend) pre_split_task_closure_sizes:
-        BTreeMap<String, i64>,
+    pub(in crate::native_backend::simple_backend) source_callables:
+        molt_tir::trampolines::CallableMetadata,
 }
 
 #[cfg(feature = "native-backend")]
@@ -41,6 +39,14 @@ impl SimpleBackend {
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
+        // Capture marker facts only from original source bodies. A batch may
+        // already contain compiler-provenance partitions; their task facts
+        // belong to the frozen module context, not lowered marker operands.
+        let source_callables =
+            molt_tir::trampolines::CallableMetadata::from_functions_with_marker_filter(
+                &ir.functions,
+                |function| !self.partition_sources.contains_key(&function.name),
+            );
         // Pre-TIR IR passes (parallel). Each pass operates on a single
         // FunctionIR with no shared mutable state, so all passes can run in
         // parallel across functions. Fusing them into one par_iter_mut avoids
@@ -67,6 +73,10 @@ impl SimpleBackend {
                 hoist_loop_invariants(func_ir);
             });
         }
+
+        // Capture task/closure custody from the unsplit body exactly once.
+        // The first TIR lift must see bounded bodies, including the LLVM lane.
+        self.partition_sources.extend(split_megafunctions(ir));
 
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
@@ -101,13 +111,12 @@ impl SimpleBackend {
             eliminate_dead_ops(ir, &dead_op_target);
         }
 
-        let (pre_split_task_kinds, pre_split_task_closure_sizes) = self
-            .run_cranelift_module_pipeline_if_needed(
-                ir,
-                use_llvm,
-                native_tti.as_ref(),
-                native_cached_tir.as_mut(),
-            );
+        self.run_cranelift_module_pipeline_if_needed(
+            ir,
+            use_llvm,
+            native_tti.as_ref(),
+            native_cached_tir.as_mut(),
+        );
 
         if self.skip_ir_passes && !use_llvm {
             let native_tti = native_tti
@@ -127,7 +136,11 @@ impl SimpleBackend {
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
-        split_megafunctions(ir);
+        // Bound growth introduced by the native TIR roundtrip. LLVM runs its
+        // TIR module phase later and retains the explicit partition barrier.
+        if !use_llvm {
+            self.partition_sources.extend(split_megafunctions(ir));
+        }
         run_post_tir_simple_ir_rewrites(&mut ir.functions);
 
         let emit_resolver_here = self.emit_app_callable_resolver;
@@ -143,7 +156,11 @@ impl SimpleBackend {
             self.app_callable_manifest.take().unwrap_or_default()
         };
         if !self.skip_shared_stdlib_partition {
-            externalize_shared_stdlib_partition(ir, &module_registry_roots);
+            externalize_shared_stdlib_partition(
+                ir,
+                &module_registry_roots,
+                &self.partition_sources,
+            );
         }
         if timing {
             let passes_elapsed = compile_start.elapsed();
@@ -154,8 +171,7 @@ impl SimpleBackend {
             native_target_info: native_tti,
             emit_resolver_here,
             app_callable_manifest,
-            pre_split_task_kinds,
-            pre_split_task_closure_sizes,
+            source_callables,
         }
     }
 
@@ -165,13 +181,7 @@ impl SimpleBackend {
         use_llvm: bool,
         native_tti: Option<&crate::tir::target_info::TargetInfo>,
         native_cached_tir: Option<&mut crate::tir::pipeline_cache::CachedTirCustody>,
-    ) -> (BTreeMap<String, TrampolineKind>, BTreeMap<String, i64>) {
-        // This pre-split capture only reads task annotations; the leaf set is
-        // recomputed post-split, so skip the heavier whole-program leaf analysis.
-        let analysis = analyze_native_backend_ir(ir, /* compute_leaves */ false);
-        let pre_split_task_kinds = analysis.task_kinds;
-        let pre_split_task_closure_sizes = analysis.task_closure_sizes;
-
+    ) {
         // The SimpleIR-carrier module phase runs for the Cranelift path and is
         // skipped for the LLVM path. LLVM lowers from TIR directly and runs the
         // same module pipeline on its own TIR functions in the LLVM branch, so
@@ -184,7 +194,7 @@ impl SimpleBackend {
             let external_symbols = if self.skip_shared_stdlib_partition {
                 BTreeSet::new()
             } else {
-                shared_stdlib_external_symbols(ir)
+                shared_stdlib_external_symbols(ir, &self.partition_sources)
             };
             let non_inlinable: HashSet<String> = external_symbols.into_iter().collect();
             let native_cached_tir = native_cached_tir
@@ -203,8 +213,6 @@ impl SimpleBackend {
                     },
                 );
         }
-
-        (pre_split_task_kinds, pre_split_task_closure_sizes)
     }
 }
 

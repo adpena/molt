@@ -93,6 +93,7 @@ pub struct SimpleBackend {
     /// binary emits the blob.
     pub module_registry: Option<ModuleRegistryIR>,
     module_context: Option<NativeBackendModuleContext>,
+    partition_sources: BTreeMap<String, String>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     pub(crate) next_data_id: u64,

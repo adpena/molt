@@ -204,10 +204,18 @@ def _append_diagnostics(
             _diagnostic(
                 signal_id="rust-compiler-error",
                 severity="error",
-                summary=f"Rust proof failed during compilation at {code}: {message}.",
+                summary=(
+                    f"Running Rust command emitted {code}: {message}."
+                    if row["status"] == "running"
+                    else f"Rust proof failed during compilation at {code}: {message}."
+                ),
                 evidence=match.group(0),
                 next_action=(
-                    "Fix the Rust compiler error before rerunning the proof; this "
+                    "Preserve the observed compiler diagnostic and prepare its source fix. "
+                    "The command is still running; this observation does not establish "
+                    "terminal status or authorize cancellation or a parallel rerun."
+                    if row["status"] == "running"
+                    else "Fix the Rust compiler error before rerunning the proof; this "
                     "row did not reach the intended runtime assertion."
                 ),
                 scopes=("runtime/", "tools/proof_queue.py"),

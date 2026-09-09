@@ -438,6 +438,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         mut func,
         header,
         body,
+        exit,
         ..
     } = build_test_loop(0, 4, 1, 1);
     // Add a bare CheckException observation op to the body and set the
@@ -458,6 +459,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         },
     );
     func.has_exception_handling = true;
+    func.label_id_map.insert(exit.0, 99);
     assert!(
         !func.has_exception_handlers(),
         "CheckException alone is not a handler region"
@@ -468,6 +470,45 @@ fn unrolls_with_check_exception_observation_in_body() {
         "CheckException-only function must still unroll"
     );
     assert!(!func.blocks.contains_key(&header));
+}
+
+#[test]
+fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation() {
+    for label_reference in [false, true] {
+        let TestLoop {
+            mut func,
+            header,
+            body,
+            ..
+        } = build_test_loop(0, 4, 1, 1);
+        if label_reference {
+            func.label_id_map.insert(header.0, 99);
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: AttrDict::from([("value".into(), AttrValue::Int(99))]),
+                    source_span: None,
+                });
+            func.has_exception_handling = true;
+        } else {
+            // Another loop's condition relation is not retired with this header.
+            func.loop_cond_blocks.insert(func.entry_block, body);
+        }
+        let before = crate::tir::serialize::serialize_tir_function(&func).unwrap();
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
+        assert_eq!(stats.ops_added, 0);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(
+            crate::tir::serialize::serialize_tir_function(&func).unwrap(),
+            before
+        );
+    }
 }
 
 /// Adversarial: a real `try:` block (TryStart) inside the loop body makes
@@ -1200,4 +1241,73 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
         );
     }
     assert!(!simple.is_empty());
+}
+
+#[test]
+fn unroll_rejects_retained_region_entries_without_mutating_ids_or_metadata() {
+    for (structural, condition) in [(false, false), (false, true), (true, false), (true, true)] {
+        let MultiArgLoop {
+            mut func,
+            body,
+            cond,
+            ..
+        } = build_multiarg_counted_loop(0, 4, 1);
+        let target = if condition { cond } else { body };
+        let outside = func.fresh_block();
+        func.blocks.insert(
+            outside,
+            TirBlock {
+                id: outside,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target,
+                    args: vec![],
+                },
+            },
+        );
+        if structural {
+            func.loop_cond_blocks.insert(func.entry_block, outside);
+        }
+        crate::tir::verify::verify_function(&func)
+            .expect("retained incoming-edge fixture must be valid before unrolling");
+        let before = crate::tir::serialize::serialize_tir_function(&func).unwrap();
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
+        assert_eq!(stats.total_changes(), 0);
+        assert_eq!(
+            crate::tir::serialize::serialize_tir_function(&func).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn unroll_rewires_unreachable_header_predecessor_without_losing_its_metadata() {
+    let TestLoop {
+        mut func, header, ..
+    } = build_test_loop(0, 4, 1, 1);
+    let outside = func.fresh_block();
+    let entry_edge = func.blocks[&func.entry_block].terminator.clone();
+    func.blocks.insert(
+        outside,
+        TirBlock {
+            id: outside,
+            args: vec![],
+            ops: vec![],
+            terminator: entry_edge,
+        },
+    );
+    func.loop_cond_blocks.insert(func.entry_block, outside);
+    crate::tir::verify::verify_function(&func)
+        .expect("metadata-retained unreachable header predecessor must be valid input");
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert!(stats.ops_added > 0);
+    assert!(!func.blocks.contains_key(&header));
+    assert_eq!(func.loop_cond_blocks.get(&func.entry_block), Some(&outside));
+    let Terminator::Branch { target, args } = &func.blocks[&outside].terminator else {
+        panic!("rewired predecessor must retain branch transport");
+    };
+    assert!(func.blocks.contains_key(target));
+    assert!(args.is_empty());
+    crate::tir::verify::verify_function(&func).expect("rewired retirement must verify");
 }

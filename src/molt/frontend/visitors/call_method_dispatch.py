@@ -7,13 +7,15 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from molt.compiler_analysis.python_inlining import (
+    inline_expression_is_frame_independent,
+)
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     ClassInfo,
     MethodInfo,
     MoltOp,
     MoltValue,
-    _InlineSuperFoldRequired,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -92,7 +94,7 @@ class CallMethodDispatchMixin(_MixinBase):
 
     def _load_local_value_unchecked(self, name: str) -> MoltValue | None:
         if name in self.comp_shadow_locals:
-            return self.locals.get(name)
+            return self._load_local_value(name, guard_unbound=False)
         if self.current_func_name != "molt_main" and name in self.global_decls:
             return None
         cell = self._load_boxed_cell(name)
@@ -110,9 +112,7 @@ class CallMethodDispatchMixin(_MixinBase):
             name in self.async_locals or name in self.async_internal_bindings
         ):
             offset = self._async_binding_slot(name).offset
-            res = MoltValue(
-                self.next_var(), type_hint=self._async_binding_hint(name)
-            )
+            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             return res
         cached = self.locals.get(name)
@@ -259,201 +259,39 @@ class CallMethodDispatchMixin(_MixinBase):
         )
         return res
 
-    def _try_emit_super_static_call(self, node: ast.Call) -> "MoltValue | None":
-        """Phase 4a: fold `super().method(args)` to a direct CALL when the
-        MRO is statically resolvable.  Returns the result MoltValue on
-        success or None to signal the caller should fall through to the
-        general dispatch path.
-
-        Bails out (returns None) on any of:
-          - `node.func` is not `Attribute(Call(super, []), method)`
-          - super() has args / kwargs (typed-super: out of scope)
-          - current method's class or first-parameter is unknown
-          - MRO walk doesn't find the method (dispatch error path)
-          - method is a property/classmethod/staticmethod descriptor
-          - method has *args/**kwargs/closure/defaults (defer to general
-            path which handles default-binding correctly)
-          - call site has *args/**kwargs/keyword args (the static fold
-            is positional-only)
-        """
-        if not isinstance(node.func, ast.Attribute):
-            return None
-        super_call = node.func.value
-        if not isinstance(super_call, ast.Call):
-            return None
-        if not isinstance(super_call.func, ast.Name) or super_call.func.id != "super":
-            return None
-        if super_call.args or super_call.keywords:
-            # typed super(T, obj) — leave to general path.  But if we are
-            # inlining a ``__class__``-cell method, the runtime super path the
-            # general path takes has no cell in the caller's spliced scope, so
-            # the inline must be aborted (caller falls back to dispatch).
-            if self._inline_super_must_fold:
-                raise _InlineSuperFoldRequired
-            return None
-        current_class = self.current_class
-        current_first_param = self.current_method_first_param
-        if current_class is None or current_first_param is None:
-            if self._inline_super_must_fold:
-                raise _InlineSuperFoldRequired
-            return None
-        if node.keywords:
-            if self._inline_super_must_fold:
-                raise _InlineSuperFoldRequired
-            return None  # kwargs hit defaults / kwonly machinery
-        for arg in node.args:
-            if isinstance(arg, (ast.Starred,)):
-                if self._inline_super_must_fold:
-                    raise _InlineSuperFoldRequired
-                return None  # *args spread — needs builder
-        method_name = node.func.attr
-        folded = self._fold_bare_super_static(
-            node, method_name, current_class, current_first_param
-        )
-        if folded is None and self._inline_super_must_fold:
-            # A bare ``super().method()`` that did not fold while inlining a
-            # ``__class__``-cell method: the general dispatch fallback would
-            # emit a runtime super into a scope with no ``__class__`` cell.
-            # Abort the inline so the caller routes through the dispatch path.
-            raise _InlineSuperFoldRequired
-        return folded
-
-    def _fold_bare_super_static(
-        self,
-        node: ast.Call,
-        method_name: str,
-        current_class: str,
-        current_first_param: str,
-    ) -> "MoltValue | None":
-        """Fold a confirmed bare ``super().method(*positional)`` call to a
-        direct CALL / inline when the MRO is statically resolvable.  Returns
-        ``None`` to fall through to the general dispatch path.  The caller
-        (``_try_emit_super_static_call``) has already validated the bare-super
-        shape and handles the inline-abort policy.  It also proved
-        ``self.current_class`` / ``self.current_method_first_param`` non-None
-        and threads them in as ``current_class`` / ``current_first_param`` so
-        the fold reads the narrowed values rather than the optional attributes.
-        """
-        # SOUNDNESS GATE for the static super fold.  ``super().method()`` in
-        # ``current_class.method`` resolves to the first class defining
-        # ``method`` after ``current_class`` in ``type(self).__mro__``.  Folding
-        # statically picks that successor in ``current_class``'s *own* MRO, which
-        # equals the runtime answer for every possible receiver only when the
-        # successor-owner is identical across ``current_class`` and all of its
-        # subclasses.  Linear hierarchies satisfy this; a diamond subclass
-        # (``Final(Left, Right)`` interposing ``Right`` between ``Left`` and
-        # ``Base``) does not — that is the parity bug.  Sema precomputes the
-        # methods whose successor-owner is stable across the whole entry-module
-        # subclass graph (and leaves non-entry modules empty, since downstream
-        # subclasses may be invisible here). When the fact is absent, super()
-        # lowers to the runtime path, which the backend fuses into the
-        # allocation-free ``call_super_method_ic`` -- already the fast path.
-        assert self._sema is not None, "module sema must be populated before lowering"
-        sound_super_methods = (
-            self._sema.class_facts.super_fold_sound_methods_by_class.get(
-                current_class, frozenset()
+    def _emit_inline_expression(
+        self, expression: ast.expr, bindings: dict[str, MoltValue]
+    ) -> MoltValue:
+        """Lower a preflighted expression without borrowing the caller's scope."""
+        if isinstance(expression, ast.Name):
+            return bindings[expression.id]
+        if isinstance(expression, ast.Constant):
+            value = self.visit(expression)
+            if value is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT, "Inline constant produced no value"
+                )
+            return value
+        if isinstance(expression, (ast.Tuple, ast.List)):
+            values = [
+                self._emit_inline_expression(element, bindings)
+                for element in expression.elts
+            ]
+            is_tuple = isinstance(expression, ast.Tuple)
+            result = MoltValue(
+                self.next_var(), type_hint="tuple" if is_tuple else "list"
             )
-        )
-        if method_name not in sound_super_methods:
-            return None
-        method_info, owner_class = self._resolve_super_method_info(
-            current_class, method_name
-        )
-        if method_info is None or owner_class is None:
-            return None
-        if method_info.get("descriptor") != "function":
-            return None
-        # A method whose closure is exactly the implicit ``__class__`` super
-        # cell (``inline_closure_ok``) can still be folded — but ONLY via the
-        # inline path below, which resolves its own ``super()`` chain statically
-        # and never reads the cell.  A direct CALL to that closure symbol would
-        # omit the cell argument, so ``target_is_closure`` forbids the direct
-        # CALL fallback for these methods (they route to general dispatch on
-        # inline failure).  A method with real captured locals is not foldable.
-        target_is_closure = bool(method_info.get("has_closure"))
-        if target_is_closure and not method_info.get("inline_closure_ok"):
-            return None
-        if method_info.get("has_vararg"):
-            return None
-        if method_info.get("has_varkw"):
-            return None
-        if method_info.get("kwonly_count"):
-            return None
-        defaults = method_info.get("defaults") or []
-        # Param count includes self; call site provides only positional
-        # args, so required positional count is param_count - 1.  We
-        # require an exact match (no defaults filled) to keep this fold
-        # purely structural — anything else routes through the general
-        # path that knows how to evaluate default-spec expressions.
-        param_count = method_info.get("param_count")
-        if param_count is None:
-            return None
-        if defaults:
-            return None
-        expected_positional = param_count - 1  # exclude self
-        if len(node.args) != expected_positional:
-            return None
-
-        self_val = self._load_local_value(current_first_param)
-        if self_val is None and current_first_param in self.free_vars:
-            self_val = self._emit_free_var_load(current_first_param)
-        if self_val is None:
-            return None
-
-        call_args = [self.visit(a) for a in node.args]
-        if any(a is None for a in call_args):
-            return None
-
-        # Phase 2 inline opportunity at the super-fold site: if the
-        # MRO-resolved target method has a trivially inlinable body
-        # (single Return of a constant/param/binop/etc. expression),
-        # emit the body inline rather than a CALL.  This composes
-        # with Phase 4a's recursive super-walk — `Leaf.compute` calls
-        # `super().compute(x) * 2` which folds to `Mid.compute`,
-        # whose body inlines to `super().compute(x) + 1` whose super
-        # again folds to `Base.compute(x) = x`, fully unwinding the
-        # super-chain at compile time.  This is the only foldable path
-        # for a ``__class__``-cell closure target (see ``target_is_closure``).
-        inlined = self._try_inline_method_call(method_info, self_val, call_args)
-        if inlined is not None:
-            return inlined
-
-        # The MRO-resolved target carries the implicit ``__class__`` super cell
-        # but did not inline (its body was not trivially inlinable): a direct
-        # CALL to its closure symbol would omit the cell, so route to the
-        # general dispatch path, which threads the real closure tuple.
-        if target_is_closure:
-            return None
-
-        # Extract the method symbol from method_info["func"].type_hint
-        # (format: "Func:<symbol>"), which was set when the ClassDef
-        # compiled the method.  Calling `_function_symbol` here would
-        # increment the collision counter and return a fresh dangling
-        # symbol — same bug Phase 1 documents at line 16720.
-        func_val = method_info.get("func")
-        if func_val is None or not getattr(func_val, "type_hint", "").startswith(
-            "Func:"
-        ):
-            return None
-        method_symbol = func_val.type_hint.split(":", 1)[1]
-        if method_symbol not in self.func_symbol_names:
-            return None
-
-        res_hint = "Any"
-        return_hint = method_info.get("return_hint")
-        if return_hint and (
-            return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-        ):
-            res_hint = return_hint
-        res = MoltValue(self.next_var(), type_hint=res_hint)
-        self.emit(
-            MoltOp(
-                kind="CALL",
-                args=[method_symbol, self_val] + call_args,
-                result=res,
+            self.emit(
+                MoltOp(
+                    kind="TUPLE_NEW" if is_tuple else "LIST_NEW",
+                    args=values,
+                    result=result,
+                )
             )
+            return result
+        raise FrontendRejection(
+            Diagnostic.INTERNAL_INVARIANT, "Unproved inline expression reached lowering"
         )
-        return res
 
     def _try_inline_method_call(
         self,
@@ -461,239 +299,71 @@ class CallMethodDispatchMixin(_MixinBase):
         receiver: MoltValue,
         call_args: list[MoltValue],
     ) -> MoltValue | None:
-        """Inline a Phase-1-direct-call into the current scope.
-
-        Substitutes parameters → arg MoltValues in the locals map
-        for the duration of visiting the inline-return-value AST,
-        then restores.  Returns the resulting MoltValue, or None if
-        inlining failed (caller should fall through to a regular CALL).
-        """
-        inline_return = method_info.get("inline_return")
-        inline_params = method_info.get("inline_params")
-        inline_owner = method_info.get("inline_owner_class")
-        if inline_return is None or inline_params is None:
-            return None
-        # Fail-closed soundness gate (cross-module global mis-resolution).
-        # The body is spliced into the *current* module's scope and re-lowered.
-        # Any bare Name in the body that is not a substituted parameter or a
-        # builtin (recorded in `inline_free_names`) resolves through
-        # `visit_Name -> _emit_global_get` against the CURRENT module's globals.
-        # When the method is defined in a *different* module, such a name is one
-        # of the defining module's globals (e.g. `_MOLT_ARRAY_TOLIST`, a sibling
-        # helper, a module-level constant) and would mis-resolve here — a silent
-        # NameError at runtime.  Refuse the inline so the call site falls through
-        # to a real CALL to the method symbol, which reads the defining module's
-        # globals correctly (via the method body's own module-cache lookup).
-        # Same-module inlines are unaffected: the current module IS the defining
-        # module, so the global resolves to the same dict either way.
-        inline_free_names = method_info.get("inline_free_names")
-        if inline_free_names:
-            owner_module = method_info.get("inline_owner_module")
-            if owner_module is not None and owner_module != self.module_name:
-                return None
-        # The first param is `self` (for non-classmethod / non-static).
-        if len(inline_params) != 1 + len(call_args):
-            return None
-        # Build the substitution map.
-        # NB: we replace `self.locals` wholesale rather than overlay,
-        # because the visitor's Name-resolution logic falls through to
-        # `self.locals` for any name not otherwise resolved.  Names
-        # outside the substitution would resolve in the caller's scope
-        # and emit ops with caller-scope ValueIds — wrong inlining
-        # semantics.  By replacing, we force the body to reference only
-        # the substituted MoltValues; if the body has any other Name
-        # reference, visit_Name will find it absent and bail.
-        subst = {inline_params[0]: receiver}
-        for pname, arg_val in zip(inline_params[1:], call_args):
-            subst[pname] = arg_val
-        old_locals = self.locals
-        old_exact = self.exact_locals
-        old_class = self.current_class
-        old_first_param = self.current_method_first_param
-        # Preserve self.exact_locals across inline so receiver-class
-        # attribute folds inside the body still resolve.  But scrub
-        # any caller locals that share names with our params, so they
-        # don't accidentally surface during attribute lookups.
-        new_exact = dict(old_exact) if isinstance(old_exact, dict) else {}
-        for pname in inline_params:
-            new_exact.pop(pname, None)
-        # Set the inline scope's current_class / first_param so that
-        # `super()` references inside the body resolve against the
-        # callee's MRO (Base for Mid.compute's super, Mid for Leaf's
-        # super), enabling the recursive Phase 4a fold + Phase 2
-        # inline pipeline to unwind nested super-call chains at
-        # compile time.
-        if inline_owner is not None:
-            self.current_class = inline_owner
-            self.current_method_first_param = (
-                inline_params[0] if inline_params else None
-            )
-        self.locals = subst
-        self.exact_locals = new_exact
-        # When the inlined method closes over the implicit ``__class__`` super
-        # cell, every ``super()`` in its body MUST fold statically at this
-        # site: the inlined body is spliced into the caller's scope, which has
-        # no ``__class__`` cell, so a ``super()`` that falls to the runtime
-        # path would bind to the wrong cell (or none — ``RuntimeError:
-        # super(): __class__ cell not found``).  Setting ``_inline_super_must_fold``
-        # makes the static super-fold raise ``_InlineSuperFoldRequired`` when it
-        # cannot fold, aborting the whole inline so the caller falls back to the
-        # cell-threaded dispatch path.  Stacks correctly across nested inlines.
-        prev_super_must_fold = self._inline_super_must_fold
-        if method_info.get("inline_closure_ok") and method_info.get("has_closure"):
-            self._inline_super_must_fold = True
-        try:
-            result = self.visit(inline_return)
-        except (
-            KeyError,
-            AttributeError,
-            NotImplementedError,
-            _InlineSuperFoldRequired,
+        """Validate the whole frame-elision proof before emitting any operation."""
+        expression = method_info.get("inline_return")
+        parameters = method_info.get("inline_params")
+        if (
+            expression is None
+            or parameters is None
+            or method_info.get("has_closure")
+            or len(parameters) != 1 + len(call_args)
+            or not inline_expression_is_frame_independent(expression, parameters)
         ):
             return None
-        finally:
-            self._inline_super_must_fold = prev_super_must_fold
-            self.locals = old_locals
-            self.exact_locals = old_exact
-            self.current_class = old_class
-            self.current_method_first_param = old_first_param
-        # Re-stamp the inlined result's type_hint with the method's
-        # declared return type when the visit produced a less-specific
-        # hint.  Inlining can degrade type_hint propagation through
-        # the BinOp/Compare visitors that don't always walk back to
-        # the method signature; reasserting `int → int` here keeps
-        # the lane preanalysis on the int-accumulator hot path in
-        # tight loops like `total += obj.compute(i)`.
-        if result is not None:
-            return_hint = method_info.get("return_hint")
-            if return_hint and (
-                return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-            ):
-                current_hint = getattr(result, "type_hint", None)
-                if current_hint in (None, "Any", "") and current_hint != return_hint:
-                    result.type_hint = return_hint
-        return result
+        bindings = dict(zip(parameters, [receiver, *call_args], strict=True))
+        return self._emit_inline_expression(expression, bindings)
 
     def _try_inline_init_assigns(
         self,
-        init_assigns: "list[tuple[str, ast.expr]]",
+        init_assigns: list[tuple[str, ast.expr]],
         inline_params: list[str],
-        receiver: "MoltValue",
-        call_args: list,
+        receiver: MoltValue,
+        call_args: list[MoltValue],
     ) -> bool:
-        """Inline an `__init__`-style body's `self.attr = expr`
-        assignments at the call site.  Substitutes
-        params → call_args in self.locals for the duration of
-        visiting each value-expression, then emits a STORE_ATTR for
-        each pair on `receiver`.  Returns True on success, False if
-        any value-expression failed to lower (caller falls back to a
-        regular CALL).
-        """
+        """Preflight every value and store, then emit in Python source order."""
         if len(inline_params) != 1 + len(call_args):
             return False
-        subst = {inline_params[0]: receiver}
-        for pname, arg_val in zip(inline_params[1:], call_args):
-            subst[pname] = arg_val
-        old_locals = self.locals
-        old_exact = self.exact_locals
-        new_exact = dict(old_exact) if isinstance(old_exact, dict) else {}
-        for pname in inline_params:
-            new_exact.pop(pname, None)
-        self.locals = subst
-        self.exact_locals = new_exact
-        emitted_pairs: list[tuple[str, MoltValue]] = []
-        try:
-            for attr_name, expr in init_assigns:
-                value = self.visit(expr)
-                if value is None:
-                    return False
-                emitted_pairs.append((attr_name, value))
-        except (KeyError, AttributeError, NotImplementedError):
+        class_name = receiver.type_hint
+        if class_name is None or class_name not in self.classes:
             return False
-        finally:
-            self.locals = old_locals
-            self.exact_locals = old_exact
-        # All value-expressions visited successfully — emit each
-        # store via `_emit_guarded_setattr(..., use_init=True,
-        # assume_exact=True)`.  `use_init=True` is sound because the
-        # receiver was just produced by OBJECT_NEW_BOUND (whose
-        # backing allocation goes through `alloc_object_zeroed_with_pool`),
-        # so every slot starts as `None`/0 with no live pointer to
-        # decref.  This routes the lowering through `store_init`
-        # (`function_compiler.rs:21162`) which has an inline tag-
-        # check fast path: for immediate values (int/float/bool/
-        # none) it emits a direct memory store with `MemFlags::trusted`
-        # and zero runtime calls.  Targets bench_struct's 2-ops-per-
-        # iter __init__ overhead.
-        #
-        # Falls back to `_emit_attribute_store` (which emits SETATTR
-        # / runtime helper) only when the field map doesn't cover the
-        # attribute — i.e. dynamic-class / non-static-layout edges
-        # the assume_exact path declines to handle.
-        receiver_class = receiver.type_hint
-        if receiver_class is not None and receiver_class in self.classes:
-            class_info = self.classes[receiver_class]
-            field_map = class_info.get("fields", {}) if class_info else {}
-            for attr_name, value in emitted_pairs:
-                if (
-                    attr_name in field_map
-                    and not class_info.get("dynamic")
-                    and not class_info.get("dataclass")
-                    and not self._class_attr_is_data_descriptor(
-                        receiver_class, attr_name
-                    )
-                ):
-                    self._emit_guarded_setattr(
-                        receiver,
-                        attr_name,
-                        value,
-                        receiver_class,
-                        use_init=True,
-                        assume_exact=True,
-                    )
-                else:
-                    self._emit_attribute_store(
-                        receiver,
-                        None,
-                        None,
-                        receiver_class,
-                        attr_name,
-                        value,
-                    )
-        else:
-            for attr_name, value in emitted_pairs:
-                self._emit_attribute_store(
-                    receiver,
-                    None,
-                    None,
-                    None,
-                    attr_name,
-                    value,
-                )
+        class_info = self.classes[class_name]
+        if (
+            class_info.get("dynamic")
+            or class_info.get("dataclass")
+            or class_info.get("custom_metaclass")
+            or class_info.get("decorated")
+        ):
+            return False
+        for owner in self._class_mro_names(class_name):
+            if owner == "object":
+                continue
+            owner_info = self.classes.get(owner)
+            if owner_info is None or owner_info.get("dynamic"):
+                return False
+            if (
+                "__setattr__" in owner_info.get("methods", {})
+                or "__setattr__" in owner_info.get("class_attrs", {})
+                or "__setattr__" in (owner_info.get("pending_methods") or ())
+            ):
+                return False
+        fields = class_info.get("fields", {})
+        seen: set[str] = set()
+        for name, expression in init_assigns:
+            if (
+                name in seen
+                or name not in fields
+                or self._class_attr_is_data_descriptor(class_name, name)
+                or not inline_expression_is_frame_independent(expression, inline_params)
+            ):
+                return False
+            seen.add(name)
+        bindings = dict(zip(inline_params, [receiver, *call_args], strict=True))
+        for name, expression in init_assigns:
+            value = self._emit_inline_expression(expression, bindings)
+            self._emit_guarded_setattr(
+                receiver, name, value, class_name, use_init=True, assume_exact=True
+            )
         return True
-
-    def _method_func_obj_for_defaults(
-        self, owner_class: str, method_name: str
-    ) -> "MoltValue | None":
-        """Load the unbound function object for ``owner_class.method_name`` so the
-        defaults-devirt deopt guard can read its ``__defaults__`` version stamp
-        and live default tuple/dict.
-
-        ``owner_class`` is the class that actually *defines* the method (the MRO
-        owner, which may be a base class), so the function object — and thus the
-        ``__defaults__`` a runtime ``Class.method.__defaults__ = (...)`` mutates
-        — is read from there.  Returns ``None`` if that class cannot be resolved
-        as a module attribute (the caller then declines to devirtualize the
-        defaults-bearing call rather than guard against a missing object).
-        """
-        class_info = self.classes.get(owner_class)
-        if class_info is None:
-            return None
-        module_name = class_info.get("module")
-        if not isinstance(module_name, str):
-            return None
-        class_ref = self._emit_module_attr_get_on(module_name, owner_class)
-        return self._emit_class_method_func(class_ref, method_name)
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
         """Phase 1 (frontend variant) — direct call for monomorphic user methods.
@@ -744,16 +414,9 @@ class CallMethodDispatchMixin(_MixinBase):
             return None
         if method_info.get("descriptor") != "function":
             return None
-        # A method whose closure is exactly the implicit ``__class__`` super
-        # cell (``inline_closure_ok``) is foldable, but ONLY through the inline
-        # path below — its recursive static super-fold resolves the chain at
-        # compile time and never reads the cell.  A direct CALL to the closure
-        # symbol would omit the cell argument, so ``target_is_closure`` forbids
-        # the direct-CALL fallback (routing those to the general dispatch path,
-        # which threads the real closure tuple).  Real captured locals are not
-        # foldable here at all.
+        # Closures require their real lexical cell transport and executing frame.
         target_is_closure = bool(method_info.get("has_closure"))
-        if target_is_closure and not method_info.get("inline_closure_ok"):
+        if target_is_closure:
             return None
         if method_info.get("has_vararg"):
             return None
@@ -779,91 +442,29 @@ class CallMethodDispatchMixin(_MixinBase):
         param_count = method_info.get("param_count")
         if param_count is None:
             return None
-        expected_positional = param_count - 1  # exclude self
-        # A method with positional defaults / kw-only params is direct-fillable:
-        # the missing trailing arguments are padded from the function's live
-        # __defaults__/__kwdefaults__ (or the compile-time literals when the
-        # defaults version proves no runtime mutation — see
-        # `_apply_default_specs`).  Reject only over-supply; under-supply is
-        # filled below.  `kwonly_count` caps the positional region.
-        kwonly_count = method_info.get("kwonly_count") or 0
-        defaults_specs = method_info.get("defaults") or []
-        has_fillable_defaults = bool(defaults_specs) or bool(kwonly_count)
-        positional_param_count = expected_positional - kwonly_count
-        if len(node.args) > positional_param_count:
+        if (
+            method_info.get("defaults")
+            or method_info.get("kwonly_count")
+            or len(node.args) != param_count - 1
+        ):
             return None
-        if len(node.args) < expected_positional and not has_fillable_defaults:
+        function = method_info.get("func")
+        if function is None or not function.type_hint.startswith("Func:"):
+            return None
+        method_symbol = function.type_hint.split(":", 1)[1]
+        if method_symbol not in self.func_symbol_names:
             return None
 
+        # No eligibility fallback is permitted after evaluating Python operands.
         receiver = self.visit(attr_node.value)
         if receiver is None:
-            return None
-
-        call_args = [self.visit(a) for a in node.args]
-        if any(a is None for a in call_args):
-            return None
-
-        # Pad missing trailing arguments from the method's defaults.  When the
-        # method has no defaults this is an exact-arity call and the list is
-        # unchanged.  `_apply_default_specs` emits the `__defaults__`-mutation
-        # deopt guard (baked literal fast path + live-read fallback) so a runtime
-        # `Class.method.__defaults__ = (...)` reassignment is observed, matching
-        # CPython's call-time default binding.  The function object the guard
-        # reads is loaded from the (statically-known, non-dynamic) class.
-        if has_fillable_defaults:
-            method_func_obj = self._method_func_obj_for_defaults(
-                owner_class, method_name
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported method receiver"
             )
-            if method_func_obj is None:
-                return None
-            positional_limit = positional_param_count
-            padded = self._apply_default_specs(
-                expected_positional,
-                defaults_specs,
-                call_args,
-                node,
-                call_name=f"{class_name}.{method_name}",
-                func_obj=method_func_obj,
-                implicit_self=False,
-                positional_limit=positional_limit if kwonly_count else None,
-            )
-            if padded is None:
-                return None
-            call_args = padded
-
-        # Phase 2 inline opportunity: if the method has a trivially
-        # inlinable body (single Return of a constant/param/binop/etc.
-        # expression), emit the body inline rather than a CALL.  For a
-        # ``__class__``-cell closure target this is the only foldable path:
-        # the recursive super-fold inside the inlined body resolves the chain
-        # statically and never reads the cell.  Only attempt the inline when the
-        # supplied-arg arity already matches (a defaults-padded call has the full
-        # argument list materialized above, so this still holds).
+        call_args = self._emit_call_args(list(node.args))
         inlined = self._try_inline_method_call(method_info, receiver, call_args)
         if inlined is not None:
             return inlined
-
-        # The target carries the implicit ``__class__`` super cell but did not
-        # inline: a direct CALL to its closure symbol would omit the cell, so
-        # route to the general dispatch path (which threads the real closure).
-        if target_is_closure:
-            return None
-
-        # The method's symbol was registered when the ClassDef was
-        # compiled (frontend/__init__.py:14117).  `method_info["func"]`
-        # is the MoltValue produced for the method, with
-        # `type_hint=f"Func:{method_symbol}"`.  Extract the symbol from
-        # there rather than re-calling `_function_symbol` (which would
-        # increment the collision counter and create a fresh, dangling
-        # symbol → undefined-symbol link error).
-        func_val = method_info.get("func")
-        if func_val is None or not getattr(func_val, "type_hint", "").startswith(
-            "Func:"
-        ):
-            return None
-        method_symbol = func_val.type_hint.split(":", 1)[1]
-        if method_symbol not in self.func_symbol_names:
-            return None
 
         res_hint = "Any"
         return_hint = method_info.get("return_hint")

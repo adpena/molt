@@ -17,8 +17,15 @@ use crate::tir::ops::TirOp;
 /// UNLESS its specific throw condition is *disproven* at the hoist site, which
 /// [`throw_condition_disproven`] decides per-instance from the value-range proof
 /// (a shift whose count is in `[0, 63]`, a divide whose divisor is non-zero).
-pub(super) fn is_hoistable(op: &TirOp, vr: &ValueRangeResult) -> bool {
-    super::super::effects::opcode_is_pure_movable(op.opcode)
+pub(super) fn is_hoistable(
+    op: &TirOp,
+    vr: &ValueRangeResult,
+    value_types: &std::collections::HashMap<
+        crate::tir::values::ValueId,
+        crate::tir::types::TirType,
+    >,
+) -> bool {
+    super::super::effects::op_is_pure_movable_with_types(op, value_types)
         || op.is_plain_value_copy()
         || (super::super::effects::opcode_is_pure_may_throw(op.opcode)
             && throw_condition_disproven(op, vr))

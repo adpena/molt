@@ -5,31 +5,15 @@ pub(in crate::object) unsafe fn eq_bool_from_bits(
     lhs_bits: u64,
     rhs_bits: u64,
 ) -> Option<bool> {
-    let pending_before = exception_pending(_py);
-    let prev_exc_bits = if pending_before {
-        exception_last_bits_noinc(_py).unwrap_or(0)
-    } else {
-        0
-    };
-    let res_bits = molt_eq(lhs_bits, rhs_bits);
-    if exception_pending(_py) {
-        if !pending_before {
-            return None;
-        }
-        let after_exc_bits = exception_last_bits_noinc(_py).unwrap_or(0);
-        if after_exc_bits != prev_exc_bits {
-            return None;
-        }
+    match crate::object::ops_compare::compare_object_eq_bool(
+        _py,
+        obj_from_bits(lhs_bits),
+        obj_from_bits(rhs_bits),
+    ) {
+        crate::object::ops_compare::CompareBoolOutcome::True => Some(true),
+        crate::object::ops_compare::CompareBoolOutcome::False => Some(false),
+        _ => None,
     }
-    let res_obj = obj_from_bits(res_bits);
-    if pending_before && res_obj.is_none() {
-        return Some(obj_eq(
-            _py,
-            obj_from_bits(lhs_bits),
-            obj_from_bits(rhs_bits),
-        ));
-    }
-    Some(is_truthy(_py, res_obj))
 }
 
 pub(in crate::object) enum BinaryDunderOutcome {
@@ -411,29 +395,39 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     );
                     return false;
                 }
-                let l_pairs = dict_order(lp);
-                let r_pairs = dict_order(rp);
-                if l_pairs.len() != r_pairs.len() {
+                if dict_order(lp).len() != dict_order(rp).len() {
                     crate::state::recursion::recursion_guard_exit_fast();
                     return false;
                 }
-                let r_table = dict_table(rp);
-                let r_hashes = dict_hashes(rp);
-                let entries = l_pairs.len() / 2;
-                for entry_idx in 0..entries {
-                    let key_bits = l_pairs[entry_idx * 2];
-                    let val_bits = l_pairs[entry_idx * 2 + 1];
-                    let Some(r_entry_idx) =
-                        dict_find_entry_fast(_py, r_pairs, r_hashes, r_table, key_bits)
-                    else {
-                        crate::state::recursion::recursion_guard_exit_fast();
-                        return false;
+                let mut index = 0usize;
+                while index * 2 < dict_order(lp).len() {
+                    let (key, value, hash) = {
+                        let order = dict_order(lp);
+                        (
+                            order[index * 2],
+                            order[index * 2 + 1],
+                            dict_hashes(lp)[index],
+                        )
                     };
-                    let r_val_bits = r_pairs[r_entry_idx * 2 + 1];
-                    if !obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(r_val_bits)) {
+                    inc_ref_bits(_py, key);
+                    inc_ref_bits(_py, value);
+                    let found = dict_find_entry_with_hash(_py, rp, key, hash);
+                    let equal = if let Some(found) = found {
+                        let right = dict_order(rp)[found * 2 + 1];
+                        inc_ref_bits(_py, right);
+                        let equal = eq_bool_from_bits(_py, value, right) == Some(true);
+                        dec_ref_bits(_py, right);
+                        equal
+                    } else {
+                        false
+                    };
+                    dec_ref_bits(_py, key);
+                    dec_ref_bits(_py, value);
+                    if !equal || exception_pending(_py) {
                         crate::state::recursion::recursion_guard_exit_fast();
                         return false;
                     }
+                    index += 1;
                 }
                 crate::state::recursion::recursion_guard_exit_fast();
                 return true;

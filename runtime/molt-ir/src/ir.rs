@@ -9,7 +9,7 @@ use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
     SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
     simpleir_kind_has_function_reference_s_value, simpleir_kind_is_return_terminator,
-    simpleir_runtime_requirements_table,
+    simpleir_runtime_requirements_table, simpleir_runtime_symbol_requirements_table,
 };
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
@@ -300,6 +300,10 @@ pub struct FunctionIR {
     /// Target-neutral execution-context ABI policy.
     #[serde(default)]
     pub execution_context: ExecutionContextPolicy,
+    /// Physical compiler partition. Inlining preserves this boundary even if
+    /// optimization shrinks the body; symbol spelling carries no authority.
+    #[serde(default)]
+    pub codegen_partition: bool,
 }
 
 /// Reserved value carrier used by canonical value-returning extern
@@ -382,8 +386,8 @@ pub struct OpIR {
     /// metadata/default authority used by `molt_func_new_builtin_named`.
     pub builtin_name: Option<String>,
     /// Canonical runtime callable provenance resolved by the frontend from a
-    /// statically known module attribute/import. Target admission propagates
-    /// this fact through SSA aliases before any backend emits source.
+    /// statically known module attribute/import. Target admission checks this
+    /// acquisition fact before source generation; it does not imply execution.
     pub runtime_symbol: Option<String>,
     /// Generated target-admission requirement bits for conservative acquisition
     /// provenance that is not an executable runtime/link symbol.
@@ -562,6 +566,7 @@ impl FunctionIR {
             source_file: self.source_file.clone(),
             is_extern: true,
             execution_context: self.execution_context,
+            codegen_partition: self.codegen_partition,
         })
     }
 }
@@ -670,6 +675,59 @@ impl OpSourceSite {
 }
 
 impl OpIR {
+    /// Requirements of executing this operation, excluding acquired-callable
+    /// provenance. Direct runtime calls execute their symbol immediately;
+    /// merely obtaining a callable must not require an already-active frame.
+    fn execution_runtime_requirements(&self) -> Option<SimpleIrRuntimeRequirements> {
+        let mut requirements = simpleir_runtime_requirements_table(self.kind.as_str())?;
+        if self.async_work_poll {
+            requirements =
+                requirements.union(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER);
+        }
+        if self.passes_execution_context {
+            requirements = requirements.union(SimpleIrRuntimeRequirements::EXECUTION_FRAME);
+        }
+        if self.kind == "call_internal"
+            && let Some(symbol) = self.s_value.as_deref()
+        {
+            requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+        }
+        Some(requirements)
+    }
+
+    /// Whether executing this operation creates, consumes, or releases the
+    /// execution frame. Lifecycle owners must validate creation separately
+    /// from operations that need the frame to have already been entered.
+    pub fn uses_execution_frame(&self) -> bool {
+        self.execution_runtime_requirements()
+            .is_some_and(|requirements| {
+                requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+            })
+    }
+
+    /// Compose generated execution semantics with canonical callable metadata.
+    /// Target support is required at acquisition itself, without use-sensitive
+    /// heap/CFG taint analysis. Returns None for an unclassified operation or
+    /// invalid explicit requirement bits; admission must fail closed.
+    pub fn runtime_requirements(&self) -> Option<SimpleIrRuntimeRequirements> {
+        let mut requirements = self.execution_runtime_requirements()?;
+        requirements = requirements.union(SimpleIrRuntimeRequirements::from_bits(
+            self.runtime_requirement_bits,
+        )?);
+        for symbol in [self.runtime_symbol.as_deref(), self.builtin_name.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+        }
+        if self.kind == "builtin_func"
+            && let Some(symbol) = self.s_value.as_deref()
+        {
+            requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+        }
+        Some(requirements)
+    }
+
     pub fn source_site(&self) -> OpSourceSite {
         OpSourceSite::from_op(self)
     }
@@ -905,6 +963,7 @@ impl FunctionIR {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             is_extern: optional_bool(obj, "is_extern", ctx)?.unwrap_or(false),
+            codegen_partition: optional_bool(obj, "codegen_partition", ctx)?.unwrap_or(false),
             execution_context: obj
                 .get("execution_context")
                 .and_then(|value| value.as_str())
@@ -1048,13 +1107,7 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             let frame_ops = func
                 .ops
                 .iter()
-                .filter(|op| {
-                    simpleir_runtime_requirements_table(op.kind.as_str()).is_some_and(
-                        |requirements| {
-                            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                        },
-                    )
-                })
+                .filter(|op| op.uses_execution_frame())
                 .collect::<Vec<_>>();
             let trace_enters = frame_ops
                 .iter()
@@ -1091,13 +1144,7 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                     let cfg = CFG::build(&func.ops);
                     let execution_dominators = cfg.execution_op_dominators(&func.ops);
                     for (op_index, op) in func.ops.iter().enumerate() {
-                        let requires_active_frame = simpleir_runtime_requirements_table(
-                            op.kind.as_str(),
-                        )
-                        .is_some_and(|requirements| {
-                            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                        });
-                        if requires_active_frame
+                        if op.uses_execution_frame()
                             && op.kind != "trace_enter_slot"
                             && simple_ir_op_is_reachable(&execution_dominators, op_index)
                             && !simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
@@ -1176,6 +1223,13 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                 }
                 ExecutionContextPolicy::None => {
                     if let Some(frame_op) = frame_ops.first() {
+                        if frame_op.passes_execution_context {
+                            return Err(format!(
+                                "function `{}` without an execution context cannot thread one to `{}`",
+                                func.name,
+                                frame_op.s_value.as_deref().unwrap_or("<missing target>")
+                            ));
+                        }
                         return Err(format!(
                             "function `{}` without an execution context cannot contain generated frame op `{}`",
                             func.name, frame_op.kind
@@ -1187,13 +1241,6 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;
             if op.passes_execution_context {
-                if func.execution_context == ExecutionContextPolicy::None {
-                    return Err(format!(
-                        "function `{}` without an execution context cannot thread one to `{}`",
-                        func.name,
-                        op.s_value.as_deref().unwrap_or("<missing target>")
-                    ));
-                }
                 let Some(target) = op.s_value.as_deref() else {
                     return Err("execution-context call metadata requires a direct target".into());
                 };
@@ -1278,6 +1325,7 @@ mod json_parse_tests {
             param_types: Some(vec!["float".to_string()]),
             source_file: Some("float_contract.py".to_string()),
             is_extern: false,
+            codegen_partition: false,
             execution_context: super::ExecutionContextPolicy::None,
         };
         let cases = [
@@ -1407,6 +1455,7 @@ mod json_parse_tests {
             param_types: None,
             source_file: Some("sys.py".to_string()),
             is_extern: true,
+            codegen_partition: false,
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let inherited_declaration = FunctionIR {
@@ -1419,6 +1468,7 @@ mod json_parse_tests {
             param_types: Some(Vec::new()),
             source_file: Some("sys.py".to_string()),
             is_extern: true,
+            codegen_partition: false,
             execution_context: super::ExecutionContextPolicy::Inherited,
         };
         let local_caller = FunctionIR {
@@ -1448,6 +1498,7 @@ mod json_parse_tests {
             param_types: None,
             source_file: Some("app.py".to_string()),
             is_extern: false,
+            codegen_partition: false,
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let ir = SimpleIR {
@@ -1493,6 +1544,7 @@ mod json_parse_tests {
             param_types: Some(vec!["i64".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: super::ExecutionContextPolicy::None,
         };
         value_declaration
@@ -1777,6 +1829,148 @@ mod json_parse_tests {
             ),
         )
         .expect("each normal return in a multi-return Local function owns one exit");
+    }
+
+    #[test]
+    fn direct_runtime_frame_symbols_require_owned_or_inherited_execution_context() {
+        let parse = |policy: &str, ops: &str| {
+            SimpleIR::from_json_str(&format!(
+                r#"{{"functions":[{{"name":"frame_call","params":[],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
+            ))
+        };
+        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let exit = r#"{"kind":"trace_exit"}"#;
+        let ret = r#"{"kind":"ret_void"}"#;
+        for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
+            let call = format!(r#"{{"kind":"call_internal","s_value":"{symbol}"}}"#);
+            let error = parse("none", &format!("{call},{ret}"))
+                .expect_err("executing a frame intrinsic needs a live execution context");
+            assert!(
+                error.contains("without an execution context"),
+                "{symbol}: {error}"
+            );
+            let error = parse("local", &format!("{call},{enter},{exit},{ret}"))
+                .expect_err("frame entry must dominate direct runtime frame calls");
+            assert!(
+                error.contains("reachable before trace_enter_slot"),
+                "{symbol}: {error}"
+            );
+            let error = parse(
+                "local",
+                &format!(
+                    r#"{{"kind":"check_exception","value":2}},{enter},{exit},{ret},{{"kind":"label","value":2}},{call},{ret}"#
+                ),
+            )
+            .expect_err("implicit exception transfers must not bypass frame ownership");
+            assert!(
+                error.contains("reachable before trace_enter_slot"),
+                "{symbol}: {error}"
+            );
+            let local = parse("local", &format!("{enter},{call},{exit},{ret}"))
+                .expect("an entered Local frame admits direct frame intrinsics");
+            assert!(local.functions[0].ops[1].uses_execution_frame());
+            parse("inherited", &format!("{call},{ret}"))
+                .expect("Inherited frame intrinsics consume the caller's context");
+            parse(
+                "none",
+                &format!(r#"{{"kind":"const_str","s_value":"{symbol}","out":"name"}},{ret}"#),
+            )
+            .expect("a string equal to a runtime symbol does not execute the symbol");
+        }
+    }
+
+    #[test]
+    fn threaded_inherited_calls_require_frame_entry_dominance() {
+        let parse = |ops: &str| {
+            SimpleIR::from_json_str(&format!(
+                r#"{{"functions":[{{"name":"caller","params":[],"execution_context":"local","ops":[{ops}]}},{{"name":"chunk","params":[],"execution_context":"inherited","ops":[{{"kind":"ret_void"}}]}}]}}"#
+            ))
+        };
+        let call = r#"{"kind":"call_internal","s_value":"chunk","passes_execution_context":true}"#;
+        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let tail = r#"{"kind":"trace_exit"},{"kind":"ret_void"}"#;
+        let error = parse(&format!("{call},{enter},{tail}"))
+            .expect_err("a threaded call cannot consume a context before its creation");
+        assert!(
+            error.contains("reachable before trace_enter_slot"),
+            "{error}"
+        );
+        let ir = parse(&format!("{enter},{call},{tail}"))
+            .expect("frame entry dominates the inherited direct call");
+        let op = &ir.functions[0].ops[1];
+        assert!(op.uses_execution_frame());
+        assert!(
+            op.runtime_requirements()
+                .unwrap()
+                .contains(super::SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+        );
+    }
+
+    #[test]
+    fn acquired_frame_requirements_do_not_execute_the_acquired_callable() {
+        use crate::tir::op_kinds_generated::{
+            SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS, SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS,
+            SimpleIrRuntimeRequirements,
+        };
+        let parse = |op: serde_json::Value| {
+            SimpleIR::from_json_value(&serde_json::json!({
+                "functions": [{
+                    "name": "acquire",
+                    "params": ["name"],
+                    "execution_context": "none",
+                    "ops": [op, {"kind": "ret_void"}]
+                }]
+            }))
+            .expect("callable acquisition must not require an active execution frame")
+        };
+        let assert_acquisition = |ir: SimpleIR| {
+            let op = &ir.functions[0].ops[0];
+            assert!(!op.uses_execution_frame(), "{}", op.kind);
+            assert!(
+                op.runtime_requirements()
+                    .unwrap()
+                    .contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME),
+                "{} must still require target support at acquisition",
+                op.kind
+            );
+        };
+        for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
+            for &kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+                assert_acquisition(parse(serde_json::json!({
+                    "kind": kind, "runtime_symbol": symbol, "out": "callable"
+                })));
+            }
+            assert_acquisition(parse(serde_json::json!({
+                "kind": "builtin_func", "s_value": symbol, "out": "callable"
+            })));
+            assert_acquisition(parse(serde_json::json!({
+                "kind": "builtin_func", "builtin_name": symbol,
+                "args": ["name"], "out": "callable"
+            })));
+        }
+        for &kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
+            assert_acquisition(parse(serde_json::json!({
+                "kind": kind,
+                "runtime_requirement_bits": SimpleIrRuntimeRequirements::EXECUTION_FRAME.bits(),
+                "out": "callable"
+            })));
+        }
+        for op in [
+            OpIR {
+                kind: "unclassified".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_attr".into(),
+                runtime_requirement_bits: u32::MAX,
+                ..OpIR::default()
+            },
+        ] {
+            assert!(
+                op.runtime_requirements().is_none(),
+                "admission must fail closed"
+            );
+        }
     }
 
     #[test]
@@ -2463,5 +2657,60 @@ mod json_parse_tests {
 
         assert!(err.contains("invalid SimpleIR contract"));
         assert!(err.contains("has 1 params but 2 param_types"));
+    }
+    #[test]
+    fn codegen_partition_survives_all_transports_and_changes_contract() {
+        for partitioned in [false, true] {
+            let function = FunctionIR {
+                name: "__molt_chunk_v1_ordinary_name".into(),
+                codegen_partition: partitioned,
+                ops: vec![OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            };
+            let json = serde_json::to_string(&SimpleIR {
+                functions: vec![function.clone()],
+                profile: None,
+            })
+            .unwrap();
+            let mut record = serde_json::to_value(&function).unwrap();
+            record["kind"] = serde_json::json!("function");
+            let ndjson = format!(
+                "{{\"kind\":\"ir_stream_start\"}}\n{}\n{{\"kind\":\"ir_stream_end\"}}\n",
+                record,
+            );
+            let manual = SimpleIR::from_json_str(&json).unwrap();
+            let serde: SimpleIR = serde_json::from_str(&json).unwrap();
+            let stream = SimpleIR::from_ndjson_reader(ndjson.as_bytes()).unwrap();
+            let document_manual = super::BackendIrDocument::from_json_str(&json).unwrap();
+            let document_serde: super::BackendIrDocument = serde_json::from_str(&json).unwrap();
+            let document_stream =
+                super::BackendIrDocument::from_ndjson_reader(ndjson.as_bytes()).unwrap();
+            for restored in [
+                &manual.functions[0],
+                &serde.functions[0],
+                &stream.functions[0],
+                &document_manual.ir.functions[0],
+                &document_serde.ir.functions[0],
+                &document_stream.ir.functions[0],
+            ] {
+                assert_eq!(restored.codegen_partition, partitioned);
+                assert_eq!(contract_bytes(restored), contract_bytes(&function));
+                assert_eq!(
+                    restored.extern_declaration().unwrap().codegen_partition,
+                    partitioned
+                );
+            }
+            let mut opposite = function.clone();
+            opposite.codegen_partition = !partitioned;
+            assert_ne!(contract_bytes(&function), contract_bytes(&opposite));
+        }
+        let defaulted = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"plain","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
+        )
+        .unwrap();
+        assert!(!defaulted.functions[0].codegen_partition);
     }
 }

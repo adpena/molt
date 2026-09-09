@@ -9,7 +9,7 @@ use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 use crate::tir::verify::verify_function;
 
-/// Build the live-shape fixture: the exact CFG `peel_sum.py`'s `compute`
+/// Build the exact-bound variant of the live CFG `peel_sum.py`'s `compute`
 /// produces post-pipeline (entry consts -> 2-phi header -> guard(Lt) ->
 /// linear body with two marker-wrapped Adds -> exit Return), including the
 /// vestigial unreachable loop-else pred passing ConstNone.
@@ -25,12 +25,12 @@ fn live_shape_function() -> TirFunction {
     let stray = func.fresh_block();
     let exit = func.fresh_block();
 
-    let n = ValueId(0); // entry arg (param)
     let fresh = |func: &mut TirFunction, ty: TirType| {
         let v = func.fresh_value();
         func.value_types.insert(v, ty);
         v
     };
+    let n = fresh(&mut func, TirType::I64); // exact producer, not the annotated entry arg
     let c_total = fresh(&mut func, TirType::I64);
     let c_i = fresh(&mut func, TirType::I64);
     let c_one = fresh(&mut func, TirType::I64);
@@ -72,6 +72,7 @@ fn live_shape_function() -> TirFunction {
     // entry: consts -> header(t0, i0)
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_op(OpCode::ConstInt, 1_000_000, n));
         entry.ops.push(const_op(OpCode::ConstInt, 0, c_total));
         entry.ops.push(const_op(OpCode::ConstInt, 0, c_i));
         entry.ops.push(const_op(OpCode::ConstInt, 1, c_one));
@@ -411,4 +412,116 @@ fn mul_accumulator_peels_to_checked_mul() {
     // Slow clone: the plain Mul + plain Add survive, BigInt-exact.
     assert_eq!(count(OpCode::Mul), 1, "slow clone keeps the plain Mul");
     assert_eq!(count(OpCode::Add), 1, "slow clone keeps the plain Add");
+}
+
+#[test]
+fn exact_loop_provenance_ignores_unreachable_metadata_and_forwards_marker_copies() {
+    let func = live_shape_function();
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(&func);
+    let header = *func.loop_pairs.keys().next().unwrap();
+    for arg in &func.blocks[&header].args {
+        assert_eq!(exact.get(&arg.id), Some(&TirType::I64));
+    }
+    for op in func.blocks.values().flat_map(|block| &block.ops) {
+        if op.opcode == OpCode::Copy && op.operands.len() == 2 {
+            assert_eq!(exact.get(&op.results[0]), Some(&TirType::I64));
+        }
+    }
+}
+
+#[test]
+fn rich_comparison_guard_cannot_observe_wrapped_values_or_be_replayed() {
+    for annotation in [
+        TirType::DynBox,
+        TirType::I64,
+        TirType::UserClass("Bound".into()),
+    ] {
+        for opcode in [OpCode::Lt, OpCode::Le, OpCode::Gt, OpCode::Ge] {
+            let mut func = live_shape_function();
+            func.param_types[0] = annotation.clone();
+            func.value_types.insert(ValueId(0), annotation.clone());
+            let header = *func.loop_pairs.keys().next().unwrap();
+            let guard = func.loop_cond_blocks[&header];
+            let comparison = func.blocks.get_mut(&guard).unwrap().ops.last_mut().unwrap();
+            comparison.opcode = opcode;
+            comparison.operands[1] = ValueId(0);
+            let exact = crate::tir::type_refine::extract_exact_scalar_map(&func);
+            let facts = crate::tir::predicate_semantics::predicate_facts_for_op(
+                func.blocks[&guard].ops.last().unwrap(),
+                &exact,
+            )
+            .unwrap();
+            assert_eq!(facts.result_type, TirType::DynBox);
+            assert!(!facts.effects.effect_free);
+            let before = format!("{func:?}");
+            assert_eq!(
+                rewrite::try_peel_loop(&mut func, header),
+                Err(Refusal::ObservableGuard)
+            );
+            assert_eq!(
+                format!("{func:?}"),
+                before,
+                "refusal must be failure-atomic"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_arithmetic_cannot_enter_checked_replay_even_with_integer_annotations() {
+    for opcode in [OpCode::Add, OpCode::Mul] {
+        let mut func = live_shape_function();
+        func.param_types[0] = TirType::I64;
+        func.value_types.insert(ValueId(0), TirType::I64);
+        let header = *func.loop_pairs.keys().next().unwrap();
+        let guard = func.loop_cond_blocks[&header];
+        let constant = func.blocks[&func.entry_block].ops[0].results[0];
+        let comparison = func.blocks.get_mut(&guard).unwrap().ops.last_mut().unwrap();
+        comparison.operands = vec![constant, constant];
+        let body = match func.blocks[&guard].terminator {
+            Terminator::CondBranch { then_block, .. } => then_block,
+            _ => unreachable!(),
+        };
+        let update = func
+            .blocks
+            .get_mut(&body)
+            .unwrap()
+            .ops
+            .iter_mut()
+            .find(|op| op.opcode == OpCode::Add)
+            .unwrap();
+        update.opcode = opcode;
+        update.operands[1] = ValueId(0);
+        assert_eq!(
+            rewrite::try_peel_loop(&mut func, header),
+            Err(Refusal::ObservableArithmetic)
+        );
+    }
+}
+
+#[test]
+fn opaque_copy_fallbacks_are_not_replay_safe_markers() {
+    let mut func = live_shape_function();
+    let header = *func.loop_pairs.keys().next().unwrap();
+    let guard = func.loop_cond_blocks[&header];
+    let mut attrs = AttrDict::new();
+    attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("opaque_callback".into()),
+    );
+    func.blocks.get_mut(&guard).unwrap().ops.insert(
+        0,
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![],
+            attrs,
+            source_span: None,
+        },
+    );
+    assert_eq!(
+        rewrite::try_peel_loop(&mut func, header),
+        Err(Refusal::ImpureBody)
+    );
 }

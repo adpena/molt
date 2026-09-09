@@ -195,47 +195,15 @@ pub(super) fn wire_fused_loop(
     //        ops + dangling uses of the deleted pair value — which the native
     //        codegen's `jump` handler rejects (`label_blocks[&target_id]` panic).
     //        Remove them here so codegen never sees them. ---
-    prune_unreachable_blocks(caller);
+    if let Some(header) = candidate.loop_header {
+        caller.retire_loop_metadata(header);
+    }
+    let retained = super::super::reachability::metadata_preserving_reachable_blocks(caller);
+    caller
+        .retain_blocks(&retained)
+        .expect("generator fusion must preserve unrelated loops and live block references");
 
     true
-}
-
-/// Remove every block unreachable from the function entry, and drop any dangling
-/// `loop_*` / `label_id_map` metadata keyed on them. This is a self-contained
-/// cleanup so the splice never hands codegen an unreachable block carrying stale
-/// ops (a use of a deleted value, a `jump` to a removed label).
-///
-/// Reachability uses the FULL CFG-edge policy (terminator edges PLUS the implicit
-/// `CheckException` → handler/exit edges): a cloned exception-exit block is
-/// reached only via the propagated-exception edge, never a terminator, so a
-/// terminator-only walk would wrongly delete it — and then a surviving
-/// `CheckException` whose `value` label targets it fails LLVM lowering
-/// ("check_exception target label N is not present in label map").
-fn prune_unreachable_blocks(caller: &mut TirFunction) {
-    use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
-    let reachable = reachable_blocks_with(caller, CfgEdgePolicy::Full);
-    let dead: Vec<BlockId> = caller
-        .blocks
-        .keys()
-        .copied()
-        .filter(|b| !reachable.contains(b))
-        .collect();
-    for b in dead {
-        caller.blocks.remove(&b);
-        caller.loop_roles.remove(&b);
-        caller.loop_pairs.remove(&b);
-        caller.loop_break_kinds.remove(&b);
-        caller.loop_cond_blocks.remove(&b);
-        caller.label_id_map.remove(&b.0);
-    }
-    // Drop loop metadata whose VALUE (end / cond block) was pruned.
-    let live: HashSet<BlockId> = caller.blocks.keys().copied().collect();
-    caller
-        .loop_pairs
-        .retain(|h, e| live.contains(h) && live.contains(e));
-    caller
-        .loop_cond_blocks
-        .retain(|h, c| live.contains(h) && live.contains(c));
 }
 
 /// Detect the loop header + latch within the cloned subgraph via a DFS from the
@@ -351,38 +319,17 @@ fn split_block_at(
     bid: BlockId,
     idx: usize,
 ) -> Option<(BlockId, BlockId)> {
-    let original = caller.blocks.remove(&bid)?;
-    let TirBlock {
-        id,
-        args,
-        mut ops,
-        terminator,
-    } = original;
-    if idx > ops.len() {
-        // restore and bail
-        caller.blocks.insert(
-            bid,
-            TirBlock {
-                id,
-                args,
-                ops,
-                terminator,
-            },
-        );
+    if idx > caller.blocks.get(&bid)?.ops.len() {
         return None;
     }
-    let post_ops = ops.split_off(idx);
     let post_id = caller.fresh_block();
-    caller.blocks.insert(
-        bid,
-        TirBlock {
-            id: bid,
-            args,
-            ops,
-            terminator: Terminator::Branch {
-                target: post_id,
-                args: Vec::new(),
-            },
+    let original = caller.blocks.get_mut(&bid).unwrap();
+    let post_ops = original.ops.split_off(idx);
+    let terminator = std::mem::replace(
+        &mut original.terminator,
+        Terminator::Branch {
+            target: post_id,
+            args: Vec::new(),
         },
     );
     caller.blocks.insert(

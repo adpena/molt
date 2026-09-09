@@ -1,10 +1,11 @@
 use super::*;
+use crate::{dict_update_apply, dict_update_set_in_place};
 
 pub(super) unsafe fn bind_builtin_call(
     _py: &PyToken<'_>,
     func_bits: u64,
     func_ptr: *mut u8,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
     unsafe {
         let fn_ptr = function_fn_ptr(func_ptr);
@@ -369,7 +370,7 @@ pub(super) unsafe fn bind_builtin_call(
             );
         }
 
-        let mut out = args.pos.clone();
+        let mut out = args.pos.to_vec();
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
@@ -435,7 +436,7 @@ pub(super) unsafe fn bind_builtin_call(
 
 pub(super) fn bind_builtin_exception_args(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     allow_keywords: bool,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -466,7 +467,7 @@ pub(super) fn bind_builtin_exception_args(
 
 pub(super) fn bind_builtin_exception_init_owned(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required arguments");
@@ -490,7 +491,10 @@ pub(super) fn bind_builtin_exception_init_owned(
     ])
 }
 
-unsafe fn bind_builtin_int_new(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_int_new(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'cls'");
     }
@@ -534,7 +538,10 @@ unsafe fn bind_builtin_int_new(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec
     Some(vec![cls_bits, value_bits, base_bits])
 }
 
-pub(super) unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgs) -> u64 {
+pub(super) unsafe fn bind_builtin_dict_update(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> u64 {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -601,7 +608,10 @@ fn default_open_mode_bits(_py: &PyToken<'_>) -> u64 {
     )
 }
 
-unsafe fn bind_builtin_bytes_hex(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_bytes_hex(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -647,7 +657,7 @@ unsafe fn bind_builtin_bytes_hex(_py: &PyToken<'_>, args: &CallArgs) -> Option<V
 
 unsafe fn bind_builtin_keywords(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     names: &[&str],
     default_bits: Option<u64>,
     extra_bits: Option<u64>,
@@ -713,7 +723,7 @@ unsafe fn bind_builtin_keywords(
 
 unsafe fn bind_builtin_int_bytes_codec(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     required_0: &str,
     required_1: &str,
 ) -> Option<Vec<u64>> {
@@ -776,7 +786,7 @@ unsafe fn bind_builtin_int_bytes_codec(
 
 pub(super) unsafe fn bind_builtin_class_text_io_wrapper(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
     const NAMES: [&str; 6] = [
         "buffer",
@@ -836,7 +846,7 @@ pub(super) unsafe fn bind_builtin_class_text_io_wrapper(
 
 pub(super) unsafe fn bind_builtin_class_string_io(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
     const NAMES: [&str; 2] = ["initial_value", "newline"];
     if args.pos.len() > NAMES.len() {
@@ -885,9 +895,12 @@ pub(super) unsafe fn bind_builtin_class_string_io(
 /// `molt_print_builtin` takes 5 positional C params:
 ///   (args_tuple, sep, end, file, flush)
 /// The first param is a tuple of the `*args` vararg.
-unsafe fn bind_builtin_print(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_print(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     // Build the *args tuple from positional arguments.
-    let args_ptr = crate::object::builders::alloc_tuple(_py, &args.pos);
+    let args_ptr = crate::object::builders::alloc_tuple(_py, args.pos);
     let args_tuple = MoltObject::from_ptr(args_ptr).bits();
     // Keyword-only defaults.
     let default_sep = crate::object::builders::alloc_string(_py, b" ");
@@ -923,7 +936,10 @@ unsafe fn bind_builtin_print(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u
     Some(vec![args_tuple, sep, end, file, flush])
 }
 
-pub(super) unsafe fn bind_builtin_open(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+pub(super) unsafe fn bind_builtin_open(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     const NAMES: [&str; 8] = [
         "file",
         "mode",
@@ -1016,7 +1032,10 @@ pub(super) unsafe fn bind_builtin_open(_py: &PyToken<'_>, args: &CallArgs) -> Op
     Some(out)
 }
 
-unsafe fn bind_builtin_type_new_init(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_type_new_init(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'cls'");
@@ -1096,7 +1115,10 @@ unsafe fn bind_builtin_type_new_init(_py: &PyToken<'_>, args: &CallArgs) -> Opti
     }
 }
 
-unsafe fn bind_builtin_list_sort(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_list_sort(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1141,7 +1163,10 @@ unsafe fn bind_builtin_list_sort(_py: &PyToken<'_>, args: &CallArgs) -> Option<V
     Some(vec![args.pos[0], key_bits, reverse_bits])
 }
 
-unsafe fn bind_builtin_list_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_list_pop(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1155,14 +1180,17 @@ unsafe fn bind_builtin_list_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Ve
     if args.pos.len() > 2 {
         return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
     }
-    let mut out = args.pos.clone();
+    let mut out = args.pos.to_vec();
     if out.len() == 1 {
         out.push(MoltObject::none().bits());
     }
     Some(out)
 }
 
-unsafe fn bind_builtin_list_index_range(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_list_index_range(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1179,7 +1207,7 @@ unsafe fn bind_builtin_list_index_range(_py: &PyToken<'_>, args: &CallArgs) -> O
     if args.pos.len() > 4 {
         return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
     }
-    let mut out = args.pos.clone();
+    let mut out = args.pos.to_vec();
     let missing = missing_bits(_py);
     if out.len() == 2 {
         out.push(missing);
@@ -1192,7 +1220,7 @@ unsafe fn bind_builtin_list_index_range(_py: &PyToken<'_>, args: &CallArgs) -> O
 
 unsafe fn bind_builtin_string_find(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1270,7 +1298,7 @@ unsafe fn bind_builtin_string_find(
 
 unsafe fn bind_builtin_count(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1348,7 +1376,7 @@ unsafe fn bind_builtin_count(
 
 unsafe fn bind_builtin_split(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
@@ -1405,7 +1433,10 @@ unsafe fn bind_builtin_split(
     Some(vec![args.pos[0], sep_bits, maxsplit_bits])
 }
 
-unsafe fn bind_builtin_splitlines(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_splitlines(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1460,7 +1491,7 @@ unsafe fn bind_builtin_splitlines(_py: &PyToken<'_>, args: &CallArgs) -> Option<
 
 unsafe fn bind_builtin_set_multi(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1499,7 +1530,7 @@ unsafe fn bind_builtin_set_multi(
 
 unsafe fn bind_builtin_set_single(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1542,7 +1573,7 @@ unsafe fn bind_builtin_set_single(
 
 unsafe fn bind_builtin_set_noargs(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1585,7 +1616,7 @@ unsafe fn bind_builtin_set_noargs(
 
 unsafe fn bind_builtin_prefix_check(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     func_name: &str,
     needle_name: &str,
 ) -> Option<Vec<u64>> {
@@ -1663,7 +1694,10 @@ unsafe fn bind_builtin_prefix_check(
     ])
 }
 
-unsafe fn bind_builtin_string_format(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_string_format(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1699,7 +1733,10 @@ unsafe fn bind_builtin_string_format(_py: &PyToken<'_>, args: &CallArgs) -> Opti
     }
 }
 
-unsafe fn bind_builtin_memoryview_cast(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_memoryview_cast(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1752,7 +1789,10 @@ unsafe fn bind_builtin_memoryview_cast(_py: &PyToken<'_>, args: &CallArgs) -> Op
     Some(vec![args.pos[0], format_bits, shape_bits, has_shape_bits])
 }
 
-unsafe fn bind_builtin_file_reconfigure(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+unsafe fn bind_builtin_file_reconfigure(
+    _py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
     }
@@ -1841,7 +1881,7 @@ unsafe fn bind_builtin_file_reconfigure(_py: &PyToken<'_>, args: &CallArgs) -> O
 
 unsafe fn bind_builtin_text_codec(
     _py: &PyToken<'_>,
-    args: &CallArgs,
+    args: &PreparedCallArgs<'_, '_>,
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {

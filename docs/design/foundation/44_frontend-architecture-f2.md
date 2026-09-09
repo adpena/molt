@@ -10,9 +10,11 @@
 
 # Frontend Architecture — the F2 Decomposition & Separation-of-Concerns End-State
 
-**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `frontend.sema.funcmeta` now owns `FunctionKind`, canonical function-kind normalization, yield/signature classification, and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, class-body block-exec facts, and precomputed zero-arg `super()` fold soundness method sets consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
+**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `frontend.sema.funcmeta` now owns `FunctionKind`, canonical function-kind normalization, yield/signature classification, and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, class-body block-exec facts consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
 
-**Date:** 2026-06-06. Every file:line anchor verified against HEAD `dc6965d8d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, class-body block-exec facts, and precomputed zero-arg `super()` fold method sets now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
+**Frame-elision update (2026-09-08):** The old static zero-argument `super()` fold and its sema method-set projection were deleted: visible-class MRO agreement does not prove immutable class-cell identity or executing-frame semantics. Method/constructor inline extraction now shares the generated effect authority through `python_inlining.py`; unknown callbacks, descriptors, operators, and scope references keep their real Python frame. Rejected candidates emit no speculative prefix.
+
+**Date:** 2026-06-06. Every file:line anchor verified against HEAD `dc6965d8d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, class-body block-exec facts now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
 
 **The verdict this engineers against** (supervisor, "engineered like Chris Lattner would?"): **NO, today.** At the original audit, `src/molt/frontend/__init__.py` was 27,071 lines, one class `SimpleTIRGenerator` with 538 `def`s (`__init__.py:211`), assembled from four MRO-mixins (`SerializationMixin, PatternMatchMixin, CallVisitorMixin, ClassDefVisitorMixin, ast.NodeVisitor` — `__init__.py:211-217`) that shared its ~150 mutable instance fields. Current F1 has moved more families out of the file, including `LocalBindingMixin` and `MidendOptimizationMixin`, and the first F2 sema cuts have removed the duplicate function-shape and static-class-graph authorities. The architectural defect remains: scope binding, IC index allocation, exception-edge insertion, const handling, augassign-kind selection, and emitted class metadata are still partly recomputed or supplied during the lowering walk behind one shared generator state. The cost is measured below in §6.
 
@@ -33,9 +35,26 @@ platform, package/spec identity, and execution kind remain part of the policy.
 direct calls, and imported-module attribute provenance through shared queries
 in `frontend/lowering/local_bindings.py`. `binding_is_bound` prevents builtin
 spelling from overriding lexical cells, parameters, or source module bindings.
-`OTHER` alone proves neither invalidation nor builtin identity. Clean rebinding
-restores source facts; clean conditional joins retain guarded native-call
-specialization only where the binding authority permits it.
+`OTHER` alone proves neither invalidation nor builtin identity. Binding stores
+and deletions publish their new state before releasing the previous value;
+that release can invoke a finalizer which replaces or resurrects the binding.
+Clean rebinding restores source facts only when the previous value's release
+is proven inert. Callback epochs include published closure cells, write-only
+nonlocals and class namespace slots, but do not taint uncaptured fast locals.
+Previously absent slots remain clean until their namespace crosses a callback
+epoch; deferred history must retain callbacks that can insert an absent name.
+Clean conditional joins retain guarded native-call specialization only where
+the binding authority permits it.
+
+Known identity is not a lifetime proof. Private aliases can outlive the module,
+function, locals mapping or frame that originally owned their value. Release
+effects therefore retain callback barriers for those identities; `UNBOUND` is
+neutral when joining genuinely inert alternatives. Plain-local replacement
+captures the old slot, publishes the new slot and locals-cache projection, then
+emits its release boundary. Runtime closure replacement follows the same
+retain/publish/release transaction, including self-assignment and reentrant
+replacement. Dictionary and list-cell stores retain their shared transaction
+authorities rather than adding frontend-specific release paths.
 
 Truth conversion runs before either successor, including short-circuit,
 conditional-expression, loop/filter, assertion-message and match-guard paths.
@@ -43,6 +62,306 @@ An arbitrary `__bool__` can replace a callable and return false: a subsequent
 global-existence check alone does not authorize a native direct call. Identity
 comparisons have primitive boolean results; genuinely invalidated builtins use
 the existing dynamic call emitter until stronger facts prove their identity.
+
+Statement execution uses `PythonCompletionFlow` in `python_binding_facts.py`:
+normal, return, raise, break and continue have separate successor states; missing
+successors denote analyzed unreachability, not unknown facts. Binding and import
+metadata share sequence, loop fixed-point, finally/context unwind and exception-
+group routing. Handler-raised exceptions remain pending while later `except*`
+handlers run; subclass split/derive operations are independent Python callback
+boundaries, so dynamic package anchors require explicit runtime import custody.
+Only raised exits can be suppressed by a context manager. Repeated
+visits join source facts, while temporal history records actual transfers rather
+than replaying old completion summaries. Deferred scopes/jobs have stable source
+identity and retain their joined execution context.
+
+Statement-loop iteration facts come from the evaluated iterable and the shared
+protocol-effect authority. Finite exact string alternatives are one abstract
+value, not per-element body replay; aliased mutable containers do not acquire
+literal provenance. The shared loop scheduler releases the iterator before
+`else` and on terminal exits, never on a backedge. Target assignment exceptions
+remain independent of iterator purity. Finite namespace-key stores use one
+batched may-write update in the non-relational binding domain, so key count does
+not multiply flow states.
+
+Exact globals item syntax and bound `__setitem__`/`__delitem__` identities share
+one namespace publication/release transfer. Import metadata consumes admitted
+call and assignment facts; globals/setattr spellings cannot manufacture exact
+anchors. Unknown old-value releases retain runtime import custody even after a
+literal assignment. The regression home is `tests/test_python_loop_metadata.py`.
+
+Import metadata projects those completions with correlated package/spec/name
+states and lexical write ownership. Calls observe metadata after earlier callee
+and argument evaluation; loop backedges revisit import sites. Scanner consumers
+honor explicitly empty site states, including absolute imports, static source
+execution and runtime-protocol discovery; absent facts retain conservative
+fallback. Pattern irrefutability and capture-only matching are shared source
+facts, not scanner/lowering-local classifiers. Focused regression homes are
+`tests/test_python_binding_completion_flow.py` and
+`tests/cli/test_cli_python_import_authority.py`; these unit consumers do not prove
+native/WASM emitted-program matrix cells.
+
+Static graph identity is separate from mandatory runtime import execution. An
+exact explicit package remains the successful-resolution anchor even when
+`spec.parent` is unknown: CPython captures the package before consulting that
+callback. The graph retains the known candidate while lowering preserves runtime
+lookup, failure and warning behavior. A genuinely unknown package still requires
+explicit runtime import custody rather than an invented graph root.
+
+Expression results are owned by `compiler_analysis/static_truth.py`:
+known truth, exact scalar value, required evaluation, and structurally shared
+display segments are separate facts. Source-bound names and members project
+from `PythonBindingIndex`; unknown facts never fall back to TYPE_CHECKING or
+platform spellings. The frontend keeps required tests in normal conditional
+ownership lowering while pruning only impossible successors, matching import
+closure. Binding analysis and effect projection share container hash/unpack
+boundaries; annotation scopes retain distinct live-class lookup semantics.
+`compiler_analysis/python_lexical_scope.py` owns definition/header regions for
+declarations, deferred dependencies and frontend assignment projections. Generic
+defaults belong to the enclosing scope, before type-parameter construction.
+The ordered assignment collector owns the walk; unordered queries project its
+set. Collection remains unpruned for Python local-name rules, including eager
+function-local annotation declarations even when their reads never execute.
+The shared `PythonDependencyAuthority` memoizes transitive dependencies for both
+binding analysis and frontend closure/storage planning. Function, lambda,
+annotation and comprehension capture queries project that authority; there is
+no second frontend free-variable walker. Header evaluation, nested defaults,
+class lexical barriers, comprehension parameters and escaping walrus writes
+retain distinct scope ownership. Name-lookup facts remove global-only reads
+from frontend captures without losing a sibling's same-spelled lexical capture.
+Annotation evaluation and lexical participation follow target-version and future
+flags. Dependency caches are scoped to the immutable source index and policy;
+repeated subtree queries reuse summaries.
+
+For supported Python 3.12+ targets, materialized comprehensions retain the
+enclosing Python frame (PEP 709), regardless of unpacking, multiple clauses,
+nesting or suspension. `_comprehension_scope` owns typed SSA/frame-slot storage
+and masks only target-name projections, restoring outer state on exit. Real
+closure captures alone allocate cells; nested eager reads do not. First-iterable
+evaluation precedes target shadowing. `current_python_first_arg` identifies the
+executing source frame's live positional argument zero, distinct from transport
+parameters and method optimization facts. A real generator expression has its
+own iterator argument; frame-observing reductions retain that frame instead of
+fusing it away. All eager collection forms share `_emit_materialized_comprehension`;
+no collection-to-generator rewrite remains. Regressions live in
+`tests/test_python_execution_frame.py`, `tests/test_class_function_lifecycle.py`
+and the `super_comprehension_frame_ownership.py` differential capsule.
+
+The executing runtime `FrameEntry` owns a typed argument-zero transport
+(`NoArgument`, value, or actual cell) and the actual implicit class cell.
+Frontend entry, rebinding/deletion, and generated repoll continuations publish
+these facts through `molt_frame_context_set`. Temporary argument shadowing and
+inline class namespaces restore the outer context on normal and exception
+edges; class namespace prefix/suffix writes remain inside the class context.
+`super_from_current_frame` is the shared resolver for direct, aliased and
+builtin-callback invocation. It owns error precedence and receiver validation;
+the constructed super retains the resolved receiver class instead of repeating
+proxy `__class__` lookup during attribute access. Native local-frame entry and
+guarded exit are semantic operations independent of optional call tracing,
+matching WASM ownership. Runtime symbol requirements are projections of the
+same generated semantic-role rows as opcode requirements, not a separate
+symbol-policy list. `super_runtime_frame_context.py` covers the dispatch family;
+frontend/static receipts alone do not establish emitted native/WASM parity.
+
+Deferred annotations and lazy type evaluators use that same executing-frame
+and lexical-closure authority. Their namespace lookup scope is not a class-body
+frame. Python 3.12/3.13 lazy evaluators have no Python argument zero; 3.14
+evaluators expose their format argument. That argument has a typed transport
+identity separate from any source binding named `format`, including a lexical
+cell or class namespace entry with that spelling. Annotation dependency
+projection retains implicit class-cell demand, and capture construction shares
+`_capture_lexical_closure` with ordinary functions and comprehensions; type
+parameter values and namespace/execution-map captures are explicit inputs.
+The public 3.14 evaluator format check preserves CPython's generated comparison
+protocol before annotation expressions. Its actual argument is not assumed to
+be an integer; comparison callbacks observe the evaluator frame.
+
+`OpIR` owns runtime-requirement aggregation. Executed canonical calls participate
+in active-frame dominance; acquiring a frame-sensitive callable only contributes
+target requirements and does not itself require an executing Python frame.
+Receiver validation observes the receiver's actual type after a `__class__`
+getter returns. Releasing a rejected claim is a separate callback boundary, so
+error diagnostics read the actual type again afterward. The differential capsule
+`super_runtime_frame_mutating_receiver.py` covers these distinct boundaries.
+
+Every function-like definition captures through `_capture_lexical_closure`;
+class mappings are not lexical frames. `class_cell_required` is the class-owned
+dependency fact, separate from an outer same-spelled free variable. Syntactic
+`super` loads request the cell even when `super` is shadowed; local/parameter/
+global `__class__` declarations suppress that implicit demand. Nested class
+headers may consume an outer cell while their methods capture the new class's
+own cell. Class methods, including conditional and repeated definitions, are
+created at their source point through `_emit_class_function_definition`.
+Decorator expressions precede defaults and apply in reverse order. Runtime
+bindings are authoritative; `MethodDescriptor` is only a proved optimization
+fact, retired by rebinding or deletion.
+
+Class lookup effects follow namespace ownership, not source spelling. Prepared
+mappings and initially exact dictionaries exposed to mutation can execute Python
+on reads, stores and deletions. Class-visible annotations consult the owning
+namespace through type-parameter scopes; current-scope type parameters and
+inherited class `global` directives bypass it. Nonlocal reads can consult that
+namespace while nonlocal writes target the closure. Eager 3.12/3.13 and deferred
+3.14 annotation scopes retain their distinct lookup order.
+`PythonExpressionFact.class_namespace_lookup` projects the same scope decision
+to lowering from a single typed name-lookup discriminator, including
+`class_lexical` versus `class_global` fallback. Invalidating a value never changes
+its storage owner, and a class-global annotation read must not retain an unused
+outer same-spelled object. Runtime-backed
+class reads use `molt_namespace_get`, which probes arbitrary mappings, recognizes
+only `KeyError` (including subclasses) as absence, and retains every other error.
+The exact-dictionary path avoids constructing an exception on an ordinary miss.
+Deletion uses `molt_namespace_del`: CPython `DELETE_NAME` replaces every mapping
+deletion failure with `NameError`, unlike the load operation's KeyError-only
+fallback. Successful deletion returns `None`, never a borrowed namespace owner;
+custom deletion discards its owned callback result. Lookup result merging
+reuses the condition-flow authority (PHI/COPY
+for synchronous code, suspension-safe storage for asynchronous code), not a
+separate per-read heap-cell lane.
+Global declarations bypass the mapping; missing class-local names fall back to
+globals, while free/nonlocal names can fall back to their lexical cells.
+Comprehension payloads and nested functions are lexical barriers; the first
+comprehension iterable remains in the enclosing class scope. Function state
+capture/reset owns the class-namespace stack and depth. Regressions live in
+`tests/test_frontend_class_namespace.py` and the replayable
+`tests/differential/basic/class_namespace_lookup.py` capsule. Frontend acceptance
+and CPython reference execution are not native/WASM parity receipts.
+
+Deferred class evaluators capture one explicit namespace cell, not a class-name
+rewrite or a parent-function SSA value. The binding index records which class
+owners have a deferred namespace reader; body entry allocates their cells once,
+before conditional definitions or loops. Evaluator construction only consumes
+that owner and cannot lazily allocate branch-local transport. Eager annotations,
+future strings and nested lexical-only readers request no namespace cell.
+Before type construction the cell holds
+the prepared mapping; class finalization publishes the actual copied dictionary
+before class callbacks. Each read reloads the cell, so class-name rebinding and
+mutation of an abandoned prepared mapping cannot redirect the evaluator.
+Unpublished classes use the existing allocation drop guard on all failure paths.
+The ordinary type-call adapter and metaclass-winner path share `molt_type_new`.
+Its finalizer validates `__qualname__` before publishing compiler cells, normalizes
+plain Python special methods centrally, and publishes the class cell before the
+dictionary cell. Descriptor hooks consume one retained ordered snapshot via
+special-method lookup, followed by one MRO-based `__init_subclass__` dispatch.
+Frontend lowering neither refills cells nor replays callbacks. It verifies the
+original class cell against a returned type before decorators/publication;
+non-type metaclass results are a distinct valid path. Constructor regressions
+live in `call/bind/class_constructor_tests.rs` and the static differential
+`class_constructor_cell_callbacks.py` capsule.
+Eager and future-string class annotations set up `__annotations__` before the
+body (including annotations in dead branches), preserve a prepared mapping, and
+reload the live mapping after RHS publication and annotation evaluation. Method
+annotation attachment follows body order, without a postbody overwrite lane.
+Annotation formats 1/2 share one body; free-variable cell reads reload closure
+transport in their consuming block rather than reusing branch-local SSA.
+The shared lexical-region validator rejects lambdas/comprehensions inside
+class-visible annotation scopes for target 3.12, including dead branches.
+Targets 3.13+ permit them; ordinary eager annotations and function-body aliases
+remain distinct regions. This gate is based on installed CPython reference
+compilation, not on the compiler host parser accepting the AST.
+Regression homes are `tests/test_class_annotation_namespace_lowering.py`,
+`tests/test_function_annotation_lowering.py`, and
+`tests/differential/basic/class_annotation_namespace.py` (3.12+ common semantics)
+with `class_annotation_namespace_313.py` (static 3.13+ nested annotation scopes
+and type-parameter defaults). Canonical `MOLT_META` version admission excludes
+inapplicable sources before parsing; runtime `exec` is not a syntax gate.
+
+Import storage and provenance share owner-aware publication for ordinary,
+from, child-module and synthetic imports. Class-local imports cannot leak
+metadata into enclosing scope; global publication projects module ownership,
+and nonlocal publication invalidates stale enclosing import provenance.
+`tests/test_frontend_class_imports.py` checks the emitted store and subsequent
+consumer, including boxed and loop-bound module slots.
+
+Frontend SCCP scheduling is owned by executable CFG edges and predecessor-state
+changes. The redundant global value-notification queue is removed. Newly
+executable edges still schedule PHI reevaluation even for equal predecessor
+states. The unchanged growth stress consumer measured 47.74855s before and
+0.89006s after this change; this is a profiled stress-case result, not a
+whole-frontend speed claim. Deterministic diamond scheduling budgets and the
+equal-state late-edge regression live in `tests/test_frontend_midend_passes.py`.
+
+`static_comparison_result` also owns each comparison's result facts, so binding
+flow applies comparison, truth and release effects before later chain operands
+and skips proven unreachable tails. A constant member result never licenses
+discarding its owner evaluation, including walrus stores. Executed typing
+imports stay in runtime closure even when a TYPE_CHECKING branch is unreachable;
+there is no scanner-only import omission.
+
+`frontend/lowering/condition_flow.py` owns value versus syntax-condition
+short-circuit emission, including comparison-result identity and PHI/COPY/async
+merges. CPython 3.14 omits a stopped nested BoolOp value's outer retest;
+3.12/3.13 retain it. Comparison and conditional-expression value boundaries
+retain their retests in all three versions. Unary `not` has distinct value and
+condition behavior as well. These choices use the target Python version, never
+the compiler host version. `tests/test_frontend_condition_semantics.py` executes
+the emitted structured expression operations against stateful Python callbacks;
+`tests/differential/basic/condition_flow_truth_custody.py` is the cross-backend
+replay corpus. This frontend-only execution is not backend conformance evidence.
+Result ownership also distinguishes inert builtin displays from containers
+holding values whose release can execute Python; dictionary values are included
+even though their membership shape describes only keys. Hashing and unpacking
+effects consume these shared result facts instead of a second literal classifier.
+
+Accumulated key effects belong to `python_effects.AccumulatedKeyEffects`:
+inserting an exact incoming key is not callback-free when a retained dictionary,
+set, or keyword key can override equality. Binding analysis and effect summaries
+carry that fact across later insertions and expansions; proven empty expansions
+introduce no collision callback. Nested walrus values preserve their result shape
+without losing the mandatory store. Scoped walrus collection visits immediate
+defaults and headers but excludes deferred bodies.
+
+Runtime call builders own one keyword dictionary. Binding acquires an ephemeral,
+pinned `PreparedCallArgs` projection after all argument effects; no borrowed
+keyword arrays survive expansion. `BoundCallSlots` owns values through every
+binding callback and failure exit. Keyword matching and canonical `**kwargs`
+insertion precede positional arity/default resolution; each missing keyword-only
+parameter rereads the live defaults dictionary. No extra-keyword rebuild lane
+exists. Inline-cache admission and foreign calls read the canonical dictionary.
+Iterator descriptor lookup and invocation share one
+exception boundary; sequence acquisition probes slot presence without binding,
+and exhaustion retires the target before releasing callback-capable references.
+User-defined iterators may resume after StopIteration; generated sequence
+iterators remain exhausted. Cached result tuples publish both cache and caller
+ownership before releasing old elements; finalizer reentry may clear or replace
+the cache without mutating or freeing the caller's result. ABI-observed tuples
+use fresh replacement under the existing ABI ownership authority.
+These contracts are retained in the registered
+`call_argument_expansion_custody.py` differential corpus; reference traces alone
+do not establish native/WASM conformance.
+
+`compiler_analysis/python_call_arguments.py` owns the call/class evaluation and
+expansion schedule used by binding effects and argument lowering. A sole call
+star operand is expanded after keywords, mixed positional stars are expanded
+immediately, and consecutive named keyword values are evaluated before merging.
+Class construction has implicit positional operands and therefore never defers
+its sole starred base. Print, dictionary construction/update with keywords, and
+class keyword assembly use the common argument builder; their old independent
+keyword-merge emitters are removed. A sole call star is materialized through the
+runtime tuple constructor; mixed stars use list-style accumulation. Tuple
+conversion skips length-hint callbacks starting in target Python 3.14, while
+list conversion retains them. The frontend no longer implements tuple conversion
+as list conversion or treats list/tuple annotations as exact-type proofs.
+Splat builtin calls enter the shared binder before per-builtin specialization,
+so cardinality, mapping callbacks, and duplicate-key errors retain source order.
+Async argument custody uses shared scratch
+load-then-clear operations so successful consumption does not retain values in
+compiler frame slots. `locals()` snapshot selection follows target Python
+(PEP 667 at 3.13), not the compiler's host interpreter.
+
+Required condition evaluation remains in the live-statement projection even
+when a successor is impossible. An underscore is not a Python visibility
+boundary: an unreferenced private module function remains present. Deleted
+helper pruning additionally requires an unobserved lifetime with exactly one
+definition and deletion, including earlier escaped live namespace views. The
+binding index owns namespace observation facts; pruning and class stability
+consume that projection rather than maintaining spelling-only escape scans.
+
+`tests/test_static_expression_result.py` pins value/truth distinctions and
+linear display-fact storage. `tests/differential/basic/expression_result_authority.py`
+covers evaluation, temporary finalizers, lookup errors, comparison results and
+construction segments. Target and CPython-version receipts are required before
+claiming matrix closure; source/IR checks alone do not establish it.
 
 Focused authority/IR proofs live in `tests/test_python_binding_flow.py` and
 `tests/test_frontend_ir_alias_ops.py`. Replay capsules are
@@ -75,7 +394,7 @@ ast.Module
    │     • ScopeTable        : per-scope symbol kind (local/cell/free/global), the
    │                           closure-cell index map, comp-scope isolation set
    │     • ClassGraph        : static bases, C3 linearization, reachability
-   │     • ClassFacts        : class-body block-exec ids, super-fold-sound
+   │     • ClassFacts        : class-body block-exec ids, class-member
    │                           methods, descriptor/slot facts
    │     • ConstEnv          : statically-known module dicts, const-int facts
    │     • Legality          : compile-time warnings (~bool, finally-flow), the
@@ -113,7 +432,7 @@ The phase boundaries are only real if the contract between them is **data, not a
 @dataclass(frozen=True)
 class SemaResult:
     scopes:      dict[int, ScopeInfo]      # keyed by AST-node id (FunctionDef/Lambda/Module/comp)
-    classes:     dict[str, ClassFacts]     # block-exec class ids, super-fold-sound methods, slots, fields
+    classes:     dict[str, ClassFacts]     # block-exec class ids, class-member facts, slots, fields
     const_env:   ConstEnv                  # module const dicts, const-int facts, refused-fold node ids
     legality:    LegalityReport            # deferred warnings, finally-flow violations
 ```
@@ -136,7 +455,7 @@ The F1 mixins, including the current local-binding, midend-optimization, seriali
 - **Clang `Sema`/`CodeGen` separation** ("Clang Internals", clang.llvm.org/docs/InternalsManual.html): the principle that semantic analysis produces a fully-annotated AST and codegen is a thin consumer. **Borrowed:** the annotate-then-consume contract; Sema never emits, Lower never re-analyzes. **Diverge:** molt's Sema is lighter — it does *binding + legality + static class facts*, not full type inference (molt's types flow as optional hints + the Rust midend's `type_refine`).
 - **CPython `symtable.c` → `compile.c`** (CPython source; PSF license — studied, reimplemented, not copied): scope/symbol binding is computed for every name into `PySTEntryObject` **before** any bytecode is emitted; the compiler reads `ste_symbols` flags. **Borrowed:** `ScopeInfo` keyed per scope, computed once, read by Lower. This is the *direct* fix for molt's "scope analysis recomputed inline during the walk." **Diverge:** molt keys by AST-node id and produces an immutable dataclass rather than a mutable `symtable` object graph.
 - **Swift `Parse → Sema → SILGen → SIL`** (swift.org/swift-compiler/; Apache-2.0): SIL is the *semantic IR* on which the diagnostic/optimization passes run; SILGen is a thin lowering from the type-checked AST. **Borrowed:** the idea that the IR (here: the MoltOp stream + JSON) is produced by a *thin* lowering from an *already-decided* representation, with the heavy analysis upstream. **Diverge:** molt has no separate SIL — the MoltOp stream is lowered straight to the Rust TIR; F2's `SemaResult` is the "decided representation," not a second IR.
-- **Rustc `HIR → THIR → MIR` + query system** (rustc-dev-guide.rust-lang.org; MIT/Apache — ideas only): the query system computes a fact (e.g. `typeck`) **on demand, memoized, keyed by `DefId`**, and consumers *ask* for it rather than recomputing. **Borrowed:** `SemaResult` tables keyed by node id are the memoized-fact analog; `super_fold_is_sound` is now the sema-owned builder predicate for `ClassFacts.super_fold_sound_methods_by_class`, and Lower reads the precomputed fact instead of re-running the predicate. **Diverge:** molt computes Sema eagerly per module (no lazy query engine — the module is small enough that eager is simpler and the DX is better; we reject importing a query framework, §5).
+- **Rustc `HIR → THIR → MIR` + query system** (rustc-dev-guide.rust-lang.org; MIT/Apache — ideas only): the query system computes a fact (e.g. `typeck`) **on demand, memoized, keyed by `DefId`**, and consumers *ask* for it rather than recomputing. **Borrowed:** `SemaResult` tables keyed by node id are the memoized-fact analog; class graph and block-execution decisions have sema-owned builders, and Lower reads their facts instead of re-running those analyses. **Diverge:** molt computes Sema eagerly per module (no lazy query engine — the module is small enough that eager is simpler and the DX is better; we reject importing a query framework, §5).
 - **MLIR ODS / TableGen** (mlir.llvm.org/docs/DefiningDialects/Operations/; Apache-2.0): one declarative op definition generates the verifier, builder, and printer. **Borrowed:** the §3 registry move — one `op_kinds.toml` row generates the mapper arm, the effect oracle, *and* the frontend's canonical-spelling + raising-kind constants. This is **already half-built** in molt (`tools/gen_op_kinds.py`); F2 extends it.
 
 ---
@@ -160,7 +479,7 @@ A second axis: the **async vs sync fork**. `visit_AugAssign` (`__init__.py:13961
 | **Class-body vs function-body statement** | `_class_body_depth` counter mutated mid-walk (`__init__.py:269`); nested-class binding fixed *twice* recently | `c1faf79f7` (class-nested classes); `classes.py:849` (class-body `visit_Assign`) vs `__init__.py:2670`/`2354` (other `visit_Assign`) | one `lower_assign` reading `ScopeInfo.kind` ∈ {class_body, function, module} |
 | **Comprehension scope** | `comp_shadow_locals` set toggled around the comp (`__init__.py:276`); walrus-target storage unified *twice* last week | `99723d589`, `d19dfa588`; `__init__.py:276` | `ScopeInfo` for the comp node carries the isolation set + walrus-leak targets; one `lower_comprehension` |
 | **f-string pieces** | conversion/format-spec assembled inline in `visit_JoinedStr`; the `{expr=}`-under-inlining multisite miscompile baton | doc 30:258 (`project_inliner_fstring_multisite_miscompile.md`) | one `lower_joinedstr` over a Sema-resolved piece list |
-| **super() dispatch** | static fold vs runtime path reads `ClassFacts.super_fold_sound_methods_by_class`; the sema builder computes it from C3/static-MRO/reachability, local class-member facts, and explicit imported-class metadata; dynamic/decorated class-member surfaces fail closed | `sema/classgraph.py` (`ClassFacts`, `super_fold_is_sound`, `class_facts_with_super_fold_sound_methods`), `lowering/sema_state.py` (fact enrichment), `calls.py` (fact consumer) | Remaining work: broaden immutable `ClassFacts`/`ScopeInfo` consumption so other call/class/scope decisions stop reading shimmed god-object fields |
+| **super() dispatch and frame elision** | Zero-argument construction reads the live runtime argument-zero and lexical class cell; no static MRO/class-name shortcut substitutes for those values. Frontend expression inlining requires callback-free effects and explicit parameter-only binding, preflighted before emission. | Runtime `FrameEntry` / `molt_super_from_frame`; `compiler_analysis/python_inlining.py`; method/constructor extractors and consumers | Preserve executing-frame observation for aliases, callbacks, class-cell mutation, suspension, and comprehension scope restoration. |
 
 **Note on task #42 accuracy (important).** The `raising_const_expr_fold_matrix.py` regression (the task-#42 corpus) documents that the *two sites that actually dropped the raising op were in the Rust midend* — the `op_kinds.toml` `may_throw` mis-classification of `Shl`/`Shr`/`Pow` and SCCP's `eval_binary_pow` (test docstring, `raising_const_expr_fold_matrix.py:9-18`). That specific bug is **already fixed** at HEAD (the registry now carries 38 `may_throw=true` rows including the shifts; `d6c792454`/`f16740ca3` landed the registry). What the test *also* encodes — and why it crosses "module / function / method / comprehension / lambda" scopes (`:88-118`) — is that **the frontend has five distinct lowering paths per scope** whose divergence is the standing fragility. F2's §2 rule is the structural defense for that fragility; the frontend's `_RAISING_OP_KINDS` (`__init__.py:1169`) duplicating the backend oracle is the residual drift vector (§3). This doc corrects the brief's framing: task #42's *drop* was backend; task #42's *scope-matrix* is the frontend smell F2 targets.
 
@@ -213,7 +532,7 @@ The unit of work is the complete structural change (CLAUDE.md). F2 is a multi-we
 
 ### F2b — Extract Sema (the binding/legality/class-graph phase), additively
 
-**Scope.** Create `frontend/sema/` with `scope.py` (the `ScopeInfo`/`ScopeTable` builder — lifts the closure-cell/free-var/nonlocal/global/comp-isolation analysis currently smeared across the `*Collector` nested classes and the 18 scope dicts), `classgraph.py` (lifts static class-graph construction, local class-member facts, C3/static-MRO/reachability facts, the zero-arg `super()` fold soundness predicate, and the precomputed fold-sound method sets Lower consumes), `constenv.py` (lifts `_collect_module_const_dicts` `__init__.py:2705`, the const-int facts, the refuse-to-fold decision), `legality.py` (lifts `_prescan_compile_warnings` `__init__.py:1450`). Each is **free functions over dataclasses** (the `cfg_analysis.py` shape). `SimpleTIRGenerator.__init__` *calls* Sema and stores the immutable `SemaResult`; the visit methods initially still read their old dicts, now *populated from* `SemaResult` (a shim layer).
+**Scope.** Create `frontend/sema/` with `scope.py` (the `ScopeInfo`/`ScopeTable` builder — lifts the closure-cell/free-var/nonlocal/global/comp-isolation analysis currently smeared across the `*Collector` nested classes and the 18 scope dicts), `classgraph.py` (lifts static class-graph construction, local class-member facts, C3/static-MRO/reachability facts, and class-body block-execution decisions), `constenv.py` (lifts `_collect_module_const_dicts` `__init__.py:2705`, the const-int facts, the refuse-to-fold decision), `legality.py` (lifts `_prescan_compile_warnings` `__init__.py:1450`). Each is **free functions over dataclasses** (the `cfg_analysis.py` shape). `SimpleTIRGenerator.__init__` *calls* Sema and stores the immutable `SemaResult`; the visit methods initially still read their old dicts, now *populated from* `SemaResult` (a shim layer).
 **Why additive-first.** This is the move-only-before-semantic discipline: F2b *relocates* the analysis and introduces the `SemaResult` contract **without yet rewiring the walk** to read it directly. The walk's behavior is byte-identical because the old dicts are filled from the new tables. This de-risks the boundary before the semantic rewire (F2c).
 **LoC/risk.** ~2,500 LoC relocated into `sema/` (the `*Collector` classes — there are ~25 of them, `__init__.py:2185-7227` — plus the MRO/const/legality helpers). **Risk: MEDIUM** (the relocation must preserve the exact population order; the `*Collector` classes mutate `self`-state today, so the relocation must thread a builder that returns facts instead — this is where the move stops being purely mechanical).
 **Gate.** Full differential corpus byte-identical; the `SemaResult` tables asserted equal (in a new `tests/test_frontend_sema.py`) to the values the old inline analysis produced on the corpus.
@@ -242,7 +561,7 @@ F2a is independent and lands now. F2b→F2c→F2d is the strict order: you canno
 F2c is highest-risk because it is the only phase that **changes behavior-adjacent code at ~500 sites** while the contract is that behavior does *not* change. The specific hazards:
 
 - **Population-order coupling.** The inline analysis today runs *interleaved* with emission (e.g. `exact_locals.pop(...)` inside `visit_AugAssign` at `__init__.py:13965`; `const_ints[...]` written inside `emit()` at `:1245`). Some "facts" are *mutated by the walk itself*. F2c must prove each such fact is either (a) a genuine Sema fact (compute once) or (b) a *walk-local* cursor that stays in `LowerCtx`. Mis-classifying (b) as (a) is a miscompile. This is the line where the brief's "asymmetric coverage" trap lurks: migrating the int-lane store but not the async-lane store re-creates the env-misbind bug.
-- **The `molt_main` forks are not all the same axis.** Some of the 88 are "module global storage" (genuinely scope-dependent, → `LowerCtx.store`); others are "is this the entry module's top-level, so the super-fold is sound" (a *ClassFacts* question) or "emit module metadata here" (a phase-ordering question). F2c must *triage* the 88, not mechanically rewrite them. A wrong triage is silent.
+- **The `molt_main` forks are not all the same axis.** Some of the 88 are "module global storage" (genuinely scope-dependent, → `LowerCtx.store`); others are class-binding questions or "emit module metadata here" (a phase-ordering question). F2c must *triage* the 88, not mechanically rewrite them. A wrong triage is silent.
 - **Differential coverage is necessary but not sufficient.** The corpus is ~480 files (doc 30:28); byte-identical output proves the *covered* paths. F2c must add targeted regressions for the *uncovered* scope crosses (the task-#42 matrix `raising_const_expr_fold_matrix.py` is the template — cross every migrated construct with module/function/method/comp/lambda). The gate is "corpus byte-identical **and** a per-family scope-cross regression added."
 
 **Mitigation (the F2b additive shim is the de-risker).** Because F2b populates the old dicts from `SemaResult` *first*, F2c can migrate one read-site at a time with an in-place assertion that `ctx.sema.scopes[node].kind[name] == (the old dict's answer)` — verifying the invariant *while* completing the migration (the right use of a debug-gated assertion per CLAUDE.md: a verification tool *during* the migration, not a substitute for it).
@@ -255,7 +574,7 @@ Scale: IMPORTANCE 1–3 (how load-bearing for a world-class AOT frontend), GAP 0
 
 ### 5.1 Phase separation — IMPORTANCE 3, GAP 3
 
-The phase boundary is now partially real but incomplete. Parse is external (ast), and `frontend.sema` now owns module class-graph construction, local class-member facts, C3/static-MRO/reachability facts, const-env collection, function-shape facts, class-body block-exec facts, the zero-arg `super()` fold soundness predicate, and the precomputed `ClassFacts.super_fold_sound_methods_by_class` table consumed by call lowering. The remaining gap is that Lower still reads shimmed god-object dicts in many other places. The only fully clean separation in the package remains `cfg_analysis.py` — and it operates on the *already-emitted* op stream, i.e. it is a *post-Lower* analysis, not a *pre-Lower* Sema. **Gap remains high:** the architecture has a Sema phase, but most of Lower is not yet a thin consumer of immutable ClassFacts/ScopeInfo.
+The phase boundary is now partially real but incomplete. Parse is external (ast), and `frontend.sema` now owns module class-graph construction, local class-member facts, C3/static-MRO/reachability facts, const-env collection, function-shape facts, class-body block-exec facts. The remaining gap is that Lower still reads shimmed god-object dicts in many other places. The only fully clean separation in the package remains `cfg_analysis.py` — and it operates on the *already-emitted* op stream, i.e. it is a *post-Lower* analysis, not a *pre-Lower* Sema. **Gap remains high:** the architecture has a Sema phase, but most of Lower is not yet a thin consumer of immutable ClassFacts/ScopeInfo.
 
 ### 5.2 Single authority per construct — IMPORTANCE 3, GAP 3
 
@@ -271,7 +590,7 @@ The defining smell. **88 `molt_main` scope-forks** (§2.1) + the async/sync fork
 
 ### 5.5 Testability in isolation — IMPORTANCE 3, GAP 3
 
-Semantic isolation is now real for the first F2 facts, but still thin. The class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts, zero-arg `super()` fold predicate, and precomputed super-fold method table are unit-testable through `frontend.sema.classgraph`, and function-shape facts are unit-testable through `frontend.sema.funcmeta`; scope binding still requires full lowering or generator construction. The old outlier remains `cfg_analysis.py` (free functions over an `OpLike` Protocol — `cfg_analysis.py:7/44`) plus `gen_op_kinds.py`'s generated output. Sema-as-free-functions (F2b) is the path that makes scope binding unit-testable on a bare AST next. **Gap remains high:** the architecture has isolated sema islands, but not a complete pre-lower semantic contract.
+Semantic isolation is now real for the first F2 facts, but still thin. The class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts are unit-testable through `frontend.sema.classgraph`, and function-shape facts are unit-testable through `frontend.sema.funcmeta`; scope binding still requires full lowering or generator construction. The old outlier remains `cfg_analysis.py` (free functions over an `OpLike` Protocol — `cfg_analysis.py:7/44`) plus `gen_op_kinds.py`'s generated output. Sema-as-free-functions (F2b) is the path that makes scope binding unit-testable on a bare AST next. **Gap remains high:** the architecture has isolated sema islands, but not a complete pre-lower semantic contract.
 
 ### 5.6 IR contract explicitness — IMPORTANCE 3, GAP 2
 
@@ -321,8 +640,8 @@ The *cross-process* contract (the JSON wire kind) is explicit and now registry-g
 - `src/molt/frontend/_types.py` — `MoltValue`/`MoltOp` (`:67/73`), `_next_ic_index` + module-global `_ic_counter` (`:43/47`).
 - `src/molt/frontend/_protocol.py` — `_GeneratorProtocol` (`:54`), the 817-declaration coupling surface (deleted in F2d).
 - `src/molt/frontend/cfg_analysis.py` — the end-state shape that already exists (`:7/12/44`).
-- `src/molt/frontend/sema/classgraph.py` — static class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts, the zero-arg `super()` fold soundness predicate, and the precomputed fold-sound method-set builder.
-- `src/molt/frontend/visitors/calls.py` — call lowering consumes `ClassFacts.super_fold_sound_methods_by_class`; still owns the large `visit_Call` dispatch body.
+- `src/molt/frontend/sema/classgraph.py` — static class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts.
+- `src/molt/frontend/visitors/calls.py` — call dispatch consumes semantic binding facts; zero-argument `super()` uses the runtime executing-frame authority.
 - `src/molt/frontend/visitors/classes.py` — class lowering, `__prepare__` gap (no `__prepare__` emission; `:574-755`).
 - `src/molt/frontend/visitors/pattern_match.py` — match lowering.
 - `src/molt/frontend/lowering/serialization.py` — `map_ops_to_json` (`:396`); becomes a free function (F2d, §1.3).

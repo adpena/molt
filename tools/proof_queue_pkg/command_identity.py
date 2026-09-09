@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, BinaryIO, Mapping, Sequence, cast
 
 from molt.dx import _reject_onedrive
+from molt import file_publication
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.python_environment_identity import (
     PYTHON_CAPTURE_SCHEMA,
@@ -34,7 +36,11 @@ def _hash_file(path: Path) -> str:
         return f"unavailable:{type(exc).__name__}"
 
 
-def _directory_manifest_identity(path: Path, *, label: str) -> dict[str, object]:
+def _directory_manifest_identity(
+    path: Path, *, label: str, strict_owned: bool = False
+) -> dict[str, object]:
+    if strict_owned:
+        return _owned_directory_manifest_identity(path, label=label)
     root = path.resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f"{label} is not a directory: {root}")
@@ -74,6 +80,72 @@ def _directory_manifest_identity(path: Path, *, label: str) -> dict[str, object]
         "file_count": len(files),
         "files": files,
         "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+    }
+
+
+def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, object]:
+    """Project existing handle-bound file and no-follow topology custody."""
+    from molt.python_file_node_custody import (
+        PythonFileCaptureContext,
+        _tree_membership_snapshot,
+        _snapshot_fingerprint,
+        _snapshot_difference,
+    )
+
+    root = file_publication.resolve_owned_path(path)
+    before_root, before = _tree_membership_snapshot(root, label=label)
+    expected = _snapshot_fingerprint(before_root, before)
+    regular: list[tuple[Path, os.stat_result]] = []
+    directories: list[str] = []
+    hardlinks: dict[tuple[int, int], tuple[int, int]] = {}
+    for relative, candidate, metadata in before:
+        if stat.S_ISDIR(metadata.st_mode):
+            directories.append(relative)
+        elif stat.S_ISREG(metadata.st_mode):
+            regular.append((candidate, metadata))
+            key = metadata.st_dev, metadata.st_ino
+            count, links = hardlinks.get(key, (0, metadata.st_nlink))
+            if links != metadata.st_nlink:
+                raise ValueError(f"{label} hard-link custody changed: {candidate}")
+            hardlinks[key] = count + 1, links
+        else:
+            raise ValueError(
+                f"{label} contains a link or junction or special entry: {candidate}"
+            )
+    if any(count != links for count, links in hardlinks.values()):
+        raise ValueError(f"{label} has hard links outside the owned root")
+    capture = PythonFileCaptureContext(hash_workers=1)
+    capture.prepare(regular, label=label)
+    files: list[dict[str, object]] = []
+    for candidate, metadata in regular:
+        identity = capture.bind(candidate, metadata, label=label)
+        files.append(
+            {
+                "relative_path": candidate.relative_to(root).as_posix(),
+                "size": identity.size,
+                "sha256": identity.sha256,
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "mtime_ns": metadata.st_mtime_ns,
+            }
+        )
+
+    def verify_membership() -> None:
+        actual = _snapshot_fingerprint(*_tree_membership_snapshot(root, label=label))
+        if expected != actual:
+            raise ValueError(
+                f"{label} changed during inventory: {_snapshot_difference(expected, actual)}"
+            )
+
+    capture.register_verification_fence(verify_membership)
+    capture.verify()
+    return {
+        "root": str(root),
+        "file_count": len(files),
+        "files": files,
+        "directories": directories,
+        "manifest_sha256": canonical_json_sha256(
+            {"files": files, "directories": directories}
+        ),
     }
 
 
@@ -561,6 +633,33 @@ def _file_identity(path: Path) -> dict[str, object]:
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "sha256": _hash_file(path),
+    }
+
+
+def execution_transcript_paths(result_path: Path) -> dict[str, Path]:
+    """The execution result, never receipt-supplied paths, owns both streams."""
+    return {
+        name: result_path.with_suffix(f".{name}.bin") for name in ("stdout", "stderr")
+    }
+
+
+def execution_record_paths(log_path: Path) -> tuple[Path, Path]:
+    """Request/result pair for one queue log; never accept a supplied fallback."""
+    return (
+        log_path.with_suffix(".execution-request.json"),
+        log_path.with_suffix(".execution.json"),
+    )
+
+
+def opened_transcript_identity(path: Path, handle: BinaryIO) -> dict[str, object]:
+    """Bind a live append-only stream to its opened file, not mutable bytes."""
+    metadata = os.fstat(handle.fileno())
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_ino <= 0:
+        raise ValueError("live command transcript requires a regular file identity")
+    return {
+        "path": str(path),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
     }
 
 
@@ -1169,6 +1268,8 @@ _CANONICAL_EXECUTION_ENV = {
 _QUEUE_CUSTODY_ENV_NAMES = frozenset(
     {
         "MOLT_MEMORY_GUARD_STATE_ROOT",
+        "MOLT_PROOF_QUEUE_RUN_ID",
+        "MOLT_PYTEST_CURRENT_TEST_FILE",
         "MOLT_PROOF_CHILD_CUSTODY_JSON",
         "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT",
         "MOLT_PROOF_CHILD_CUSTODY_TOKEN",

@@ -15,6 +15,7 @@ fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }
 }
@@ -386,6 +387,7 @@ fn transport_hints_do_not_seed_canonical_types() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -408,6 +410,127 @@ fn transport_hints_do_not_seed_canonical_types() {
     }
 }
 
+#[test]
+fn predicate_return_contracts_require_exact_not_annotated_operands() {
+    for kind in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        let mut source = make_func(
+            "annotated_predicate",
+            &["left", "right"],
+            vec![
+                op_args_out(kind, &["left", "right"], "predicate"),
+                op_args_out("copy", &["predicate"], "copied"),
+                op_args("ret", &["copied"]),
+            ],
+        );
+        source.param_types = Some(vec!["int".into(), "int".into()]);
+        let mut tir = lower_to_tir(&source);
+        assert_eq!(
+            tir.return_type,
+            TirType::DynBox,
+            "{kind}: initial return ABI"
+        );
+        // Refinement must also repair stale caller-visible return metadata.
+        tir.return_type = TirType::Bool;
+        crate::tir::type_refine::refine_types(&mut tir);
+        assert_eq!(
+            tir.return_type,
+            TirType::DynBox,
+            "{kind}: refined return ABI"
+        );
+
+        let exact = make_func(
+            "exact_predicate",
+            &[],
+            vec![
+                op_val_out("const", 1, "left"),
+                op_val_out("const", 2, "right"),
+                op_args_out(kind, &["left", "right"], "predicate"),
+                op_args_out("copy", &["predicate"], "copied"),
+                op_args("ret", &["copied"]),
+            ],
+        );
+        assert_eq!(lower_to_tir(&exact).return_type, TirType::Bool);
+    }
+}
+
+#[test]
+fn arithmetic_return_contracts_require_exact_not_annotated_operands() {
+    for (kind, exact_result) in [
+        ("add", TirType::I64),
+        ("mul", TirType::I64),
+        ("div", TirType::F64),
+        ("pow", TirType::DynBox),
+    ] {
+        for annotation in ["int", "float"] {
+            let mut source = make_func(
+                "annotated_arithmetic",
+                &["left", "right"],
+                vec![
+                    op_args_out(kind, &["left", "right"], "result"),
+                    op_args_out("copy", &["result"], "copied"),
+                    op_args("ret", &["copied"]),
+                ],
+            );
+            source.param_types = Some(vec![annotation.into(), annotation.into()]);
+            let mut tir = lower_to_tir(&source);
+            assert_eq!(
+                tir.return_type,
+                TirType::DynBox,
+                "{annotation} {kind}: initial ABI"
+            );
+            tir.return_type = TirType::F64;
+            crate::tir::type_refine::refine_types(&mut tir);
+            assert_eq!(
+                tir.return_type,
+                TirType::DynBox,
+                "{annotation} {kind}: refined ABI"
+            );
+        }
+        let source = make_func(
+            "exact_arithmetic",
+            &[],
+            vec![
+                op_val_out("const", 1, "left"),
+                op_val_out("const", 2, "right"),
+                op_args_out(kind, &["left", "right"], "result"),
+                op_args_out("copy", &["result"], "copied"),
+                op_args("ret", &["copied"]),
+            ],
+        );
+        let mut tir = lower_to_tir(&source);
+        assert_eq!(tir.return_type, exact_result, "{kind}: exact initial ABI");
+        crate::tir::type_refine::refine_types(&mut tir);
+        assert_eq!(tir.return_type, exact_result, "{kind}: exact refined ABI");
+    }
+}
+
+#[test]
+fn annotated_parameter_returns_do_not_promise_exact_scalar_abi() {
+    for annotation in ["int", "float", "bool", "str", "bytes"] {
+        let mut source = make_func(
+            "annotated_identity",
+            &["value"],
+            vec![
+                op_args_out("copy", &["value"], "copied"),
+                op_args("ret", &["copied"]),
+            ],
+        );
+        source.param_types = Some(vec![annotation.into()]);
+        let mut tir = lower_to_tir(&source);
+        assert_eq!(
+            tir.return_type,
+            TirType::DynBox,
+            "{annotation}: initial ABI"
+        );
+        crate::tir::type_refine::refine_types(&mut tir);
+        assert_eq!(
+            tir.return_type,
+            TirType::DynBox,
+            "{annotation}: refined ABI"
+        );
+    }
+}
+
 // =======================================================================
 // Test 4: Empty function
 // =======================================================================
@@ -419,6 +542,36 @@ fn empty_function() {
     assert_eq!(tir.name, "empty");
     // Empty ops → empty CFG → no blocks from SSA.
     assert!(tir.blocks.is_empty());
+    assert!(crate::tir::type_refine::extract_exact_scalar_map(&tir).is_empty());
+    assert!(crate::tir::type_refine::extract_proven_map(&tir).is_empty());
+}
+
+#[test]
+fn phase_only_functions_preserve_markers_without_phantom_exact_facts() {
+    use crate::tir::passes::drop_insertion::{
+        DROP_INSERTED_ATTR, EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+    };
+    for markers in [
+        vec![DROP_INSERTED_ATTR],
+        vec![EXCEPTION_REGION_DROPS_INSERTED_ATTR],
+        vec![DROP_INSERTED_ATTR, EXCEPTION_REGION_DROPS_INSERTED_ATTR],
+    ] {
+        let func_ir = make_func(
+            "phase_only",
+            &[],
+            markers.iter().map(|name| op(name)).collect(),
+        );
+        let tir = lower_to_tir(&func_ir);
+        assert!(tir.blocks.is_empty());
+        assert!(crate::tir::type_refine::extract_exact_scalar_map(&tir).is_empty());
+        assert!(crate::tir::type_refine::extract_proven_map(&tir).is_empty());
+        for marker in markers {
+            assert_eq!(
+                tir.attrs.get(marker),
+                Some(&crate::tir::ops::AttrValue::Bool(true))
+            );
+        }
+    }
 }
 
 // =======================================================================
@@ -433,6 +586,7 @@ fn param_types_from_annotation() {
         param_types: Some(vec!["int".to_string(), "float".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -461,9 +615,10 @@ fn param_types_from_annotation() {
         .expect("typed add result");
     assert_eq!(
         tir.value_types.get(&add_result),
-        Some(&TirType::F64),
-        "arithmetic propagation must persist op-result facts on TirFunction"
+        Some(&TirType::DynBox),
+        "annotations must not seed exact arithmetic result facts during lifting"
     );
+    assert_eq!(tir.return_type, TirType::DynBox);
 }
 
 #[test]
@@ -475,6 +630,7 @@ fn compound_param_types_from_annotation() {
         param_types: Some(vec!["list[int]".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -503,6 +659,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
         param_types: Some(vec!["i64".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -529,6 +686,7 @@ fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -576,4 +734,27 @@ fn string_type_conversion() {
         TirType::Dict(Box::new(TirType::Str), Box::new(TirType::F64))
     );
     assert_eq!(string_to_tir_type("unknown_type"), TirType::DynBox);
+}
+
+// Physical partitions survive the actual TIR artifact cache, without granting
+// inherited Python-frame access or relying on reserved-looking function names.
+#[test]
+fn codegen_partition_survives_tir_artifact_roundtrip() {
+    for partitioned in [false, true] {
+        let mut input = make_func("__molt_chunk_v1_user", &[], vec![op("ret_void")]);
+        input.codegen_partition = partitioned;
+        let tir = lower_to_tir(&input);
+        assert_eq!(tir.is_codegen_partition(), partitioned);
+        assert_eq!(
+            tir.execution_context,
+            crate::ir::ExecutionContextPolicy::None
+        );
+        let bytes = crate::tir::serialize::serialize_tir_function(&tir).unwrap();
+        let restored = crate::tir::serialize::deserialize_tir_function(&bytes).unwrap();
+        assert_eq!(restored.is_codegen_partition(), partitioned);
+        assert_eq!(
+            restored.execution_context,
+            crate::ir::ExecutionContextPolicy::None
+        );
+    }
 }

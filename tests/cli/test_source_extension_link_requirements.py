@@ -22,10 +22,89 @@ from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,
     source_extension_link_dialect,
 )
+from molt.cli.native_link_plan import whole_archive_link_arguments
 
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "triple",
+    [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "wasm32-wasip1",
+    ],
+)
+def test_archive_argument_roundtrip_preserves_comma_and_space_path(
+    tmp_path, triple
+) -> None:
+    source = tmp_path / "dependency, with space.a"
+    source.write_bytes(b"dependency")
+    dialect = source_extension_link_dialect(triple)
+    arguments = whole_archive_link_arguments(str(source), dialect=dialect)
+    requirements = source_extension_link_requirements(
+        arguments,
+        target_triple=triple,
+        path_roots=(tmp_path,),
+        publish_root=tmp_path / "published",
+    )
+    assert len(requirements.inputs) == 1
+    item = requirements.inputs[0]
+    assert item.loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+    assert item.path.endswith(source.name)
+    assert render_source_extension_link_arguments(
+        requirements
+    ) == whole_archive_link_arguments(item.path, dialect=dialect)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-Xlinker", "-force_load", "-Xlinker", "provider.a"),
+        ("-Xlinker", "/WHOLEARCHIVE:provider.lib"),
+        ("-Xlinker", "-Xlinker"),
+        ("-Xlinker", "--output=foreign"),
+    ],
+)
+def test_driver_envelopes_cannot_cross_link_dialects_or_take_output_authority(
+    arguments,
+) -> None:
+    with pytest.raises(ValueError):
+        source_extension_link_requirements(
+            arguments, target_triple="x86_64-unknown-linux-gnu"
+        )
+
+
+def test_driver_wrapped_archive_group_keeps_the_typed_group_and_member_policy() -> None:
+    requirements = source_extension_link_requirements(
+        (
+            "-Xlinker",
+            "--start-group",
+            "first.a",
+            "-Xlinker",
+            "--whole-archive",
+            "second.a",
+            "-Xlinker",
+            "--no-whole-archive",
+            "-Xlinker",
+            "--end-group",
+        ),
+        target_triple="x86_64-pc-windows-gnu",
+    )
+    group = requirements.items[0]
+    assert isinstance(group, SourceExtensionLinkCyclicGroup)
+    assert group.members[1].loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+    assert (
+        source_extension_link_requirements(
+            render_source_extension_link_arguments(requirements),
+            target_triple=requirements.target_triple,
+        )
+        == requirements
+    )
 
 
 def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
@@ -34,14 +113,11 @@ def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
     build_root = tmp_path / "build"
     publish_root = tmp_path / "wheel" / "demo"
     build_root.mkdir()
-    folded = build_root / "demo.molt.a"
     dependency = build_root / "libdependency.a"
-    folded.write_bytes(b"extension")
     dependency.write_bytes(b"dependency")
 
     requirements = source_extension_link_requirements(
         (
-            str(folded),
             "-Wl,--as-needed",
             "-lm",
             "-Wl,--no-as-needed",
@@ -50,7 +126,6 @@ def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
             "-Wl,--no-whole-archive",
         ),
         target_triple="x86_64-unknown-linux-gnu",
-        folded_static_archives=(folded.name,),
         path_roots=(build_root,),
         publish_root=publish_root,
     )
@@ -72,9 +147,11 @@ def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
         "-Wl,--as-needed",
         "-lm",
         "-Wl,--no-as-needed",
-        "-Wl,--whole-archive",
+        "-Xlinker",
+        "--whole-archive",
         relative,
-        "-Wl,--no-whole-archive",
+        "-Xlinker",
+        "--no-whole-archive",
     )
     assert (publish_root / relative).read_bytes() == b"dependency"
     assert "arguments" not in requirements.manifest_payload()
@@ -185,12 +262,10 @@ def test_cyclic_group_is_structural_and_preserves_member_policies() -> None:
         ),
     )
     assert render_source_extension_link_arguments(requirements) == (
-        "-Wl,--start-group",
         "libfirst.a",
-        "-Wl,--whole-archive",
+        "--whole-archive",
         "libsecond.a",
-        "-Wl,--no-whole-archive",
-        "-Wl,--end-group",
+        "--no-whole-archive",
     )
 
 
@@ -397,12 +472,12 @@ def test_link_requirement_publication_rejects_source_root_escape(
         (
             "aarch64-apple-darwin",
             "-Wl,-force_load,{path}",
-            "-Wl,-force_load,",
+            ("-Xlinker", "-force_load", "-Xlinker"),
         ),
         (
             "x86_64-pc-windows-msvc",
             "-Wl,/WHOLEARCHIVE:{path}",
-            "-Wl,/WHOLEARCHIVE:",
+            ("-Xlinker",),
         ),
     ],
 )
@@ -410,7 +485,7 @@ def test_target_loading_syntax_becomes_one_input_policy(
     tmp_path: Path,
     target_triple: str,
     loading_argument: str,
-    expected_prefix: str,
+    expected_prefix: tuple[str, ...],
 ) -> None:
     source = tmp_path / (
         "dependency.lib" if "windows" in target_triple else "dependency.a"
@@ -426,8 +501,9 @@ def test_target_loading_syntax_becomes_one_input_policy(
     assert (
         requirements.inputs[0].loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
     )
-    assert render_source_extension_link_arguments(requirements)[0].startswith(
-        expected_prefix
+    assert (
+        render_source_extension_link_arguments(requirements)[: len(expected_prefix)]
+        == expected_prefix
     )
 
 
@@ -464,7 +540,10 @@ def test_resolve_and_materialize_verify_bytes_and_preserve_structure(
     assert errors == []
     assert resolved == (
         "-pthread",
-        f"-Wl,-force_load,{archive.resolve()}",
+        "-Xlinker",
+        "-force_load",
+        "-Xlinker",
+        str(archive.resolve()),
     )
 
     publish_root = tmp_path / "published" / "demo"
@@ -492,3 +571,33 @@ def test_resolve_and_materialize_verify_bytes_and_preserve_structure(
     assert resolved is None
     assert len(errors) == 1
     assert "checksum mismatch" in errors[0]
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib"])
+def test_explicit_same_basename_inputs_are_never_implicitly_folded(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    roots = (tmp_path / "local", tmp_path / "external")
+    for root in roots:
+        root.mkdir()
+    paths = tuple(root / ("libsame" + suffix) for root in roots)
+    paths[0].write_bytes(b"local-input")
+    paths[1].write_bytes(b"external-input")
+    requirements = source_extension_link_requirements(
+        tuple(str(path) for path in paths),
+        target_triple="x86_64-unknown-linux-gnu",
+        path_roots=roots,
+        publish_root=tmp_path / "publish",
+    )
+    assert len(requirements.items) == 2
+    inputs = tuple(
+        item
+        for item in requirements.items
+        if isinstance(item, SourceExtensionLinkInput)
+    )
+    assert len(inputs) == 2
+    assert tuple(item.sha256 for item in inputs) == (
+        _sha256(b"local-input"),
+        _sha256(b"external-input"),
+    )

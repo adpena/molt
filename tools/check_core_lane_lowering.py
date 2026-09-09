@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import argparse
 import ast
+import sys
 from collections import deque
 from pathlib import Path
 
-import check_stdlib_intrinsics as stdlib_audit
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+for import_root in (ROOT, SRC_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+from tools import check_stdlib_intrinsics as stdlib_audit  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
 DEFAULT_CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 
 
@@ -210,9 +217,19 @@ def _collect_manifest_tests(manifest: Path) -> list[Path]:
 
 def _collect_seed_modules(manifest: Path, known_modules: set[str]) -> set[str]:
     seeds: set[str] = set()
+    admitted = 0
+    excluded = 0
     for test_path in _collect_manifest_tests(manifest):
         if test_path.suffix != ".py":
             continue
+        reason = test_policy.parse_metadata(test_path).python_exclusion_reason(
+            sys.version_info[:2]
+        )
+        if reason is not None:
+            excluded += 1
+            print(f"[SKIP] {test_path} ({reason})")
+            continue
+        admitted += 1
         tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=str(test_path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -226,6 +243,7 @@ def _collect_seed_modules(manifest: Path, known_modules: set[str]) -> set[str]:
                 resolved = _canonical_module(node.module, known_modules)
                 if resolved:
                     seeds.add(resolved)
+    print(f"core-lane source admission: admitted={admitted} excluded={excluded}")
     return seeds
 
 

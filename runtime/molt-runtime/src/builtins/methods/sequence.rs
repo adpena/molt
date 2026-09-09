@@ -59,7 +59,7 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__getitem__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_getitem,
-            fn_addr!(molt_getitem_method),
+            fn_addr!(crate::object::ops::molt_getitem_builtin),
             2,
         )),
         "__str__" => Some(builtin_func_bits(
@@ -71,13 +71,13 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(
@@ -453,13 +453,13 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(
@@ -805,13 +805,13 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_iter,
-            fn_addr!(molt_iter),
+            fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
         "__len__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_len,
-            fn_addr!(molt_len),
+            fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
         "__contains__" => Some(builtin_func_bits(

@@ -14,6 +14,158 @@ use crate::{
 use molt_obj_model::MoltObject;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
+/// The executing Python argument-zero slot, independent of ABI-only parameters.
+#[derive(Clone, Copy, Default)]
+pub(crate) enum PythonArgumentZero {
+    #[default]
+    NoArgument,
+    Value(u64),
+    Cell(u64),
+}
+
+impl PythonArgumentZero {
+    fn retained_bits(self) -> Option<u64> {
+        match self {
+            Self::NoArgument => None,
+            Self::Value(bits) | Self::Cell(bits) => Some(bits),
+        }
+    }
+}
+
+/// Live lexical context; cells are the compiler's canonical one-item list cells.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PythonFrameContext {
+    pub(crate) argument_zero: PythonArgumentZero,
+    pub(crate) class_cell_bits: Option<u64>,
+}
+
+impl PythonFrameContext {
+    fn retain(self, py: &PyToken<'_>) {
+        for bits in self
+            .argument_zero
+            .retained_bits()
+            .into_iter()
+            .chain(self.class_cell_bits)
+        {
+            inc_ref_bits(py, bits);
+        }
+    }
+
+    fn release(self, py: &PyToken<'_>) {
+        for bits in self
+            .argument_zero
+            .retained_bits()
+            .into_iter()
+            .chain(self.class_cell_bits)
+        {
+            dec_ref_bits(py, bits);
+        }
+    }
+}
+
+/// A retained snapshot survives arbitrary reentry during receiver validation.
+pub(crate) struct PythonFrameContextSnapshot<'a, 'py> {
+    py: &'a PyToken<'py>,
+    pub(crate) context: PythonFrameContext,
+}
+
+impl Drop for PythonFrameContextSnapshot<'_, '_> {
+    fn drop(&mut self) {
+        self.context.release(self.py);
+    }
+}
+
+pub(crate) fn frame_python_context_snapshot<'a, 'py>(
+    py: &'a PyToken<'py>,
+) -> PythonFrameContextSnapshot<'a, 'py> {
+    let context = FRAME_STACK.with(|stack| {
+        let context = stack
+            .borrow()
+            .last()
+            .map(|entry| entry.python_context)
+            .unwrap_or_default();
+        context.retain(py);
+        context
+    });
+    PythonFrameContextSnapshot { py, context }
+}
+
+pub(crate) fn frame_stack_set_python_context(
+    py: &PyToken<'_>,
+    context: PythonFrameContext,
+) -> bool {
+    // Retain before publication. A replaced value can run finalizers on release.
+    context.retain(py);
+    let previous = FRAME_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let entry = stack.last_mut()?;
+        Some(std::mem::replace(&mut entry.python_context, context))
+    });
+    if let Some(previous) = previous {
+        previous.release(py);
+        true
+    } else {
+        context.release(py);
+        false
+    }
+}
+
+fn frame_context_cell_is_valid(bits: u64) -> bool {
+    obj_from_bits(bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == crate::TYPE_ID_LIST
+            && crate::object::seq_access::locked_len(ptr) == 1
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_context_set(
+    argument_zero_bits: u64,
+    argument_kind_bits: u64,
+    class_cell_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let argument_zero = match to_i64(obj_from_bits(argument_kind_bits)) {
+            Some(0) => PythonArgumentZero::NoArgument,
+            Some(1) => PythonArgumentZero::Value(argument_zero_bits),
+            Some(2) if frame_context_cell_is_valid(argument_zero_bits) => {
+                PythonArgumentZero::Cell(argument_zero_bits)
+            }
+            _ => {
+                return raise_exception::<_>(
+                    py,
+                    "SystemError",
+                    "invalid executing-frame argument-zero transport",
+                );
+            }
+        };
+        let class_cell_bits = if obj_from_bits(class_cell_bits).is_none() {
+            None
+        } else if frame_context_cell_is_valid(class_cell_bits) {
+            Some(class_cell_bits)
+        } else {
+            return raise_exception::<_>(
+                py,
+                "SystemError",
+                "invalid executing-frame class-cell transport",
+            );
+        };
+        if !frame_stack_set_python_context(
+            py,
+            PythonFrameContext {
+                argument_zero,
+                class_cell_bits,
+            },
+        ) {
+            return raise_exception::<_>(
+                py,
+                "SystemError",
+                "executing-frame context published without a Python frame",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct FrameEntry {
     pub(crate) code_bits: u64,
@@ -38,6 +190,7 @@ pub(crate) struct FrameEntry {
     /// Effective `f_builtins` selected when the frame is created. This is a
     /// retained dict edge, not a live re-read of globals["__builtins__"].
     pub(crate) builtins_bits: u64,
+    pub(crate) python_context: PythonFrameContext,
 }
 
 const TRACEBACK_PAYLOAD_CODE_OFFSET: usize = 0;
@@ -141,6 +294,7 @@ fn frame_stack_push_entry(_py: &PyToken<'_>, code_bits: u64, globals_bits: u64) 
             locals_bits: 0,
             globals_bits,
             builtins_bits,
+            python_context: PythonFrameContext::default(),
         });
     });
 }
@@ -227,22 +381,28 @@ pub(crate) fn frame_stack_set_line_col(line: i64, col_offset: i64, end_col_offse
     });
 }
 
+impl FrameEntry {
+    /// One edge-release authority for normal return and thread teardown.
+    pub(crate) fn release(self, py: &PyToken<'_>) {
+        for bits in [
+            self.code_bits,
+            self.locals_bits,
+            self.globals_bits,
+            self.builtins_bits,
+        ] {
+            if bits != 0 && !obj_from_bits(bits).is_none() {
+                dec_ref_bits(py, bits);
+            }
+        }
+        self.python_context.release(py);
+    }
+}
+
 pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
     let entry = FRAME_STACK.with(|stack| stack.borrow_mut().pop());
     if let Some(entry) = entry {
-        if entry.code_bits != 0 {
-            dec_ref_bits(_py, entry.code_bits);
-        }
-        if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
-            dec_ref_bits(_py, entry.locals_bits);
-        }
-        if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
-            dec_ref_bits(_py, entry.globals_bits);
-        }
-        if entry.builtins_bits != 0 && !obj_from_bits(entry.builtins_bits).is_none() {
-            dec_ref_bits(_py, entry.builtins_bits);
-        }
+        entry.release(_py);
     }
 }
 
@@ -1142,6 +1302,64 @@ mod tests {
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);
         (code_ptr, MoltObject::from_ptr(code_ptr).bits())
+    }
+
+    #[test]
+    fn python_context_edges_survive_snapshot_replacement_and_pop() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let argument = crate::alloc_list(py, &[MoltObject::from_int(1).bits()]);
+            let class_cell = crate::alloc_list(py, &[crate::builtin_classes(py).object]);
+            assert!(!argument.is_null() && !class_cell.is_null());
+            let argument_bits = MoltObject::from_ptr(argument).bits();
+            let class_bits = MoltObject::from_ptr(class_cell).bits();
+            frame_stack_push(py, 0);
+            assert!(super::frame_stack_set_python_context(
+                py,
+                super::PythonFrameContext {
+                    argument_zero: super::PythonArgumentZero::Cell(argument_bits),
+                    class_cell_bits: Some(class_bits),
+                }
+            ));
+            assert_eq!(unsafe { ref_count(argument) }, 2);
+            assert_eq!(unsafe { ref_count(class_cell) }, 2);
+            let snapshot = super::frame_python_context_snapshot(py);
+            assert_eq!(unsafe { ref_count(argument) }, 3);
+            assert!(super::frame_stack_set_python_context(
+                py,
+                super::PythonFrameContext::default()
+            ));
+            assert_eq!(unsafe { ref_count(argument) }, 2);
+            frame_stack_pop(py);
+            assert_eq!(unsafe { ref_count(argument) }, 2);
+            drop(snapshot);
+            assert_eq!(unsafe { ref_count(argument) }, 1);
+            assert_eq!(unsafe { ref_count(class_cell) }, 1);
+            dec_ref_bits(py, argument_bits);
+            dec_ref_bits(py, class_bits);
+        });
+    }
+
+    #[test]
+    fn python_context_publication_preserves_pending_unwind() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            frame_stack_push(py, 0);
+            let none = MoltObject::none().bits();
+            let _ = crate::raise_exception::<u64>(py, "ValueError", "frame unwind");
+            let before = crate::builtins::exceptions::molt_exception_last_pending();
+            assert!(crate::exception_pending(py));
+            let result = super::molt_frame_context_set(none, MoltObject::from_int(1).bits(), none);
+            assert!(crate::obj_from_bits(result).is_none());
+            assert!(crate::exception_pending(py));
+            let after = crate::builtins::exceptions::molt_exception_last_pending();
+            assert_eq!(before, after);
+            crate::molt_exception_clear();
+            frame_stack_pop(py);
+            dec_ref_bits(py, before);
+            dec_ref_bits(py, after);
+            dec_ref_bits(py, result);
+        });
     }
 
     #[test]

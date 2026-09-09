@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+
 import ast
 import builtins as py_builtins
 import contextlib
@@ -92,9 +94,11 @@ from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.native_link_test_support import (
+    static_archive_bytes,
     RUNTIME_BUILD_IDENTITY,
     write_test_native_link_manifest,
 )
+from tests.native_artifact_fixtures import native_relocatable_object
 from molt.cli.runtime_build_identity import runtime_build_fingerprint
 from tests.runtime_build_identity_helper import (
     runtime_cargo_plan,
@@ -157,8 +161,9 @@ def _external_static_archive_symbol_facts(
         *,
         nm_command: Sequence[str] | None = None,
         target_triple: str | None = None,
+        identity=None,
     ) -> BACKEND_CACHE._NativeGlobalSymbolFacts | None:
-        del nm_command, target_triple
+        del nm_command, target_triple, identity
         return _STATIC_ARCHIVE_SYMBOL_FACTS.get(path.resolve())
 
     _STATIC_ARCHIVE_SYMBOL_FACTS.clear()
@@ -4932,6 +4937,7 @@ def test_native_archive_data_symbol_cannot_satisfy_callable_custody(
             defined=frozenset(defined),
             undefined=frozenset(),
             defined_functions=function_symbols,
+            artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
         ),
     )
 
@@ -4972,6 +4978,7 @@ def test_wasm_data_symbol_cannot_satisfy_init_function_custody(
         wasm_function_import_signatures=(),
         wasm_function_exports=(),
         artifact_bytes=artifact_bytes,
+        artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
     )
 
     errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
@@ -9255,111 +9262,70 @@ def test_frontend_native_callable_callargs_export_lowers_keyword_child_module_at
     assert all(op.get("kind") != "call_indirect" for op in ops)
 
 
-def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
-    exports: dict[str, dict[str, object]] = {
-        "scipy.ndimage.distance_transform_edt": {
-            "module": "scipy.ndimage",
-            "name": "distance_transform_edt",
-            "binding": "module_attr",
-            "abi": "molt.object_call_v1",
-        },
-        "scipy.ndimage.gaussian_filter": {
-            "module": "scipy.ndimage",
-            "name": "gaussian_filter",
-            "binding": "module_attr",
-            "abi": "molt.object_callargs_v1",
-        },
-        "scipy.ndimage.maximum_filter": {
-            "module": "scipy.ndimage",
-            "name": "maximum_filter",
-            "binding": "module_attr",
-            "abi": "molt.object_callargs_v1",
-        },
-        "scipy.ndimage.minimum_filter": {
-            "module": "scipy.ndimage",
-            "name": "minimum_filter",
-            "binding": "module_attr",
-            "abi": "molt.object_callargs_v1",
-        },
-        "scipy.ndimage.label": {
-            "module": "scipy.ndimage",
-            "name": "label",
-            "binding": "module_attr",
-            "abi": "molt.object_call_v1",
-        },
-    }
-
+@pytest.mark.parametrize(
+    "name,arguments,abi,keyword",
+    [
+        ("distance_transform_edt", "mask", "molt.object_call_v1", None),
+        ("gaussian_filter", "mask, sigma=1.5", "molt.object_callargs_v1", "sigma"),
+        ("maximum_filter", "mask, size=15", "molt.object_callargs_v1", "size"),
+        ("minimum_filter", "mask, size=11", "molt.object_callargs_v1", "size"),
+        ("label", "mask", "molt.object_call_v1", None),
+    ],
+)
+@pytest.mark.parametrize(
+    "import_statement,callee",
+    [
+        ("from scipy.ndimage import {name}", "{name}"),
+        ("import scipy.ndimage as ndi", "ndi.{name}"),
+        ("from scipy import ndimage", "ndimage.{name}"),
+        ("import scipy.ndimage", "scipy.ndimage.{name}"),
+    ],
+)
+def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi(
+    name: str,
+    arguments: str,
+    abi: str,
+    keyword: str | None,
+    import_statement: str,
+    callee: str,
+) -> None:
+    # Each cell tests its admitted binding before any arbitrary Python callback.
+    # A prior call may rebind every module global; chaining all twenty calls and
+    # requiring static exports after the first silently assumed that away.
+    export_name = f"scipy.ndimage.{name}"
     ops = _frontend_main_ops_for_import_source(
-        "import scipy.ndimage as ndi\n"
-        "import scipy.ndimage\n"
-        "from scipy import ndimage\n"
-        "from scipy.ndimage import (\n"
-        "    distance_transform_edt,\n"
-        "    gaussian_filter,\n"
-        "    label,\n"
-        "    maximum_filter,\n"
-        "    minimum_filter,\n"
-        ")\n"
-        "mask = 1\n"
-        "a = distance_transform_edt(mask)\n"
-        "b = ndi.distance_transform_edt(mask)\n"
-        "c = ndimage.distance_transform_edt(mask)\n"
-        "d = gaussian_filter(mask, sigma=1.5)\n"
-        "e = ndi.gaussian_filter(mask, sigma=2.0)\n"
-        "f = ndimage.gaussian_filter(mask, sigma=2.5)\n"
-        "g = maximum_filter(mask, size=15)\n"
-        "h = ndi.maximum_filter(mask, size=17)\n"
-        "i = ndimage.maximum_filter(mask, size=19)\n"
-        "j = minimum_filter(mask, size=11)\n"
-        "k = ndi.minimum_filter(mask, size=13)\n"
-        "l = ndimage.minimum_filter(mask, size=21)\n"
-        "m = label(mask)\n"
-        "n = ndi.label(mask)\n"
-        "o = ndimage.label(mask)\n"
-        "p = scipy.ndimage.distance_transform_edt(mask)\n"
-        "q = scipy.ndimage.gaussian_filter(mask, sigma=3.0)\n"
-        "r = scipy.ndimage.maximum_filter(mask, size=23)\n"
-        "s = scipy.ndimage.minimum_filter(mask, size=25)\n"
-        "t = scipy.ndimage.label(mask)\n",
+        import_statement.format(name=name)
+        + "\nmask = 1\n"
+        + f"result = {callee.format(name=name)}({arguments})\n",
         module_name="field_solve",
         parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
-        native_callable_exports=exports,
+        native_callable_exports={
+            export_name: {
+                "module": "scipy.ndimage",
+                "name": name,
+                "binding": "module_attr",
+                "abi": abi,
+            }
+        },
     )
-
-    expected_counts = {
-        "scipy.ndimage.distance_transform_edt": 4,
-        "scipy.ndimage.gaussian_filter": 4,
-        "scipy.ndimage.maximum_filter": 4,
-        "scipy.ndimage.minimum_filter": 4,
-        "scipy.ndimage.label": 4,
-    }
-    invoke_ops_by_export = {
-        name: [
-            op
-            for op in ops
-            if op.get("kind") == "invoke_ffi"
-            and op.get("native_callable_export") == name
-        ]
-        for name in expected_counts
-    }
-
-    assert {name: len(items) for name, items in invoke_ops_by_export.items()} == (
-        expected_counts
+    invoke_ops = [op for op in ops if op.get("kind") == "invoke_ffi"]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert invoke_op["native_callable_export"] == export_name
+    assert invoke_op["native_callable_binding"] == "module_attr"
+    assert invoke_op["native_callable_abi"] == abi
+    assert "native_callable_symbol" not in invoke_op
+    assert len(invoke_op["args"]) == 2
+    assert sum(op.get("kind") == "callargs_new" for op in ops) == int(
+        keyword is not None
     )
-    for export_name, invoke_ops in invoke_ops_by_export.items():
-        spec = exports[export_name]
-        for invoke_op in invoke_ops:
-            assert invoke_op["native_callable_binding"] == "module_attr"
-            assert invoke_op["native_callable_abi"] == spec["abi"]
-            assert "native_callable_symbol" not in invoke_op
-            assert len(invoke_op["args"]) == 2
-    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 12
-    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 12
-    assert all(op.get("kind") != "call_bind" for op in ops)
-    assert all(op.get("kind") != "call_indirect" for op in ops)
+    assert sum(op.get("kind") == "callargs_push_kw" for op in ops) == int(
+        keyword is not None
+    )
+    assert all(op.get("kind") not in {"call_bind", "call_indirect"} for op in ops)
     assert all(
         not (
             op.get("kind") == "call"
@@ -9534,7 +9500,7 @@ def test_collect_imports_prunes_boolean_static_guard_branches() -> None:
         )
     )
 
-    assert "typing" not in imports
+    assert "typing" in imports
     assert "numpy" not in imports
     assert "pandas" not in imports
     assert "scipy" in imports
@@ -9559,9 +9525,11 @@ def test_collect_imports_prunes_type_checking_alias_branches() -> None:
         )
         assert "os" in imports
         assert "typing" in imports
-        assert "typing.TYPE_CHECKING" not in imports
+        assert "typing.TYPE_CHECKING" in imports
         assert "warnings" not in imports
-        assert "re" not in imports
+        # Executing os can mutate typing's live module namespace before this
+        # later attribute read; the imported TC value was a separate binding.
+        assert "re" in imports
 
 
 def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
@@ -9574,8 +9542,8 @@ def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
 
     imports = cli_module_import_scanner._collect_imports(tree)
 
-    assert "typing" not in imports
-    assert "typing.TYPE_CHECKING" not in imports
+    assert "typing" in imports
+    assert "typing.TYPE_CHECKING" in imports
     assert "warnings" in imports
 
 
@@ -10158,8 +10126,10 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     runtime_lib.write_bytes(b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
-    stdlib_obj = tmp_path / "stdlib.o"
-    stdlib_obj.write_bytes(b"stdlib")
+    stdlib_obj = tmp_path / "stdlib.a"
+    stdlib_obj.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+    )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     captured_inputs: list[Path] = []
     artifacts_root = tmp_path / "artifacts"
@@ -10207,14 +10177,14 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
 
     assert error is None
     assert prepared is not None
-    staged_stdlib = artifacts_root / stdlib_obj.name
+    staged_stdlib = artifacts_root / "shared-stdlib-link" / stdlib_obj.name
     assert captured_inputs == [
         tmp_path / "artifacts" / "main_stub.c",
         output_obj,
         runtime_lib,
         staged_stdlib,
     ]
-    assert staged_stdlib.read_bytes() == b"stdlib"
+    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes()
 
 
 def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
@@ -10226,8 +10196,10 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     runtime_lib.write_bytes(b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
-    stdlib_obj = tmp_path / "stdlib.o"
-    stdlib_obj.write_bytes(b"stdlib-v1")
+    stdlib_obj = tmp_path / "stdlib.a"
+    stdlib_obj.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+    )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -10269,7 +10241,13 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     assert first_error is None
     assert first is not None
 
-    stdlib_obj.write_bytes(b"stdlib-v2")
+    stdlib_obj.write_bytes(
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=("molt_init_sys", "molt_second_generation")
+            )
+        )
+    )
     _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
 
     second, second_error = cli_link_pipeline._prepare_native_link(
@@ -10308,8 +10286,10 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     runtime_lib.write_bytes(b"archive")
     runtime_build_identity = write_test_native_link_manifest(runtime_lib)
     output_binary = tmp_path / "app"
-    stdlib_obj = tmp_path / "stdlib.o"
-    stdlib_obj.write_bytes(b"stdlib")
+    stdlib_obj = tmp_path / "stdlib.a"
+    stdlib_obj.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+    )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -10361,12 +10341,25 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
 
     assert error is None
     assert prepared is not None
-    staged_stdlib = artifacts_root / stdlib_obj.name
-    assert str(staged_stdlib) in captured_link_cmd
+    staged_stdlib = artifacts_root / "shared-stdlib-link" / stdlib_obj.name
+    from molt.cli.native_link_plan import (
+        resolve_link_dialect,
+        whole_archive_link_arguments,
+    )
+
+    forced_stdlib = list(
+        whole_archive_link_arguments(
+            str(staged_stdlib), dialect=resolve_link_dialect(None)
+        )
+    )
+    assert any(
+        captured_link_cmd[index : index + len(forced_stdlib)] == forced_stdlib
+        for index in range(len(captured_link_cmd))
+    )
     assert str(prepared.link_output) in captured_link_cmd
     assert str(output_binary) not in captured_link_cmd
     assert str(output_binary) in prepared.link_cmd
-    assert staged_stdlib.read_bytes() == b"stdlib"
+    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes()
 
 
 def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
@@ -10523,9 +10516,14 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     ) < stub_content.index("molt_runtime_init();", native_main_start)
     staged_archive = str(staged.staged_path.resolve())
     if sys.platform == "win32":
-        assert f"-Wl,/WHOLEARCHIVE:{staged_archive}" in captured_link_cmd
+        assert f"/WHOLEARCHIVE:{staged_archive}" in captured_link_cmd
     elif sys.platform == "darwin":
-        assert f"-Wl,-force_load,{staged_archive}" in captured_link_cmd
+        position = captured_link_cmd.index(staged_archive)
+        assert captured_link_cmd[position - 3 : position] == [
+            "-Xlinker",
+            "-force_load",
+            "-Xlinker",
+        ]
     else:
         assert staged_archive in captured_link_cmd
     assert str(staged.staged_manifest_path) not in captured_link_cmd
@@ -10855,9 +10853,11 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     )
 
     force_load_arguments = tuple(
-        f"-Wl,-force_load,{archive.resolve()}" for archive in extension_archives
+        argument
+        for archive in extension_archives
+        for argument in ("-Xlinker", "-force_load", "-Xlinker", str(archive.resolve()))
     )
-    start = link_plan.command.index(force_load_arguments[0])
+    start = link_plan.command.index(str(extension_archives[0].resolve())) - 3
     expected_link_arguments = (
         *force_load_arguments,
         str(runtime_lib),
@@ -10990,10 +10990,10 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         host_platform="win32",
     )
 
-    assert f"-Wl,/WHOLEARCHIVE:{extension_archive.resolve()}" in link_plan.command
+    assert f"/WHOLEARCHIVE:{extension_archive.resolve()}" in link_plan.command
     assert "-Wl,/INCLUDE:PyInit_extension" in link_plan.command
     def_path = tmp_path / ".molt_exports.def"
-    assert f"-Wl,/DEF:{def_path}" in link_plan.command
+    assert f"/DEF:{def_path}" in link_plan.command
     assert def_path.read_text(encoding="utf-8") == (
         "EXPORTS\n"
         "_Py_NoneStruct=Py_None\n"
@@ -11037,60 +11037,20 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     assert not any(argument.startswith("-l") for argument in link_plan.command)
 
 
-def test_windows_native_partial_link_uses_coff_library_tool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_windows_native_object_output_rejects_archive_masquerading_as_object(
+    tmp_path: Path,
 ) -> None:
-    input_obj = tmp_path / "app.obj"
-    stdlib_obj = tmp_path / "stdlib.obj"
     output_obj = tmp_path / "out.obj"
-    input_obj.write_bytes(b"coff")
-    stdlib_obj.write_bytes(b"coff")
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(NATIVE_LINK_DEPS.sys, "platform", "win32")
-    monkeypatch.setattr(
-        NATIVE_LINK_COMMAND,
-        "llvm_named_tool_candidates",
-        lambda *names, **_kwargs: (
-            (Path("C:/LLVM/bin/llvm-lib.exe"),) if "llvm-lib" in names else ()
-        ),
-    )
-
-    def fake_run_native_link_command(
-        *,
-        link_cmd: Sequence[str],
-        json_output: bool,
-        link_timeout: float | None,
-    ) -> subprocess.CompletedProcess[str]:
-        captured["link_cmd"] = list(link_cmd)
-        captured["json_output"] = json_output
-        captured["link_timeout"] = link_timeout
-        return subprocess.CompletedProcess(list(link_cmd), 0, "", "")
-
-    monkeypatch.setattr(
-        cli_link_pipeline,
-        "_run_native_link_command",
-        fake_run_native_link_command,
-    )
-
-    result = cli_link_pipeline._run_native_partial_link_command(
-        input_objects=[input_obj, stdlib_obj],
-        output_path=output_obj,
+    output_obj.write_bytes(b"!<arch>\n")
+    artifact, failure = cli_link_pipeline._prepare_native_object_artifact(
+        output_artifact=output_obj,
+        stdlib_obj_path=None,
         json_output=True,
-        link_timeout=12.0,
-        target_triple=None,
+        target_triple="x86_64-pc-windows-msvc",
     )
-
-    assert result.returncode == 0
-    assert captured["link_cmd"] == [
-        str(Path("C:/LLVM/bin/llvm-lib.exe")),
-        f"/OUT:{output_obj}",
-        str(input_obj),
-        str(stdlib_obj),
-    ]
-    assert "-Wl,-r" not in captured["link_cmd"]
-    assert captured["json_output"] is True
-    assert captured["link_timeout"] == 12.0
+    assert artifact is None
+    assert failure is not None
+    assert output_obj.read_bytes() == b"!<arch>\n"
 
 
 def _payload_digest_cache_key(
@@ -17108,7 +17068,6 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_module_symbols_json: str | None = None,
     stdlib_module_symbols: set[str] | frozenset[str] | None = None,
     timeout: float | None,
-    request_bytes: bytes | None = None,
     daemon_identity: cli._BackendDaemonIdentity | None = None,
 ) -> cli._BackendDaemonCompileResult:
     return BACKEND_EXECUTION._compile_with_backend_daemon(
@@ -17116,11 +17075,12 @@ def _compile_with_backend_daemon_non_wasm(
         project_root=backend_output.parent,
         ir=ir,
         backend_output=backend_output,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=target_triple
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=target_triple,
         cache_key=cache_key,
         function_cache_key=function_cache_key,
         config_digest=config_digest,
@@ -17132,7 +17092,6 @@ def _compile_with_backend_daemon_non_wasm(
         stdlib_module_symbols_json=stdlib_module_symbols_json,
         stdlib_module_symbols=stdlib_module_symbols,
         timeout=timeout,
-        request_bytes=request_bytes,
         daemon_identity=daemon_identity,
     )
 
@@ -19289,6 +19248,9 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         assert backend_bin.exists()
         assert not cli._backend_binary_identity(backend_bin).startswith("missing:")
         return cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -19371,6 +19333,9 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -19481,6 +19446,9 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -19590,6 +19558,9 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -19707,6 +19678,9 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         lambda **kwargs: (
             cache_setup_kwargs.append(dict(kwargs))
             or cli._BackendCacheSetup(
+                artifact_contract=resolve_backend_artifact_contract(
+                    target="native", emit_mode="obj", target_triple=None
+                ),
                 cache_enabled=True,
                 cache_key="module-cache",
                 function_cache_key=None,
@@ -19895,6 +19869,9 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key=None,
             function_cache_key=None,
@@ -19972,6 +19949,9 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli._BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_enabled=True,
         cache_key=None,
         function_cache_key=None,
@@ -20029,6 +20009,9 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli._BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_enabled=True,
         cache_key=None,
         function_cache_key=None,
@@ -22351,6 +22334,9 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         call_order.append("backend_setup")
         runtime_state = cli._RuntimeArtifactState(runtime_lib=runtime_lib)
         cache_setup = cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -22806,7 +22792,7 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.wasm_backend"
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
 
     def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
         del args, kwargs
@@ -22853,7 +22839,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
     canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
     backend_cmds: list[list[str]] = []
@@ -23006,7 +22992,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
     canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     build_cmds: list[list[str]] = []
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
@@ -24447,10 +24433,10 @@ def test_native_backend_compile_routes_stdlib_object_env(
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    output_artifact = project_root / "build" / "main.o"
+    output_artifact = project_root / "build" / "main.a"
     backend_bin = tmp_path / "backend-bin"
     artifacts_root = tmp_path / "artifacts"
-    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    stdlib_object_path = project_root / "build" / "main.stdlib.a"
     entry_module = "pkg.app"
     captured_envs: list[dict[str, str] | None] = []
 
@@ -24465,7 +24451,9 @@ def test_native_backend_compile_routes_stdlib_object_env(
         assert kwargs.get("input") is None
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"object")
+        output_path.write_bytes(
+            static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+        )
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24491,6 +24479,9 @@ def test_native_backend_compile_routes_stdlib_object_env(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -24536,10 +24527,10 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    output_artifact = project_root / "build" / "main.o"
+    output_artifact = project_root / "build" / "main.a"
     backend_bin = tmp_path / "backend-bin"
     artifacts_root = tmp_path / "artifacts"
-    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    stdlib_object_path = project_root / "build" / "main.stdlib.a"
     entry_module = "pkg.app"
     captured_envs: list[dict[str, str] | None] = []
 
@@ -24556,7 +24547,9 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         assert env is not None
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"object")
+        output_path.write_bytes(
+            static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+        )
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24582,6 +24575,9 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -24647,7 +24643,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         assert env is not None
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"object")
+        output_path.write_bytes(native_relocatable_object(symbols=("molt_main",)))
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24673,6 +24669,9 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -24726,6 +24725,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     function_cache_path = project_root / ".molt_cache" / "fn-cache-key.wasm"
     backend_bin = tmp_path / "backend-bin"
     seen_output_paths: list[Path] = []
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
 
     def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
@@ -24734,7 +24734,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         output_path = Path(cmd[cmd.index("--output") + 1])
         seen_output_paths.append(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"wasm-bytes")
+        output_path.write_bytes(artifact_bytes)
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24760,6 +24760,9 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="wasm", emit_mode="wasm", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="cache-key",
             function_cache_key="fn-cache-key",
@@ -24798,9 +24801,9 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     assert seen_output_paths
     assert seen_output_paths[0] != cache_path
     assert seen_output_paths[0].parent == artifacts_root
-    assert output_artifact.read_bytes() == b"wasm-bytes"
-    assert cache_path.read_bytes() == b"wasm-bytes"
-    assert function_cache_path.read_bytes() == b"wasm-bytes"
+    assert output_artifact.read_bytes() == artifact_bytes
+    assert cache_path.read_bytes() == artifact_bytes
+    assert function_cache_path.read_bytes() == artifact_bytes
 
 
 def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_miss(
@@ -24810,10 +24813,10 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
     project_root = tmp_path / "project"
     project_root.mkdir()
     artifacts_root = tmp_path / "artifacts"
-    output_artifact = project_root / "build" / "main.o"
-    cache_path = project_root / ".molt_cache" / "cache-key.o"
-    function_cache_path = project_root / ".molt_cache" / "fn-cache-key.o"
-    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    output_artifact = project_root / "build" / "main.a"
+    cache_path = project_root / ".molt_cache" / "cache-key.a"
+    function_cache_path = project_root / ".molt_cache" / "fn-cache-key.a"
+    stdlib_object_path = project_root / "build" / "main.stdlib.a"
     request_encode_calls: list[tuple[bool, bool, bool]] = []
     daemon_request_bytes: list[bytes | None] = []
 
@@ -24835,7 +24838,9 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
-        backend_output.write_bytes(b"object")
+        backend_output.write_bytes(
+            static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+        )
         return cli._BackendDaemonCompileResult(
             True,
             None,
@@ -24869,6 +24874,9 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="cache-key",
             function_cache_key="fn-cache-key",
@@ -24954,7 +24962,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
             )
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
-        backend_output.write_bytes(b"object")
+        backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
         return cli._BackendDaemonCompileResult(
             True,
             None,
@@ -24997,6 +25005,9 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="cache-key",
             function_cache_key="fn-cache-key",
@@ -25117,6 +25128,9 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -25220,6 +25234,9 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -25287,7 +25304,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
             handle.write("fresh incremental compile line\n")
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
-        backend_output.write_bytes(b"object")
+        backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
         return cli._BackendDaemonCompileResult(
             True,
             None,
@@ -25321,6 +25338,9 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -25368,7 +25388,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
     artifacts_root = tmp_path / "artifacts"
     output_artifact = project_root / "build" / "main.o"
     output_artifact.parent.mkdir(parents=True, exist_ok=True)
-    output_artifact.write_bytes(b"stale")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("stale_main",)))
 
     monkeypatch.setattr(
         cli_backend_compile,
@@ -25401,6 +25421,9 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         cache_key="cache-key",
         function_cache_key=None,
         cache_setup=cli._BackendCacheSetup(
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
             cache_enabled=True,
             cache_key="cache-key",
             function_cache_key=None,
@@ -25447,11 +25470,12 @@ def test_backend_daemon_compile_request_includes_partition_env(
     request_bytes, error = cli._backend_daemon_compile_request_bytes(
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -25484,12 +25508,13 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
     request_bytes, error = cli._backend_daemon_compile_request_bytes(
         ir={"functions": []},
         backend_output=tmp_path / "output.wasm",
-        is_wasm=True,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="wasm", emit_mode="wasm", target_triple=None
+        ),
         wasm_link=True,
         wasm_data_base=67_108_864,
         wasm_table_base=1,
         wasm_split_runtime_app_table_base=8_192,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -25515,11 +25540,12 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
         ir=None,
         ir_path=ir_path,
         backend_output=backend_output,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -25541,11 +25567,12 @@ def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
         ir={"functions": []},
         ir_path=tmp_path / "backend-ir.json",
         backend_output=tmp_path / "output.o",
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -25564,29 +25591,31 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    backend_output = tmp_path / "output.o"
+    backend_output = tmp_path / "output.a"
     monkeypatch.setenv("MOLT_BACKEND_BATCH_OP_BUDGET", "16384")
 
     request_bytes, error = cli._backend_daemon_compile_request_bytes(
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
         entry_module="pkg.app",
-        stdlib_object_path=tmp_path / "cache" / "main.stdlib.o",
+        stdlib_object_path=tmp_path / "cache" / "main.stdlib.a",
     )
 
     assert error is None
     assert request_bytes is not None
     payload = json.loads(request_bytes)
+    assert payload["jobs"][0]["native_output_kind"] == "archive"
     assert payload["env"]["MOLT_BACKEND_BATCH_OP_BUDGET"] == "16384"
 
 
@@ -25604,11 +25633,12 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     request_bytes, error = cli._backend_daemon_compile_request_bytes(
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         wasm_link=False,
         wasm_data_base=None,
         wasm_table_base=None,
-        target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -26412,20 +26442,18 @@ def test_compile_with_backend_daemon_surfaces_failed_job_message_after_probe_mis
     assert result.full_request_sent is True
 
 
-def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
+def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     backend_output = tmp_path / "output.o"
-    preencoded = (
-        b'{"version":1,"jobs":[{"id":"job0","is_wasm":false,"target_triple":"","output":"'
-        + str(backend_output).encode("utf-8")
-        + b'","cache_key":"","function_cache_key":"","skip_module_output_if_synced":false,'
-        b'"skip_function_output_if_synced":false,"ir":{"functions":[]}}]}\n'
-    )
+    encoded_payloads: list[dict[str, object]] = []
+    leases: list[Path] = []
+    original_encode = BACKEND_EXECUTION._backend_daemon_request_payload_bytes
 
-    def fail_encode(payload: dict[str, object]) -> tuple[bytes | None, str | None]:
-        raise AssertionError(f"unexpected request encode: {payload}")
+    def record_encode(payload: dict[str, object]) -> tuple[bytes | None, str | None]:
+        encoded_payloads.append(payload)
+        return original_encode(payload)
 
     def _fake_request(
         socket_path: Path,
@@ -26436,7 +26464,23 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
         project_root: Path | None = None,
     ) -> tuple[dict[str, object], None]:
         del socket_path, timeout, daemon_identity, project_root
-        assert data == preencoded
+        assert len(encoded_payloads) == 1
+        payload = json.loads(data)
+        assert payload == encoded_payloads[0]
+        job = payload["jobs"][0]
+        assert "probe_cache_only" not in job
+        assert "ir" not in job
+        assert job["cache_key"] == job["function_cache_key"] == ""
+        assert job["native_output_kind"] == "archive"
+        assert (
+            job["target_triple"]
+            == resolve_backend_artifact_contract(
+                target="native", emit_mode="bin"
+            ).target_triple
+        )
+        lease = Path(job["ir_path"])
+        assert json.loads(lease.read_text(encoding="utf-8")) == {"functions": []}
+        leases.append(lease)
         backend_output.write_bytes(b"\x7fELF")
         return (
             {
@@ -26447,7 +26491,7 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
         )
 
     monkeypatch.setattr(
-        BACKEND_EXECUTION, "_backend_daemon_request_payload_bytes", fail_encode
+        BACKEND_EXECUTION, "_backend_daemon_request_payload_bytes", record_encode
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_request_bytes", _fake_request
@@ -26456,19 +26500,20 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=backend_output,
-        target_triple="",
+        target_triple=None,
         cache_key=None,
         function_cache_key=None,
         config_digest=None,
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
         timeout=0.1,
-        request_bytes=preencoded,
     )
 
     assert result.ok is True
     assert result.output_written is True
     assert result.output_exists is True
+    assert len(encoded_payloads) == 1
+    assert len(leases) == 1 and not leases[0].exists()
 
 
 def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
@@ -26554,23 +26599,14 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    backend_output = tmp_path / "output.o"
-    stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
+    backend_output = tmp_path / "output.a"
+    stdlib_object_path = tmp_path / "cache" / "main.stdlib.a"
     stdlib_object_path.parent.mkdir(parents=True)
-    stdlib_object_path.write_bytes(b"\x7fELF")
-    cli._stdlib_object_key_sidecar_path(stdlib_object_path).write_text(
-        "stdlib-cache-key\n", encoding="utf-8"
+    stdlib_object_path.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
     )
-    stdlib_manifest = '{"cache_key":"stdlib-cache-key"}'
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object_path).write_text(
-        stdlib_manifest + "\n", encoding="utf-8"
-    )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
-        encoding="utf-8",
-    )
-    cli._stdlib_object_digest_sidecar_path(stdlib_object_path).write_text(
-        cli._sha256_file(stdlib_object_path) + "\n", encoding="utf-8"
+    stdlib_manifest = _write_shared_stdlib_test_contract(
+        stdlib_object_path, "stdlib-cache-key"
     )
     seen_payloads: list[dict[str, object]] = []
     ir_lease_paths: list[Path] = []
@@ -26618,7 +26654,11 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                     "functions": [{"name": "heavy"}]
                 }
                 ir_lease_paths.append(ir_path)
-                backend_output.write_bytes(b"\x7fELF")
+                backend_output.write_bytes(
+                    static_archive_bytes(
+                        native_relocatable_object(symbols=("molt_main",))
+                    )
+                )
                 response = {
                     "ok": True,
                     "jobs": [
@@ -26673,6 +26713,10 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert result.ok is True
     assert len(seen_payloads) == 2
     assert connects == 2
+    assert all(
+        payload["jobs"][0]["native_output_kind"] == "archive"
+        for payload in seen_payloads
+    )
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
     assert "ir" not in seen_payloads[0]["jobs"][0]
     assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
@@ -27569,12 +27613,18 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -27582,49 +27632,15 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
     )
 
     assert skip_module is True
     assert skip_function is False
-
-
-def test_backend_daemon_skip_output_sync_flags_stats_artifact_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output_artifact = tmp_path / "dist" / "output.o"
-    output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
-    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_artifact_sync_state(
-        state_path,
-        source_key="module-key",
-        tier="module",
-        artifact=output_artifact,
-    )
-    original_stat = Path.stat
-    calls = 0
-
-    def wrapped_stat(self: Path, *, follow_symlinks: bool = True):  # type: ignore[no-untyped-def]
-        nonlocal calls
-        if self == output_artifact:
-            calls += 1
-        return original_stat(self, follow_symlinks=follow_symlinks)
-
-    monkeypatch.setattr(Path, "stat", wrapped_stat)
-
-    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
-        tmp_path,
-        output_artifact,
-        cache_key="module-key",
-        function_cache_key="function-key",
-    )
-
-    assert skip_module is True
-    assert skip_function is False
-    assert calls == 3
 
 
 def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_reread(
@@ -27632,12 +27648,18 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -27653,6 +27675,9 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
         state_path=state_path,
@@ -27669,12 +27694,20 @@ def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+    )
     state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -27682,6 +27715,9 @@ def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
         stdlib_object_path=tmp_path / "cache" / "stdlib_shared_test.o",
@@ -28060,7 +28096,7 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
     tmp_path: Path,
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
@@ -28070,6 +28106,9 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28079,9 +28118,13 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
-    assert function_cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
+    assert function_cache_path.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
     assert not backend_output.exists()
 
 
@@ -28090,7 +28133,7 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
 ) -> None:
     cache_path = tmp_path / "cache" / "module.o"
     cache_path.parent.mkdir(parents=True)
-    cache_path.write_bytes(b"artifact")
+    cache_path.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
@@ -28099,6 +28142,9 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
         tmp_path,
         cache_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28108,32 +28154,35 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
 
     assert err is None
     assert warnings == []
-    assert cache_path.read_bytes() == b"artifact"
-    assert output_artifact.read_bytes() == b"artifact"
-    assert function_cache_path.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert function_cache_path.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
 
 
 def test_stage_backend_output_and_caches_preserves_existing_module_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
+    new_artifact = native_relocatable_object(symbols=("new_module",))
+    cached_artifact = native_relocatable_object(symbols=("cached_module",))
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"new-artifact")
+    backend_output.write_bytes(new_artifact)
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     cache_path.parent.mkdir(parents=True)
-    cache_path.write_bytes(b"cached-artifact")
+    cache_path.write_bytes(cached_artifact)
     warnings: list[str] = []
-
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
-    )
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28141,35 +28190,34 @@ def test_stage_backend_output_and_caches_preserves_existing_module_cache(
         warnings=warnings,
     )
 
-    assert err is None
+    assert err is not None and "conflicting content" in err
     assert warnings == []
-    assert cache_path.read_bytes() == b"cached-artifact"
-    assert output_artifact.read_bytes() == b"cached-artifact"
-    assert not backend_output.exists()
+    assert cache_path.read_bytes() == cached_artifact
+    assert not output_artifact.exists()
+    assert backend_output.read_bytes() == new_artifact
 
 
 def test_stage_backend_output_and_caches_preserves_existing_function_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
+    new_artifact = native_relocatable_object(symbols=("new_module",))
+    cached_artifact = native_relocatable_object(symbols=("cached_function",))
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"new-artifact")
+    backend_output.write_bytes(new_artifact)
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     function_cache_path.parent.mkdir(parents=True)
-    function_cache_path.write_bytes(b"cached-function")
+    function_cache_path.write_bytes(cached_artifact)
     warnings: list[str] = []
-
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
-    )
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28178,10 +28226,10 @@ def test_stage_backend_output_and_caches_preserves_existing_function_cache(
     )
 
     assert err is None
-    assert warnings == []
-    assert cache_path.read_bytes() == b"new-artifact"
-    assert output_artifact.read_bytes() == b"new-artifact"
-    assert function_cache_path.read_bytes() == b"cached-function"
+    assert len(warnings) == 1 and "conflicting content" in warnings[0]
+    assert cache_path.read_bytes() == new_artifact
+    assert output_artifact.read_bytes() == new_artifact
+    assert function_cache_path.read_bytes() == cached_artifact
     assert not backend_output.exists()
 
 
@@ -28189,10 +28237,10 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
@@ -28201,7 +28249,13 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -28218,6 +28272,9 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28227,9 +28284,13 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
-    assert function_cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
+    assert function_cache_path.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
     assert not backend_output.exists()
 
 
@@ -28237,10 +28298,10 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
 
@@ -28248,7 +28309,13 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -28262,6 +28329,9 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28271,8 +28341,10 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
     assert not backend_output.exists()
 
 
@@ -28280,12 +28352,23 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key=cli._backend_artifact_source_key(
+            "module-key", stdlib_object_cache_key=None, artifact_contract=contract
+        ),
+        tier="module",
+        artifact=output_artifact,
+    )
+    state = cli._read_artifact_sync_state(state_path)
 
     def fail_read(path: Path) -> dict[str, object] | None:
         raise AssertionError(f"unexpected sync-state read: {path}")
@@ -28296,50 +28379,55 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
         output_already_synced=True,
+        state_path=state_path,
+        state=state,
     )
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
     assert not backend_output.exists()
 
 
-def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
+def test_stage_backend_output_and_caches_isolates_mutable_output_from_immutable_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
-    link_calls: list[tuple[Path, Path]] = []
-    original_link_or_copy = BACKEND_CACHE._atomic_link_or_copy_file
-    original_copy = cli._atomic_copy_file
+    copies: list[tuple[Path, Path]] = []
+    original_copy = BACKEND_CACHE._copy_verified_backend_artifact
 
-    def record_link_or_copy(src: Path, dst: Path) -> None:
-        link_calls.append((src, dst))
-        original_link_or_copy(src, dst)
+    def record_copy(src: Path, dst: Path, *, identity):
+        copies.append((src, dst))
+        result = original_copy(src, dst, identity=identity)
+        assert not src.samefile(dst)
+        return result
 
-    def fail_copy(src: Path, dst: Path) -> None:
-        if dst == output_artifact:
-            raise AssertionError(f"unexpected copy {src} -> {dst}")
-        original_copy(src, dst)
-
-    monkeypatch.setattr(BACKEND_CACHE, "_atomic_link_or_copy_file", record_link_or_copy)
-    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+    monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", record_copy)
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28349,17 +28437,23 @@ def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
-    assert function_cache_path.read_bytes() == b"artifact"
-    assert (cache_path, output_artifact) in link_calls
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
+    assert function_cache_path.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert (cache_path, output_artifact) in copies
+    output_artifact.write_bytes(b"mutated user output")
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
 
 
 def test_stage_backend_output_and_caches_without_cache_moves_output(
     tmp_path: Path,
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
 
@@ -28367,6 +28461,9 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=None,
         cache_key=None,
         stdlib_object_cache_key=None,
@@ -28376,7 +28473,9 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
 
     assert err is None
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
     assert not backend_output.exists()
 
 
@@ -28384,17 +28483,25 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend_output = tmp_path / "backend.o"
-    backend_output.write_bytes(b"artifact")
+    backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
     original = BACKEND_CACHE._publish_immutable_backend_cache_artifact
 
-    def wrapped(src: Path, dst: Path, *, is_wasm: bool, warnings: list[str]) -> Path:
+    def wrapped(
+        src: Path, dst: Path, *, artifact_contract, warnings: list[str], identity=None
+    ):
         if dst == function_cache_path:
             raise OSError("link failed")
-        return original(src, dst, is_wasm=is_wasm, warnings=warnings)
+        return original(
+            src,
+            dst,
+            artifact_contract=artifact_contract,
+            warnings=warnings,
+            identity=identity,
+        )
 
     monkeypatch.setattr(
         BACKEND_CACHE,
@@ -28406,6 +28513,9 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         tmp_path,
         backend_output,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_path=cache_path,
         cache_key="module-key",
         stdlib_object_cache_key=None,
@@ -28414,8 +28524,10 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     )
 
     assert err is None
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
     assert warnings == ["Function cache write failed: link failed"]
 
 
@@ -28424,7 +28536,7 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
 ) -> None:
     candidate = tmp_path / "cache" / "function.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
@@ -28433,6 +28545,9 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
         tmp_path,
         candidate,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         tier="function",
         source_key="function-key",
         cache_path=cache_path,
@@ -28441,32 +28556,43 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
 
     assert ok is True
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
 
 
 def test_backend_cache_artifact_path_uses_native_stdlib_context(
     tmp_path: Path,
 ) -> None:
     cache_root = tmp_path / "cache"
+    native_contract = resolve_backend_artifact_contract(
+        target="native", emit_mode="bin"
+    )
+    wasm_contract = resolve_backend_artifact_contract(target="wasm", emit_mode="wasm")
 
     native_path = cli._backend_cache_artifact_path(
         cache_root,
         "function-key",
-        ext="o",
+        artifact_contract=native_contract,
         stdlib_object_cache_key="stdlib-key",
-        is_wasm=False,
     )
     wasm_path = cli._backend_cache_artifact_path(
         cache_root,
         "function-key",
-        ext="wasm",
-        stdlib_object_cache_key="stdlib-key",
-        is_wasm=True,
+        artifact_contract=wasm_contract,
+        stdlib_object_cache_key=None,
     )
 
-    assert native_path == cache_root / "function-key.stdlib-stdlib-key.o"
-    assert wasm_path == cache_root / "function-key.wasm"
+    assert (
+        native_path
+        == cache_root
+        / f"function-key.artifact-{native_contract.cache_identity}.stdlib-stdlib-key{native_contract.suffix}"
+    )
+    assert (
+        wasm_path
+        == cache_root / f"function-key.artifact-{wasm_contract.cache_identity}.wasm"
+    )
 
 
 def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced(
@@ -28475,21 +28601,23 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
 ) -> None:
     candidate = tmp_path / "cache" / "function.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
     monkeypatch.setattr(
         BACKEND_CACHE,
         "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
+        lambda path, *, artifact_contract: True,
     )
 
     ok, cache_hit_tier = cli._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
         cache_path=cache_path,
@@ -28504,6 +28632,9 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
     )
@@ -28513,37 +28644,34 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
 
 def test_try_cached_backend_candidates_promoted_native_function_hit_marks_context_module_synced(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidate = tmp_path / "cache" / "function.stdlib-current.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+    )
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.stdlib-current.o"
     stdlib_object = tmp_path / "cache" / "stdlib_shared_current.o"
-    stdlib_object.write_bytes(b"stdlib")
+    stdlib_object.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+    )
+    stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_object, "stdlib-key")
     warnings: list[str] = []
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_is_valid_cached_backend_artifact",
-        lambda path, *, is_wasm: True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_shared_stdlib_cache_matches_key_locked",
-        lambda *args, **kwargs: True,
-    )
 
     ok, cache_hit_tier = cli._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
         cache_path=cache_path,
         stdlib_object_path=stdlib_object,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
         warnings=warnings,
     )
 
@@ -28553,28 +28681,43 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key="function-key",
         stdlib_object_path=stdlib_object,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
     assert skip_module is True
     assert skip_function is False
     state = cli._read_artifact_sync_state(
         cli._artifact_sync_state_path(tmp_path, output_artifact)
     )
-    output_stat = output_artifact.stat()
-    assert cli._artifact_sync_state_matches_stat(
+    assert cli._artifact_sync_state_matches(
         state,
-        source_key="module-key|stdlib:stdlib-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key="stdlib-key",
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
+        ),
         tier="module",
-        stat=output_stat,
+        artifact=output_artifact,
     )
-    assert not cli._artifact_sync_state_matches_stat(
+    assert not cli._artifact_sync_state_matches(
         state,
-        source_key="module-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
+        ),
         tier="module",
-        stat=output_stat,
+        artifact=output_artifact,
     )
 
 
@@ -28591,7 +28734,9 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -28611,7 +28756,9 @@ def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
 ) -> None:
     candidate = tmp_path / "cache" / "module.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(
+        static_archive_bytes(native_relocatable_object(symbols=("molt_main",)))
+    )
     output_artifact = tmp_path / "dist" / "output.o"
     stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
     warnings: list[str] = []
@@ -28620,7 +28767,9 @@ def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -28639,7 +28788,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
 ) -> None:
     candidate = tmp_path / "cache" / "module.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
 
@@ -28647,6 +28796,9 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         tmp_path,
         candidate,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         tier="module",
         source_key="module-key",
         cache_path=candidate,
@@ -28663,6 +28815,9 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         tmp_path,
         candidate,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         tier="module",
         source_key="module-key",
         cache_path=candidate,
@@ -28672,34 +28827,32 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
     assert warnings == []
 
 
-def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_sync(
+def test_materialize_cached_backend_artifact_isolates_mutable_output_from_immutable_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate = tmp_path / "cache" / "module.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
-    link_calls: list[tuple[Path, Path]] = []
-    original_link_or_copy = BACKEND_CACHE._atomic_link_or_copy_file
-    original_copy = cli._atomic_copy_file
+    copies: list[tuple[Path, Path]] = []
+    original_copy = BACKEND_CACHE._copy_verified_backend_artifact
 
-    def record_link_or_copy(src: Path, dst: Path) -> None:
-        link_calls.append((src, dst))
-        original_link_or_copy(src, dst)
+    def record_copy(src: Path, dst: Path, *, identity):
+        copies.append((src, dst))
+        result = original_copy(src, dst, identity=identity)
+        assert not src.samefile(dst)
+        return result
 
-    def fail_copy(src: Path, dst: Path) -> None:
-        if dst == output_artifact:
-            raise AssertionError(f"unexpected copy {src} -> {dst}")
-        original_copy(src, dst)
-
-    monkeypatch.setattr(BACKEND_CACHE, "_atomic_link_or_copy_file", record_link_or_copy)
-    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+    monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", record_copy)
 
     ok = cli._materialize_cached_backend_artifact(
         tmp_path,
         candidate,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         tier="module",
         source_key="module-key",
         cache_path=candidate,
@@ -28708,8 +28861,12 @@ def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_syn
 
     assert ok is True
     assert warnings == []
-    assert output_artifact.read_bytes() == b"artifact"
-    assert (candidate, output_artifact) in link_calls
+    assert output_artifact.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
+    assert (candidate, output_artifact) in copies
+    output_artifact.write_bytes(b"mutated user output")
+    assert candidate.read_bytes() == native_relocatable_object(symbols=("molt_main",))
 
 
 def test_materialize_cached_backend_artifact_uses_known_sync_state_without_reread(
@@ -28717,10 +28874,10 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
 ) -> None:
     candidate = tmp_path / "cache" / "module.o"
     candidate.parent.mkdir(parents=True)
-    candidate.write_bytes(b"artifact")
+    candidate.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     output_artifact = tmp_path / "dist" / "output.o"
     output_artifact.parent.mkdir(parents=True)
-    output_artifact.write_bytes(b"artifact")
+    output_artifact.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
@@ -28743,6 +28900,9 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
         tmp_path,
         candidate,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
         tier="module",
         source_key="module-key",
         cache_path=candidate,
@@ -28759,13 +28919,22 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
 def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
     tmp_path: Path,
 ) -> None:
-    with cli._temporary_backend_output_path(tmp_path, is_wasm=False) as path:
-        assert path.suffix == ".o"
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
+    with cli._temporary_backend_output_path(
+        tmp_path,
+        artifact_contract=contract,
+    ) as path:
+        assert path.suffix == contract.suffix
         assert not path.exists()
         path.write_bytes(b"artifact")
     assert not path.exists()
 
-    with cli._temporary_backend_output_path(tmp_path, is_wasm=True) as path:
+    with cli._temporary_backend_output_path(
+        tmp_path,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="wasm", emit_mode="wasm", target_triple=None
+        ),
+    ) as path:
         assert path.suffix == ".wasm"
         assert not path.exists()
         path.write_bytes(b"artifact")
@@ -28775,15 +28944,30 @@ def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     wasm_bad = tmp_path / "bad.wasm"
     wasm_bad.write_bytes(b"not-wasm")
-    assert not cli._is_valid_cached_backend_artifact(wasm_bad, is_wasm=True)
+    assert not cli._is_valid_cached_backend_artifact(
+        wasm_bad,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="wasm", emit_mode="wasm", target_triple=None
+        ),
+    )
 
     wasm_good = tmp_path / "good.wasm"
     wasm_good.write_bytes(b"\x00asm\x01\x00\x00\x00")
-    assert cli._is_valid_cached_backend_artifact(wasm_good, is_wasm=True)
+    assert cli._is_valid_cached_backend_artifact(
+        wasm_good,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="wasm", emit_mode="wasm", target_triple=None
+        ),
+    )
 
     native_empty = tmp_path / "empty.o"
     native_empty.write_bytes(b"")
-    assert not cli._is_valid_cached_backend_artifact(native_empty, is_wasm=False)
+    assert not cli._is_valid_cached_backend_artifact(
+        native_empty,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
+    )
 
     empty_c = tmp_path / "empty.c"
     empty_c.write_text("", encoding="utf-8")
@@ -28794,7 +28978,12 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert not cli._is_valid_cached_backend_artifact(empty_object, is_wasm=False)
+    assert not cli._is_valid_cached_backend_artifact(
+        empty_object,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
+    )
 
     native_c = tmp_path / "native.c"
     native_c.write_text("int foo(void){return 0;}\n", encoding="utf-8")
@@ -28805,7 +28994,12 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert cli._is_valid_cached_backend_artifact(native_nonempty, is_wasm=False)
+    assert cli._is_valid_cached_backend_artifact(
+        native_nonempty,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj", target_triple=None
+        ),
+    )
 
 
 def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_module_chunks(
@@ -28849,7 +29043,9 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
-        is_wasm=False,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key=None,
         cache_path=candidate,
@@ -28878,6 +29074,7 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
         }
         """,
     )
+    stdlib_object.write_bytes(static_archive_bytes(stdlib_object.read_bytes()))
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "stdlib-key\n", encoding="utf-8"
     )
@@ -28964,7 +29161,13 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
         state_path,
-        source_key="module-key|stdlib:stdlib-key",
+        source_key=cli._backend_artifact_source_key(
+            "module-key",
+            stdlib_object_cache_key="stdlib-key",
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
+        ),
         tier="module",
         artifact=output_artifact,
     )
@@ -28972,6 +29175,9 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
         output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         cache_key="module-key",
         function_cache_key=None,
         stdlib_object_path=stdlib_object,
@@ -29090,7 +29296,7 @@ def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
+def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None:
     """Prove that the cache key changes when stdlib partition mode is toggled.
 
     ``_prepare_backend_cache_setup`` builds a ``cache_variant`` that feeds into
@@ -29129,7 +29335,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         is_wasm=False,
         linked=False,
         project_root=ROOT,
-        cache_dir=None,
+        cache_dir=str(tmp_path / "cache"),
         warnings=warnings,
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
@@ -29137,25 +29343,18 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
-        emit_mode="obj",  # native + obj  => split enabled
-        output_artifact=ROOT / "dummy_split.o",
+        emit_mode="bin",
+        output_artifact=tmp_path / "dummy_split.a",
         **common,
     )
 
-    # _native_stdlib_object_split_enabled returns True for native target,
-    # so we simulate monolithic by patching the helper.
-    import unittest.mock as _mock
-
-    with _mock.patch.object(
-        cli_backend_cache_setup,
-        "_native_stdlib_object_split_enabled",
-        return_value=False,
-    ):
-        setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
-            emit_mode="obj",
-            output_artifact=ROOT / "dummy_mono.o",
-            **common,
-        )
+    setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
+        emit_mode="obj",
+        output_artifact=tmp_path / "dummy_mono.o",
+        **common,
+    )
+    assert setup_split.stdlib_object_path is not None
+    assert setup_mono.stdlib_object_path is None
 
     assert setup_split.cache_key is not None
     assert setup_mono.cache_key is not None
@@ -29195,12 +29394,12 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
-        emit_mode="obj",
+        emit_mode="bin",
         is_wasm=False,
         linked=False,
         project_root=ROOT,
         cache_dir=str(explicit_cache),
-        output_artifact=tmp_path / "out.o",
+        output_artifact=tmp_path / "out.a",
         warnings=[],
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
@@ -29244,12 +29443,12 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
-        emit_mode="obj",
+        emit_mode="bin",
         is_wasm=False,
         linked=False,
         project_root=ROOT,
         cache_dir=str(explicit_cache),
-        output_artifact=tmp_path / "out.o",
+        output_artifact=tmp_path / "out.a",
         warnings=[],
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
@@ -29533,3 +29732,39 @@ def test_backend_daemon_digest_rejects_cross_fingerprint_reuse(tmp_path: Path) -
     ) != cli._backend_daemon_socket_path(
         tmp_path, "release-fast", config_digest=digest_b
     )
+
+
+@pytest.mark.parametrize(
+    ("condition", "live"),
+    [
+        ("[*()]", False),
+        ("{**{}}", False),
+        ("2 == True", False),
+        ("[__import__('condition_pkg')]", True),
+    ],
+)
+def test_expression_result_reachability_preserves_condition_imports(
+    condition: str, live: bool
+):
+    tree = ast.parse(
+        f"if {condition}:\n    import selected_true\nelse:\n    import selected_false\n"
+    )
+    for mode in ("full", "module_init"):
+        imports = cli_module_import_scanner._collect_imports(
+            tree, import_scan_mode=mode
+        )
+        assert ("selected_true" in imports) is live
+        assert ("selected_false" in imports) is not live
+        if "condition_pkg" in condition:
+            assert "condition_pkg" in imports
+
+
+@pytest.mark.parametrize("module", ["typing", "typing_extensions"])
+@pytest.mark.parametrize("mode", ["full", "module_init"])
+def test_type_checking_from_import_retains_runtime_closure(module: str, mode: str):
+    tree = ast.parse(
+        f"from {module} import TYPE_CHECKING\nif TYPE_CHECKING:\n    import dead\n"
+    )
+    imports = cli_module_import_scanner._collect_imports(tree, import_scan_mode=mode)
+    assert module in imports
+    assert "dead" not in imports

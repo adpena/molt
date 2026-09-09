@@ -2,10 +2,8 @@ use super::*;
 
 #[test]
 #[cfg(feature = "native-backend")]
-fn daemon_request_with_env_preserves_user_entry_object() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+fn daemon_request_with_env_preserves_user_entry_archive() {
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-request-env-{}-{}",
         std::process::id(),
@@ -15,8 +13,8 @@ fn daemon_request_with_env_preserves_user_entry_object() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let output = tmp_dir.join("out.o");
-    let stdlib = tmp_dir.join("stdlib.o");
+    let output = tmp_dir.join("out.a");
+    let stdlib = tmp_dir.join("stdlib.a");
     // The main application object emits the per-app callable resolver, which
     // requires the linked runtime staticlib's `molt_*` callable-symbol set
     // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
@@ -42,6 +40,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
         "jobs": [{
             "id": "job0",
             "is_wasm": false,
+            "native_output_kind": "archive",
             "output": output.to_string_lossy(),
             "cache_key": "",
             "function_cache_key": "",
@@ -91,6 +90,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -110,6 +110,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -122,6 +123,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -134,6 +136,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -146,6 +149,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -177,24 +181,16 @@ fn daemon_request_with_env_preserves_user_entry_object() {
     let result = compile_single_job(job, &mut cache);
 
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
-    assert!(output.exists(), "output object missing");
-    assert!(
-        output.metadata().expect("output metadata").len() > 240,
-        "daemon path emitted empty object"
-    );
-
-    // The daemon env-passthrough mutated the process environment; clear the
-    // resolver symbol-set var so it does not leak into sibling tests that
-    // share `ENV_TEST_MUTEX`.
-    unsafe { std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS") };
+    let bytes = std::fs::read(&output).expect("read application archive");
+    assert_native_archive_members(&bytes, 1);
+    let stdlib_bytes = std::fs::read(&stdlib).expect("read shared stdlib archive");
+    assert_native_archive_members(&stdlib_bytes, 1);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
 fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
         std::env::set_var("MOLT_ENTRY_MODULE", "stale_entry");
@@ -226,9 +222,7 @@ fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
 
 #[test]
 fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     let keys = [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
@@ -244,10 +238,6 @@ fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() 
         "RAYON_NUM_THREADS",
         "MOLT_TIR_TRACE_FUNC",
     ];
-    let prior_env: Vec<_> = keys
-        .iter()
-        .map(|key| (*key, std::env::var(key).ok()))
-        .collect();
     unsafe {
         for key in keys {
             std::env::set_var(key, "stale");
@@ -311,19 +301,11 @@ fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() 
             "{key} leaked across daemon requests"
         );
     }
-    for (key, value) in prior_env {
-        match value {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-    }
 }
 
 #[test]
 fn daemon_request_env_rejects_malformed_stdlib_module_symbols() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
     }

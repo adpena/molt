@@ -49,6 +49,9 @@ else:
 
 class AsyncGenVisitorMixin(_MixinBase):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
+            self._emit_class_function_definition(self._class_ns_stack[-1], node)
+            return None
         if self.current_func_name == "molt_main":
             new_globals = self._collect_global_decls(node.body)
             self.module_global_mutations.update(new_globals)
@@ -84,30 +87,9 @@ class AsyncGenVisitorMixin(_MixinBase):
             if node.args.kwarg is not None:
                 arg_nodes.append(node.args.kwarg)
 
-            free_vars: list[str] = []
-            free_var_hints: dict[str, str] = {}
-            closure_val: MoltValue | None = None
-            has_closure = False
-            if self.current_func_name != "molt_main":
-                free_vars = self._collect_free_vars(node)
-                if free_vars:
-                    self.unbound_check_names.update(free_vars)
-                    for name in free_vars:
-                        self._box_local(name)
-                        self.closure_locals.add(name)
-                    for name in free_vars:
-                        hint = self.boxed_local_hints.get(name)
-                        if hint is None:
-                            value = self.locals.get(name)
-                            if value is not None and value.type_hint:
-                                hint = value.type_hint
-                        free_var_hints[name] = hint or "Any"
-                    closure_items = self._closure_cells_for(free_vars)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                    )
-                    has_closure = True
+            free_vars, free_var_hints, closure_val, has_closure = (
+                self._capture_lexical_closure(self._cached_free_vars_raw(node))
+            )
 
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.ASYNC_GENERATOR,
@@ -130,6 +112,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             prev_first_param = self.current_method_first_param
             self.start_function(
                 poll_func_name,
+                python_first_arg=self._python_first_positional_arg(node.args),
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=func_name,
@@ -170,6 +153,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             if needs_locals_cache:
                 self._init_locals_cache_and_pin()
+            self._publish_python_frame_context()
             self._push_qualname(func_name, True)
             try:
                 for item in node.body:
@@ -315,13 +299,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-            if self.current_func_name == "molt_main":
-                self.globals[func_name] = func_val
-                if func_name in self.boxed_locals:
-                    self._store_local_value(func_name, func_val)
-            else:
-                self._store_local_value(func_name, func_val)
-            self._emit_module_attr_set(func_name, func_val)
+            self._publish_definition_binding(func_name, func_val)
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
@@ -332,6 +310,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             )
             self.start_function(
                 func_symbol,
+                python_first_arg=self._python_first_positional_arg(node.args),
                 params=func_params,
                 type_facts_name=func_name,
             )
@@ -402,13 +381,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                     )
                     decorated = res_val
                 func_val = decorated
-                if self.current_func_name == "molt_main":
-                    self.globals[func_name] = func_val
-                    if func_name in self.boxed_locals:
-                        self._store_local_value(func_name, func_val)
-                else:
-                    self._store_local_value(func_name, func_val)
-                self._emit_module_attr_set(func_name, func_val)
+                self._publish_definition_binding(func_name, func_val)
             self._record_source_app_callable(
                 func_name,
                 kind=FunctionKind.ASYNC_GENERATOR,
@@ -439,30 +412,9 @@ class AsyncGenVisitorMixin(_MixinBase):
             arg_nodes.append(node.args.kwarg)
 
         needs_locals_cache = self._function_contains_locals_call(node)
-        free_vars: list[str] = []
-        free_var_hints: dict[str, str] = {}
-        closure_val: MoltValue | None = None
-        has_closure = False
-        if self.current_func_name != "molt_main":
-            free_vars = self._collect_free_vars(node)
-            if free_vars:
-                self.unbound_check_names.update(free_vars)
-                for name in free_vars:
-                    self._box_local(name)
-                    self.closure_locals.add(name)
-                for name in free_vars:
-                    hint = self.boxed_local_hints.get(name)
-                    if hint is None:
-                        value = self.locals.get(name)
-                        if value is not None and value.type_hint:
-                            hint = value.type_hint
-                    free_var_hints[name] = hint or "Any"
-                closure_items = self._closure_cells_for(free_vars)
-                closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                )
-                has_closure = True
+        free_vars, free_var_hints, closure_val, has_closure = (
+            self._capture_lexical_closure(self._cached_free_vars_raw(node))
+        )
 
         # Add to globals to support calls from other scopes
         frame_plan = stateful_function_frame_plan(
@@ -486,6 +438,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         prev_first_param = self.current_method_first_param
         self.start_function(
             poll_func_name,
+            python_first_arg=self._python_first_positional_arg(node.args),
             params=["self"],
             compiler_params={"self"},
             type_facts_name=func_name,
@@ -525,6 +478,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
         if needs_locals_cache:
             self._init_locals_cache_and_pin()
+        self._publish_python_frame_context()
         self._push_qualname(func_name, True)
         try:
             for item in node.body:
@@ -613,13 +567,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                 result=MoltValue("none"),
             )
         )
-        if self.current_func_name == "molt_main":
-            self.globals[func_name] = func_val
-            if func_name in self.boxed_locals:
-                self._store_local_value(func_name, func_val)
-        else:
-            self._store_local_value(func_name, func_val)
-        self._emit_module_attr_set(func_name, func_val)
+        self._publish_definition_binding(func_name, func_val)
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
@@ -630,6 +578,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         )
         self.start_function(
             func_symbol,
+            python_first_arg=self._python_first_positional_arg(node.args),
             params=func_params,
             type_facts_name=func_name,
         )
@@ -696,13 +645,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                 )
                 decorated = res
             func_val = decorated
-            if self.current_func_name == "molt_main":
-                self.globals[func_name] = func_val
-                if func_name in self.boxed_locals:
-                    self._store_local_value(func_name, func_val)
-            else:
-                self._store_local_value(func_name, func_val)
-            self._emit_module_attr_set(func_name, func_val)
+            self._publish_definition_binding(func_name, func_val)
         self._record_source_app_callable(
             func_name,
             kind=FunctionKind.ASYNC,

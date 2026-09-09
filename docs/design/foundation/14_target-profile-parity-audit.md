@@ -133,8 +133,9 @@ From `Cargo.toml`:
 
 **There is no `skip_ir_passes` gating on dev-fast.** `skip_ir_passes` is set to `true` only in three cases (all explicit caller-set, not profile-conditional):
 
-- `compile_stdlib_cache_object` single-batch path (line 347): stdlib cache objects skip IR passes because the per-function TIR pipeline was already run on the full IR above.
-- `compile_stdlib_cache_object` multi-batch path (line 377): same reason.
+- `compile_stdlib_cache_archive` direct and batched paths: stdlib member objects
+  skip IR passes because the per-function TIR pipeline already ran on the full
+  IR above; deterministic archive publication does not rerun compiler passes.
 - Batched user-program compilation (line 2535): batches skip IR passes because the full-program module phase + per-function pipeline already ran on `ir` in the non-batched first pass before splitting.
 
 In all three cases the semantics are correct: the passes already ran before the split, and `skip_ir_passes = true` prevents double-execution.

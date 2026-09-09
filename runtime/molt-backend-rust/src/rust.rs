@@ -246,6 +246,7 @@ impl RustBackend {
             param_types: func.param_types.clone(),
             source_file: func.source_file.clone(),
             is_extern: func.is_extern,
+            codegen_partition: func.codegen_partition,
             execution_context: func.execution_context,
         };
         self.current_scalar_plan = Some(ScalarRepresentationPlan::for_function_ir_for_target(

@@ -13,6 +13,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -37,6 +38,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ]);
@@ -65,6 +67,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
@@ -95,6 +98,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
@@ -133,6 +137,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut extern_helper);
@@ -156,10 +161,11 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
-    let functions = vec![caller.clone(), extern_helper.clone()];
-    let module_context = SimpleBackend::build_module_context(&functions);
+    let mut functions = vec![caller.clone(), extern_helper.clone()];
+    let module_context = SimpleBackend::prepare_module_context(&mut functions);
     assert_eq!(
         module_context.function_has_ret.get("stdlib_value_helper"),
         Some(&true),
@@ -213,6 +219,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -227,6 +234,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ]);
@@ -253,6 +261,7 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         param_types: Some(vec!["i64".to_string()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }]);
 
@@ -299,5 +308,28 @@ fn local_function_metadata_overrides_stale_module_context_after_split() {
     assert_eq!(
         merged_has_ret.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
         Some(&true)
+    );
+}
+
+// The context's serialized origin rows are compiler-produced identity, not a
+// naming convention. Batch readers must retain chains for late re-partitioning.
+#[test]
+fn native_module_context_roundtrip_preserves_partition_sources() {
+    let context = NativeBackendModuleContext {
+        partition_sources: BTreeMap::from([
+            ("opaque_first".into(), "app__owner".into()),
+            ("opaque_second".into(), "opaque_first".into()),
+        ]),
+        ..NativeBackendModuleContext::default()
+    };
+    let bytes = serde_json::to_vec(&context).unwrap();
+    let restored: NativeBackendModuleContext = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        restored.original_function_name("opaque_second"),
+        "app__owner"
+    );
+    assert_eq!(
+        restored.original_function_name("__molt_chunk_v1_user"),
+        "__molt_chunk_v1_user"
     );
 }

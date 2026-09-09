@@ -8,7 +8,7 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::super::effects::op_may_throw;
+use super::super::effects::op_may_throw_with_types;
 
 /// SimpleIR op kinds that fall through to `OpCode::Copy` in the SSA lift
 /// (so they carry `_original_kind`) but are nevertheless provably
@@ -127,7 +127,7 @@ pub(crate) fn op_may_raise(
     {
         return false;
     }
-    if op_may_throw(op) {
+    if op_may_throw_with_types(op, value_types) {
         return true;
     }
     if op.opcode == OpCode::Copy {

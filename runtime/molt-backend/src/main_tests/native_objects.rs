@@ -10,6 +10,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -19,6 +20,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -28,6 +30,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ];
@@ -57,6 +60,7 @@ fn partition_functions_for_batches_respects_count_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         })
         .collect();
@@ -68,247 +72,143 @@ fn partition_functions_for_batches_respects_count_budget() {
 }
 
 #[test]
-fn relocatable_linker_binary_prefers_override_then_env() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prior_molt_linker = std::env::var("MOLT_LINKER").ok();
-    let prior_ld = std::env::var("LD").ok();
-    let prior_cc = std::env::var("CC").ok();
-
-    unsafe {
-        std::env::set_var("MOLT_LINKER", "molt-ld");
-        std::env::set_var("LD", "system-ld");
-        std::env::set_var("CC", "clang");
-    }
-    assert_eq!(relocatable_linker_binary(Some("explicit")), "explicit");
-    assert_eq!(relocatable_linker_binary(None), "molt-ld");
-
-    unsafe {
-        std::env::remove_var("MOLT_LINKER");
-    }
-    assert_eq!(relocatable_linker_binary(None), "system-ld");
-
-    unsafe {
-        std::env::remove_var("LD");
-    }
-    assert_eq!(relocatable_linker_binary(None), "clang");
-
-    match prior_molt_linker {
-        Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
-        None => unsafe { std::env::remove_var("MOLT_LINKER") },
-    }
-    match prior_ld {
-        Some(value) => unsafe { std::env::set_var("LD", value) },
-        None => unsafe { std::env::remove_var("LD") },
-    }
-    match prior_cc {
-        Some(value) => unsafe { std::env::set_var("CC", value) },
-        None => unsafe { std::env::remove_var("CC") },
-    }
-}
-
-#[test]
-fn merge_relocatable_objects_copies_single_input() {
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "molt-merge-reloc-single-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let input = tmp_dir.join("input.o");
-    let output = tmp_dir.join("output.o");
-    std::fs::write(&input, b"object-bytes").expect("write input object");
-
-    merge_relocatable_objects(
-        &output,
-        std::slice::from_ref(&input),
-        Some("linker-that-must-not-run"),
-    )
-    .expect("copy single input object");
-
-    assert_eq!(
-        std::fs::read(&output).expect("read merged output"),
-        b"object-bytes"
-    );
-
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-}
-
-#[test]
-fn merge_relocatable_objects_reports_linker_failure() {
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "molt-merge-reloc-fail-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let input_a = tmp_dir.join("a.o");
-    let input_b = tmp_dir.join("b.o");
-    let output = tmp_dir.join("output.o");
-    std::fs::write(&input_a, b"a").expect("write first input object");
-    std::fs::write(&input_b, b"b").expect("write second input object");
-    let failing_linker = write_failing_relocatable_linker(&tmp_dir);
-    let failing_linker_arg = failing_linker.to_string_lossy();
-
-    let err = merge_relocatable_objects(
-        &output,
-        &[input_a.clone(), input_b.clone()],
-        Some(failing_linker_arg.as_ref()),
-    )
-    .expect_err("merge should fail with failing linker");
-    let message = err.to_string();
-    assert!(message.contains("relocatable link failed"), "{message}");
-    assert!(!output.exists());
-
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-}
-
-#[test]
-fn native_application_object_batches_cleanup_temp_dir_after_merge_failure() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
-    let prior_linker = std::env::var("MOLT_LINKER").ok();
+fn native_application_archive_publication_failure_cleans_batches() {
+    let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
+    unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1") };
     let temp_root = std::env::temp_dir();
-    let batch_prefix = format!("molt_batch_{}_", std::process::id());
-    let before: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
-        .expect("read temp root before")
-        .flatten()
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_string_lossy().starts_with(&batch_prefix))
-        .collect();
-    let tmp_dir = temp_root.join(format!(
-        "molt-native-app-merge-fail-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let failing_linker = write_failing_relocatable_linker(&tmp_dir);
-    unsafe {
-        std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
-        std::env::set_var("MOLT_LINKER", failing_linker.as_os_str());
-    }
-
-    let output = tmp_dir.join("output.o");
-    let ir = SimpleIR {
-        functions: vec![
-            FunctionIR {
-                name: "molt_main".to_string(),
-                params: vec![],
-                ops: vec![
-                    OpIR {
-                        kind: "call".to_string(),
-                        s_value: Some("helper".to_string()),
-                        value: Some(0),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
-                ],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
-            },
-            FunctionIR {
-                name: "helper".to_string(),
-                params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
-            },
-        ],
-        profile: None,
+    let prefix = format!("molt_batch_{}_", std::process::id());
+    let batch_dirs = || {
+        std::fs::read_dir(&temp_root)
+            .expect("read temp root")
+            .map(|entry| entry.expect("read directory entry").file_name())
+            .filter(|name| name.to_string_lossy().starts_with(&prefix))
+            .collect::<std::collections::BTreeSet<_>>()
     };
-
-    let err = compile_native_application_object_to_path(
-        ir,
+    let before = batch_dirs();
+    let directory = native_artifact_test_directory("publication-failure");
+    let output = directory.join("blocked.a");
+    std::fs::create_dir(&output).expect("create blocking directory");
+    let error = compile_native_application_artifact_to_path(
+        native_artifact_test_ir(),
         &output,
-        NativeApplicationObjectOptions {
-            target_triple: None,
-            stdlib_split_enabled: false,
-            app_callable_manifest: None,
-            log_prefix: "MOLT_BACKEND(test)",
-            module_registry: None,
-            module_context: None,
-        },
+        native_artifact_test_options(NativeArtifactKind::Archive),
     )
-    .expect_err("forced linker failure should propagate");
-    let message = err.to_string();
-    assert!(message.contains("relocatable link failed"), "{message}");
-    assert!(!output.exists(), "failed merge must not publish output");
-
-    let after: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
-        .expect("read temp root after")
-        .flatten()
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_string_lossy().starts_with(&batch_prefix))
-        .collect();
-    assert_eq!(
-        after, before,
-        "batch temp dirs must be cleaned after failure"
+    .expect_err("archive publication into a directory must fail");
+    assert!(
+        !error.to_string().is_empty(),
+        "publication failure must retain diagnostics"
     );
-
-    match prior_batch_size {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
-    }
-    match prior_linker {
-        Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
-        None => unsafe { std::env::remove_var("MOLT_LINKER") },
-    }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    assert!(
+        output.is_dir(),
+        "failure must preserve the previous destination"
+    );
+    assert_eq!(
+        batch_dirs(),
+        before,
+        "failure must not strand batch directories"
+    );
+    std::fs::remove_dir_all(directory).expect("clean test directory");
 }
 
 #[test]
-fn native_application_object_uses_op_budget_even_when_count_fits() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
-    let prior_op_budget = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET").ok();
-    let prior_linker = std::env::var("MOLT_LINKER").ok();
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "molt-native-app-op-budget-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let failing_linker = write_failing_relocatable_linker(&tmp_dir);
+fn native_archive_honors_batch_budget_while_object_is_one_relocatable() {
+    let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
     unsafe {
         std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "64");
         std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "1");
-        std::env::set_var("MOLT_LINKER", failing_linker.as_os_str());
     }
+    let directory = native_artifact_test_directory("output-kinds");
+    for kind in [NativeArtifactKind::Object, NativeArtifactKind::Archive] {
+        let output = directory.join(if kind == NativeArtifactKind::Object {
+            "output.o"
+        } else {
+            "output.a"
+        });
+        let result = compile_native_application_artifact_to_path(
+            native_artifact_test_ir(),
+            &output,
+            native_artifact_test_options(kind),
+        )
+        .expect("compile typed native artifact");
+        let bytes = std::fs::read(&output).expect("read native artifact");
+        if kind == NativeArtifactKind::Object {
+            use object::Object;
+            assert_eq!(
+                result.batch_count, 1,
+                "explicit object output cannot cross object modules"
+            );
+            let object = object::File::parse(bytes.as_slice()).expect("actual relocatable object");
+            assert_eq!(object.kind(), object::ObjectKind::Relocatable);
+        } else {
+            assert_eq!(result.batch_count, 2, "archive output obeys the op budget");
+            let archive = object::read::archive::ArchiveFile::parse(bytes.as_slice())
+                .expect("actual archive");
+            assert_eq!(archive.members().count(), 2);
+        }
+    }
+    std::fs::remove_dir_all(directory).expect("clean test directory");
+}
 
-    let output = tmp_dir.join("output.o");
-    let ir = SimpleIR {
+#[test]
+fn native_object_refuses_split_graph_before_emission() {
+    let mut options = native_artifact_test_options(NativeArtifactKind::Object);
+    options.stdlib_split_enabled = true;
+    let error = compile_native_application_artifact_to_path(
+        native_artifact_test_ir(),
+        std::path::Path::new("must-not-be-emitted.o"),
+        options,
+    )
+    .expect_err("object mode cannot externalize the shared stdlib");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot omit the shared stdlib graph")
+    );
+}
+
+fn native_artifact_test_options(
+    kind: NativeArtifactKind,
+) -> NativeApplicationArtifactOptions<'static> {
+    NativeApplicationArtifactOptions {
+        native_output_kind: kind,
+        target_triple: None,
+        stdlib_split_enabled: false,
+        app_callable_manifest: None,
+        log_prefix: "MOLT_BACKEND(test)",
+        module_registry: None,
+        module_context: None,
+    }
+}
+
+fn native_artifact_test_directory(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "molt-native-artifact-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).expect("create test directory");
+    directory
+}
+
+fn native_artifact_test_ir() -> SimpleIR {
+    let function = |name: &str, ops| FunctionIR {
+        name: name.to_string(),
+        params: vec![],
+        ops,
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        execution_context: Default::default(),
+    };
+    SimpleIR {
         functions: vec![
-            FunctionIR {
-                name: "molt_main".to_string(),
-                params: vec![],
-                ops: vec![
+            function(
+                "molt_main",
+                vec![
                     OpIR {
                         kind: "call".to_string(),
                         s_value: Some("helper".to_string()),
@@ -320,71 +220,23 @@ fn native_application_object_uses_op_budget_even_when_count_fits() {
                         ..OpIR::default()
                     },
                 ],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
-            },
-            FunctionIR {
-                name: "helper".to_string(),
-                params: vec![],
-                ops: vec![OpIR {
+            ),
+            function(
+                "helper",
+                vec![OpIR {
                     kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
-            },
+            ),
         ],
         profile: None,
-    };
-
-    let err = compile_native_application_object_to_path(
-        ir,
-        &output,
-        NativeApplicationObjectOptions {
-            target_triple: None,
-            stdlib_split_enabled: false,
-            app_callable_manifest: None,
-            log_prefix: "MOLT_BACKEND(test)",
-            module_registry: None,
-            module_context: None,
-        },
-    )
-    .expect_err("op budget must force relocatable batching");
-    let message = err.to_string();
-    assert!(message.contains("relocatable link failed"), "{message}");
-    assert!(!output.exists(), "failed merge must not publish output");
-
-    match prior_batch_size {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
     }
-    match prior_op_budget {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET") },
-    }
-    match prior_linker {
-        Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
-        None => unsafe { std::env::remove_var("MOLT_LINKER") },
-    }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
 fn resolved_batch_size_and_op_budget_limits_default_and_zero_disable_caps() {
-    let _env_guard = ENV_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prior_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
-    let prior_ops = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET").ok();
-
-    unsafe {
-        std::env::remove_var("MOLT_BACKEND_BATCH_SIZE");
-        std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET");
-    }
+    let _env_guard =
+        TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
     assert_eq!(
         resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE),
         DEFAULT_BACKEND_BATCH_SIZE
@@ -414,15 +266,6 @@ fn resolved_batch_size_and_op_budget_limits_default_and_zero_disable_caps() {
         resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET),
         usize::MAX
     );
-
-    match prior_size {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
-    }
-    match prior_ops {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET") },
-    }
 }
 
 #[test]
@@ -444,6 +287,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
         FunctionIR {
@@ -456,6 +300,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         },
     ];
@@ -485,6 +330,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         param_types: Some(Vec::new()),
         source_file: Some("demo.py".to_string()),
         is_extern: false,
+        codegen_partition: false,
         execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
     };
     let local = FunctionIR {
@@ -514,6 +360,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         param_types: None,
         source_file: Some("demo.py".to_string()),
         is_extern: false,
+        codegen_partition: false,
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
     let declarations = external_function_declarations(&[local.clone(), inherited.clone()]);
@@ -530,6 +377,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         param_types: None,
         source_file: Some("demo.py".to_string()),
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }];
     append_referenced_external_declarations(&mut string_only_reference, &declarations);
@@ -566,6 +414,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         param_types: None,
         source_file: Some("warm.py".to_string()),
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     }];
     append_referenced_external_declarations(&mut local_external_reference, &declarations);

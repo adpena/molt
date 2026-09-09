@@ -6527,6 +6527,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_namespace_get",
+        symbol: "molt_namespace_get",
+        arity: 3,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_namespace_del",
+        symbol: "molt_namespace_del",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_module_import",
         symbol: "molt_module_import",
         arity: 1,
@@ -7537,6 +7549,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_inspect_currentframe",
         symbol: "molt_inspect_currentframe",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_frame_context_set",
+        symbol: "molt_frame_context_set",
+        arity: 3,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_super_from_frame",
+        symbol: "molt_super_from_frame",
         arity: 0,
         defaults: &[],
     },

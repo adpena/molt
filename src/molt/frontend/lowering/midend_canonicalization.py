@@ -15,7 +15,13 @@ from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
 )
-from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS
+from molt.frontend.lowering.op_kinds_generated import (
+    FRONTEND_EFFECT_CLASS,
+    FRONTEND_INTRINSIC_SCALAR_ARITIES,
+    FRONTEND_INTRINSIC_SCALAR_RESULTS,
+    FRONTEND_PREDICATE_SEMANTICS,
+    frontend_predicate_facts,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -141,14 +147,76 @@ class MidendCanonicalizationMixin(_MixinBase):
             return ("CONST", type(value).__name__, normalized)
         return None
 
-    def _op_effect_class(self, op_kind: str) -> str:
+    def _predicate_primitive_facts(self, op: MoltOp) -> tuple[bool, bool] | None:
+        category = FRONTEND_PREDICATE_SEMANTICS.get(op.kind)
+        if category is None:
+            return None
+        if (
+            not isinstance(op.result, MoltValue)
+            or not op.result.name
+            or len(op.args) != (1 if category == "truth" else 2)
+            or not all(isinstance(arg, MoltValue) for arg in op.args)
+        ):
+            return (False, False)
+        definitions = getattr(self, "_op_by_result", {})
+        visiting: set[str] = set()
+
+        def exact_type(value: MoltValue) -> str | None:
+            # A type_hint can come from an annotation and admit subclasses.
+            # Only producer semantics prove an exact primitive. SSA rewrite
+            # passes retain producer identity; absent facts stay conservative.
+            if value.name in visiting:
+                return None
+            producer = definitions.get(value.name)
+            if (
+                producer is None
+                or not isinstance(producer.result, MoltValue)
+                or producer.result.name != value.name
+            ):
+                return None
+            intrinsic = FRONTEND_INTRINSIC_SCALAR_RESULTS.get(producer.kind)
+            if intrinsic is not None:
+                return (
+                    intrinsic
+                    if len(producer.args) == FRONTEND_INTRINSIC_SCALAR_ARITIES[producer.kind]
+                    and (
+                        producer.kind not in FRONTEND_PREDICATE_SEMANTICS
+                        or all(isinstance(arg, MoltValue) for arg in producer.args)
+                    )
+                    else None
+                )
+            visiting.add(value.name)
+            try:
+                if producer.kind == "COPY" and len(producer.args) == 1 and not producer.metadata:
+                    source = producer.args[0]
+                    return exact_type(source) if isinstance(source, MoltValue) else None
+                if producer.kind in FRONTEND_PREDICATE_SEMANTICS:
+                    if all(isinstance(arg, MoltValue) for arg in producer.args):
+                        facts = frontend_predicate_facts(
+                            producer.kind, *(exact_type(arg) for arg in producer.args)
+                        )
+                        return "bool" if facts is not None and facts[0] else None
+                return None
+            finally:
+                visiting.remove(value.name)
+
+        return frontend_predicate_facts(op.kind, *(exact_type(arg) for arg in op.args))
+
+    def _op_effect_class(self, op: MoltOp | str) -> str:
+        if isinstance(op, MoltOp):
+            predicate = self._predicate_primitive_facts(op)
+            if predicate is not None:
+                return "pure" if predicate[0] else "writes_heap"
+            op_kind = op.kind
+        else:
+            op_kind = op
         return FRONTEND_EFFECT_CLASS.get(op_kind, "unknown")
 
-    def _is_pure_op_for_global_cse(self, op_kind: str) -> bool:
-        return self._op_effect_class(op_kind) == "pure"
+    def _is_pure_op_for_global_cse(self, op: MoltOp | str) -> bool:
+        return self._op_effect_class(op) == "pure"
 
-    def _is_cse_eligible_op(self, op_kind: str) -> bool:
-        return self._op_effect_class(op_kind) in {"pure", "reads_heap"}
+    def _is_cse_eligible_op(self, op: MoltOp | str) -> bool:
+        return self._op_effect_class(op) in {"pure", "reads_heap"}
 
     def _normalize_value_operand_key(
         self, value: Any, const_int_values: dict[str, int]
@@ -802,9 +870,9 @@ class MidendCanonicalizationMixin(_MixinBase):
         object_epochs: dict[str, int],
         memory_epoch: int,
     ) -> tuple[Any, ...] | None:
-        if not self._is_cse_eligible_op(op.kind):
+        if not self._is_cse_eligible_op(op):
             return None
-        effect_class = self._op_effect_class(op.kind)
+        effect_class = self._op_effect_class(op)
         runtime_symbol = (
             op.metadata.get("runtime_symbol") if op.metadata is not None else None
         )
@@ -1209,7 +1277,7 @@ class MidendCanonicalizationMixin(_MixinBase):
                 object_epochs=object_epochs,
                 memory_epoch=memory_epoch,
             )
-            effect_class = self._op_effect_class(canonical_op.kind)
+            effect_class = self._op_effect_class(canonical_op)
             if (
                 effect_class == "reads_heap"
                 and value_key is not None

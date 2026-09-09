@@ -9,10 +9,10 @@ use crate::backend_process::emit::validate_wasm_module_catalog;
 use molt_backend::{WasmBackend, WasmCompileOptions};
 
 #[cfg(feature = "native-backend")]
-use super::super::super::native_batch::compile_native_application_object_to_path;
+use super::super::super::native_batch::compile_native_application_artifact_to_path;
 #[cfg(feature = "native-backend")]
 use super::super::super::shared_stdlib_cache::{
-    NativeStdlibCachePrepare, prepare_native_application_object,
+    NativeStdlibCachePrepare, prepare_native_application_artifact,
 };
 use super::super::DaemonJobRequest;
 
@@ -26,6 +26,7 @@ pub(crate) enum DaemonCompiledOutput {
 pub(crate) fn compile_daemon_job_output(
     job: &DaemonJobRequest,
     document: molt_backend::BackendIrDocument,
+    stdlib_archive_path: Option<&str>,
 ) -> Result<DaemonCompiledOutput, String> {
     let molt_backend::BackendIrDocument {
         ir,
@@ -63,18 +64,18 @@ pub(crate) fn compile_daemon_job_output(
         {
             let mut ir = ir;
             let target_triple = job.target_triple.as_deref();
-            let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
             let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
             let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let explicit_stdlib_module_symbols = molt_backend::stdlib_module_symbols_from_env()?;
-            let compile_options = prepare_native_application_object(
+            let compile_options = prepare_native_application_artifact(
                 &mut ir,
                 NativeStdlibCachePrepare {
+                    native_output_kind: job.native_output_kind,
                     target_triple,
-                    stdlib_obj_path: stdlib_obj_path.as_deref(),
+                    stdlib_archive_path,
                     expected_cache_key: expected_stdlib_cache_key.as_deref(),
                     expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
                     have_entry_module,
@@ -86,12 +87,17 @@ pub(crate) fn compile_daemon_job_output(
             )
             .map_err(|err| err.to_string())?;
 
-            compile_native_application_object_to_path(ir, Path::new(&job.output), compile_options)
-                .map_err(|err| format!("failed to compile native application object: {err}"))?;
+            compile_native_application_artifact_to_path(
+                ir,
+                Path::new(&job.output),
+                compile_options,
+            )
+            .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
             Ok(DaemonCompiledOutput::WrittenToPath)
         }
         #[cfg(not(feature = "native-backend"))]
         {
+            let _ = stdlib_archive_path;
             Err("backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend".to_string())
         }
     }

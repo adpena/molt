@@ -60,12 +60,18 @@ cProfile, pstats = _import_stdlib_profilers()
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from molt.frontend import SimpleTIRGenerator, _ic_counter  # noqa: E402
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from molt.target_python import (  # noqa: E402
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_target_python_version,
+    require_supported_target_python,
+)
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -396,6 +402,7 @@ def profile_one(
     *,
     optimization_profile: str,
     top_functions: int,
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rel = _repo_rel(path)
     source = _read_python_source(path)
@@ -406,6 +413,20 @@ def profile_one(
     visit_ms = 0.0
     serialize_ms = 0.0
     try:
+        reason = test_policy.parse_metadata(path).python_exclusion_reason(target_python)
+        if reason is not None:
+            return {
+                "path": rel,
+                "sha256": source_hash,
+                "status": "skip",
+                "exclusion_reason": reason,
+                "elapsed_ms": 0.0,
+                "parse_ms": 0.0,
+                "visit_ms": 0.0,
+                "serialize_ms": 0.0,
+                "midend_pass_stats_by_function": {},
+                "midend_policy_outcomes_by_function": {},
+            }, []
         _ic_counter[0] = 0
         profiler.enable()
         parse_start = time.perf_counter()
@@ -415,6 +436,7 @@ def profile_one(
             optimization_profile=optimization_profile,
             module_name=_module_name_for_path(path),
             source_path=str(path),
+            target_python=target_python,
         )
         visit_start = time.perf_counter()
         gen.visit(tree)
@@ -470,6 +492,7 @@ def profile_sources(
     optimization_profile: str,
     top: int,
     profile_inputs: Mapping[str, Any] | None = None,
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
 ) -> dict[str, Any]:
     pass_aggregate: dict[str, dict[str, Any]] = {}
     cprofile_aggregate: dict[tuple[str, int, str], dict[str, Any]] = {}
@@ -479,6 +502,7 @@ def profile_sources(
             path,
             optimization_profile=optimization_profile,
             top_functions=max(1, top),
+            target_python=target_python,
         )
         source_results.append(result)
         _record_pass_aggregates(
@@ -497,11 +521,13 @@ def profile_sources(
     inputs.setdefault("limit", None)
     inputs["resolved_sources"] = resolved_sources
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "tool": "frontend_hot_pass_profile",
         "generated_at_utc": _utc_stamp(),
         "git_rev": _git_rev(),
         "optimization_profile": optimization_profile,
+        "target_python": f"{target_python[0]}.{target_python[1]}",
+        "parser_python": f"{sys.version_info.major}.{sys.version_info.minor}",
         "profile_inputs": inputs,
         "source_count": len(source_results),
         "status_counts": dict(sorted(status_counts.items())),
@@ -541,6 +567,7 @@ def format_markdown(report: Mapping[str, Any]) -> str:
         f"- Generated: {report.get('generated_at_utc')}",
         f"- Git revision: {report.get('git_rev')}",
         f"- Optimization profile: {report.get('optimization_profile')}",
+        f"- Target Python: {report.get('target_python')} (parser {report.get('parser_python')})",
         f"- Corpus digest: {report.get('corpus_digest')}",
         f"- Sources: {report.get('source_count')} ({report.get('status_counts')})",
         f"- Total frontend elapsed: {report.get('total_elapsed_ms')} ms",
@@ -579,7 +606,7 @@ def format_markdown(report: Mapping[str, Any]) -> str:
         )
     )
     errors = [
-        source for source in report.get("sources", []) if source.get("status") != "pass"
+        source for source in report.get("sources", []) if source.get("status") == "error"
     ]
     if errors:
         lines.extend(["", "## Errors", ""])
@@ -587,6 +614,13 @@ def format_markdown(report: Mapping[str, Any]) -> str:
             lines.append(
                 f"- {source.get('path')}: {source.get('error_type')}: {source.get('error')}"
             )
+    skipped = [
+        source for source in report.get("sources", []) if source.get("status") == "skip"
+    ]
+    if skipped:
+        lines.extend(["", "## Excluded Sources", ""])
+        for source in skipped:
+            lines.append(f"- {source.get('path')}: {source.get('exclusion_reason')}")
     lines.append("")
     return "\n".join(lines)
 
@@ -612,6 +646,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--top", type=int, default=12)
+    parser.add_argument(
+        "--target-python",
+        default=_DEFAULT_TARGET_PYTHON_VERSION.short,
+        help="Canonical target Python version; use a parser that supports its syntax.",
+    )
     parser.add_argument(
         "--optimization-profile",
         choices=("dev", "release"),
@@ -639,6 +678,9 @@ def _manifest_input_record(path: Path | None) -> dict[str, str] | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    target = require_supported_target_python(
+        _parse_target_python_version(args.target_python)
+    )
     sources = resolve_sources(
         manifest=args.manifest,
         sources=args.source,
@@ -648,6 +690,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sources,
         optimization_profile=args.optimization_profile,
         top=args.top,
+        target_python=target.feature_version,
         profile_inputs={
             "manifest": _manifest_input_record(args.manifest),
             "source_args": list(args.source),
@@ -663,14 +706,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     md_path.write_text(format_markdown(report), encoding="utf-8")
+    return_code = int(
+        bool(args.fail_on_error and report["status_counts"].get("error", 0))
+    )
     print(
         "frontend-hot-pass-profile "
-        f"rc=0 sources={report['source_count']} statuses={report['status_counts']} "
+        f"rc={return_code} sources={report['source_count']} statuses={report['status_counts']} "
         f"json={_repo_rel(json_path)} md={_repo_rel(md_path)}"
     )
-    if args.fail_on_error and report["status_counts"].get("error", 0):
-        return 1
-    return 0
+    return return_code
 
 
 if __name__ == "__main__":

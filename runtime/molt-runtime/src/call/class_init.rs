@@ -1176,43 +1176,11 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
 ) -> Option<u64> {
     unsafe {
         if is_builtin_class_bits(_py, call_bits) {
-            // `super` is a builtin type (CPython parity). We must handle it here so that
-            // indirect calls like `alias = builtins.super; alias()` produce CPython-shaped
-            // errors (RuntimeError when `__class__` cell is missing) instead of falling
-            // through to the generic type-call path.
             let builtins = builtin_classes(_py);
             if call_bits == builtins.super_type {
-                if args.is_empty() {
-                    // CPython distinguishes between calling from module scope (no args at all)
-                    // and calling from a function/method frame without a `__class__` cell.
-                    let has_pos_args = crate::state::tls::FRAME_STACK.with(|stack| {
-                        let frame = stack.borrow().last().copied();
-                        let Some(frame) = frame else {
-                            return false;
-                        };
-                        let Some(code_ptr) = obj_from_bits(frame.code_bits).as_ptr() else {
-                            return false;
-                        };
-                        if object_type_id(code_ptr) != TYPE_ID_CODE {
-                            return false;
-                        }
-                        code_argcount(code_ptr) > 0
-                    });
-                    let msg = if has_pos_args {
-                        "super(): __class__ cell not found"
-                    } else {
-                        "super(): no arguments"
-                    };
-                    return Some(raise_exception::<_>(_py, "RuntimeError", msg));
-                }
-                if args.len() == 1 {
-                    return Some(molt_super_new(args[0], MoltObject::none().bits()));
-                }
-                if args.len() == 2 {
-                    return Some(molt_super_new(args[0], args[1]));
-                }
-                let msg = format!("super() expected at most 2 arguments, got {}", args.len());
-                return Some(raise_exception::<_>(_py, "TypeError", &msg));
+                return Some(crate::builtins::types::descriptor_objects::super_call(
+                    _py, args, false,
+                ));
             }
             // `type(...)` needs the builder-aware path in `call_type_via_bind`
             // for CPython-compatible 1-arg and 3-arg semantics.

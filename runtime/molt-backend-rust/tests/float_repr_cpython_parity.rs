@@ -15,6 +15,13 @@ use molt_backend_rust::{FunctionIR, OpIR, SimpleIR};
 use std::io::Write;
 use std::process::Command;
 
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
 /// Edge-case table verified against CPython 3.12 `repr(float)`. Each entry is
 /// `(f64 bit pattern as u64, expected repr)`. Covers: scientific/fixed
 /// threshold neighborhoods (1e16 vs 1e17, 1e-4 vs 1e-5), round-half-to-even
@@ -57,6 +64,7 @@ fn emitted_format_float_block() -> String {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -77,23 +85,26 @@ fn emitted_format_float_block() -> String {
 
 /// Compile `program_src` with rustc into `out_dir`, run it, return stdout lines.
 fn compile_and_run(program_src: &str, tag: &str) -> Vec<String> {
-    let out_dir = std::env::temp_dir().join(format!("molt_float_repr_test_{tag}"));
-    std::fs::create_dir_all(&out_dir).unwrap();
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new(tag)
+        .expect("create float-repr outputs within Cargo image custody");
+    let out_dir = artifacts.path();
     let src_path = out_dir.join("prog.rs");
     let bin_path = out_dir.join(if cfg!(windows) { "prog.exe" } else { "prog" });
     let mut f = std::fs::File::create(&src_path).unwrap();
     f.write_all(program_src.as_bytes()).unwrap();
     drop(f);
 
-    let status = Command::new("rustc")
+    let status = artifacts
+        .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .expect("resolve fixture compiler")
         .arg("-O")
         .arg("--edition")
         .arg("2021")
         .arg("-A")
         .arg("warnings")
         .arg("-o")
-        .arg(&bin_path)
-        .arg(&src_path)
+        .arg(artifacts.argument("", &bin_path).unwrap())
+        .arg(artifacts.argument("", &src_path).unwrap())
         .status()
         .expect("rustc must be available to compile the emitted formatter");
     assert!(
@@ -104,7 +115,14 @@ fn compile_and_run(program_src: &str, tag: &str) -> Vec<String> {
     let output = Command::new(&bin_path)
         .output()
         .expect("compiled formatter binary must run");
-    assert!(output.status.success(), "formatter binary must exit 0");
+    assert!(
+        output.status.success(),
+        "formatter binary {} failed: status={}\nstdout:\n{}\nstderr:\n{}",
+        bin_path.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout)
         .unwrap()
         .lines()

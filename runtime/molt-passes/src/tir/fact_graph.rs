@@ -12,9 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::blocks::{BlockId, Terminator};
-use super::call_facts::{
-    CallFacts, CallFactsTable, CallTargetFact, FactValue, InlineEligibility, InlineWhyNot,
-};
+use super::call_facts::{CallFacts, CallFactsTable, CallTargetFact, FactValue, InlineEligibility};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
     ExplicitReleaseOperands, RefcountBalanceRole, opcode_explicit_release_operands_table,
@@ -815,7 +813,7 @@ fn fact_value_confidence(value: FactValue) -> &'static str {
 fn inline_eligibility_value(value: InlineEligibility) -> String {
     match value {
         InlineEligibility::Eligible => "Eligible".to_string(),
-        InlineEligibility::WhyNot(reason) => format!("WhyNot({})", inline_why_not(reason)),
+        InlineEligibility::WhyNot(reason) => format!("WhyNot({})", reason.as_str()),
         InlineEligibility::Unknown => "Unknown".to_string(),
     }
 }
@@ -825,17 +823,6 @@ fn inline_eligibility_confidence(value: InlineEligibility) -> &'static str {
         InlineEligibility::Eligible => "proven",
         InlineEligibility::WhyNot(_) => "proven_false",
         InlineEligibility::Unknown => "unknown",
-    }
-}
-
-fn inline_why_not(reason: InlineWhyNot) -> &'static str {
-    match reason {
-        InlineWhyNot::Recursive => "Recursive",
-        InlineWhyNot::HasHandlers => "HasHandlers",
-        InlineWhyNot::Generator => "Generator",
-        InlineWhyNot::EntryHasPredecessor => "EntryHasPredecessor",
-        InlineWhyNot::Closure => "Closure",
-        InlineWhyNot::OverBudget => "OverBudget",
     }
 }
 
@@ -957,6 +944,29 @@ mod tests {
                 .iter()
                 .any(|c| c.kind == "terminator_operand" && c.role == "return[0]")
         );
+    }
+
+    #[test]
+    fn inline_reason_diagnostics_cover_the_typed_authority() {
+        use crate::tir::call_facts::InlineWhyNot;
+
+        for (reason, expected) in [
+            (InlineWhyNot::ExecutionContext, "WhyNot(ExecutionContext)"),
+            (InlineWhyNot::CodegenPartition, "WhyNot(CodegenPartition)"),
+            (InlineWhyNot::Recursive, "WhyNot(Recursive)"),
+            (InlineWhyNot::HasHandlers, "WhyNot(HasHandlers)"),
+            (InlineWhyNot::Generator, "WhyNot(Generator)"),
+            (
+                InlineWhyNot::EntryHasPredecessor,
+                "WhyNot(EntryHasPredecessor)",
+            ),
+            (InlineWhyNot::Closure, "WhyNot(Closure)"),
+            (InlineWhyNot::OverBudget, "WhyNot(OverBudget)"),
+        ] {
+            let eligibility = InlineEligibility::WhyNot(reason);
+            assert_eq!(inline_eligibility_value(eligibility), expected);
+            assert_eq!(inline_eligibility_confidence(eligibility), "proven_false");
+        }
     }
 
     #[test]

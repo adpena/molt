@@ -5,11 +5,13 @@ use molt_backend::SimpleIR;
 
 use super::super::super::io_limits::ensure_output_parent_dir;
 use super::super::{
-    compile_stdlib_cache_object, publish_shared_stdlib_cache_object, stdlib_cache_temp_publish_path,
+    compile_stdlib_cache_archive, publish_shared_stdlib_cache_archive,
+    stdlib_cache_temp_publish_path,
 };
 use super::request::NativeStdlibCachePrepare;
+use crate::backend_process::atomic_publish::cleanup_temporary_after_error;
 
-pub(crate) fn materialize_missing_stdlib_cache(
+pub(crate) fn materialize_stdlib_cache(
     ir: &mut SimpleIR,
     stdlib_path: &Path,
     request: &NativeStdlibCachePrepare<'_>,
@@ -27,13 +29,13 @@ pub(crate) fn materialize_missing_stdlib_cache(
 
     let stdlib_count = stdlib_funcs.len();
     eprintln!(
-        "{}: first build -- caching {} stdlib functions to {}",
+        "{}: materializing {} stdlib functions to {}",
         request.log_prefix,
         stdlib_count,
         stdlib_path.display()
     );
-    let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "object");
-    if let Err(err) = compile_stdlib_cache_object(
+    let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "archive");
+    if let Err(err) = compile_stdlib_cache_archive(
         &temp_stdlib_path,
         std::mem::take(stdlib_funcs),
         ir.profile.clone(),
@@ -41,13 +43,9 @@ pub(crate) fn materialize_missing_stdlib_cache(
         request.log_prefix,
         module_context.clone(),
     ) {
-        let _ = std::fs::remove_file(&temp_stdlib_path);
-        return Err(io::Error::new(
-            err.kind(),
-            format!("failed to materialize shared stdlib cache: {err}"),
-        ));
+        return Err(cleanup_temporary_after_error(&temp_stdlib_path, err));
     }
-    if let Err(err) = publish_shared_stdlib_cache_object(
+    if let Err(err) = publish_shared_stdlib_cache_archive(
         stdlib_path,
         &temp_stdlib_path,
         stdlib_count,
@@ -55,11 +53,9 @@ pub(crate) fn materialize_missing_stdlib_cache(
         request.expected_cache_manifest,
         current_partition_manifest,
     ) {
-        let _ = std::fs::remove_file(&temp_stdlib_path);
-        return Err(io::Error::new(
-            err.kind(),
-            format!("failed to publish shared stdlib cache: {err}"),
-        ));
+        // The publisher owns temporary cleanup and preserves any cleanup
+        // failure in the returned publication error.
+        return Err(err);
     }
 
     ir.functions = std::mem::take(user_remaining);

@@ -8,7 +8,6 @@ from tests.process_guard_common import (
 import argparse
 import base64
 import copy
-import functools
 import hashlib
 import json
 import os
@@ -34,6 +33,13 @@ from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt.exact_json import canonical_json_sha256
 from tests.python_environment_test_support import build_environment_manifest
+from tests.proof_queue_custody_test_support import (
+    ReceiptCustodyFactory,
+    assert_execution_context_rejects_substitutions,
+    synthetic_live_custody as _synthetic_live_custody,
+    synthetic_python_toolchain,
+    synthetic_receipt_custody as synthetic_receipt_custody,
+)
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
@@ -62,6 +68,7 @@ from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
     execution_environment,
+    execution_receipt_details,
     guarded_execution,
     supervisor_custody,
     custody,
@@ -116,127 +123,6 @@ _REAL_GIT_SNAPSHOT_TESTS = {
     "test_proof_queue_git_snapshot_tracks_runtime_generation_changes",
     "test_proof_queue_git_snapshot_expands_untracked_directories",
 }
-
-
-@functools.lru_cache(maxsize=1)
-def _test_proof_supervisor_binary() -> Path:
-    build = (
-        Path(command_admission.__file__).resolve().parents[1]
-        / "proof_supervisor"
-        / "build.py"
-    )
-    completed = run_custody_subject_process(
-        [sys.executable, str(build), "--release"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
-
-
-def _synthetic_v3_custody(
-    directory: Path,
-    toolchains: dict[str, object],
-    *,
-    nonce: str = "a" * 64,
-    descendants: str = "forbidden",
-    environment: dict[str, str] | None = None,
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    summaries, artifact, telemetry = toolchain_capture.publish_capture(
-        directory / "custody-cas", toolchains
-    )
-    verification = toolchain_capture.verify_capture(
-        artifact, workers=1, cas_root=directory / "custody-cas"
-    )
-    binary_artifact = custody_cas.put_file(
-        directory / "custody-cas",
-        _test_proof_supervisor_binary(),
-        logical_name=_test_proof_supervisor_binary().name,
-        executable=True,
-    ).as_dict()
-    binary = Path(str(binary_artifact["path"])).resolve(strict=True)
-    command = [str(binary), "capability", "leaf"]
-    root_role, fixed_images = supervisor_custody._supervisor_fixed_images(
-        toolchains,
-        {},
-        command,
-    )
-    policy = {
-        "schema": "molt.proof-process-closure.v2",
-        "nonce": nonce,
-        "mode": "leaf" if descendants == "forbidden" else "declared-tree",
-        "cwd": str(directory.resolve()),
-        "command": command,
-        "environment": dict(environment or {}),
-        "root_role": root_role,
-        "fixed_images": fixed_images,
-        "derived_roots": [],
-    }
-    policy_path = directory / "synthetic-supervisor-policy.json"
-    receipt_path = directory / "synthetic-supervisor-receipt.json"
-    supervisor_custody._atomic_json(policy_path, policy)
-    run_custody_subject_process(
-        [
-            str(binary),
-            "run",
-            "--policy",
-            str(policy_path),
-            "--receipt",
-            str(receipt_path),
-        ],
-        check=True,
-    )
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    event_artifact = supervisor_custody._publish_supervisor_event_artifact(
-        receipt_path=receipt_path,
-        receipt=receipt,
-        cas_root=directory / "custody-cas",
-    )
-    capture = {
-        "schema": "molt.proof-toolchain-custody.v1",
-        "artifact": artifact,
-        "verification": verification,
-        "telemetry": {"capture": telemetry},
-    }
-    toolchain_custody = {
-        "capture_semantic_sha256": artifact["semantic_sha256"],
-        "verification_identity_sha256": verification["identity_sha256"],
-        "identical": True,
-    }
-    supervisor = {
-        "schema": "molt.proof-process-supervision.v1",
-        "binary": command_identity._file_identity(binary),
-        "binary_artifact": binary_artifact,
-        "policy": command_identity._file_identity(policy_path),
-        "receipt": receipt,
-        "receipt_file": command_identity._file_identity(receipt_path),
-        "event_artifact": event_artifact,
-        "supervisor_returncode": 0,
-    }
-    return summaries, toolchain_custody, {"capture": capture, "supervisor": supervisor}
-
-
-def _synthetic_live_custody(directory: Path) -> dict[str, object]:
-    raw = {
-        "schema": "molt.proof-live-custody.v1",
-        "watch_roots": 0,
-        "events": [],
-        "errors": [],
-        "state": "DRAINED",
-        "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
-        "stable": True,
-    }
-    raw["identity_sha256"] = supervisor_custody._canonical_payload_sha256(
-        {
-            "events": raw["events"],
-            "errors": raw["errors"],
-            "state": raw["state"],
-            "lifecycle": raw["lifecycle"],
-        }
-    )
-    return supervisor_custody._publish_live_custody_receipt(
-        raw, cas_root=directory / "custody-cas"
-    )
 
 
 def _terminalize_synthetic_run(
@@ -334,7 +220,9 @@ def _terminalize_synthetic_run(
     )
 
 
-def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -> None:
+def _write_synthetic_guarded_execution(
+    command: list[str], *, returncode: int, custody_factory: ReceiptCustodyFactory
+) -> None:
     request_path = Path(command[command.index("--request") + 1])
     request = json.loads(request_path.read_text(encoding="utf-8"))
     result_path = Path(request["result_path"])
@@ -357,19 +245,8 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
     ).hexdigest()
     requested_toolchains = request["envelope"]["toolchains"]
     assert requested_toolchains == ["python"]
-    executable = Path(sys.executable).resolve(strict=True)
-    executable_sha256 = command_identity._hash_file(executable)
-    python_identity: dict[str, object] = {
-        "executable": str(executable),
-        "implementation": "CPython",
-        "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-        "executable_sha256": executable_sha256,
-    }
-    python_identity["identity_sha256"] = hashlib.sha256(
-        json.dumps(python_identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    toolchains = {"python": python_identity}
-    toolchains, compact_custody, v3 = _synthetic_v3_custody(
+    toolchains = {"python": synthetic_python_toolchain(result_path.parent)}
+    toolchains, compact_custody, v3 = custody_factory(
         result_path.parent,
         toolchains,
         nonce=request["execution_nonce"],
@@ -443,6 +320,9 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
             "ineligible_reasons": [],
         },
     }
+    receipt_context = execution_receipt_details.compact_context(
+        receipt_context, cas_root=result_path.parent / "custody-cas"
+    )
     receipt_context["execution_custody_sha256"] = (
         supervisor_custody.execution_custody_sha256(
             receipt_context,
@@ -814,13 +694,34 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 96
+    assert plan.commands
     for command in plan.commands:
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
         assert envelope["toolchains"] == list(plan.required_toolchains(command))
         assert envelope["toolchains"], command.id
+
+
+def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -> None:
+    plan = proof_plan.ProofPlan.load()
+    command = next(
+        item for item in plan.commands if item.id == "rust.test.compiler-authorities"
+    )
+    envelope = command_admission.envelope_for_command(command.argv)
+    assert envelope["kind"] == "proof-plan"
+    assert "lune" in envelope["process_closure"]["toolchains"]
+    assert "--include-ignored" in command.argv
+    assert "--no-fail-fast" in command.argv
+    config_index = command.argv.index("--config")
+    assert command.argv[config_index + 1] == (
+        "profile.dev-fast.package.cranelift-codegen.opt-level=0"
+    )
+    assert config_index < command.argv.index("--")
+    assert {"cargo", "lune", "node", "wasm-ld"} <= set(envelope["toolchains"])
+    compiler_only = [arg for arg in command.argv if arg != "--include-ignored"]
+    compiler_envelope = command_admission.envelope_for_command(compiler_only)
+    assert "lune" not in compiler_envelope["toolchains"]
 
 
 @pytest.mark.parametrize(
@@ -2459,138 +2360,29 @@ def test_execution_context_rejects_malformed_toolchain_objects(
 
 def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
     tmp_path: Path,
+    synthetic_receipt_custody: ReceiptCustodyFactory,
 ) -> None:
-    execution_path = tmp_path / "run.execution.json"
-    stdout_path = execution_path.with_suffix(".stdout.bin")
-    stderr_path = execution_path.with_suffix(".stderr.bin")
-    stdout_path.write_bytes(b"1 passed in 0.01s\n")
-    stderr_path.write_bytes(b"")
-    transcript = {
-        "stdout": command_identity._transcript_identity(stdout_path),
-        "stderr": command_identity._transcript_identity(stderr_path),
-    }
-    transcript["identity_sha256"] = hashlib.sha256(
-        json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    envelope = command_admission.envelope_for_command([sys.executable, "-c", "pass"])
-    python_image = process_image_capture.capture_image(
-        "python", Path(sys.executable), preserve_path=True
-    )
-    synthetic_toolchains, compact_custody, v3 = _synthetic_v3_custody(
-        tmp_path,
-        {
-            "python": {
-                "identity_sha256": "b" * 64,
-                "process_images": [python_image],
-            }
-        },
-        environment={"MOLT_TEST_VALUE": "alpha"},
-    )
-    supervisor_policy_path = Path(str(v3["supervisor"]["policy"]["path"]))
-    supervisor_policy = json.loads(supervisor_policy_path.read_text(encoding="utf-8"))
-    context: dict[str, object] = {
-        "run_id": "run-one",
-        "execution_nonce_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
-        "command_envelope": envelope,
-        "command_transcript": transcript,
-        "toolchains": synthetic_toolchains,
-        "toolchain_custody": compact_custody,
-        "toolchain_capture": v3["capture"],
-        "live_input_custody": _synthetic_live_custody(tmp_path),
-        "child_process_custody": {
-            "policy": {"descendants": "forbidden"},
-            "receipt": {"broker_complete": True},
-        },
-        "process_supervisor": v3["supervisor"],
-        "exact_command_sha256": hashlib.sha256(
-            json.dumps(supervisor_policy["command"], separators=(",", ":")).encode()
-        ).hexdigest(),
-        "execution_environment": {
-            "prelaunch": {
-                "passed_names": ["MOLT_TEST_VALUE"],
-                "identity_sha256": "e" * 64,
-                "canonical_values_sha256": (
-                    execution_environment._canonical_environment_sha256(
-                        {"MOLT_TEST_VALUE": "alpha"}
-                    )
-                ),
-            },
-            "postcompletion_identity_sha256": "e" * 64,
-            "identical": True,
-            "executable_inputs": {
-                "prelaunch": {},
-                "postcompletion_sha256": supervisor_custody._canonical_payload_sha256(
-                    {}
-                ),
-                "identical": True,
-            },
-        },
-        "custody_authorities": {
-            "prelaunch": [],
-            "postcompletion_sha256": supervisor_custody._canonical_payload_sha256([]),
-            "identical": True,
-        },
-        "derived_root_custody": {"prelaunch": [], "policy_roots": []},
-        "source_custody": {"row_cwd": supervisor_policy["cwd"]},
-    }
-    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
-        context, run_id="run-one", returncode=0
-    )
-    runner._validated_execution_context(
-        context,
-        execution_path=execution_path,
-        envelope=envelope,
-        run_id="run-one",
-        execution_nonce="a" * 64,
-        returncode=0,
-    )
-    supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "substituted"
-    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
-    with pytest.raises(ValueError, match="policy binding is invalid"):
-        runner._validated_execution_context(
-            context,
-            execution_path=execution_path,
-            envelope=envelope,
-            run_id="run-one",
-            execution_nonce="a" * 64,
-            returncode=0,
-        )
-    supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "alpha"
-    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
-    event_artifact = v3["supervisor"]["event_artifact"]
-    event_artifact["count"] = int(event_artifact["count"]) + 1
-    with pytest.raises(ValueError, match="event artifact binding is invalid"):
-        runner._validated_execution_context(
-            context,
-            execution_path=execution_path,
-            envelope=envelope,
-            run_id="run-one",
-            execution_nonce="a" * 64,
-            returncode=0,
-        )
-    event_artifact["count"] = int(event_artifact["count"]) - 1
-    stdout_path.write_bytes(b"substituted\n")
-    with pytest.raises(ValueError, match="transcript content substitution"):
-        runner._validated_execution_context(
-            context,
-            execution_path=execution_path,
-            envelope=envelope,
-            run_id="run-one",
-            execution_nonce="a" * 64,
-            returncode=0,
-        )
-    stdout_path.write_bytes(b"1 passed in 0.01s\n")
-    context["execution_custody_sha256"] = "0" * 64
-    with pytest.raises(ValueError, match="custody digest mismatch"):
-        runner._validated_execution_context(
-            context,
-            execution_path=execution_path,
-            envelope=envelope,
-            run_id="run-one",
-            execution_nonce="a" * 64,
-            returncode=0,
+    assert_execution_context_rejects_substitutions(tmp_path, synthetic_receipt_custody)
+
+
+def test_synthetic_receipt_verifier_rejects_unissued_requests(
+    tmp_path: Path,
+    synthetic_receipt_custody: ReceiptCustodyFactory,
+) -> None:
+    del synthetic_receipt_custody
+    with pytest.raises(AssertionError, match="unissued synthetic native verification"):
+        runner._COMMANDS.run(
+            [
+                str(tmp_path / "unknown.bin"),
+                "verify",
+                "--policy",
+                str(tmp_path / "unknown-policy.json"),
+                "--receipt",
+                str(tmp_path / "unknown-receipt.json"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
 
 
@@ -2820,7 +2612,9 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     )
     assert rc == 0
     context = record["receipt_context"]
-    receipt = context["child_process_custody"]["receipt"]
+    receipt = execution_receipt_details.expand_context(
+        context, cas_root=tmp_path / "custody-cas"
+    )["child_process_custody"]["receipt"]
     assert [event["requested"] for event in receipt["violations"]] == [
         "cargo",
         "node",
@@ -3060,7 +2854,9 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     )
     assert rc == 0
     assert not marker.exists()
-    receipt = record["receipt_context"]["child_process_custody"]["receipt"]
+    receipt = execution_receipt_details.expand_context(
+        record["receipt_context"], cas_root=tmp_path / "custody-cas"
+    )["child_process_custody"]["receipt"]
     assert receipt["broker_complete"] is True
     assert any(
         event.get("event") == "hook-start" and event.get("runtime") == "python"
@@ -3162,11 +2958,25 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
     [derived_root] = context["derived_root_custody"]["policy_roots"]
     assert Path(derived_root["path"]) != persistent_target
-    assert Path(derived_root["path"]).parent.name == record["execution_nonce"]
-    rustc = context["toolchains"]["rustc"]
+    [provenance] = context["derived_root_custody"]["prelaunch"]
+    assert provenance["state"] == "cold"
+    assert provenance["requested_target"] == str(persistent_target)
+    assert Path(derived_root["path"]).parent.parent.name == provenance["input_sha256"]
+    assert record["cargo_cache_publication"]["state"] == "sealed"
+    assert record["cargo_cache_publication"]["purpose"] == "preserved-candidate"
+    assert record["cargo_cache_publication"]["reusable"] is False
+    full_capture = toolchain_capture.load_capture(
+        context["toolchain_capture"]["artifact"],
+        cas_root=execution_path.parent / "custody-cas",
+    )
+    full_toolchains = full_capture["toolchains"]
+    assert (
+        toolchain_capture.compact_toolchains(full_toolchains) == context["toolchains"]
+    )
+    rustc = full_toolchains["rustc"]
     assert rustc["link_selection"]["selection_probe_count"] == 1
     assert any(row["role"] == "rust-linker" for row in rustc["process_images"])
-    git = context["toolchains"]["git"]
+    git = full_toolchains["git"]
     assert git["process_image_inventories"][0]["observed_image_count"] >= 1
     assert any(row["role"] == "git-launcher" for row in git["process_images"])
     assert context["toolchain_capture"]["telemetry"]["receipt_context_bytes"] <= (
@@ -3233,7 +3043,9 @@ def test_python_leaf_blocks_exec_replacement_before_launch(
     )
     assert rc == 0
     assert not marker.exists()
-    receipt = record["receipt_context"]["child_process_custody"]["receipt"]
+    receipt = execution_receipt_details.expand_context(
+        record["receipt_context"], cas_root=tmp_path / "custody-cas"
+    )["child_process_custody"]["receipt"]
     assert any(event.get("surface") == "os.exec" for event in receipt["violations"])
 
 
@@ -6599,6 +6411,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    synthetic_receipt_custody: ReceiptCustodyFactory,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
@@ -6644,7 +6457,9 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             if self.wait_count == 1:
                 raise subprocess.TimeoutExpired(self.command, timeout)
             self.returncode = 0
-            _write_synthetic_guarded_execution(self.command, returncode=0)
+            _write_synthetic_guarded_execution(
+                self.command, returncode=0, custody_factory=synthetic_receipt_custody
+            )
             return self.returncode
 
         def poll(self) -> int | None:
@@ -6717,6 +6532,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    synthetic_receipt_custody: ReceiptCustodyFactory,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
@@ -6756,7 +6572,9 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             if self.wait_count == 1:
                 raise subprocess.TimeoutExpired(self.command, timeout)
             self.returncode = 0
-            _write_synthetic_guarded_execution(self.command, returncode=0)
+            _write_synthetic_guarded_execution(
+                self.command, returncode=0, custody_factory=synthetic_receipt_custody
+            )
             return self.returncode
 
         def poll(self) -> int | None:

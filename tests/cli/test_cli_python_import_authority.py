@@ -144,7 +144,12 @@ def test_package_none_falls_back_to_valid_module_spec_parent() -> None:
 
 
 def test_source_order_uses_state_at_each_import(tmp_path: Path) -> None:
-    source = "from .a import x\n__package__ = 'other.pkg'\nfrom .b import y\n"
+    # Identity comparison does not invoke a user truth callback. The imports
+    # are on disjoint paths: executing one cannot mutate the other's anchor.
+    source = (
+        "if condition is None:\n    from .a import x\n"
+        "else:\n    __package__ = 'other.pkg'\n    from .b import y\n"
+    )
     expected = {"pkg.a", "pkg.a.x", "other.pkg.b", "other.pkg.b.y"}
     tree = ast.parse(source)
     assert (
@@ -192,7 +197,7 @@ def test_module_level_policy_skips_deferred_bodies_without_hiding_module_imports
 
 def test_branch_join_preserves_whole_possible_states() -> None:
     source = (
-        "if condition:\n"
+        "if condition is None:\n"
         "    __package__ = 'left'\n"
         "else:\n"
         "    __package__ = 'right'\n"
@@ -207,7 +212,7 @@ def test_branch_join_preserves_whole_possible_states() -> None:
 
 def test_mixed_static_and_error_paths_are_not_erased() -> None:
     source = (
-        "if flag:\n"
+        "if flag is None:\n"
         "    __package__ = 'left'\n"
         "else:\n"
         "    __package__ = 42\n"
@@ -281,13 +286,61 @@ def test_try_star_handler_participates_in_import_state_flow() -> None:
         "    __package__ = 'other.pkg'\n"
         "from .child import value\n"
     )
-    imports = set(
-        module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry", is_package=False
+    tree, _context, flow = _contexts_for(source)
+    request = cast(ast.ImportFrom, tree.body[-1])
+    assert flow.states_for(request)
+    # ExceptionGroup split/derive and replacement release may run Python;
+    # a handler assignment cannot overwrite that uncertainty with a literal.
+    assert any(state.package.kind == "unknown" for state in flow.states_for(request))
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+
+
+def test_known_package_with_unknown_spec_keeps_graph_root_and_runtime_protocol() -> (
+    None
+):
+    context = ModuleImportContext("pkg.entry", False).with_state(
+        ModuleImportState(
+            StaticMetadataValue.known("other.pkg"),
+            python_imports.UNKNOWN_VALUE,
+            python_imports.UNKNOWN_VALUE,
+            None,
         )
     )
+    plan = plan_static_import_request(
+        StaticImportRequest.statement("child", level=1, fromlist=("value",)),
+        (context,),
+    )
+    assert plan.modules == ("other.pkg.child", "other.pkg.child.value")
+    assert not plan.requires_runtime
+    assert plan.requires_runtime_execution
 
-    assert {"other.pkg.child", "other.pkg.child.value"} <= imports
+
+def test_cpython_retains_explicit_package_before_spec_parent_callback(
+    monkeypatch,
+) -> None:
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("_molt_import_protocol_oracle")
+    package.__path__ = []
+    child = ModuleType("_molt_import_protocol_oracle.child")
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace: dict[str, object] = {"__package__": package.__name__}
+    events: list[str] = []
+
+    class Spec:
+        @property
+        def parent(self) -> str:
+            events.append("parent")
+            namespace["__package__"] = "unavailable.changed"
+            return package.__name__
+
+    namespace["__spec__"] = Spec()
+    assert __import__("child", namespace, namespace, ("value",), 1) is child
+    assert events == ["parent"]
+    assert namespace["__package__"] == "unavailable.changed"
 
 
 def test_match_mapping_rest_capture_invalidates_import_metadata() -> None:
@@ -540,7 +593,6 @@ def test_type_alias_dynamic_imports_are_lazy_full_graph_edges() -> None:
         "def f():\n"
         "    pass\n"
         "from .child import value\n",
-        "def f():\n    global __package__\n    __package__ = 'other'\n    from .child import value\n",
         "def mutate():\n"
         "    global __package__\n"
         "    __package__ = 'other'\n"
@@ -571,6 +623,23 @@ def test_deferred_function_graph_unions_call_time_module_states() -> None:
         "other.pkg.child",
         "other.pkg.child.value",
     }
+
+
+def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
+    source = (
+        "def f():\n"
+        "    global __package__\n"
+        "    __package__ = 'other'\n"
+        "    from .child import value\n"
+    )
+    # The deferred entry makes __spec__ unknown, not the freshly stored exact
+    # package string. Its parent callback still requires runtime execution, but
+    # CPython retains that package before consulting the spec (oracle above).
+    assert set(
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+    ) == {"other.child", "other.child.value"}
 
 
 def test_modulespec_signature_and_parent_are_cpython_valid() -> None:
@@ -732,3 +801,419 @@ def test_script_and_module_execution_have_distinct_loader_metadata() -> None:
     )
     assert as_module.package == StaticMetadataValue.known("pkg")
     assert as_module.spec_parent == StaticMetadataValue.known("pkg")
+
+
+def _known_completion_packages(
+    flow: python_imports.ModuleImportFlow,
+    node: ast.AST,
+) -> set[str]:
+    return {
+        state.package.value
+        for state in flow.states_for(node)
+        if state.package.kind == "known" and state.package.value is not None
+    }
+
+
+@pytest.mark.parametrize("header", ["if predicate():", "while predicate():"])
+def test_import_completion_preserves_header_exceptions_beside_body_raises(
+    header: str,
+) -> None:
+    source = (
+        "__package__ = 'outer'\n"
+        "try:\n"
+        f"    {header}\n"
+        "        __package__ = 'inner'\n"
+        "        raise RuntimeError()\n"
+        "except:\n"
+        "    from .child import value\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    assert "outer" in _known_completion_packages(flow, request)
+    assert any(state.package.kind == "unknown" for state in flow.states_for(request))
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+
+
+def test_import_completion_exception_before_assignment_keeps_prior_metadata() -> None:
+    tree, _context, flow = _contexts_for(
+        "try:\n    __package__ = 1 / 0\nexcept:\n    from .child import value\n"
+    )
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    # RHS failure occurs before the package assignment commits.
+    assert "pkg" in _known_completion_packages(flow, request)
+
+
+@pytest.mark.parametrize("backedge", ["", "    continue\n"])
+def test_import_completion_revisits_loop_import_sites_on_backedges(
+    backedge: str,
+) -> None:
+    source = (
+        "__package__ = 'first'\n"
+        "while predicate():\n"
+        "    from .child import value\n"
+        "    __package__ = 'later'\n" + backedge
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    assert "first" in _known_completion_packages(flow, request)
+    # The backedge must add the callback/release-tainted successor instead of
+    # caching the first visit or publishing an unjustified 'later' anchor.
+    assert any(state.package.kind == "unknown" for state in flow.states_for(request))
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+
+
+def test_import_completion_break_does_not_enter_loop_else() -> None:
+    source = (
+        "while True:\n"
+        "    __package__ = 'broken'\n"
+        "    break\n"
+        "else:\n"
+        "    __package__ = 'not_exhausted'\n"
+        "from .child import value\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = cast(ast.ImportFrom, tree.body[-1])
+    assert _known_completion_packages(flow, request) == {"broken"}
+    imports = set(module_import_scanner._collect_imports(tree, module_name="pkg.entry"))
+    assert "broken.child" in imports
+    assert "not_exhausted.child" not in imports
+
+
+def test_import_completion_try_star_keeps_pending_exception_provenance() -> None:
+    source = (
+        "try:\n"
+        "    raise group\n"
+        "except* ValueError:\n"
+        "    __package__ = 'poison'\n"
+        "    raise RuntimeError()\n"
+        "except* TypeError:\n"
+        "    pass\n"
+        "from .child import value\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = cast(ast.ImportFrom, tree.body[-1])
+    # A subgroup path that wrote poison must still propagate its new exception,
+    # even if a later except* handler completes normally.
+    assert flow.states_for(request)
+    assert "poison" not in _known_completion_packages(flow, request)
+    # Unknown ExceptionGroup subclasses can change globals in split/derive.
+    # No exact package anchor survives that protocol on the normal path.
+    assert all(state.package.kind == "unknown" for state in flow.states_for(request))
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+
+
+@pytest.mark.parametrize("owner", ["function", "class"])
+def test_import_completion_local_walrus_does_not_write_module_metadata(
+    owner: str,
+) -> None:
+    header = "def local():" if owner == "function" else "class Local:"
+    source = (
+        f"{header}\n    (__package__ := 'local_only')\n    from .child import value\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    assert _known_completion_packages(flow, request) == {"pkg"}
+    imports = set(module_import_scanner._collect_imports(tree, module_name="pkg.entry"))
+    assert "pkg.child" in imports
+    assert "local_only.child" not in imports
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "globals()['__package__'] = 'other'",
+        "globals().__setitem__('__package__', 'other')",
+    ],
+)
+def test_import_completion_class_explicit_globals_write_needs_no_global_statement(
+    write: str,
+) -> None:
+    source = f"class Local:\n    {write}\nfrom .child import value\n"
+    tree, _context, flow = _contexts_for(source)
+    request = cast(ast.ImportFrom, tree.body[-1])
+    assert _known_completion_packages(flow, request) == {"other"}
+    assert "other.child" in module_import_scanner._collect_imports(
+        tree, module_name="pkg.entry"
+    )
+
+
+def test_import_completion_records_nested_import_call_after_prior_argument_write() -> (
+    None
+):
+    source = "(__package__ := 'next', __import__('child', globals(), level=1))\n"
+    tree, _context, flow = _contexts_for(source)
+    request = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "__import__"
+    )
+    assert _known_completion_packages(flow, request) == {"next"}
+    assert set(
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+    ) == {"next.child"}
+
+
+def test_import_completion_distinguishes_unobserved_from_explicitly_unreachable() -> (
+    None
+):
+    tree, _context, flow = _contexts_for(
+        "raise RuntimeError()\nimport sealed.unreachable\n"
+    )
+    dead = tree.body[-1]
+    missing = ast.parse("import sealed.unobserved").body[0]
+    ast.increment_lineno(missing, 100)
+    assert python_imports.python_node_source_key(dead) in flow.states_by_node
+    assert flow.states_for(dead) == ()
+    assert python_imports.python_node_source_key(missing) not in flow.states_by_node
+    assert flow.all_states
+    assert flow.states_for(missing) == flow.all_states
+
+
+def test_import_completion_marks_finally_after_divergence_unreachable() -> None:
+    source = (
+        "try:\n"
+        "    while True:\n"
+        "        pass\n"
+        "finally:\n"
+        "    import sealed.dead_finally\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.Import))
+    assert python_imports.python_node_source_key(request) in flow.states_by_node
+    assert flow.states_for(request) == ()
+    assert "sealed.dead_finally" not in module_import_scanner._collect_imports(
+        tree, module_name="pkg.entry"
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal,reachable",
+    [("return", False), ("raise RuntimeError()", True)],
+)
+def test_import_completion_with_only_suppresses_exception_successors(
+    terminal: str,
+    reachable: bool,
+) -> None:
+    source = (
+        "def load():\n"
+        "    with manager():\n"
+        f"        {terminal}\n"
+        "    import sealed.after_with\n"
+    )
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.Import))
+    assert bool(flow.states_for(request)) is reachable
+    imports = module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+    assert ("sealed.after_with" in imports) is reachable
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "import sealed.dead_absolute\n",
+        "from sealed.dead_from import member\n",
+        "__import__('sealed.dead_builtin')\n",
+    ],
+)
+def test_import_scanner_excludes_all_direct_import_dead_tails(tail: str) -> None:
+    source = "raise RuntimeError()\n" + tail
+    tree, _context, flow = _contexts_for(source)
+    assert flow.states_for(tree.body[-1]) == ()
+    assert module_import_scanner._collect_imports(tree, module_name="pkg.entry") == []
+
+
+@pytest.mark.parametrize("dead_location", ["helper_body", "helper_call"])
+def test_import_scanner_excludes_unreachable_helper_import_payloads(
+    dead_location: str,
+) -> None:
+    source = (
+        "def load(name):\n"
+        "    return name\n"
+        "    return __import__(name)\n"
+        "load('sealed.dead_helper')\n"
+        if dead_location == "helper_body"
+        else "def load(name):\n"
+        "    return __import__(name)\n"
+        "raise RuntimeError()\n"
+        "load('sealed.dead_helper')\n"
+    )
+    imports = module_import_scanner._collect_imports(
+        ast.parse(source), module_name="pkg.entry"
+    )
+    assert "sealed.dead_helper" not in imports
+
+
+@pytest.mark.parametrize("dead", [False, True])
+@pytest.mark.parametrize("loader", ["spec", "run_path"])
+def test_static_source_scanner_uses_completion_reachability(
+    tmp_path: Path,
+    dead: bool,
+    loader: str,
+) -> None:
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    call = (
+        f"importlib.util.spec_from_file_location('loaded_name', {str(target)!r})\n"
+        if loader == "spec"
+        else f"runpy.run_path({str(target)!r})\n"
+    )
+    source = (
+        "import importlib.util\nimport runpy\n"
+        + ("raise RuntimeError()\n" if dead else "")
+        + call
+    )
+    requests = module_import_scanner._collect_static_source_executions(
+        ast.parse(source),
+        source_path=tmp_path / "entry.py",
+        module_name="pkg.entry",
+    )
+    assert len(requests) == (0 if dead else 1)
+    if requests:
+        assert requests[0].source_path == target.resolve()
+        assert requests[0].module_name == ("loaded_name" if loader == "spec" else None)
+
+
+@pytest.mark.parametrize("dead", [False, True])
+@pytest.mark.parametrize(
+    "call",
+    [
+        "__import__('sealed.runtime')",
+        "importlib.import_module('sealed.runtime')",
+        "importlib.util.find_spec('sealed.runtime')",
+    ],
+)
+def test_runtime_protocol_scanner_uses_completion_reachability(
+    dead: bool,
+    call: str,
+) -> None:
+    source = (
+        "import importlib\nimport importlib.util\n"
+        + ("raise RuntimeError()\n" if dead else "")
+        + call
+        + "\n"
+    )
+    assert module_import_scanner._tree_uses_runtime_import_protocol(
+        ast.parse(source),
+        module_name="pkg.entry",
+        is_package=False,
+    ) is (not dead)
+
+
+@pytest.mark.parametrize("mode", ["full", "module_init_static_helpers"])
+def test_selected_stdlib_helper_scan_does_not_revive_dead_body_imports(
+    mode: module_import_scanner.ImportScanMode,
+) -> None:
+    source = (
+        "class UserDict:\n"
+        "    def copy(self):\n"
+        "        return self\n"
+        "        import sealed.dead_static_helper\n"
+    )
+    imports = module_import_scanner._collect_imports(
+        ast.parse(source),
+        module_name="collections",
+        import_scan_mode=mode,
+    )
+    assert "sealed.dead_static_helper" not in imports
+
+
+def test_unobserved_deferred_lambda_import_is_not_treated_as_dead() -> None:
+    source = "load = lambda: __import__('sealed.deferred_lambda')\n"
+    tree, _context, flow = _contexts_for(source)
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    assert flow.states_for(request)
+    assert "sealed.deferred_lambda" in module_import_scanner._collect_imports(
+        tree, module_name="pkg.entry"
+    )
+
+
+@pytest.mark.parametrize(
+    "statement,expected",
+    [
+        (
+            "items[__import__('child', globals(), level=1)] = (__package__ := 'rhs')",
+            "rhs",
+        ),
+        (
+            "items[(__package__ := 'target')] += __import__('child', globals(), level=1)",
+            "target",
+        ),
+        (
+            "del items[(__package__ := 'deleted_index', __import__('child', globals(), level=1))]",
+            "deleted_index",
+        ),
+    ],
+)
+def test_import_completion_assignment_family_evaluates_target_expressions_in_order(
+    statement: str,
+    expected: str,
+) -> None:
+    tree, _context, flow = _contexts_for(statement + "\n")
+    request = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        or (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "__import__"
+        )
+    )
+    assert _known_completion_packages(flow, request) == {expected}
+    imports = module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+    assert f"{expected}.child" in imports
+    assert "pkg.child" not in imports
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("future_annotations", [False, True])
+def test_import_completion_annotation_order_respects_version_and_future_policy(
+    target_python: tuple[int, int],
+    future_annotations: bool,
+) -> None:
+    source = (
+        ("from __future__ import annotations\n" if future_annotations else "")
+        + "items[(__package__ := 'target')]: "
+        "globals().__setitem__('__package__', 'annotation')\n"
+        "from .child import value\n"
+    )
+    tree = ast.parse(source)
+    context = ModuleImportContext("pkg.entry", False, target_python=target_python)
+    flow = analyze_module_import_flow(tree, context)
+    request = cast(ast.ImportFrom, tree.body[-1])
+    # A non-simple target is evaluated even without an assigned value. Its
+    # annotation follows on eager versions, but cannot mutate module-init state
+    # under future-string or Python 3.14 deferred annotation semantics.
+    expected = (
+        "annotation" if target_python < (3, 14) and not future_annotations else "target"
+    )
+    assert _known_completion_packages(flow, request) == {expected}
+    assert {state.package.value for state in flow.final_states} == {expected}
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("future_annotations", [False, True])
+def test_import_completion_function_local_annotation_never_executes(
+    target_python: tuple[int, int],
+    future_annotations: bool,
+) -> None:
+    source = (
+        ("from __future__ import annotations\n" if future_annotations else "")
+        + "def local():\n"
+        "    value: globals().__setitem__('__package__', 'annotation')\n"
+        "    from .child import member\n"
+    )
+    tree = ast.parse(source)
+    context = ModuleImportContext("pkg.entry", False, target_python=target_python)
+    flow = analyze_module_import_flow(tree, context)
+    request = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level
+    )
+    assert _known_completion_packages(flow, request) == {"pkg"}

@@ -24,7 +24,6 @@ from molt.cli.backend_cache import (
     _stdlib_module_symbols,
     _stdlib_object_cache_path,
     _try_cached_backend_candidates,
-    _validate_shared_stdlib_cache_contract,
 )
 from molt.cli.backend_execution import (
     _backend_bin_path,
@@ -33,6 +32,7 @@ from molt.cli.backend_execution import (
     _backend_features_for_build_target,
 )
 from molt.cli.build_output_layout import _resolve_cache_root
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.cache_keys import (
     _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
     _cache_ir_payload_ir,
@@ -53,7 +53,7 @@ from molt.cli.models import (
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
 from molt.target_python import TargetPythonVersion
 
-_BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 1
+_BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -241,7 +241,7 @@ def _build_cache_variant(
     the user-facing intent before cache setup. It is part of the variant because
     each concrete tier compiles the molt-runtime hub with different Cargo
     features. Two builds whose reachable stdlib IR happens to be identical would
-    otherwise collide on the same ``stdlib_shared.o`` (and main backend object),
+    otherwise collide on the same shared stdlib archive (and main artifact),
     so a smaller-tier build could silently reuse a larger-tier object and vice
     versa - a stale cache hit that yields the wrong runtime surface or a
     duplicate/missing-symbol link.
@@ -249,7 +249,7 @@ def _build_cache_variant(
     ``backend_binary_identity`` MUST be part of the variant: it is the stable
     content identity of the backend binary that will compile these
     objects (see ``_backend_binary_identity``). The variant flows into every
-    ``.o`` cache key (stdlib-shared, module, per-function), so binding it here
+    artifact cache key (stdlib-shared, module, per-function), so binding it here
     makes the cache key change whenever the backend binary changes — closing the
     Finding #4 (design 20 §4.1) confound where a rebuilt backend with different
     codegen silently linked stale objects compiled by the prior binary. The
@@ -316,6 +316,9 @@ def _prepare_backend_cache_setup(
     backend_compiler_fingerprint: str | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendCacheSetup:
+    artifact_contract = resolve_backend_artifact_contract(
+        target=target, emit_mode=emit_mode, target_triple=target_triple
+    )
     stage_start = time.perf_counter()
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -440,9 +443,9 @@ def _prepare_backend_cache_setup(
 
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
-        # daemon can partition stdlib functions into stdlib_shared.o and
-        # the linker can resolve them.  Without this, the daemon strips
-        # stdlib functions but the linker never sees stdlib_shared.o.
+        # daemon can partition stdlib functions into a shared archive and
+        # the final linker can include them. Without this artifact custody,
+        # separating stdlib functions would leave the final graph incomplete.
         _nocache_stdlib_path = None
         _nocache_stdlib_key = None
         _nocache_stdlib_manifest = None
@@ -480,25 +483,19 @@ def _prepare_backend_cache_setup(
                 _nocache_stub_path, _nocache_stdlib_key
             )
             if _nocache_stdlib_path is not None:
-                _nocache_stdlib_contract_valid = _validate_shared_stdlib_cache_contract(
-                    _nocache_stdlib_path,
-                    project_root,
-                    _nocache_stdlib_key,
-                    expected_manifest=_nocache_stdlib_manifest,
-                    target_triple=target_triple,
-                    stdlib_module_symbols=stdlib_module_symbols,
-                    stage_timings_ms=stage_timings_ms,
-                )
-                if _nocache_stdlib_contract_valid:
-                    _nocache_stdlib_contract_validation_token = (
-                        _shared_stdlib_cache_validation_token(
-                            _nocache_stdlib_path,
-                            _nocache_stdlib_key,
-                            stdlib_object_manifest=_nocache_stdlib_manifest,
-                            stdlib_module_symbols=stdlib_module_symbols,
-                        )
+                _nocache_stdlib_contract_validation_token = (
+                    _shared_stdlib_cache_validation_token(
+                        _nocache_stdlib_path,
+                        _nocache_stdlib_key,
+                        stdlib_object_manifest=_nocache_stdlib_manifest,
+                        target_triple=target_triple,
+                        stdlib_module_symbols=stdlib_module_symbols,
+                        stage_timings_ms=stage_timings_ms,
+                        evict_corrupt=True,
                     )
+                )
         return _BackendCacheSetup(
+            artifact_contract=artifact_contract,
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -567,6 +564,7 @@ def _prepare_backend_cache_setup(
         )
         warnings.append(f"Cache disabled: {exc}")
         return _BackendCacheSetup(
+            artifact_contract=artifact_contract,
             cache_enabled=False,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -615,22 +613,19 @@ def _prepare_backend_cache_setup(
     )
 
     stage_start = time.perf_counter()
-    ext = "wasm" if is_wasm else "o"
     cache_path = _backend_cache_artifact_path(
         cache_root,
         cache_key,
-        ext=ext,
+        artifact_contract=artifact_contract,
         stdlib_object_cache_key=stdlib_object_cache_key,
-        is_wasm=is_wasm,
     )
     function_cache_path = None
     if function_cache_key and function_cache_key != cache_key:
         function_cache_path = _backend_cache_artifact_path(
             cache_root,
             function_cache_key,
-            ext=ext,
+            artifact_contract=artifact_contract,
             stdlib_object_cache_key=stdlib_object_cache_key,
-            is_wasm=is_wasm,
         )
     if split_stdlib_object and stdlib_object_cache_key is not None:
         assert cache_path is not None
@@ -646,24 +641,15 @@ def _prepare_backend_cache_setup(
     stage_start = time.perf_counter()
     if split_stdlib_object and stdlib_object_cache_key is not None:
         if stdlib_object_path is not None:
-            stdlib_contract_valid = _validate_shared_stdlib_cache_contract(
+            stdlib_contract_validation_token = _shared_stdlib_cache_validation_token(
                 stdlib_object_path,
-                project_root,
                 stdlib_object_cache_key,
-                expected_manifest=stdlib_object_manifest,
+                stdlib_object_manifest=stdlib_object_manifest,
                 target_triple=target_triple,
                 stdlib_module_symbols=stdlib_module_symbols,
                 stage_timings_ms=stage_timings_ms,
+                evict_corrupt=True,
             )
-            if stdlib_contract_valid:
-                stdlib_contract_validation_token = (
-                    _shared_stdlib_cache_validation_token(
-                        stdlib_object_path,
-                        stdlib_object_cache_key,
-                        stdlib_object_manifest=stdlib_object_manifest,
-                        stdlib_module_symbols=stdlib_module_symbols,
-                    )
-                )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_stdlib_contract",
@@ -680,7 +666,7 @@ def _prepare_backend_cache_setup(
         project_root=project_root,
         cache_candidates=cache_candidates,
         output_artifact=output_artifact,
-        is_wasm=is_wasm,
+        artifact_contract=artifact_contract,
         cache_key=cache_key,
         function_cache_key=function_cache_key,
         cache_path=cache_path,
@@ -698,6 +684,7 @@ def _prepare_backend_cache_setup(
         stage_start,
     )
     return _BackendCacheSetup(
+        artifact_contract=artifact_contract,
         cache_enabled=True,
         cache_key=cache_key,
         function_cache_key=function_cache_key,

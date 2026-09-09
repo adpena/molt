@@ -1177,35 +1177,34 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
             let start_bits = super_type_bits(obj_ptr);
             let target_bits = super_obj_bits(obj_ptr);
-            let target_ptr = maybe_ptr_from_bits(target_bits);
-            let obj_type_bits = if let Some(raw_ptr) = target_ptr {
-                if object_type_id(raw_ptr) == TYPE_ID_TYPE {
-                    if issubclass_bits(target_bits, start_bits) {
-                        target_bits
-                    } else {
-                        type_of_bits(_py, target_bits)
-                    }
-                } else {
-                    type_of_bits(_py, target_bits)
-                }
-            } else {
-                type_of_bits(_py, target_bits)
+            let obj_type_bits = crate::object::layout::super_receiver_class_bits(obj_ptr);
+            let member = match attr_name.as_deref() {
+                Some("__thisclass__") => Some(start_bits),
+                Some("__self__") => Some(target_bits),
+                Some("__self_class__") => Some(obj_type_bits),
+                Some("__class__") => Some(builtin_classes(_py).super_type),
+                _ => None,
             };
+            if let Some(bits) = member {
+                inc_ref_bits(_py, bits);
+                return Some(bits);
+            }
+            if obj_from_bits(obj_type_bits).is_none() {
+                return None;
+            }
             let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
             if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
                 return None;
             }
             let mro_storage = class_mro_view(_py, obj_type_ptr);
-            let mut instance_ptr = None;
-            let mut owner_ptr = obj_type_ptr;
-            if let Some(raw_ptr) = target_ptr {
-                if object_type_id(raw_ptr) == TYPE_ID_TYPE {
-                    owner_ptr = raw_ptr;
-                    instance_ptr = Some(raw_ptr);
-                } else {
-                    instance_ptr = Some(raw_ptr);
-                }
-            }
+            // A class receiver is unbound for descriptors; a metaclass receiver
+            // remains an instance of its resolved metaclass.
+            let instance_ptr = if target_bits == obj_type_bits {
+                None
+            } else {
+                maybe_ptr_from_bits(target_bits)
+            };
+            let owner_ptr = obj_type_ptr;
             let mut found_start = false;
             for class_bits in mro_storage.iter() {
                 if !found_start {

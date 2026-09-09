@@ -162,6 +162,7 @@ def _derived_root_provenance(
     env: Mapping[str, str],
     source_root: Path,
     result_path: Path,
+    cargo_cache: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     roots = _supervisor_derived_roots(descendants=descendants, env=env)
     source = source_root.resolve(strict=True)
@@ -187,6 +188,16 @@ def _derived_root_provenance(
             raise ValueError("derived executable root overlaps proof custody CAS")
         if resolved == Path(os.path.abspath(result_path)):
             raise ValueError("derived executable root overlaps terminal result")
+        if cargo_cache is not None and row["role"] == "build-output":
+            if (
+                cargo_cache.get("path") != str(resolved)
+                or cargo_cache.get("run_owned") is not True
+            ):
+                raise ValueError(
+                    "derived Cargo root differs from exclusive cache custody"
+                )
+            admitted.append(dict(cargo_cache))
+            continue
         entries = list(resolved.iterdir())
         if entries:
             raise ValueError(

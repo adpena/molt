@@ -1648,8 +1648,13 @@ pub(crate) fn alloc_property_obj(
     ptr
 }
 
-pub(crate) fn alloc_super_obj(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+pub(crate) fn alloc_super_obj(
+    _py: &PyToken<'_>,
+    type_bits: u64,
+    obj_bits: u64,
+    receiver_class_bits: u64,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_SUPER);
     if ptr.is_null() {
         return ptr;
@@ -1657,8 +1662,10 @@ pub(crate) fn alloc_super_obj(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) 
     unsafe {
         *(ptr as *mut u64) = type_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = obj_bits;
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = receiver_class_bits;
         inc_ref_bits(_py, type_bits);
         inc_ref_bits(_py, obj_bits);
+        inc_ref_bits(_py, receiver_class_bits);
     }
     ptr
 }

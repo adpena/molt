@@ -165,26 +165,16 @@ pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
             if object_type_id(other_ptr) != TYPE_ID_SLICE {
                 return not_implemented_bits(_py);
             }
-            let start_eq = molt_eq(slice_start_bits(slice_ptr), slice_start_bits(other_ptr));
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !is_truthy(_py, obj_from_bits(start_eq)) {
-                return MoltObject::from_bool(false).bits();
-            }
-            let stop_eq = molt_eq(slice_stop_bits(slice_ptr), slice_stop_bits(other_ptr));
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !is_truthy(_py, obj_from_bits(stop_eq)) {
-                return MoltObject::from_bool(false).bits();
-            }
-            let step_eq = molt_eq(slice_step_bits(slice_ptr), slice_step_bits(other_ptr));
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !is_truthy(_py, obj_from_bits(step_eq)) {
-                return MoltObject::from_bool(false).bits();
+            for (left, right) in [
+                (slice_start_bits(slice_ptr), slice_start_bits(other_ptr)),
+                (slice_stop_bits(slice_ptr), slice_stop_bits(other_ptr)),
+                (slice_step_bits(slice_ptr), slice_step_bits(other_ptr)),
+            ] {
+                match crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(left), obj_from_bits(right)) {
+                    crate::object::ops_compare::CompareBoolOutcome::True => {}
+                    crate::object::ops_compare::CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+                    _ => return MoltObject::none().bits(),
+                }
             }
             MoltObject::from_bool(true).bits()
         }

@@ -147,18 +147,3 @@ class ClassResolutionMixin(_MixinBase):
             if method in methods:
                 return methods[method], name
         return None, None
-
-    def _resolve_super_method_info(
-        self, class_name: str, method: str
-    ) -> tuple[MethodInfo | None, str | None]:
-        mro = self._class_mro_names(class_name)
-        found_start = False
-        for name in mro:
-            if not found_start:
-                if name == class_name:
-                    found_start = True
-                continue
-            info = self.classes.get(name)
-            if info and "methods" in info and method in info["methods"]:
-                return info["methods"][method], name
-        return None, None

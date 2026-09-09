@@ -14,13 +14,16 @@ import hashlib
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Event, RLock
-from typing import Final, Iterable, Literal, Sequence, cast
+from typing import Final, Literal, Sequence, cast
+
+from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 
 from molt.compiler_analysis.python_binding_facts import (
     ALL_INVALID_MEMBERS,
     NO_IDENTITIES,
+    NO_INVALID_MEMBERS,
     OTHER_IDENTITY,
     UNBOUND_IDENTITY,
     IdentityMask,
@@ -28,12 +31,18 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonBindingIndex,
     PythonBindingTelemetry,
     PythonCallSiteFact,
+    PythonCompletion,
+    PythonCompletionFlow,
     PythonExpressionFact,
     PythonIdentity,
+    PythonIterationFact,
+    PythonStringAlternatives,
     PythonMember,
+    PythonNameLookup,
     PythonNodeKey,
     PythonParameterRef,
     PythonScopeFact,
+    PythonStatementFact,
     PythonStaticValue,
     exact_identity,
     possible_identity,
@@ -63,19 +72,39 @@ from molt.compiler_analysis.python_effects_generated import (
     WRITES_OBJECT_STATE,
     EffectMask,
 )
+from molt.compiler_analysis.static_truth import (
+    StaticExpressionResult,
+    UNKNOWN_EXPRESSION_RESULT,
+    static_comparison_result,
+    static_expression_result,
+)
+from molt.compiler_analysis.python_effects import (
+    AccumulatedKeyEffects,
+    iterable_unpack_effects,
+    mapping_unpack_effects,
+)
 from molt.compiler_analysis.python_imports import import_metadata_target_name
-from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
+from molt.compiler_analysis.python_lexical_scope import (
+    PythonDependencyAuthority,
+    PythonScopeDeclarations,
+    python_scope_declarations,
+    function_annotation_expressions,
+    function_parameter_names,
+    type_parameter_expressions,
+)
+from molt.compiler_analysis.python_source_keys import (
+    python_pattern_capture_names,
+    python_pattern_irrefutable_reason,
+    python_pattern_is_capture_only,
+)
 
 
-_ANALYSIS_SCHEMA: Final = 5
-_MAX_LOOP_FIXPOINT_STEPS: Final = 8
+_ANALYSIS_SCHEMA: Final = 17
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
 )
-_IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = ALL_INVALID_MEMBERS & ~int(
-    PythonMember.TYPING_TYPE_CHECKING
-)
+_IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = ALL_INVALID_MEMBERS
 _BUILTIN_IDENTITIES: Final[dict[str, IdentityMask]] = {
     "__import__": exact_identity(PythonIdentity.BUILTINS_IMPORT),
     "globals": exact_identity(PythonIdentity.BUILTIN_GLOBALS),
@@ -86,6 +115,7 @@ _BUILTIN_IDENTITIES: Final[dict[str, IdentityMask]] = {
     "exec": exact_identity(PythonIdentity.BUILTIN_EXEC),
 }
 _CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
+    "__future__": PythonIdentity.OTHER,
     "importlib": PythonIdentity.IMPORTLIB_MODULE,
     "importlib.util": PythonIdentity.IMPORTLIB_UTIL_MODULE,
     "importlib.machinery": PythonIdentity.IMPORTLIB_MACHINERY_MODULE,
@@ -243,7 +273,14 @@ class _StatePool:
                 clean,
             )
         else:
-            resolution = _UNBOUND_BINDING_RESOLUTION
+            # An absent slot is pristine until its namespace has actually
+            # crossed a callback boundary. Absence is not itself dirty state.
+            resolution = _BindingResolution(
+                UNBOUND_IDENTITY,
+                None,
+                not self.slot_in_taint_domain(slot)
+                or self._states[state_id].taint_epoch == 0,
+            )
         memo[state_id] = resolution
         return resolution
 
@@ -570,7 +607,7 @@ class _StatePool:
     ) -> tuple[IdentityMask, PythonStaticValue, bool]:
         resolution = self._binding_resolution(state_id, slot)
         value = resolution.identities
-        if value != UNBOUND_IDENTITY and not resolution.clean:
+        if not resolution.clean:
             value |= OTHER_IDENTITY
         static_value = resolution.static_value if resolution.clean else None
         return value, static_value, resolution.clean
@@ -589,41 +626,42 @@ class _StatePool:
         value: IdentityMask,
         static_value: PythonStaticValue = None,
     ) -> int:
-        current_value, current_static_value, clean = self._binding_details(
-            state_id, slot
-        )
-        if current_value == value and current_static_value == static_value and clean:
-            return state_id
-        state = self._states[state_id]
-        return self.intern(
-            _BindingState(
-                parents=(state_id,),
-                updated_slot=slot,
-                updated_value=value,
-                updated_static_value=static_value,
-                updated_clean=True,
-                taint_epoch=state.taint_epoch,
-                maybe_invalidated_members=state.maybe_invalidated_members,
-                definitely_invalidated_members=state.definitely_invalidated_members,
-            )
-        )
+        return self.set_bindings(state_id, ((slot, value, static_value),))
 
     def set_bindings(
         self,
         state_id: int,
-        bindings: Sequence[tuple[int, IdentityMask]],
+        bindings: Sequence[tuple[int, IdentityMask, PythonStaticValue]],
     ) -> int:
         updates: list[tuple[int, IdentityMask, PythonStaticValue, bool]] = []
-        for slot, value in bindings:
+        for slot, value, static_value in bindings:
             current_value, current_static_value, clean = self._binding_details(
                 state_id, slot
             )
-            if current_value == value and current_static_value is None and clean:
+            if (
+                current_value == value
+                and current_static_value == static_value
+                and clean
+            ):
                 continue
-            updates.append((slot, value, None, True))
+            updates.append((slot, value, static_value, True))
         if not updates:
             return state_id
         state = self._states[state_id]
+        if len(updates) == 1:
+            slot, value, static_value, clean = updates[0]
+            return self.intern(
+                _BindingState(
+                    parents=(state_id,),
+                    updated_slot=slot,
+                    updated_value=value,
+                    updated_static_value=static_value,
+                    updated_clean=clean,
+                    taint_epoch=state.taint_epoch,
+                    maybe_invalidated_members=state.maybe_invalidated_members,
+                    definitely_invalidated_members=state.definitely_invalidated_members,
+                )
+            )
         return self.intern(
             _BindingState(
                 parents=(state_id,),
@@ -903,7 +941,9 @@ class _StatePool:
         return len(self._states)
 
 
-_ScopeKind = Literal["module", "function", "class", "comprehension", "lambda"]
+_ScopeKind = Literal[
+    "module", "function", "class", "comprehension", "lambda", "annotation"
+]
 
 
 @dataclass(slots=True)
@@ -916,13 +956,44 @@ class _Scope:
     globals: frozenset[str]
     nonlocals: frozenset[str]
     slots: dict[str, int]
+    dynamic_class_namespace: bool = False
+    annotation_evaluator: bool = False
+    needs_annotation_namespace: bool = False
 
+    def class_namespace_owner(self) -> _Scope | None:
+        owner: _Scope | None = self
+        while owner is not None and owner.kind == "annotation":
+            owner = owner.parent
+        return owner if owner is not None and owner.kind == "class" else None
 
-@dataclass(frozen=True, slots=True)
-class _ScopeDeclarations:
-    bound: frozenset[str]
-    globals: frozenset[str]
-    nonlocals: frozenset[str]
+    def namespace_lookup_owner(
+        self, name: str, *, write: bool = False
+    ) -> _Scope | None:
+        # LOAD_CLASSDEREF consults the class mapping before a closure cell,
+        # including explicit nonlocals. STORE/DELETE_DEREF bypass that mapping.
+        if self.kind == "annotation":
+            if write or name in self.locals or name in self.globals:
+                return None
+            # A deferred 3.14 annotation is a child scope: the class mapping
+            # precedes its captured type parameters. The eager 3.12/3.13
+            # annotation executes in the parameter scope itself, whose locals
+            # precede the class. Do not search ancestor locals before the map.
+            owner = self.class_namespace_owner()
+        else:
+            owner = self if self.kind == "class" else None
+        if owner is None or owner.kind != "class" or name in owner.globals:
+            return None
+        if write and name in owner.nonlocals:
+            return None
+        return owner
+
+    def namespace_can_call(
+        self, name: str, *, write: bool = False, namespace_tainted: bool = False
+    ) -> bool:
+        owner = self.namespace_lookup_owner(name, write=write)
+        return owner is not None and (
+            owner.dynamic_class_namespace or namespace_tainted
+        )
 
 
 def _target_names(target: ast.AST | None) -> set[str]:
@@ -939,136 +1010,6 @@ def _target_names(target: ast.AST | None) -> set[str]:
     return set()
 
 
-class _DeclarationCollector(ast.NodeVisitor):
-    """One scope-local symbol-table pass; nested lexical scopes are skipped."""
-
-    def __init__(self) -> None:
-        self.bound: set[str] = set()
-        self.globals: set[str] = set()
-        self.nonlocals: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bound.add(node.id)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        self.bound.update(
-            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
-        )
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.bound.update(
-            alias.asname or alias.name for alias in node.names if alias.name != "*"
-        )
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.bound.add(node.name)
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for expression in (*node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.bound.add(node.name)
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for expression in (*node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        for expression in (*node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.bound.add(node.name)
-        for expression in (*node.decorator_list, *node.bases):
-            self.visit(expression)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-
-    def visit_Global(self, node: ast.Global) -> None:
-        self.globals.update(node.names)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        self.nonlocals.update(node.names)
-
-    def visit_comprehension(self, node: ast.comprehension) -> None:
-        self.visit(node.iter)
-        for condition in node.ifs:
-            self.visit(condition)
-
-
-class _DeferredLoadCollector(ast.NodeVisitor):
-    """Collect names loaded by one deferred body without per-job class cycles."""
-
-    def __init__(self) -> None:
-        self.loaded: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load):
-            self.loaded.add(node.id)
-
-    def _visit_function_definition(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default is not None:
-                self.visit(default)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_function_definition(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_function_definition(node)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for expression in (
-            *node.decorator_list,
-            *node.bases,
-            *(keyword.value for keyword in node.keywords),
-        ):
-            self.visit(expression)
-        for statement in node.body:
-            self.visit(statement)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default is not None:
-                self.visit(default)
-
-
-def _scope_declarations(
-    body: Sequence[ast.stmt],
-    parameters: Iterable[str] = (),
-) -> _ScopeDeclarations:
-    collector = _DeclarationCollector()
-    for statement in body:
-        collector.visit(statement)
-    bound = (
-        (collector.bound | set(parameters)) - collector.globals - collector.nonlocals
-    )
-    return _ScopeDeclarations(
-        frozenset(bound), frozenset(collector.globals), frozenset(collector.nonlocals)
-    )
-
-
-def _argument_names(arguments: ast.arguments) -> tuple[str, ...]:
-    names = [
-        argument.arg
-        for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
-    ]
-    if arguments.vararg is not None:
-        names.append(arguments.vararg.arg)
-    if arguments.kwarg is not None:
-        names.append(arguments.kwarg.arg)
-    return tuple(names)
-
-
 def _literal_string(node: ast.AST | None) -> str | None:
     return (
         node.value
@@ -1077,45 +1018,27 @@ def _literal_string(node: ast.AST | None) -> str | None:
     )
 
 
-def _literal_truth(node: ast.expr) -> bool | None:
-    if isinstance(node, ast.Constant):
-        return bool(node.value)
-    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        return bool(node.elts)
-    if isinstance(node, ast.Dict):
-        return bool(node.keys)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        operand = _literal_truth(node.operand)
-        return None if operand is None else not operand
-    return None
-
-
 def _identity_can_release(mask: IdentityMask) -> bool:
+    # Identity is not retained-owner custody. Modules/functions can be evicted
+    # from registries while private aliases remain exact; dropping the last
+    # alias can release contents or run weakref callbacks. Locals/frame owners
+    # can similarly escape their defining invocation (including 3.12 locals).
+    # Only inert values, absence, and the globals dictionary still rooted by
+    # the executing function/frame are intrinsically safe in this abstraction.
     inert = int(
-        PythonIdentity.IMPORTLIB_MODULE
-        | PythonIdentity.IMPORTLIB_IMPORT_MODULE
-        | PythonIdentity.IMPORTLIB_MACHINERY_MODULE
-        | PythonIdentity.MODULE_SPEC_CLASS
-        | PythonIdentity.BUILTINS_MODULE
-        | PythonIdentity.BUILTINS_IMPORT
-        | PythonIdentity.SYS_MODULE
-        | PythonIdentity.SYS_MODULES
-        | PythonIdentity.INSPECT_MODULE
-        | PythonIdentity.INSPECT_CURRENTFRAME
-        | PythonIdentity.CURRENT_GLOBALS
-        | PythonIdentity.CURRENT_LOCALS
-        | PythonIdentity.CURRENT_FRAME
-        | PythonIdentity.BUILTIN_GLOBALS
-        | PythonIdentity.BUILTIN_LOCALS
-        | PythonIdentity.BUILTIN_VARS
-        | PythonIdentity.BUILTIN_SETATTR
-        | PythonIdentity.BUILTIN_EVAL
-        | PythonIdentity.BUILTIN_EXEC
+        PythonIdentity.CURRENT_GLOBALS
         | PythonIdentity.INERT_VALUE
-        | PythonIdentity.IMPORTLIB_UTIL_MODULE
-        | PythonIdentity.IMPORTLIB_FIND_SPEC
+        | PythonIdentity.STATIC_FALSE
+        | PythonIdentity.UNBOUND
     )
-    return bool(mask & ~inert) and mask != UNBOUND_IDENTITY
+    return bool(mask & ~inert)
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluatedMemberTarget:
+    node: ast.Attribute | ast.Subscript
+    owner_identities: IdentityMask
+    static_index: PythonStaticValue = None
 
 
 @dataclass(slots=True)
@@ -1124,6 +1047,7 @@ class _ExpressionResult:
     identities: IdentityMask
     effects: EffectMask
     static_value: PythonStaticValue = None
+    assignment_target: _EvaluatedMemberTarget | None = None
 
 
 @dataclass(slots=True)
@@ -1138,6 +1062,7 @@ class _FunctionJob:
     lexical_history_start: int
     lexical_base_bindings: tuple[tuple[int, IdentityMask], ...]
     parameter_default_identities: tuple[tuple[str, IdentityMask], ...]
+    annotation_scope: bool = False
 
 
 @dataclass(slots=True)
@@ -1239,21 +1164,9 @@ class _HistorySummary:
         if pool.slot_in_taint_domain(slot):
             taint_index = bisect_left(self.taint_indices, start)
             if taint_index < len(self.taint_indices):
-                last_taint = self.taint_indices[-1]
-                bound_before_taint = base_value != UNBOUND_IDENTITY
-                if not bound_before_taint and rows is not None:
-                    indices, event_values, _suffix_values = rows
-                    event_index = bisect_left(indices, start)
-                    while (
-                        event_index < len(indices)
-                        and indices[event_index] <= last_taint
-                    ):
-                        if event_values[event_index] != UNBOUND_IDENTITY:
-                            bound_before_taint = True
-                            break
-                        event_index += 1
-                if bound_before_taint:
-                    value |= OTHER_IDENTITY
+                # A callback may insert a previously absent binding as well
+                # as replace an existing one. Deferred overlays retain both.
+                value |= OTHER_IDENTITY
         return value
 
 
@@ -1265,11 +1178,25 @@ class _Analyzer:
         self.scopes: list[_Scope] = []
         self.slot_names: list[str] = []
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
+        self.statements: dict[PythonNodeKey, PythonStatementFact] = {}
+        self.iterations: dict[PythonNodeKey, PythonIterationFact] = {}
+        self.assignment_effects: dict[PythonNodeKey, EffectMask] = {}
+        self._namespace_observation_epoch = 0
+        self._future_annotations = False
+        self._dependency_authority: PythonDependencyAuthority | None = None
         self.calls: dict[PythonNodeKey, PythonCallSiteFact] = {}
         self.function_jobs: list[_FunctionJob] = []
+        self._queued_function_jobs: dict[
+            tuple[PythonNodeKey, int, bool], _FunctionJob
+        ] = {}
+        self._source_scopes: dict[
+            tuple[PythonNodeKey, int | None, _ScopeKind], _Scope
+        ] = {}
+        self._active_lexical_history: list[int] | None = None
         self.module_scope: _Scope | None = None
         self.module_slots: list[int] = []
         self.module_slot_mask = 0
+        self.callback_slot_mask = 0
         self._observed_stack: list[list[int]] = []
         self._module_history: list[int] = [0]
         self._active_module_states: tuple[int, ...] | None = None
@@ -1281,6 +1208,10 @@ class _Analyzer:
         # nodes for the analysis lifetime, so CPython cannot recycle an id into a
         # false cache hit.
         self._node_keys: dict[ast.AST, PythonNodeKey] = {}
+
+    @property
+    def _eager_annotations(self) -> bool:
+        return self.policy.target_python < (3, 14) and not self._future_annotations
 
     def _node_key(self, node: ast.AST) -> PythonNodeKey:
         key = self._node_keys.get(node)
@@ -1316,66 +1247,113 @@ class _Analyzer:
         scope: _Scope,
         state_id: int,
         parameter_default_identities: tuple[tuple[str, IdentityMask], ...] = (),
+        *,
+        annotation_scope: bool = False,
     ) -> None:
-        module_slots, lexical_slots = self._deferred_slot_dependencies(node, scope)
-        lexical_history = (
-            self._observed_stack[-1] if lexical_slots and self._observed_stack else None
+        module_slots, lexical_slots = self._deferred_slot_dependencies(
+            node, scope, annotation_scope=annotation_scope
         )
-        self.function_jobs.append(
-            _FunctionJob(
-                node,
-                scope,
-                state_id,
-                (
-                    None
-                    if self._active_module_states is not None
-                    else len(self._module_history)
-                ),
-                self._active_module_states,
-                tuple(
-                    (slot, self.states.binding(state_id, slot)) for slot in module_slots
-                ),
-                lexical_history,
-                len(lexical_history) if lexical_history is not None else 0,
-                tuple(
-                    (slot, self.states.binding(state_id, slot))
-                    for slot in lexical_slots
-                ),
-                parameter_default_identities,
+        self.callback_slot_mask |= sum(1 << slot for slot in lexical_slots)
+        self.states.set_taint_domain(self.module_slot_mask | self.callback_slot_mask)
+        lexical_history = self._active_lexical_history if lexical_slots else None
+        job = _FunctionJob(
+            node,
+            scope,
+            state_id,
+            None
+            if self._active_module_states is not None
+            else len(self._module_history),
+            self._active_module_states,
+            tuple((slot, self.states.binding(state_id, slot)) for slot in module_slots),
+            lexical_history,
+            len(lexical_history) if lexical_history is not None else 0,
+            tuple(
+                (slot, self.states.binding(state_id, slot)) for slot in lexical_slots
+            ),
+            parameter_default_identities,
+            annotation_scope,
+        )
+        key = (self._node_key(node), scope.scope_id, annotation_scope)
+        previous = self._queued_function_jobs.get(key)
+        if previous is None:
+            self._queued_function_jobs[key] = job
+            self.function_jobs.append(job)
+            return
+        # A source-owned definition has one lexical history owner even when
+        # loop/finally predecessors visit its creation point repeatedly.
+        if previous.lexical_history is not lexical_history:
+            raise RuntimeError(
+                "deferred source definition changed lexical history owner"
             )
+        previous.outer_state_id = self.states.join(previous.outer_state_id, state_id)
+
+        def merge_bindings[K](
+            left: tuple[tuple[K, IdentityMask], ...],
+            right: tuple[tuple[K, IdentityMask], ...],
+        ) -> tuple[tuple[K, IdentityMask], ...]:
+            merged = dict(left)
+            for name, identities in right:
+                merged[name] = merged.get(name, NO_IDENTITIES) | identities
+            return tuple(merged.items())
+
+        previous.module_base_bindings = merge_bindings(
+            previous.module_base_bindings, job.module_base_bindings
         )
+        previous.lexical_base_bindings = merge_bindings(
+            previous.lexical_base_bindings, job.lexical_base_bindings
+        )
+        previous.parameter_default_identities = merge_bindings(
+            previous.parameter_default_identities, parameter_default_identities
+        )
+        previous.lexical_history_start = min(
+            previous.lexical_history_start, job.lexical_history_start
+        )
+        if previous.module_states is None or job.module_states is None:
+            if previous.module_states is not job.module_states:
+                raise RuntimeError(
+                    "deferred source definition changed module history owner"
+                )
+            assert previous.module_history_start is not None
+            assert job.module_history_start is not None
+            previous.module_history_start = min(
+                previous.module_history_start, job.module_history_start
+            )
+        else:
+            previous.module_states = tuple(
+                sorted(set((*previous.module_states, *job.module_states)))
+            )
 
     def _deferred_slot_dependencies(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
         parent_scope: _Scope,
+        *,
+        annotation_scope: bool = False,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        parameters = _argument_names(node.args)
-        body = (
-            node.body if isinstance(node.body, list) else [ast.Return(value=node.body)]
-        )
-        declarations = _scope_declarations(body, parameters)
-        collector = _DeferredLoadCollector()
-        for statement in body:
-            collector.visit(statement)
-        loaded = collector.loaded
-        module_slots: set[int] = set()
-        lexical_slots: set[int] = set()
+        assert self._dependency_authority is not None
+        dependencies = self._dependency_authority.summary(node).body
         assert self.module_scope is not None
-        for name in loaded:
-            if name in declarations.bound:
-                continue
-            if name in declarations.globals:
-                slot = self.module_scope.slots.get(name)
-            else:
-                slot = None
-                visible: _Scope | None = parent_scope
-                while visible is not None:
-                    candidate = visible.slots.get(name)
-                    if candidate is not None:
-                        slot = candidate
-                        break
-                    visible = visible.parent
+        module_slots: set[int] = {
+            slot
+            for name in dependencies.globals
+            if (slot := self.module_scope.slots.get(name)) is not None
+        }
+        lexical_slots: set[int] = set()
+        for name in dependencies.lexical:
+            slot = None
+            visible: _Scope | None = parent_scope
+            while visible is not None:
+                candidate = (
+                    visible.slots.get(name)
+                    if visible.kind != "class"
+                    or annotation_scope
+                    and visible is parent_scope
+                    else None
+                )
+                if candidate is not None:
+                    slot = candidate
+                    break
+                visible = visible.parent
             if slot is None:
                 continue
             if slot in self.module_slots:
@@ -1411,16 +1389,53 @@ class _Analyzer:
             ),
             expression,
         )
-        self._queue_function(deferred, scope, state_id)
+        self._queue_function(deferred, scope, state_id, annotation_scope=True)
+
+    def _type_parameter_scope(
+        self, node: ast.AST, state_id: int, parent: _Scope
+    ) -> tuple[int, _Scope]:
+        parameters = tuple(getattr(node, "type_params", ()))
+        if not parameters:
+            return state_id, parent
+        name = getattr(node, "name", "alias")
+        if isinstance(name, ast.Name):
+            name = name.id
+        scope = self._new_scope(
+            parent=parent,
+            source_node=node,
+            kind="annotation",
+            name=f"<{name} type parameters>",
+            declarations=PythonScopeDeclarations(
+                frozenset(parameter.name for parameter in parameters),
+                frozenset(),
+                frozenset(),
+            ),
+        )
+        state_id = self.states.set_bindings(
+            state_id,
+            tuple((slot, OTHER_IDENTITY, None) for slot in scope.slots.values()),
+        )
+        for expression in type_parameter_expressions(parameters):
+            self._queue_annotation_expression(expression, scope, state_id, ())
+        return state_id, scope
 
     def _new_scope(
         self,
         *,
         parent: _Scope | None,
+        source_node: ast.AST,
         kind: _ScopeKind,
         name: str,
-        declarations: _ScopeDeclarations,
+        declarations: PythonScopeDeclarations,
     ) -> _Scope:
+        key = (
+            self._node_key(source_node),
+            parent.scope_id if parent is not None else None,
+            kind,
+        )
+        existing = self._source_scopes.get(key)
+        if existing is not None:
+            return existing
         scope = _Scope(
             scope_id=len(self.scopes),
             parent=parent,
@@ -1433,21 +1448,34 @@ class _Analyzer:
         )
         if self.module_scope is not None:
             for global_name in sorted(scope.globals):
-                if global_name not in self.module_scope.slots:
-                    slot = len(self.slot_names)
-                    self.module_scope.slots[global_name] = slot
-                    self.slot_names.append(
-                        f"{self.module_scope.scope_id}:{global_name}"
-                    )
-                    self.module_slots.append(slot)
-                    self.module_slot_mask |= 1 << slot
-                    self.states.set_taint_domain(self.module_slot_mask)
-                    self._scope_slot_cache.clear()
+                self._ensure_module_slot(global_name)
         for local_name in sorted(scope.locals):
             scope.slots[local_name] = len(self.slot_names)
             self.slot_names.append(f"{scope.scope_id}:{local_name}")
+        if kind == "class":
+            # Class bodies execute against a mapping, not private fast locals.
+            self.callback_slot_mask |= sum(1 << slot for slot in scope.slots.values())
+            self.states.set_taint_domain(
+                self.module_slot_mask | self.callback_slot_mask
+            )
         self.scopes.append(scope)
+        self._source_scopes[key] = scope
         return scope
+
+    def _ensure_module_slot(self, name: str) -> int:
+        """One slot authority for global declarations and reflective item writes."""
+        assert self.module_scope is not None
+        existing = self.module_scope.slots.get(name)
+        if existing is not None:
+            return existing
+        slot = len(self.slot_names)
+        self.module_scope.slots[name] = slot
+        self.slot_names.append(f"{self.module_scope.scope_id}:{name}")
+        self.module_slots.append(slot)
+        self.module_slot_mask |= 1 << slot
+        self.states.set_taint_domain(self.module_slot_mask | self.callback_slot_mask)
+        self._scope_slot_cache.clear()
+        return slot
 
     def _module_slot(self, name: str) -> int | None:
         assert self.module_scope is not None
@@ -1456,7 +1484,7 @@ class _Analyzer:
     def _nonlocal_slot(self, scope: _Scope, name: str) -> int | None:
         parent = scope.parent
         while parent is not None and parent.kind != "module":
-            slot = parent.slots.get(name)
+            slot = parent.slots.get(name) if parent.kind != "class" else None
             if slot is not None:
                 return slot
             parent = parent.parent
@@ -1470,64 +1498,125 @@ class _Analyzer:
             slot = self._module_slot(name)
         elif name in scope.nonlocals:
             slot = self._nonlocal_slot(scope, name)
+        elif (
+            scope.kind == "annotation"
+            and name not in scope.locals
+            and (class_owner := scope.class_namespace_owner()) is not None
+            and name in class_owner.globals
+        ):
+            # Class global directives carry into class-visible annotation
+            # scopes, but never override a current scope's own type parameter.
+            slot = self._module_slot(name)
         else:
             slot = scope.slots.get(name)
             parent = scope.parent
             while slot is None and parent is not None:
-                slot = parent.slots.get(name)
+                if (
+                    parent.kind != "class"
+                    or scope.kind == "annotation"
+                    and parent is scope.parent
+                ):
+                    slot = parent.slots.get(name)
                 parent = parent.parent
         self._scope_slot_cache[cache_key] = slot
         return slot
 
-    def _lookup_name(self, state_id: int, scope: _Scope, name: str) -> IdentityMask:
-        slot = self._slot_for_name(scope, name)
-        if slot is not None:
-            value = self.states.binding(state_id, slot)
-            if (
-                value != UNBOUND_IDENTITY
-                or scope.kind in {"function", "lambda", "comprehension"}
-                and name in scope.locals
-            ):
-                return value
-        builtin = _BUILTIN_IDENTITIES.get(name)
-        if builtin is None:
-            return OTHER_IDENTITY | UNBOUND_IDENTITY
-        if name == "__import__":
-            state = self.states.get(state_id)
-            guard = int(PythonMember.BUILTINS_IMPORT)
-            if state.definitely_invalidated_members & guard:
-                return OTHER_IDENTITY
-            if state.maybe_invalidated_members & guard:
-                return builtin | OTHER_IDENTITY
-        return builtin
-
-    def _lookup_static_value(
+    def _read_name_resolution(
         self, state_id: int, scope: _Scope, name: str
-    ) -> PythonStaticValue:
+    ) -> _BindingResolution:
+        if scope.namespace_can_call(
+            name, namespace_tainted=self.states.get(state_id).taint_epoch != 0
+        ):
+            # __prepare__ may return an arbitrary mapping, and an initially
+            # exact dictionary can gain callback-bearing keys via reflection.
+            # A prior STORE_NAME cannot establish the next lookup's behavior.
+            return _BindingResolution(OTHER_IDENTITY | UNBOUND_IDENTITY, None, False)
         slot = self._slot_for_name(scope, name)
-        return None if slot is None else self.states.static_value(state_id, slot)
-
-    def _name_binding_status(
-        self, state_id: int, scope: _Scope, name: str
-    ) -> tuple[bool, bool]:
-        slot = self._slot_for_name(scope, name)
-        if slot is not None and not self.states.slot_in_taint_domain(slot):
-            # Lexical declarations shadow builtins even before assignment:
-            # the runtime local load must raise UnboundLocalError on a miss.
-            return False, True
-        resolution = (
-            self.states._binding_resolution(state_id, slot)
+        own = (
+            _BindingResolution(*self.states._binding_details(state_id, slot))
             if slot is not None
             else _UNBOUND_BINDING_RESOLUTION
         )
+        if (
+            scope.kind == "annotation"
+            and name not in scope.locals
+            and name not in scope.globals
+            and (class_owner := scope.class_namespace_owner()) is not None
+            and name not in class_owner.globals
+        ):
+            # Class-visible annotations observe live namespace contents, even
+            # through an intervening type-parameter scope. An undeclared name
+            # can be added before deferred evaluation just like a declared one.
+            return _BindingResolution(OTHER_IDENTITY | UNBOUND_IDENTITY, None, False)
+        if (
+            scope.kind == "class"
+            and name in scope.locals
+            and own.identities & UNBOUND_IDENTITY
+        ):
+            # LOAD_NAME: an unbound class-local falls back to the module, not
+            # the enclosing class or an identically named closure cell.
+            global_slot = self._module_slot(name)
+            fallback = (
+                _BindingResolution(*self.states._binding_details(state_id, global_slot))
+                if global_slot is not None
+                else _UNBOUND_BINDING_RESOLUTION
+            )
+            if own.identities == UNBOUND_IDENTITY:
+                return fallback
+            return _BindingResolution(
+                (own.identities & ~UNBOUND_IDENTITY) | fallback.identities,
+                None,
+                own.clean and fallback.clean,
+            )
+        return own
+
+    def _resolve_name(
+        self, state_id: int, scope: _Scope, name: str
+    ) -> tuple[IdentityMask, PythonStaticValue, bool, bool]:
+        """One source-point lookup owns value, cleanliness and storage facts."""
+        slot = self._slot_for_name(scope, name)
+        self.states.binding_lookups += 1
+        resolution = self._read_name_resolution(state_id, scope, name)
+        value = resolution.identities
+        local_miss = (
+            scope.kind in {"function", "lambda", "comprehension", "annotation"}
+            and name in scope.locals
+        )
+        if value == UNBOUND_IDENTITY and not local_miss:
+            value = _BUILTIN_IDENTITIES.get(name, OTHER_IDENTITY | UNBOUND_IDENTITY)
+            if name == "__import__":
+                state = self.states.get(state_id)
+                guard = int(PythonMember.BUILTINS_IMPORT)
+                if state.definitely_invalidated_members & guard:
+                    value = OTHER_IDENTITY
+                elif state.maybe_invalidated_members & guard:
+                    value |= OTHER_IDENTITY
+        lexical_cell = (
+            scope.kind != "class"
+            and slot is not None
+            and not self.states.slot_in_taint_domain(slot)
+        )
+        invalidated = (
+            not lexical_cell
+            and self.states.get(state_id).taint_epoch != 0
+            and not resolution.clean
+        )
+        bound = lexical_cell or resolution.identities != UNBOUND_IDENTITY
         return (
-            self.states.get(state_id).taint_epoch != 0 and not resolution.clean,
-            resolution.identities != UNBOUND_IDENTITY,
+            value,
+            resolution.static_value if resolution.clean else None,
+            invalidated,
+            bound,
         )
 
     def _record_state(self, state_id: int) -> None:
+        # Record a transfer when it happens, never when a completion partition
+        # later republishes its summary. Replaying old exceptional states after
+        # a definition would fabricate impossible future closure environments.
         for observed in self._observed_stack:
             observed.append(state_id)
+        if self._active_module_states is None:
+            self._module_history.append(state_id)
 
     def _record_expression(
         self,
@@ -1538,22 +1627,85 @@ class _Analyzer:
         static_value: PythonStaticValue,
         binding_invalidated: bool = False,
         binding_is_bound: bool = False,
+        module_namespace_observable: bool = False,
     ) -> None:
         key = self._node_key(node)
+        result = (
+            static_expression_result(node, fact_result=self._known_expression_result)
+            if isinstance(node, ast.expr)
+            else UNKNOWN_EXPRESSION_RESULT
+        )
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            if identities == int(PythonIdentity.STATIC_FALSE):
+                result = StaticExpressionResult.scalar(
+                    False,
+                    evaluation_required=isinstance(node, ast.Attribute)
+                    or effects != NO_EFFECTS,
+                )
+            elif static_value is not None and type(static_value) in {str, int}:
+                result = StaticExpressionResult.scalar(
+                    static_value, evaluation_required=True
+                )
+            else:
+                result = UNKNOWN_EXPRESSION_RESULT
+        name_lookup: PythonNameLookup = "none"
+        if isinstance(node, ast.Name):
+            slot = self._slot_for_name(scope, node.id)
+            if (owner := scope.namespace_lookup_owner(node.id)) is not None:
+                if scope.annotation_evaluator:
+                    owner.needs_annotation_namespace = True
+                # Class locals use globals on a mapping miss, never an outer
+                # same-spelled local or the method's captured type parameter.
+                name_lookup = (
+                    "class_lexical"
+                    if node.id not in owner.locals
+                    and slot is not None
+                    and not self.module_slot_mask & (1 << slot)
+                    else "class_global"
+                )
+            elif (
+                slot is not None
+                and not self.module_slot_mask & (1 << slot)
+                or scope.kind in {"function", "lambda", "comprehension", "annotation"}
+                and node.id in scope.locals
+                and node.id not in scope.globals
+            ):
+                name_lookup = "lexical"
+            else:
+                name_lookup = "global"
+        previous = self.expressions.get(key)
         self.expressions[key] = PythonExpressionFact(
             key,
             scope.scope_id,
-            identities,
-            effects,
-            static_value,
-            binding_invalidated,
-            binding_is_bound,
+            identities
+            | (previous.identities if previous is not None else NO_IDENTITIES),
+            effects | (previous.effects if previous is not None else NO_EFFECTS),
+            static_value
+            if previous is None or previous.static_value == static_value
+            else None,
+            binding_invalidated
+            or (previous is not None and previous.binding_invalidated),
+            binding_is_bound and (previous is None or previous.binding_is_bound),
+            result
+            if previous is None or previous.result == result
+            else UNKNOWN_EXPRESSION_RESULT,
+            module_namespace_observable
+            or (previous is not None and previous.module_namespace_observable),
+            previous.truth_effects if previous is not None else NO_EFFECTS,
+            name_lookup,
         )
 
+    def _known_expression_result(self, node: ast.expr) -> StaticExpressionResult:
+        fact = self.expressions.get(self._node_key(node))
+        return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
+
     def _widen_module_bindings(self, state_id: int) -> int:
+        self._namespace_observation_epoch += 1
         return self.states.taint_module_bindings(state_id)
 
     def _apply_effects(self, state_id: int, effects: EffectMask) -> int:
+        if effects & (REFLECTS_NAMESPACE | READS_GLOBAL_NAMESPACE | READS_FRAME_STATE):
+            self._namespace_observation_epoch += 1
         callback_effects = (
             RUNS_FINALIZER
             | RUNS_WEAKREF_CALLBACK
@@ -1665,6 +1817,15 @@ class _Analyzer:
                 value |= exact_identity(PythonIdentity.CURRENT_GLOBALS)
                 if base & ~owners:
                     value |= OTHER_IDENTITY
+        elif member in {"__setitem__", "__delitem__"}:
+            if base & int(PythonIdentity.CURRENT_GLOBALS):
+                value |= int(
+                    PythonIdentity.GLOBALS_SETITEM
+                    if member == "__setitem__"
+                    else PythonIdentity.GLOBALS_DELITEM
+                )
+                if base != int(PythonIdentity.CURRENT_GLOBALS):
+                    value |= OTHER_IDENTITY
         if value == NO_IDENTITIES:
             return OTHER_IDENTITY
         if base & OTHER_IDENTITY:
@@ -1708,6 +1869,8 @@ class _Analyzer:
             "path_hooks",
         }:
             members |= int(PythonMember.IMPORT_HOOKS)
+        if base & int(PythonIdentity.SYS_MODULE) and member == "platform":
+            members |= int(PythonMember.SYS_PLATFORM)
         if base & int(PythonIdentity.SYS_MODULE) and member == "modules":
             members |= int(PythonMember.SYS_MODULES | PythonMember.IMPORT_HOOKS)
         return self.states.invalidate_members(state_id, members, definite=True)
@@ -1726,6 +1889,48 @@ class _Analyzer:
         if exact and callee == int(PythonIdentity.BUILTIN_GLOBALS):
             result = exact_identity(PythonIdentity.CURRENT_GLOBALS)
             effects |= REFLECTS_NAMESPACE | READS_GLOBAL_NAMESPACE
+        elif exact and callee in {
+            int(PythonIdentity.GLOBALS_SETITEM),
+            int(PythonIdentity.GLOBALS_DELITEM),
+        }:
+            deleting = callee == int(PythonIdentity.GLOBALS_DELITEM)
+            arity = 1 if deleting else 2
+            if (
+                len(node.args) == arity
+                and not node.keywords
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                key_fact = self.expressions.get(self._node_key(node.args[0]))
+                value_fact = (
+                    None
+                    if deleting
+                    else self.expressions.get(self._node_key(node.args[1]))
+                )
+                state_id, mutation_effects = self._store_namespace_key(
+                    state_id,
+                    None if key_fact is None else key_fact.static_value,
+                    UNBOUND_IDENTITY
+                    if deleting
+                    else (
+                        OTHER_IDENTITY if value_fact is None else value_fact.identities
+                    ),
+                    None if value_fact is None else value_fact.static_value,
+                )
+                key = self._node_key(node)
+                self.assignment_effects[key] = (
+                    self.assignment_effects.get(key, NO_EFFECTS) | mutation_effects
+                )
+                # Callee/arguments have executed; publication applies only its
+                # own release effects. Reapplying aggregate namespace writes
+                # here would erase the exact replacement we just established.
+                return (
+                    int(PythonIdentity.INERT_VALUE),
+                    effects | mutation_effects,
+                    state_id,
+                )
+            else:
+                effects |= UNKNOWN_EFFECTS
+            result = int(PythonIdentity.INERT_VALUE)
         elif (
             exact
             and callee
@@ -1781,7 +1986,7 @@ class _Analyzer:
             effects |= UNKNOWN_EFFECTS
         else:
             effects |= UNKNOWN_EFFECTS
-        return result, effects, state_id
+        return result, effects, self._apply_effects(state_id, effects)
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
         fact = self.expressions.get(self._node_key(node))
@@ -1796,12 +2001,18 @@ class _Analyzer:
         # successor and can publish or replace module bindings.
         truth_effects = (
             NO_EFFECTS
-            if result.identities
+            if self._known_expression_result(node).kind != "unknown"
+            or result.identities
             in {
                 int(PythonIdentity.INERT_VALUE),
                 int(PythonIdentity.STATIC_FALSE),
             }
             else INVOKES_COMPARISON_CALLBACK | RAISES
+        )
+        key = self._node_key(node)
+        fact = self.expressions[key]
+        self.expressions[key] = replace(
+            fact, truth_effects=fact.truth_effects | truth_effects
         )
         return _ExpressionResult(
             self._apply_effects(result.state_id, truth_effects),
@@ -1813,12 +2024,14 @@ class _Analyzer:
     def eval_expr(
         self, node: ast.expr, state_id: int, scope: _Scope
     ) -> _ExpressionResult:
+        observation_before = self._namespace_observation_epoch
         effects = NO_EFFECTS
         identities = OTHER_IDENTITY
         static_value: PythonStaticValue = None
         binding_invalidated = False
         binding_is_bound = False
         effects_applied = False
+        assignment_target: _EvaluatedMemberTarget | None = None
         if isinstance(node, ast.Constant):
             identities = exact_identity(
                 PythonIdentity.STATIC_FALSE
@@ -1830,31 +2043,46 @@ class _Analyzer:
             ):
                 static_value = node.value
         elif isinstance(node, ast.Name):
-            identities = self._lookup_name(state_id, scope, node.id)
-            static_value = self._lookup_static_value(state_id, scope, node.id)
-            binding_invalidated, binding_is_bound = self._name_binding_status(
-                state_id, scope, node.id
+            if scope.namespace_can_call(
+                node.id, namespace_tainted=self.states.get(state_id).taint_epoch != 0
+            ):
+                effects |= READS_OBJECT_STATE | EXECUTES_ARBITRARY_PYTHON | RAISES
+            identities, static_value, binding_invalidated, binding_is_bound = (
+                self._resolve_name(state_id, scope, node.id)
             )
+            if identities & UNBOUND_IDENTITY or binding_invalidated:
+                effects |= RAISES
         elif isinstance(node, ast.Attribute):
-            base = self.eval_expr(node.value, state_id, scope)
-            state_id = base.state_id
-            effects |= base.effects
-            identities = self._member_value(state_id, base.identities, node.attr)
+            assignment_target, state_id, effects = self._evaluate_member_target(
+                node, state_id, scope
+            )
+            owner_identities = assignment_target.owner_identities
+            identities = self._member_value(state_id, owner_identities, node.attr)
+            if (
+                node.attr == "platform"
+                and owner_identities == int(PythonIdentity.SYS_MODULE)
+                and self.policy.target_sys_platform is not None
+                and not self.states.get(state_id).maybe_invalidated_members
+                & int(PythonMember.SYS_PLATFORM)
+            ):
+                identities = int(PythonIdentity.INERT_VALUE)
+                static_value = self.policy.target_sys_platform
             effects |= READS_OBJECT_STATE | RAISES
             if identities == OTHER_IDENTITY:
                 effects |= INVOKES_DESCRIPTOR | EXECUTES_ARBITRARY_PYTHON
         elif isinstance(node, ast.Subscript):
-            owner = self.eval_expr(node.value, state_id, scope)
-            index = self.eval_expr(node.slice, owner.state_id, scope)
-            state_id = index.state_id
-            effects |= owner.effects | index.effects | READS_OBJECT_STATE | RAISES
+            assignment_target, state_id, effects = self._evaluate_member_target(
+                node, state_id, scope
+            )
+            owner_identities = assignment_target.owner_identities
+            effects |= READS_OBJECT_STATE | RAISES
             if (
-                owner.identities & int(PythonIdentity.SYS_MODULES)
+                owner_identities & int(PythonIdentity.SYS_MODULES)
                 and isinstance(node.slice, ast.Name)
                 and node.slice.id == "__name__"
             ):
                 identities = exact_identity(PythonIdentity.CURRENT_MODULE)
-                if owner.identities != int(PythonIdentity.SYS_MODULES):
+                if owner_identities != int(PythonIdentity.SYS_MODULES):
                     identities |= OTHER_IDENTITY
             else:
                 identities = OTHER_IDENTITY
@@ -1880,14 +2108,10 @@ class _Analyzer:
             callee_result = self.eval_expr(node.func, state_id, scope)
             state_id = callee_result.state_id
             effects |= callee_result.effects
-            for argument in node.args:
-                result = self.eval_expr(argument, state_id, scope)
-                state_id = result.state_id
-                effects |= result.effects
-            for keyword in node.keywords:
-                result = self.eval_expr(keyword.value, state_id, scope)
-                state_id = result.state_id
-                effects |= result.effects
+            state_id, argument_effects = self._eval_call_arguments(
+                node, state_id, scope
+            )
+            effects |= argument_effects
             callee_may_require_intrinsic = bool(
                 callee_result.identities & int(PythonIdentity.INTRINSICS_REQUIRE)
             )
@@ -1898,6 +2122,7 @@ class _Analyzer:
                 and any(
                     self._expression_exposes_module_globals(argument)
                     for argument in (
+                        node.func,
                         *node.args,
                         *(keyword.value for keyword in node.keywords),
                     )
@@ -1911,18 +2136,42 @@ class _Analyzer:
             identities, effects, state_id = self._call_semantics(
                 state_id, scope, node, callee_result.identities, effects
             )
-            state_id = self._apply_effects(state_id, effects)
             key = self._node_key(node)
+            previous_call = self.calls.get(key)
+            after = self.states.get(state_id)
             self.calls[key] = PythonCallSiteFact(
                 key,
                 scope.scope_id,
-                callee_result.identities,
-                identities,
-                effects,
-                self.states.get(state_id).maybe_invalidated_members,
-                self.states.get(state_id).definitely_invalidated_members,
+                callee_result.identities
+                | (
+                    previous_call.callee_identities
+                    if previous_call is not None
+                    else NO_IDENTITIES
+                ),
+                identities
+                | (
+                    previous_call.result_identities
+                    if previous_call is not None
+                    else NO_IDENTITIES
+                ),
+                effects
+                | (previous_call.effects if previous_call is not None else NO_EFFECTS),
+                after.maybe_invalidated_members
+                | (
+                    previous_call.maybe_invalidated_members_after
+                    if previous_call is not None
+                    else NO_INVALID_MEMBERS
+                ),
+                after.definitely_invalidated_members
+                & (
+                    previous_call.definitely_invalidated_members_after
+                    if previous_call is not None
+                    else ALL_INVALID_MEMBERS
+                ),
             )
         elif isinstance(node, ast.NamedExpr):
+            if self._target_may_write_import_metadata(node.target):
+                self._module_import_flow_required = True
             effects_applied = True
             value = self.eval_expr(node.value, state_id, scope)
             state_id, target_effects = self.assign_target(
@@ -1942,10 +2191,15 @@ class _Analyzer:
             effects |= defaults_effect | ALLOCATES
             identities = exact_identity(PythonIdentity.USER_FUNCTION)
             self._queue_function(node, scope, state_id, defaults)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            effects_applied = True
+            operand = self._eval_truth_test(node.operand, state_id, scope)
+            state_id, effects = operand.state_id, operand.effects
+            identities = int(PythonIdentity.INERT_VALUE)
         elif isinstance(node, ast.IfExp):
             effects_applied = True
             test = self._eval_truth_test(node.test, state_id, scope)
-            truth = _literal_truth(node.test)
+            truth = self._known_expression_result(node.test).truth
             if truth is not None:
                 selected = self.eval_expr(
                     node.body if truth else node.orelse, test.state_id, scope
@@ -1972,7 +2226,7 @@ class _Analyzer:
                     else self._eval_truth_test(value, current, scope)
                 )
                 effects |= result.effects
-                truth = _literal_truth(value)
+                truth = self._known_expression_result(value).truth
                 stops = (
                     final_value
                     or isinstance(node.op, ast.And)
@@ -1987,21 +2241,66 @@ class _Analyzer:
                     break
                 current = result.state_id
             state_id = self.states.join(*possible_exits)
-        elif isinstance(node, ast.Compare) and all(
-            isinstance(operator, (ast.Is, ast.IsNot)) for operator in node.ops
-        ):
+        elif isinstance(node, ast.Compare):
             effects_applied = True
             left = self.eval_expr(node.left, state_id, scope)
+            left_fact = self._known_expression_result(node.left)
             state_id = left.state_id
             effects |= left.effects
             exits: list[int] = []
-            for comparator in node.comparators:
+            identities = NO_IDENTITIES
+            for index, (operator, comparator) in enumerate(
+                zip(node.ops, node.comparators, strict=True)
+            ):
                 right = self.eval_expr(comparator, state_id, scope)
+                right_fact = self._known_expression_result(comparator)
                 state_id = right.state_id
                 effects |= right.effects
-                exits.append(state_id)
+                comparison = static_comparison_result(left_fact, operator, right_fact)
+                boundary = NO_EFFECTS
+                if (
+                    not isinstance(operator, (ast.Is, ast.IsNot))
+                    and comparison.truth is None
+                ):
+                    boundary |= (
+                        EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+                    )
+                final = index == len(node.ops) - 1
+                if not final and comparison.kind == "unknown":
+                    boundary |= INVOKES_COMPARISON_CALLBACK | RAISES
+                # Operands and intermediate results can be released between
+                # comparisons. Conservatively invalidate before the next read,
+                # even when a particular execution retains the middle operand.
+                # Pure loads keep their namespace owners alive. Otherwise use
+                # the shared result's recursive ownership fact, including
+                # dictionary values (which membership shape alone omits).
+                left_node = node.left if index == 0 else node.comparators[index - 1]
+                stable_loads = (
+                    scope.kind != "class"
+                    and isinstance(left_node, (ast.Name, ast.Constant))
+                    and isinstance(comparator, (ast.Name, ast.Constant))
+                    and boundary == NO_EFFECTS
+                )
+                if not stable_loads and (
+                    _identity_can_release(left.identities)
+                    and left_fact.release_may_call
+                    or _identity_can_release(right.identities)
+                    and right_fact.release_may_call
+                ):
+                    boundary |= _RELEASE_CALLBACK_EFFECTS
+                effects |= boundary
+                state_id = self._apply_effects(state_id, boundary)
+                if final or comparison.truth is not True:
+                    exits.append(state_id)
+                    identities |= (
+                        int(PythonIdentity.INERT_VALUE)
+                        if comparison.kind == "bool"
+                        else OTHER_IDENTITY
+                    )
+                if final or comparison.truth is False:
+                    break
+                left, left_fact = right, right_fact
             state_id = self.states.join(*exits)
-            identities = exact_identity(PythonIdentity.INERT_VALUE)
         elif isinstance(
             node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
         ):
@@ -2012,13 +2311,44 @@ class _Analyzer:
                 effects |= (
                     INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
                 )
+        elif isinstance(node, ast.Starred):
+            effects_applied = True
+            value = self.eval_expr(node.value, state_id, scope)
+            boundary = iterable_unpack_effects(
+                node.value,
+                fact_result=self._known_expression_result,
+            )
+            effects = value.effects | boundary
+            state_id = self._apply_effects(value.state_id, boundary)
         elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            effects_applied = True
+            keys = AccumulatedKeyEffects()
+            pending_hash = NO_EFFECTS
             element_static_values: list[PythonStaticValue] = []
             for element in node.elts:
+                if isinstance(element, ast.Starred):
+                    state_id = self._apply_effects(state_id, pending_hash)
+                    pending_hash = NO_EFFECTS
                 result = self.eval_expr(element, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
                 element_static_values.append(result.static_value)
+                if isinstance(node, ast.Set):
+                    key_result = static_expression_result(
+                        element.value if isinstance(element, ast.Starred) else element,
+                        fact_result=self._known_expression_result,
+                    )
+                    hashing = (
+                        keys.extend(key_result)
+                        if isinstance(element, ast.Starred)
+                        else keys.add(key_result)
+                    )
+                    effects |= hashing
+                    pending_hash |= hashing
+                    # Conservatively cover incremental SET_ADD and batched
+                    # BUILD_SET scheduling; flush again at segment boundaries.
+                    state_id = self._apply_effects(state_id, hashing)
+            state_id = self._apply_effects(state_id, pending_hash)
             identities = exact_identity(PythonIdentity.INERT_VALUE) | OTHER_IDENTITY
             effects |= ALLOCATES
             if not isinstance(node, ast.Set) and all(
@@ -2028,7 +2358,13 @@ class _Analyzer:
                     cast(str, value) for value in element_static_values
                 )
         elif isinstance(node, ast.Dict):
+            effects_applied = True
+            keys = AccumulatedKeyEffects()
+            pending_hash = NO_EFFECTS
             for key, value in zip(node.keys, node.values):
+                if key is None:
+                    state_id = self._apply_effects(state_id, pending_hash)
+                    pending_hash = NO_EFFECTS
                 if key is not None:
                     result = self.eval_expr(key, state_id, scope)
                     state_id = result.state_id
@@ -2037,9 +2373,25 @@ class _Analyzer:
                 state_id = result.state_id
                 effects |= result.effects
                 if key is None:
-                    effects |= (
-                        INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
+                    boundary = mapping_unpack_effects(
+                        value,
+                        fact_result=self._known_expression_result,
                     )
+                    boundary |= keys.extend(
+                        static_expression_result(
+                            value, fact_result=self._known_expression_result
+                        )
+                    )
+                else:
+                    boundary = keys.add(
+                        static_expression_result(
+                            key, fact_result=self._known_expression_result
+                        )
+                    )
+                    pending_hash |= boundary
+                effects |= boundary
+                state_id = self._apply_effects(state_id, boundary)
+            state_id = self._apply_effects(state_id, pending_hash)
             identities = possible_identity(PythonIdentity.INERT_VALUE)
             effects |= ALLOCATES
         elif isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)):
@@ -2062,6 +2414,16 @@ class _Analyzer:
                 effects |= INVOKES_COMPARISON_CALLBACK
         if not effects_applied:
             state_id = self._apply_effects(state_id, effects)
+        if identities & int(
+            PythonIdentity.CURRENT_MODULE
+            | PythonIdentity.CURRENT_GLOBALS
+            | PythonIdentity.CURRENT_LOCALS
+            | PythonIdentity.CURRENT_FRAME
+            | PythonIdentity.BUILTIN_GLOBALS
+            | PythonIdentity.BUILTIN_LOCALS
+            | PythonIdentity.BUILTIN_VARS
+        ):
+            self._namespace_observation_epoch += 1
         self._record_expression(
             node,
             scope,
@@ -2070,9 +2432,45 @@ class _Analyzer:
             static_value,
             binding_invalidated,
             binding_is_bound,
+            self._namespace_observation_epoch != observation_before,
         )
         self._record_state(state_id)
-        return _ExpressionResult(state_id, identities, effects, static_value)
+        return _ExpressionResult(
+            state_id, identities, effects, static_value, assignment_target
+        )
+
+    def _eval_call_arguments(
+        self, node: ast.Call | ast.ClassDef, state_id: int, scope: _Scope
+    ) -> tuple[int, EffectMask]:
+        effects = NO_EFFECTS
+        keys = AccumulatedKeyEffects()
+        for step in call_argument_schedule(node):
+            if step.action == "evaluate":
+                result = self.eval_expr(step.expression, state_id, scope)
+                state_id = result.state_id
+                effects |= result.effects
+            elif step.action == "kw":
+                boundary = keys.add(StaticExpressionResult.scalar(step.name))
+                effects |= boundary
+                state_id = self._apply_effects(state_id, boundary)
+            elif step.action in {"star", "kwstar"}:
+                unpack = (
+                    iterable_unpack_effects
+                    if step.action == "star"
+                    else mapping_unpack_effects
+                )
+                boundary = unpack(
+                    step.expression, fact_result=self._known_expression_result
+                )
+                if step.action == "kwstar":
+                    boundary |= keys.extend(
+                        static_expression_result(
+                            step.expression, fact_result=self._known_expression_result
+                        )
+                    )
+                effects |= boundary
+                state_id = self._apply_effects(state_id, boundary)
+        return state_id, effects
 
     def _eval_arguments(
         self, arguments: ast.arguments, state_id: int, scope: _Scope
@@ -2105,9 +2503,12 @@ class _Analyzer:
         names = {
             name for generator in generators for name in _target_names(generator.target)
         }
-        declarations = _ScopeDeclarations(frozenset(names), frozenset(), frozenset())
+        declarations = PythonScopeDeclarations(
+            frozenset(names), frozenset(), frozenset()
+        )
         scope = self._new_scope(
             parent=parent,
+            source_node=node,
             kind="comprehension",
             name="<comprehension>",
             declarations=declarations,
@@ -2120,7 +2521,11 @@ class _Analyzer:
             | RAISES
         )
         deferred_effects = NO_EFFECTS
-        current = first_iterable.state_id
+        immediate_state = self._apply_effects(
+            first_iterable.state_id, immediate_effects
+        )
+        immediate_observation = self._namespace_observation_epoch
+        current = immediate_state
         for index, generator in enumerate(generators):
             if index:
                 iterable = self.eval_expr(generator.iter, current, scope)
@@ -2128,6 +2533,9 @@ class _Analyzer:
                 deferred_effects |= iterable.effects
             deferred_effects |= (
                 INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
+            )
+            current = self._apply_effects(
+                current, INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
             )
             current, target_effects = self.assign_target(
                 generator.target, OTHER_IDENTITY, current, scope
@@ -2149,15 +2557,143 @@ class _Analyzer:
             current = result.state_id
             deferred_effects |= result.effects
         if isinstance(node, ast.GeneratorExp):
-            return first_iterable.state_id, immediate_effects
+            # The body is analyzed for its own facts, but only acquisition of
+            # the first iterator executes while creating a generator object.
+            self._namespace_observation_epoch = immediate_observation
+            return immediate_state, immediate_effects
         return current, immediate_effects | deferred_effects
 
-    def _release_binding(self, state_id: int, slot: int) -> tuple[int, EffectMask]:
-        previous = self.states.binding(state_id, slot)
-        if not _identity_can_release(previous):
+    def _replace_binding(
+        self,
+        state_id: int,
+        slot: int,
+        value: IdentityMask,
+        static_value: PythonStaticValue = None,
+    ) -> tuple[int, EffectMask]:
+        return self._replace_bindings(state_id, ((slot, value, static_value),))
+
+    def _replace_bindings(
+        self,
+        state_id: int,
+        bindings: Sequence[tuple[int, IdentityMask, PythonStaticValue]],
+        *,
+        may_write: bool = False,
+    ) -> tuple[int, EffectMask]:
+        # STORE/DELETE publishes before releasing the old value. For a finite
+        # choice of namespace keys, the non-relational state domain joins each
+        # slot independently: retain its old value as a may-write, and publish
+        # the whole abstract update once instead of constructing N branches.
+        updates: list[tuple[int, IdentityMask, PythonStaticValue]] = []
+        releases_previous = False
+        for slot, value, static_value in bindings:
+            previous = self.states.binding(state_id, slot)
+            releases_previous |= _identity_can_release(previous)
+            if may_write:
+                value |= previous
+                if self.states.static_value(state_id, slot) != static_value:
+                    static_value = None
+            updates.append((slot, value, static_value))
+        state_id = self.states.set_bindings(state_id, updates)
+        if not releases_previous:
             return state_id, NO_EFFECTS
         effects = _RELEASE_CALLBACK_EFFECTS
         return self._apply_effects(state_id, effects), effects
+
+    def _evaluate_member_target(
+        self,
+        target: ast.Attribute | ast.Subscript,
+        state_id: int,
+        scope: _Scope,
+    ) -> tuple[_EvaluatedMemberTarget, int, EffectMask]:
+        owner = self.eval_expr(target.value, state_id, scope)
+        state_id = owner.state_id
+        effects = owner.effects
+        static_index: PythonStaticValue = None
+        if isinstance(target, ast.Subscript):
+            index = self.eval_expr(target.slice, state_id, scope)
+            state_id = index.state_id
+            effects |= index.effects
+            static_index = index.static_value
+        return (
+            _EvaluatedMemberTarget(target, owner.identities, static_index),
+            state_id,
+            effects,
+        )
+
+    def _store_evaluated_member(
+        self,
+        target: _EvaluatedMemberTarget,
+        state_id: int,
+        value: IdentityMask = OTHER_IDENTITY,
+        static_value: PythonStaticValue = None,
+    ) -> tuple[int, EffectMask]:
+        # Receiver/index identity is retained across RHS and in-place operator
+        # callbacks. A store must not evaluate either source expression again.
+        if isinstance(target.node, ast.Subscript) and target.owner_identities == int(
+            PythonIdentity.CURRENT_GLOBALS
+        ):
+            return self._store_namespace_key(
+                state_id, target.static_index, value, static_value
+            )
+        strings = (
+            frozenset((target.static_index,))
+            if isinstance(target.static_index, str)
+            else target.static_index.values
+            if isinstance(target.static_index, PythonStringAlternatives)
+            else None
+        )
+        effects = (
+            WRITES_OBJECT_STATE
+            | EXECUTES_ARBITRARY_PYTHON
+            | _RELEASE_CALLBACK_EFFECTS
+            | RAISES
+        )
+        if isinstance(target.node, ast.Attribute):
+            state_id = self._invalidate_member_target(
+                state_id, target.owner_identities, target.node.attr
+            )
+            effects |= INVOKES_DESCRIPTOR
+            if (
+                target.owner_identities & int(PythonIdentity.CURRENT_MODULE)
+                and target.node.attr in _METADATA_NAMES
+            ):
+                effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
+        elif target.owner_identities & int(PythonIdentity.CURRENT_GLOBALS):
+            effects |= WRITES_GLOBAL_NAMESPACE
+            # An unknown key can select any import-metadata member.
+            if strings is None or strings & _METADATA_NAMES:
+                effects |= WRITES_MODULE_METADATA
+        return self._apply_effects(state_id, effects), effects
+
+    def _store_namespace_key(
+        self,
+        state_id: int,
+        key: PythonStaticValue,
+        value: IdentityMask,
+        static_value: PythonStaticValue,
+    ) -> tuple[int, EffectMask]:
+        """Shared item-store/delete publication for syntax and bound dict methods."""
+        strings = (
+            frozenset((key,))
+            if isinstance(key, str)
+            else key.values
+            if isinstance(key, PythonStringAlternatives)
+            else None
+        )
+        if not strings:
+            return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
+        effects = WRITES_GLOBAL_NAMESPACE | WRITES_OBJECT_STATE | RAISES
+        if strings & _METADATA_NAMES:
+            effects |= WRITES_MODULE_METADATA
+        state_id, release_effects = self._replace_bindings(
+            state_id,
+            tuple(
+                (self._ensure_module_slot(name), value, static_value)
+                for name in sorted(strings)
+            ),
+            may_write=len(strings) > 1,
+        )
+        return state_id, effects | release_effects
 
     def assign_target(
         self,
@@ -2168,18 +2704,43 @@ class _Analyzer:
         *,
         static_value: PythonStaticValue = None,
     ) -> tuple[int, EffectMask]:
+        result = self._assign_target(
+            target, value, state_id, scope, static_value=static_value
+        )
+        key = self._node_key(target)
+        self.assignment_effects[key] = (
+            self.assignment_effects.get(key, NO_EFFECTS) | result[1]
+        )
+        return result
+
+    def _assign_target(
+        self,
+        target: ast.AST,
+        value: IdentityMask,
+        state_id: int,
+        scope: _Scope,
+        *,
+        static_value: PythonStaticValue = None,
+    ) -> tuple[int, EffectMask]:
         effects = NO_EFFECTS
         if isinstance(target, ast.Name):
-            slot = self._slot_for_name(scope, target.id)
-            if slot is None:
-                return state_id, effects
-            state_id, release_effects = self._release_binding(state_id, slot)
-            effects |= release_effects
-            if release_effects:
-                value |= OTHER_IDENTITY
-            state_id = self.states.set_binding(state_id, slot, value, static_value)
-            return state_id, effects
+            return self._write_name(state_id, scope, target.id, value, static_value)
         if isinstance(target, (ast.Tuple, ast.List)):
+            if (
+                isinstance(static_value, tuple)
+                and len(static_value) == len(target.elts)
+                and not any(isinstance(element, ast.Starred) for element in target.elts)
+            ):
+                for element, item in zip(target.elts, static_value, strict=True):
+                    state_id, element_effects = self.assign_target(
+                        element,
+                        int(PythonIdentity.INERT_VALUE),
+                        state_id,
+                        scope,
+                        static_value=item,
+                    )
+                    effects |= element_effects
+                return state_id, effects
             effects |= INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
             state_id = self._apply_effects(state_id, effects)
             for element in target.elts:
@@ -2190,59 +2751,46 @@ class _Analyzer:
             return state_id, effects
         if isinstance(target, ast.Starred):
             return self.assign_target(target.value, OTHER_IDENTITY, state_id, scope)
-        if isinstance(target, ast.Attribute):
-            owner = self.eval_expr(target.value, state_id, scope)
-            state_id = self._invalidate_member_target(
-                owner.state_id, owner.identities, target.attr
+        if isinstance(target, (ast.Attribute, ast.Subscript)):
+            evaluated, state_id, evaluation_effects = self._evaluate_member_target(
+                target, state_id, scope
             )
-            effects |= (
-                owner.effects
-                | WRITES_OBJECT_STATE
-                | INVOKES_DESCRIPTOR
-                | EXECUTES_ARBITRARY_PYTHON
-                | _RELEASE_CALLBACK_EFFECTS
-                | RAISES
+            state_id, store_effects = self._store_evaluated_member(
+                evaluated, state_id, value, static_value
             )
-            if (
-                owner.identities & int(PythonIdentity.CURRENT_MODULE)
-                and target.attr in _METADATA_NAMES
-            ):
-                effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
-            return self._apply_effects(state_id, effects), effects
-        if isinstance(target, ast.Subscript):
-            owner = self.eval_expr(target.value, state_id, scope)
-            index = self.eval_expr(target.slice, owner.state_id, scope)
-            effects |= (
-                owner.effects
-                | index.effects
-                | WRITES_OBJECT_STATE
-                | EXECUTES_ARBITRARY_PYTHON
-                | _RELEASE_CALLBACK_EFFECTS
-                | RAISES
-            )
-            if owner.identities & int(PythonIdentity.CURRENT_GLOBALS):
-                effects |= WRITES_GLOBAL_NAMESPACE
-                if _literal_string(target.slice) in _METADATA_NAMES:
-                    effects |= WRITES_MODULE_METADATA
-            return self._apply_effects(index.state_id, effects), effects
+            return state_id, evaluation_effects | store_effects
         return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
 
     def delete_target(
         self, target: ast.AST, state_id: int, scope: _Scope
     ) -> tuple[int, EffectMask]:
+        result = self._delete_target(target, state_id, scope)
+        key = self._node_key(target)
+        self.assignment_effects[key] = (
+            self.assignment_effects.get(key, NO_EFFECTS) | result[1]
+        )
+        return result
+
+    def _delete_target(
+        self, target: ast.AST, state_id: int, scope: _Scope
+    ) -> tuple[int, EffectMask]:
         if isinstance(target, ast.Name):
-            slot = self._slot_for_name(scope, target.id)
-            if slot is None:
-                return state_id, NO_EFFECTS
-            state_id, effects = self._release_binding(state_id, slot)
-            return self.states.set_binding(state_id, slot, UNBOUND_IDENTITY), effects
+            identities, _value, invalidated, bound = self._resolve_name(
+                state_id, scope, target.id
+            )
+            updated, effects = self._write_name(
+                state_id, scope, target.id, UNBOUND_IDENTITY
+            )
+            if not bound or identities & UNBOUND_IDENTITY or invalidated:
+                effects |= RAISES
+            return updated, effects
         if isinstance(target, (ast.Tuple, ast.List)):
             effects = NO_EFFECTS
             for element in target.elts:
                 state_id, child_effects = self.delete_target(element, state_id, scope)
                 effects |= child_effects
             return state_id, effects
-        return self.assign_target(target, OTHER_IDENTITY, state_id, scope)
+        return self.assign_target(target, UNBOUND_IDENTITY, state_id, scope)
 
     def _canonical_imports_available(self, state_id: int) -> bool:
         return self.policy.standard_imports_are_canonical and not (
@@ -2286,26 +2834,99 @@ class _Analyzer:
     def _bind_name(
         self, name: str, value: IdentityMask, state_id: int, scope: _Scope
     ) -> tuple[int, EffectMask]:
-        synthetic = ast.Name(id=name, ctx=ast.Store())
-        return self.assign_target(synthetic, value, state_id, scope)
+        return self._write_name(state_id, scope, name, value)
+
+    def _write_name(
+        self,
+        state_id: int,
+        scope: _Scope,
+        name: str,
+        value: IdentityMask,
+        static_value: PythonStaticValue = None,
+    ) -> tuple[int, EffectMask]:
+        slot = self._slot_for_name(scope, name)
+        if scope.namespace_can_call(
+            name,
+            write=True,
+            namespace_tainted=self.states.get(state_id).taint_epoch != 0,
+        ):
+            if slot is not None:
+                state_id = self.states.set_binding(
+                    state_id, slot, OTHER_IDENTITY | UNBOUND_IDENTITY
+                )
+            effects = WRITES_OBJECT_STATE | EXECUTES_ARBITRARY_PYTHON | RAISES
+            return self._apply_effects(state_id, effects), effects
+        if slot is None:
+            return state_id, NO_EFFECTS
+        return self._replace_binding(state_id, slot, value, static_value)
+
+    def _merge_flows(
+        self, *flows: PythonCompletionFlow[int]
+    ) -> PythonCompletionFlow[int]:
+        result: PythonCompletionFlow[int] = PythonCompletionFlow()
+        for flow in flows:
+            result = result.merge(flow, join_states=self.states.join)
+        return result
+
+    def _normal_flow(
+        self, state_id: int, effects: EffectMask = NO_EFFECTS
+    ) -> PythonCompletionFlow[int]:
+        self._record_state(state_id)
+        # A leaf may fail before its final assignment. Preserve the entry and
+        # intermediate expression states, not only its successful exit state.
+        if effects & ALLOCATES:
+            effects |= RAISES
+        exceptional = (
+            self.states.join(*self._observed_stack[-1], state_id)
+            if effects & RAISES
+            else None
+        )
+        return PythonCompletionFlow(
+            normal=state_id, raised=exceptional, effects=effects
+        )
 
     def exec_statements(
         self, body: Sequence[ast.stmt], state_id: int, scope: _Scope
-    ) -> tuple[int, EffectMask]:
-        effects = NO_EFFECTS
+    ) -> PythonCompletionFlow[int]:
+        flow = PythonCompletionFlow(normal=state_id)
         for statement in body:
-            state_id, statement_effects = self.exec_statement(
-                statement, state_id, scope
+            if flow.normal is None:
+                break
+            flow = flow.sequence(
+                lambda normal: self.exec_statement(statement, normal, scope),
+                join_states=self.states.join,
             )
-            effects |= statement_effects
-            self._record_state(state_id)
-            if scope.kind == "module":
-                self._module_history.append(state_id)
-        return state_id, effects
+        return flow
 
     def exec_statement(
         self, node: ast.stmt, state_id: int, scope: _Scope
-    ) -> tuple[int, EffectMask]:
+    ) -> PythonCompletionFlow[int]:
+        observation_before = self._namespace_observation_epoch
+        observed = [state_id]
+        self._observed_stack.append(observed)
+        try:
+            flow = self._exec_statement(node, state_id, scope)
+        finally:
+            self._observed_stack.pop()
+        if not flow.completions & PythonCompletion.NORMAL:
+            self._module_import_flow_required = True
+        key = self._node_key(node)
+        previous = self.statements.get(key)
+        self.statements[key] = PythonStatementFact(
+            key,
+            scope.scope_id,
+            flow.effects | (previous.effects if previous is not None else NO_EFFECTS),
+            self._namespace_observation_epoch != observation_before
+            or (previous is not None and previous.module_namespace_observable),
+            flow.completions
+            | (previous.completions if previous is not None else PythonCompletion.NONE),
+            self.iterations.get(key),
+        )
+        return flow
+
+    def _exec_statement(
+        self, node: ast.stmt, state_id: int, scope: _Scope
+    ) -> PythonCompletionFlow[int]:
         effects = NO_EFFECTS
         if isinstance(
             node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)
@@ -2325,8 +2946,8 @@ class _Analyzer:
             self._module_import_flow_required = True
         if isinstance(node, ast.Expr):
             result = self.eval_expr(node.value, state_id, scope)
-            return result.state_id, result.effects
-        if isinstance(node, ast.Assign):
+            state_id, effects = result.state_id, result.effects
+        elif isinstance(node, ast.Assign):
             result = self.eval_expr(node.value, state_id, scope)
             state_id = result.state_id
             effects |= result.effects
@@ -2340,10 +2961,6 @@ class _Analyzer:
                 )
                 effects |= target_effects
         elif isinstance(node, ast.AnnAssign):
-            if self.policy.target_python < (3, 14):
-                annotation = self.eval_expr(node.annotation, state_id, scope)
-                state_id = annotation.state_id
-                effects |= annotation.effects
             if node.value is not None:
                 result = self.eval_expr(node.value, state_id, scope)
                 state_id = result.state_id
@@ -2356,6 +2973,28 @@ class _Analyzer:
                     static_value=result.static_value,
                 )
                 effects |= target_effects
+            elif isinstance(node.target, (ast.Attribute, ast.Subscript)):
+                # An annotation without a value evaluates the target owner
+                # (and index), but does not assign or release its member.
+                target_parts = (
+                    (node.target.value, node.target.slice)
+                    if isinstance(node.target, ast.Subscript)
+                    else (node.target.value,)
+                )
+                for expression in target_parts:
+                    result = self.eval_expr(expression, state_id, scope)
+                    state_id = result.state_id
+                    effects |= result.effects
+            if not self._future_annotations and scope.kind in {"module", "class"}:
+                if self.policy.target_python < (3, 14):
+                    # Eager annotations execute after the value is assigned.
+                    annotation = self.eval_expr(node.annotation, state_id, scope)
+                    state_id = annotation.state_id
+                    effects |= annotation.effects
+                elif node.simple:
+                    self._queue_annotation_expression(
+                        node.annotation, scope, state_id, ()
+                    )
         elif isinstance(node, ast.AugAssign):
             target_read = (
                 self.eval_expr(node.target, state_id, scope)
@@ -2366,9 +3005,17 @@ class _Analyzer:
             effects |= (
                 target_read.effects | value.effects | EXECUTES_ARBITRARY_PYTHON | RAISES
             )
-            state_id, target_effects = self.assign_target(
-                node.target, OTHER_IDENTITY, value.state_id, scope
+            state_id = self._apply_effects(
+                value.state_id, EXECUTES_ARBITRARY_PYTHON | RAISES
             )
+            if target_read.assignment_target is not None:
+                state_id, target_effects = self._store_evaluated_member(
+                    target_read.assignment_target, state_id
+                )
+            else:
+                state_id, target_effects = self.assign_target(
+                    node.target, OTHER_IDENTITY, state_id, scope
+                )
             effects |= target_effects
         elif isinstance(node, ast.Delete):
             for target in node.targets:
@@ -2385,6 +3032,7 @@ class _Analyzer:
                 module in _CANONICAL_IMPORT_IDENTITIES for module in identity_modules
             )
             if not canonical_statement:
+                state_id = self._apply_effects(state_id, effects)
                 state_id = self.states.invalidate_members(
                     state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
                 )
@@ -2417,6 +3065,7 @@ class _Analyzer:
                 )
             )
             if not canonical_statement:
+                state_id = self._apply_effects(state_id, effects)
                 state_id = self.states.invalidate_members(
                     state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
                 )
@@ -2438,87 +3087,105 @@ class _Analyzer:
                 effects |= bind_effects
         elif isinstance(node, ast.If):
             test = self._eval_truth_test(node.test, state_id, scope)
-            truth = _literal_truth(node.test)
+            truth = self._known_expression_result(node.test).truth
             if truth is None and test.identities == int(PythonIdentity.STATIC_FALSE):
                 truth = False
-            if truth is not None:
-                state_id, branch_effects = self.exec_statements(
-                    node.body if truth else node.orelse,
-                    test.state_id,
-                    scope,
-                )
-                effects |= test.effects | branch_effects
-            else:
-                left, left_effects = self.exec_statements(
-                    node.body, test.state_id, scope
-                )
-                right, right_effects = self.exec_statements(
-                    node.orelse, test.state_id, scope
-                )
-                state_id = self.states.join(left, right)
-                effects |= test.effects | left_effects | right_effects
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-            state_id, loop_effects = self._exec_loop(node, state_id, scope)
-            effects |= loop_effects
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            for item in node.items:
-                context = self.eval_expr(item.context_expr, state_id, scope)
-                state_id = context.state_id
-                effects |= (
-                    context.effects
-                    | INVOKES_CONTEXT_CALLBACK
-                    | EXECUTES_ARBITRARY_PYTHON
-                    | RAISES
-                )
-                if item.optional_vars is not None:
-                    state_id, target_effects = self.assign_target(
-                        item.optional_vars, OTHER_IDENTITY, state_id, scope
-                    )
-                    effects |= target_effects
-            state_id, body_effects = self.exec_statements(node.body, state_id, scope)
-            effects |= (
-                body_effects
-                | INVOKES_CONTEXT_CALLBACK
-                | EXECUTES_ARBITRARY_PYTHON
-                | RAISES
+            prefix = self._normal_flow(test.state_id, test.effects)
+            branches = (
+                (node.body if truth else node.orelse,)
+                if truth is not None
+                else (node.body, node.orelse)
             )
-            state_id = self._apply_effects(state_id, effects)
+            return prefix.sequence(
+                lambda normal: self._merge_flows(
+                    *(
+                        self.exec_statements(branch, normal, scope)
+                        for branch in branches
+                    )
+                ),
+                join_states=self.states.join,
+            )
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            return self._exec_loop(node, state_id, scope)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            return self._exec_with(node, state_id, scope)
         elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            state_id, try_effects = self._exec_try(node, state_id, scope)
-            effects |= try_effects
+            return self._exec_try(node, state_id, scope)
         elif isinstance(node, ast.Match):
             subject = self.eval_expr(node.subject, state_id, scope)
-            effects |= subject.effects | INVOKES_COMPARISON_CALLBACK | RAISES
-            unmatched = subject.state_id
-            branches: list[int] = []
+            flow = self._normal_flow(subject.state_id, subject.effects).without_normal()
+            unmatched: int | None = subject.state_id
             for case in node.cases:
-                unmatched = self._apply_effects(
-                    unmatched, INVOKES_COMPARISON_CALLBACK | RAISES
+                if unmatched is None:
+                    break
+                # A capture/wildcard pattern is irrefutable and has no protocol
+                # callbacks. Other patterns retain the existing conservative
+                # comparison boundary.
+                irrefutable = (
+                    python_pattern_irrefutable_reason(case.pattern) is not None
                 )
-                branch = unmatched
+                inert_capture = python_pattern_is_capture_only(case.pattern)
+                pattern_effects = (
+                    NO_EFFECTS
+                    if inert_capture
+                    else INVOKES_COMPARISON_CALLBACK | RAISES
+                )
+                branch = self._apply_effects(unmatched, pattern_effects)
+                if not irrefutable:
+                    unmatched = branch
+                pattern_flow = self._normal_flow(branch, pattern_effects)
+                flow = self._merge_flows(flow, pattern_flow.without_normal())
                 for name in _target_names(case.pattern):
                     branch, target_effects = self._bind_name(
                         name, OTHER_IDENTITY, branch, scope
                     )
-                    effects |= target_effects
+                    flow = self._merge_flows(
+                        flow, self._normal_flow(branch, target_effects).without_normal()
+                    )
+                guard_truth = True
                 if case.guard is not None:
                     guard = self._eval_truth_test(case.guard, branch, scope)
                     branch = guard.state_id
+                    guard_truth = self._known_expression_result(case.guard).truth
+                    flow = self._merge_flows(
+                        flow, self._normal_flow(branch, guard.effects).without_normal()
+                    )
+                if guard_truth is not False:
+                    flow = self._merge_flows(
+                        flow, self.exec_statements(case.body, branch, scope)
+                    )
+                if irrefutable and guard_truth is True:
+                    unmatched = None
+                elif guard_truth is not True:
                     unmatched = self.states.join(unmatched, branch)
-                    effects |= guard.effects
-                branch, branch_effects = self.exec_statements(case.body, branch, scope)
-                effects |= branch_effects
-                branches.append(branch)
-            state_id = self.states.join(*branches, unmatched)
+            if unmatched is not None:
+                flow = self._merge_flows(flow, PythonCompletionFlow(normal=unmatched))
+            return flow
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in node.decorator_list:
                 result = self.eval_expr(decorator, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+            # Generic defaults are evaluated before entering the type-parameter
+            # annotation scope, just like ordinary function defaults.
             state_id, default_effects, defaults = self._eval_arguments(
                 node.args, state_id, scope
             )
             effects |= default_effects | ALLOCATES
+            state_id, definition_scope = self._type_parameter_scope(
+                node, state_id, scope
+            )
+            for annotation in function_annotation_expressions(node):
+                if self._future_annotations:
+                    continue
+                if self.policy.target_python >= (3, 14):
+                    self._queue_annotation_expression(
+                        annotation, definition_scope, state_id, ()
+                    )
+                else:
+                    result = self.eval_expr(annotation, state_id, definition_scope)
+                    state_id = result.state_id
+                    effects |= result.effects
             function_identity = exact_identity(PythonIdentity.USER_FUNCTION)
             if node.decorator_list:
                 decorator_effects = EXECUTES_ARBITRARY_PYTHON | RAISES
@@ -2529,48 +3196,98 @@ class _Analyzer:
                 node.name, function_identity, state_id, scope
             )
             effects |= bind_effects
-            self._queue_function(node, scope, state_id, defaults)
+            self._queue_function(node, definition_scope, state_id, defaults)
         elif isinstance(node, ast.ClassDef):
-            for expression in (*node.decorator_list, *node.bases):
+            for expression in node.decorator_list:
                 result = self.eval_expr(expression, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
-            for keyword in node.keywords:
-                result = self.eval_expr(keyword.value, state_id, scope)
-                state_id = result.state_id
-                effects |= result.effects
-            declarations = _scope_declarations(node.body)
+            state_id, definition_scope = self._type_parameter_scope(
+                node, state_id, scope
+            )
+            state_id, argument_effects = self._eval_call_arguments(
+                node, state_id, definition_scope
+            )
+            effects |= argument_effects
+            assert self._dependency_authority is not None
+            declarations = self._dependency_authority.declarations(node)
             class_scope = self._new_scope(
-                parent=scope, kind="class", name=node.name, declarations=declarations
+                parent=definition_scope,
+                source_node=node,
+                kind="class",
+                name=node.name,
+                declarations=declarations,
             )
-            class_state, class_effects = self.exec_statements(
-                node.body, state_id, class_scope
+            plain_preparation = (
+                not node.bases
+                and not node.keywords
+                and self._canonical_imports_available(state_id)
+                and self.states.get(state_id).taint_epoch == 0
             )
-            effects |= class_effects | EXECUTES_ARBITRARY_PYTHON | ALLOCATES | RAISES
-            state_id = self._apply_effects(state_id, effects)
-            class_identity = possible_identity(PythonIdentity.USER_CLASS)
-            state_id, bind_effects = self._bind_name(
-                node.name, class_identity, state_id, scope
-            )
-            effects |= bind_effects
-        elif isinstance(node, getattr(ast, "TypeAlias", ())):
-            for expression in (
-                node.value,
-                *(
-                    value
-                    for type_param in node.type_params
-                    for attribute in ("bound", "default_value")
-                    if isinstance(
-                        (value := getattr(type_param, attribute, None)), ast.expr
-                    )
+            class_scope.dynamic_class_namespace |= not plain_preparation
+            # Each execution creates a fresh namespace, despite sharing source
+            # slots/facts with other visits to this class definition.
+            state_id = self.states.set_bindings(
+                state_id,
+                tuple(
+                    (slot, UNBOUND_IDENTITY, None)
+                    for slot in class_scope.slots.values()
                 ),
-            ):
-                self._queue_annotation_expression(
-                    expression,
-                    scope,
-                    state_id,
-                    node.type_params,
+            )
+            if not plain_preparation:
+                # __mro_entries__, metaclass selection and __prepare__ all run
+                # before body lookup; custom namespace initialization can call
+                # Python before the first user statement as well.
+                preparation_effects = EXECUTES_ARBITRARY_PYTHON | RAISES
+                effects |= preparation_effects
+                state_id = self._apply_effects(state_id, preparation_effects)
+            prefix = self._normal_flow(state_id, effects)
+            class_flow = self.exec_statements(node.body, state_id, class_scope)
+            flow = self._merge_flows(
+                prefix.without_normal(), class_flow.without_normal()
+            )
+            if class_flow.normal is not None:
+                class_state = class_flow.normal
+                # Body failure never creates or binds a class. Plain creation
+                # remains a projection of the successful namespace state.
+                plain_creation = (
+                    plain_preparation
+                    and not node.decorator_list
+                    and self._canonical_imports_available(class_state)
+                    and self.states.get(class_state).taint_epoch == 0
+                    and all(
+                        self.states.binding(class_state, slot)
+                        in {
+                            UNBOUND_IDENTITY,
+                            int(PythonIdentity.INERT_VALUE),
+                            int(PythonIdentity.STATIC_FALSE),
+                            int(PythonIdentity.USER_FUNCTION),
+                        }
+                        for slot in class_scope.slots.values()
+                    )
                 )
+                creation_effects = ALLOCATES | RAISES
+                if not plain_creation:
+                    creation_effects |= EXECUTES_ARBITRARY_PYTHON
+                class_state = self._apply_effects(class_state, creation_effects)
+                class_state, bind_effects = self._bind_name(
+                    node.name,
+                    possible_identity(PythonIdentity.USER_CLASS),
+                    class_state,
+                    scope,
+                )
+                flow = self._merge_flows(
+                    flow,
+                    self._normal_flow(class_state, creation_effects | bind_effects),
+                )
+            return flow
+        elif isinstance(node, getattr(ast, "TypeAlias", ())):
+            state_id, definition_scope = self._type_parameter_scope(
+                node, state_id, scope
+            )
+            self._queue_annotation_expression(
+                node.value, definition_scope, state_id, ()
+            )
             if isinstance(node.name, ast.Name):
                 state_id, bind_effects = self._bind_name(
                     node.name.id,
@@ -2580,24 +3297,58 @@ class _Analyzer:
                 )
                 effects |= bind_effects
             effects |= ALLOCATES
-        elif isinstance(node, (ast.Return, ast.Raise)):
-            value = getattr(node, "value", None) or getattr(node, "exc", None)
-            if isinstance(value, ast.expr):
-                result = self.eval_expr(value, state_id, scope)
-                state_id = result.state_id
-                effects |= result.effects
-            effects |= RAISES if isinstance(node, ast.Raise) else NO_EFFECTS
-        elif isinstance(node, (ast.Assert,)):
+        elif isinstance(node, ast.Return):
+            if node.value is not None:
+                result = self.eval_expr(node.value, state_id, scope)
+                state_id, effects = result.state_id, result.effects
+            evaluated = self._normal_flow(state_id, effects)
+            return self._merge_flows(
+                evaluated.without_normal(), PythonCompletionFlow(returned=state_id)
+            )
+        elif isinstance(node, ast.Raise):
+            for expression in (node.exc, node.cause):
+                if expression is not None:
+                    result = self.eval_expr(expression, state_id, scope)
+                    state_id = result.state_id
+                    effects |= result.effects
+            # Exception class normalization/instantiation can invoke Python;
+            # a bare re-raise has no new exception/cause expression to normalize.
+            effects |= RAISES
+            if node.exc is not None:
+                effects |= EXECUTES_ARBITRARY_PYTHON
+                state_id = self._apply_effects(
+                    state_id, EXECUTES_ARBITRARY_PYTHON | RAISES
+                )
+            self._record_state(state_id)
+            return PythonCompletionFlow(
+                raised=self.states.join(*self._observed_stack[-1], state_id),
+                effects=effects,
+            )
+        elif isinstance(node, ast.Assert):
             test = self._eval_truth_test(node.test, state_id, scope)
-            state_id = test.state_id
-            effects |= test.effects | RAISES
-            if node.msg is not None:
-                message = self.eval_expr(node.msg, state_id, scope)
-                state_id = self.states.join(state_id, message.state_id)
-                effects |= message.effects
-        elif isinstance(
-            node, (ast.Global, ast.Nonlocal, ast.Pass, ast.Break, ast.Continue)
-        ):
+            truth = self._known_expression_result(node.test).truth
+            flow = self._normal_flow(test.state_id, test.effects).without_normal()
+            if truth is not False:
+                flow = self._merge_flows(
+                    flow, PythonCompletionFlow(normal=test.state_id)
+                )
+            if truth is not True:
+                failure_state = test.state_id
+                failure_effects = RAISES
+                if node.msg is not None:
+                    message = self.eval_expr(node.msg, failure_state, scope)
+                    failure_state = message.state_id
+                    failure_effects |= message.effects
+                flow = self._merge_flows(
+                    flow,
+                    self._normal_flow(failure_state, failure_effects).without_normal(),
+                )
+            return flow
+        elif isinstance(node, ast.Break):
+            return PythonCompletionFlow(broken=state_id)
+        elif isinstance(node, ast.Continue):
+            return PythonCompletionFlow(continued=state_id)
+        elif isinstance(node, (ast.Global, ast.Nonlocal, ast.Pass)):
             pass
         else:
             for child in ast.iter_child_nodes(node):
@@ -2607,104 +3358,292 @@ class _Analyzer:
                     effects |= result.effects
             effects |= UNKNOWN_EFFECTS
             state_id = self._apply_effects(state_id, effects)
-        self._record_state(state_id)
-        return state_id, effects
+        return self._normal_flow(state_id, effects)
 
     def _exec_loop(
         self, node: ast.For | ast.AsyncFor | ast.While, state_id: int, scope: _Scope
-    ) -> tuple[int, EffectMask]:
-        effects = NO_EFFECTS
+    ) -> PythonCompletionFlow[int]:
         entry = state_id
+        prefix: PythonCompletionFlow[int] = PythonCompletionFlow()
+        iteration: PythonIterationFact | None = None
         if isinstance(node, (ast.For, ast.AsyncFor)):
             iterable = self.eval_expr(node.iter, entry, scope)
             entry = iterable.state_id
-            effects |= (
-                iterable.effects
-                | INVOKES_ITERATION_CALLBACK
-                | EXECUTES_ARBITRARY_PYTHON
-                | RAISES
+            iteration_effects = iterable_unpack_effects(
+                node.iter, fact_result=self._known_expression_result
             )
-        else:
-            test = self._eval_truth_test(node.test, entry, scope)
-            entry = test.state_id
-            effects |= test.effects
-        header = entry
-        for _step in range(_MAX_LOOP_FIXPOINT_STEPS):
+            if isinstance(node, ast.AsyncFor):
+                iteration_effects = (
+                    INVOKES_ITERATION_CALLBACK
+                    | EXECUTES_ARBITRARY_PYTHON
+                    | SUSPENDS
+                    | RAISES
+                )
+            iterable_result = self._known_expression_result(node.iter)
+            iteration = PythonIterationFact.from_result(
+                iterable_result,
+                iteration_effects,
+                _RELEASE_CALLBACK_EFFECTS
+                if iterable_result.release_may_call
+                else NO_EFFECTS,
+            )
+            key = self._node_key(node)
+            previous = self.iterations.get(key)
+            self.iterations[key] = (
+                iteration if previous is None else previous.merge(iteration)
+            )
+            entry = self._apply_effects(entry, iteration.effects)
+            prefix = self._normal_flow(
+                entry, iterable.effects | iteration.effects
+            ).without_normal()
+        entry_epoch = self.states.get(entry).taint_epoch
+
+        def advance(header: int) -> tuple[int | None, PythonCompletionFlow[int]]:
             body_entry = header
+            truth: bool | None = None
             if isinstance(node, ast.While):
                 test = self._eval_truth_test(node.test, header, scope)
                 body_entry = test.state_id
-                effects |= test.effects
+                truth = self._known_expression_result(node.test).truth
+                header_flow = self._normal_flow(body_entry, test.effects)
+            else:
+                assert iteration is not None
+                body_entry = self._apply_effects(body_entry, iteration.effects)
+                header_flow = self._normal_flow(body_entry, iteration.effects)
+                if iteration.empty:
+                    truth = False
+            exhausted = body_entry if truth is not True else None
+            if truth is False:
+                return exhausted, header_flow.without_normal()
             if isinstance(node, (ast.For, ast.AsyncFor)):
+                assert iteration is not None
+                strings = iteration.element_strings
+                if (
+                    iteration.mutable
+                    and self.states.get(body_entry).taint_epoch != entry_epoch
+                ):
+                    strings = None
                 body_entry, target_effects = self.assign_target(
-                    node.target, OTHER_IDENTITY, body_entry, scope
+                    node.target,
+                    int(PythonIdentity.INERT_VALUE)
+                    if strings is not None
+                    else OTHER_IDENTITY,
+                    body_entry,
+                    scope,
+                    static_value=strings,
                 )
-                effects |= target_effects
-            body_exit, body_effects = self.exec_statements(node.body, body_entry, scope)
-            effects |= body_effects
-            next_header = self.states.join(entry, body_exit)
-            if self.states.equivalent(next_header, header):
-                header = next_header
-                break
-            header = next_header
-        else:
-            header = self._widen_module_bindings(header)
-            header = self.states.invalidate_members(header, ALL_INVALID_MEMBERS)
-        orelse, else_effects = self.exec_statements(node.orelse, header, scope)
-        effects |= else_effects
-        state_id = self.states.join(entry, header, orelse)
-        return self._apply_effects(state_id, effects), effects
+                header_flow = self._merge_flows(
+                    header_flow.without_normal(),
+                    self._normal_flow(body_entry, target_effects),
+                )
+            return exhausted, header_flow.sequence(
+                lambda normal: self.exec_statements(node.body, normal, scope),
+                join_states=self.states.join,
+            )
+
+        def widen(header: int) -> int:
+            return self.states.invalidate_members(
+                self._widen_module_bindings(header), ALL_INVALID_MEMBERS
+            )
+
+        def finalize(state: int) -> PythonCompletionFlow[int]:
+            assert iteration is not None
+            return self._normal_flow(
+                self._apply_effects(state, iteration.release_effects),
+                iteration.release_effects,
+            )
+
+        return self._merge_flows(
+            prefix,
+            PythonCompletionFlow.loop(
+                entry,
+                advance,
+                lambda exhausted: self.exec_statements(node.orelse, exhausted, scope),
+                join_states=self.states.join,
+                equivalent_states=self.states.equivalent,
+                widen_state=widen,
+                finalize=finalize
+                if iteration is not None and iteration.release_effects
+                else None,
+            ),
+        )
+
+    def _exec_with(
+        self, node: ast.With | ast.AsyncWith, state_id: int, scope: _Scope
+    ) -> PythonCompletionFlow[int]:
+        callback_effects = INVOKES_CONTEXT_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
+        if isinstance(node, ast.AsyncWith):
+            callback_effects |= SUSPENDS
+
+        def enter(index: int, incoming: int) -> PythonCompletionFlow[int]:
+            if index == len(node.items):
+                return self.exec_statements(node.body, incoming, scope)
+            item = node.items[index]
+            context = self.eval_expr(item.context_expr, incoming, scope)
+            evaluated = self._normal_flow(context.state_id, context.effects)
+            entered = self._apply_effects(context.state_id, callback_effects)
+            prefix = self._merge_flows(
+                evaluated.without_normal(),
+                self._normal_flow(entered, callback_effects).without_normal(),
+            )
+            assigned = PythonCompletionFlow(normal=entered)
+            if item.optional_vars is not None:
+                assigned_state, assigned_effects = self.assign_target(
+                    item.optional_vars, OTHER_IDENTITY, entered, scope
+                )
+                assigned = self._normal_flow(assigned_state, assigned_effects)
+            body = assigned.sequence(
+                lambda normal: enter(index + 1, normal), join_states=self.states.join
+            )
+
+            def exit_context(incoming: int) -> PythonCompletionFlow[int]:
+                released = self._apply_effects(incoming, callback_effects)
+                return self._normal_flow(released, callback_effects)
+
+            return self._merge_flows(
+                prefix, body.unwind_context(exit_context, join_states=self.states.join)
+            )
+
+        return enter(0, state_id)
+
+    def _exec_exception_handler(
+        self, handler: ast.ExceptHandler, state_id: int, scope: _Scope
+    ) -> PythonCompletionFlow[int]:
+        effects = NO_EFFECTS
+        if handler.name:
+            state_id, effects = self._bind_name(
+                handler.name, OTHER_IDENTITY, state_id, scope
+            )
+        flow = self._normal_flow(state_id, effects).sequence(
+            lambda normal: self.exec_statements(handler.body, normal, scope),
+            join_states=self.states.join,
+        )
+        if handler.name:
+
+            def clear_exception(incoming: int) -> PythonCompletionFlow[int]:
+                # CPython clears an exception target by storing None before
+                # deleting it, including when the handler already deleted it.
+                rebound, release_effects = self._bind_name(
+                    handler.name,
+                    exact_identity(PythonIdentity.INERT_VALUE),
+                    incoming,
+                    scope,
+                )
+                cleared, cleanup_effects = self.delete_target(
+                    ast.Name(id=handler.name, ctx=ast.Del()), rebound, scope
+                )
+                return self._normal_flow(cleared, release_effects | cleanup_effects)
+
+            flow = flow.apply_finally(clear_exception, join_states=self.states.join)
+        return flow
+
+    def _exec_try_star_handlers(
+        self, handlers: Sequence[ast.ExceptHandler], state_id: int, scope: _Scope
+    ) -> PythonCompletionFlow[int]:
+        def evaluate_type(
+            handler: ast.ExceptHandler, incoming: int
+        ) -> PythonCompletionFlow[int]:
+            if handler.type is None:
+                return PythonCompletionFlow(normal=incoming)
+            kind = self.eval_expr(handler.type, incoming, scope)
+            return self._normal_flow(kind.state_id, kind.effects | RAISES)
+
+        def group_protocol(incoming: int) -> PythonCompletionFlow[int]:
+            effects = EXECUTES_ARBITRARY_PYTHON | ALLOCATES | RAISES
+            successor = self._apply_effects(incoming, effects)
+            return self._normal_flow(successor, effects)
+
+        return PythonCompletionFlow.exception_group_handlers(
+            state_id,
+            handlers,
+            evaluate_type=evaluate_type,
+            split_group=group_protocol,
+            execute_handler=lambda handler, incoming: self._exec_exception_handler(
+                handler, incoming, scope
+            ),
+            merge_group=group_protocol,
+            join_states=self.states.join,
+        )
 
     def _exec_try(
         self, node: ast.Try | ast.TryStar, state_id: int, scope: _Scope
-    ) -> tuple[int, EffectMask]:
-        observed: list[int] = [state_id]
-        self._observed_stack.append(observed)
-        try:
-            body, effects = self.exec_statements(node.body, state_id, scope)
-        finally:
-            self._observed_stack.pop()
-        exceptional = self.states.join(*observed)
-        branches = [body]
-        for handler in node.handlers:
-            branch = exceptional
-            if handler.type is not None:
-                result = self.eval_expr(handler.type, branch, scope)
-                branch = result.state_id
-                effects |= result.effects
-            if handler.name:
-                branch, bind_effects = self._bind_name(
-                    handler.name, OTHER_IDENTITY, branch, scope
+    ) -> PythonCompletionFlow[int]:
+        body = self.exec_statements(node.body, state_id, scope)
+        flow = PythonCompletionFlow(
+            returned=body.returned,
+            broken=body.broken,
+            continued=body.continued,
+            effects=body.effects,
+        )
+        if body.normal is not None:
+            flow = self._merge_flows(
+                flow, self.exec_statements(node.orelse, body.normal, scope)
+            )
+        if body.raised is not None:
+            if isinstance(node, ast.TryStar):
+                handled = self._exec_try_star_handlers(
+                    node.handlers, body.raised, scope
                 )
-                effects |= bind_effects
-            branch, handler_effects = self.exec_statements(handler.body, branch, scope)
-            effects |= handler_effects
-            if handler.name:
-                branch, delete_effects = self.delete_target(
-                    ast.Name(id=handler.name, ctx=ast.Del()), branch, scope
-                )
-                effects |= delete_effects
-            branches.append(branch)
-        normal, else_effects = self.exec_statements(node.orelse, body, scope)
-        effects |= else_effects
-        branches.append(normal)
-        joined = self.states.join(*branches)
-        final, final_effects = self.exec_statements(node.finalbody, joined, scope)
-        return final, effects | final_effects
+                flow = self._merge_flows(flow, handled)
+            else:
+                unmatched: int | None = body.raised
+                for handler in node.handlers:
+                    if unmatched is None:
+                        break
+                    branch = unmatched
+                    if handler.type is not None:
+                        kind = self.eval_expr(handler.type, branch, scope)
+                        branch = kind.state_id
+                        unmatched = branch
+                        flow = self._merge_flows(
+                            flow,
+                            self._normal_flow(
+                                branch, kind.effects | RAISES
+                            ).without_normal(),
+                        )
+                    else:
+                        unmatched = None
+                    flow = self._merge_flows(
+                        flow, self._exec_exception_handler(handler, branch, scope)
+                    )
+                if unmatched is not None:
+                    flow = self._merge_flows(
+                        flow, PythonCompletionFlow(raised=unmatched)
+                    )
+        if node.finalbody:
+            flow = flow.apply_finally(
+                lambda incoming: self.exec_statements(node.finalbody, incoming, scope),
+                join_states=self.states.join,
+            )
+        return flow
 
     def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
         node = job.node
         arguments = node.args
-        parameters = _argument_names(arguments)
+        parameters = function_parameter_names(arguments)
         body = (
-            node.body if isinstance(node.body, list) else [ast.Return(value=node.body)]
+            node.body
+            if isinstance(node.body, list)
+            else [ast.copy_location(ast.Return(value=node.body), node.body)]
         )
-        declarations = _scope_declarations(body, parameters)
-        kind: _ScopeKind = "lambda" if isinstance(node, ast.Lambda) else "function"
+        assert self._dependency_authority is not None
+        declarations = self._dependency_authority.declarations(node)
+        kind: _ScopeKind = (
+            "annotation"
+            if job.annotation_scope
+            else "lambda"
+            if isinstance(node, ast.Lambda)
+            else "function"
+        )
         name = "<lambda>" if isinstance(node, ast.Lambda) else node.name
         scope = self._new_scope(
-            parent=job.parent_scope, kind=kind, name=name, declarations=declarations
+            parent=job.parent_scope,
+            source_node=node,
+            kind=kind,
+            name=name,
+            declarations=declarations,
         )
+        scope.annotation_evaluator = job.annotation_scope
         state_id = outer_state
         parameter_default_identities = dict(job.parameter_default_identities)
         for local_name in scope.locals:
@@ -2725,9 +3664,12 @@ class _Analyzer:
                 )
         observed: list[int] = [state_id]
         self._observed_stack.append(observed)
+        previous_history = self._active_lexical_history
+        self._active_lexical_history = observed
         try:
-            exit_state, _effects = self.exec_statements(body, state_id, scope)
+            self.exec_statements(body, state_id, scope)
         finally:
+            self._active_lexical_history = previous_history
             self._observed_stack.pop()
 
     def _overlay_future_states(
@@ -2751,16 +3693,32 @@ class _Analyzer:
             definitely_invalidated_members=definitely,
             taint_epoch=taint_epoch,
         )
-        updates: list[tuple[int, IdentityMask]] = []
+        updates: list[tuple[int, IdentityMask, PythonStaticValue]] = []
         for slot, base_binding in base_bindings:
             future_binding = summary.binding(self.states, summary_start, slot)
-            updates.append((slot, base_binding | future_binding))
+            updates.append((slot, base_binding | future_binding, None))
         return self.states.set_bindings(state_id, updates)
 
     def analyze(self, tree: ast.Module) -> PythonBindingIndex:
-        declarations = _scope_declarations(tree.body)
+        self._future_annotations = any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in tree.body
+        )
+        self._dependency_authority = PythonDependencyAuthority(
+            eager_annotations=self._eager_annotations,
+            future_annotations=self._future_annotations,
+        )
+        declarations = python_scope_declarations(
+            tree.body, eager_annotations=self._eager_annotations
+        )
         module = self._new_scope(
-            parent=None, kind="module", name="<module>", declarations=declarations
+            parent=None,
+            source_node=tree,
+            kind="module",
+            name="<module>",
+            declarations=declarations,
         )
         self.module_scope = module
         self.module_slots = list(module.slots.values())
@@ -2768,10 +3726,15 @@ class _Analyzer:
         self.states.set_taint_domain(self.module_slot_mask)
         observed: list[int] = [0]
         self._observed_stack.append(observed)
+        self._active_lexical_history = observed
         try:
-            module_exit, _effects = self.exec_statements(tree.body, 0, module)
+            module_flow = self.exec_statements(tree.body, 0, module)
+            module_exit = self.states.join(
+                *(state for _kind, state in module_flow.successors()), *observed
+            )
         finally:
             self._observed_stack.pop()
+        self._active_lexical_history = None
         cursor = 0 if self.policy.analyze_deferred_bodies else len(self.function_jobs)
         while cursor < len(self.function_jobs):
             job = self.function_jobs[cursor]
@@ -2848,6 +3811,10 @@ class _Analyzer:
             module_import_flow = _analyze_module_import_flow_uncached(
                 tree,
                 import_context,
+                statement_facts=self.statements,
+                expression_facts=self.expressions,
+                assignment_effects=self.assignment_effects,
+                call_facts=self.calls,
                 metadata_preserving_globals_calls=frozenset(
                     (
                         fact.node.lineno,
@@ -2875,8 +3842,16 @@ class _Analyzer:
             expressions=tuple(
                 sorted(self.expressions.values(), key=lambda fact: fact.node)
             ),
+            statements=tuple(
+                sorted(self.statements.values(), key=lambda fact: fact.node)
+            ),
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
+            class_annotation_namespaces=frozenset(
+                source_key
+                for (source_key, _parent_id, kind), scope in self._source_scopes.items()
+                if kind == "class" and scope.needs_annotation_namespace
+            ),
             state_count=len(self.states),
             telemetry=PythonBindingTelemetry(
                 binding_lookups=self.states.binding_lookups,

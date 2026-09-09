@@ -2,8 +2,8 @@ use std::io;
 use std::path::Path;
 
 use super::super::super::{
-    NativeBatchJobSpec, merge_relocatable_objects, release_native_backend_batch_memory_to_os,
-    run_native_batch_worker_with_failure_artifacts,
+    NativeBatchJobSpec, release_native_backend_batch_memory_to_os,
+    run_native_batch_worker_with_failure_artifacts, write_native_archive_objects,
 };
 
 pub(super) fn run_native_application_batches(
@@ -29,5 +29,5 @@ pub(super) fn run_native_application_batches(
         release_native_backend_batch_memory_to_os();
     }
 
-    merge_relocatable_objects(output_path, &batch_paths, None)
+    write_native_archive_objects(output_path, &batch_paths)
 }

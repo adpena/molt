@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     opcode_is_overflow_peel_body_pure_table, opcode_is_overflow_peel_guard_compare_table,
 };
 use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+use crate::tir::passes::value_identity::{build_copy_map, copy_value_source, resolve_copy};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
@@ -28,61 +30,11 @@ struct PhiPlan {
     update_opcode: OpCode,
 }
 
-/// Blocks reachable from the function entry via terminator edges.
-fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
-    let mut seen = HashSet::new();
-    let mut work = vec![func.entry_block];
-    while let Some(bid) = work.pop() {
-        if !seen.insert(bid) {
-            continue;
-        }
-        let Some(block) = func.blocks.get(&bid) else {
-            continue;
-        };
-        match &block.terminator {
-            Terminator::Branch { target, .. } => work.push(*target),
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => {
-                work.push(*then_block);
-                work.push(*else_block);
-            }
-            Terminator::Switch { cases, default, .. }
-            | Terminator::StateDispatch { cases, default, .. } => {
-                work.extend(cases.iter().map(|(_, b, _)| *b));
-                work.push(*default);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
-        }
-    }
-    seen
-}
-
-/// Chase a value backward through `Copy` results to its origin within `ops`
-/// (a map from result id to the defining op). Marker copies (`store_var`
-/// round-trips) are 2-operand same-value Copies; both shapes chase through
-/// `operands[0]`.
-fn chase_copies(start: ValueId, def_by_result: &HashMap<ValueId, &TirOp>) -> ValueId {
-    let mut cur = start;
-    let mut fuel = 64; // structural bound; copy chains are short
-    while fuel > 0 {
-        fuel -= 1;
-        match def_by_result.get(&cur) {
-            Some(op) if op.opcode == OpCode::Copy && !op.operands.is_empty() => {
-                cur = op.operands[0];
-            }
-            _ => break,
-        }
-    }
-    cur
-}
-
 /// Attempt to peel the loop rooted at `header`. Returns the number of ops
 /// added on success.
 pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refusal> {
-    let reachable = reachable_blocks(func);
+    let reachable = reachable_blocks_with(func, CfgEdgePolicy::TerminatorOnly);
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // -- Shape: header(args) --Branch--> guard {..., cmp, CondBranch(body, exit)} --
     let header_block = func.blocks.get(&header).ok_or(Refusal::NoCanonicalGuard)?;
@@ -122,7 +74,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
     // Guard ops: ignorable markers + Copies + ONE compare producing `cond`.
     let mut guard_compare: Option<&TirOp> = None;
     for op in &guard_block.ops {
-        if op.opcode == OpCode::Copy {
+        if copy_value_source(op).is_some() || is_ignorable_marker(op) {
             continue;
         }
         if opcode_is_overflow_peel_guard_compare_table(op.opcode)
@@ -130,6 +82,16 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         {
             if guard_compare.is_some() {
                 return Err(Refusal::ImpureBody);
+            }
+            let replay_safe = crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+                .is_some_and(|facts| {
+                    facts.result_type == TirType::Bool
+                        && facts.effects.consistent
+                        && facts.effects.effect_free
+                        && facts.effects.nothrow
+                });
+            if !replay_safe {
+                return Err(Refusal::ObservableGuard);
             }
             guard_compare = Some(op);
         } else {
@@ -161,8 +123,21 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
     // (no side effect, deterministic), so a multiply accumulator
     // (`prod = prod * i`) re-executes BigInt-exact on the boxed slow loop.
     for op in &body_block.ops {
-        if !opcode_is_overflow_peel_body_pure_table(op.opcode) {
+        if !opcode_is_overflow_peel_body_pure_table(op.opcode) || !op.has_valid_result_arity() {
             return Err(Refusal::ImpureBody);
+        }
+        if op.opcode == OpCode::Copy {
+            if copy_value_source(op).is_none() && !is_ignorable_marker(op) {
+                return Err(Refusal::ImpureBody);
+            }
+        } else if matches!(op.opcode, OpCode::Add | OpCode::Mul)
+            && (op.operands.len() != 2
+                || !op
+                    .operands
+                    .iter()
+                    .all(|operand| exact.get(operand) == Some(&TirType::I64)))
+        {
+            return Err(Refusal::ObservableArithmetic);
         }
     }
 
@@ -222,6 +197,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         .flat_map(|b| b.ops.iter())
         .flat_map(|op| op.results.iter().map(move |r| (*r, op)))
         .collect();
+    let copy_of = build_copy_map(func);
     let phi_ids: HashSet<ValueId> = phis.iter().map(|v| v.id).collect();
 
     let body_block = &func.blocks[&body];
@@ -239,12 +215,12 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         }
         let init_arg = init_args[arg_index];
         if !matches!(
-            def_by_result.get(&chase_copies(init_arg, &def_by_result)),
+            def_by_result.get(&resolve_copy(&copy_of, init_arg)),
             Some(op) if op.opcode == OpCode::ConstInt
         ) {
             return Err(Refusal::NonConstInit);
         }
-        let update = chase_copies(latch_args[arg_index], &def_by_result);
+        let update = resolve_copy(&copy_of, latch_args[arg_index]);
         let Some(&update_op_index) = body_defs.get(&update) else {
             return Err(Refusal::NonArithmeticUpdate);
         };
@@ -264,7 +240,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         // (a literal step the frontend left un-hoisted - constant, so
         // trivially invariant).
         for &operand in &add_op.operands {
-            let origin = chase_copies(operand, &def_by_result);
+            let origin = resolve_copy(&copy_of, operand);
             let in_body_const = body_defs
                 .get(&origin)
                 .is_some_and(|&i| body_block.ops[i].opcode == OpCode::ConstInt);
@@ -872,5 +848,14 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
 /// Header blocks may carry zero-result marker Copies (line markers). Any op
 /// with results disqualifies the canonical empty-header shape.
 fn is_ignorable_marker(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy && op.results.is_empty()
+    op.opcode == OpCode::Copy
+        && op.results.is_empty()
+        && op.operands.is_empty()
+        && match op.attrs.get("_original_kind") {
+            None => true,
+            Some(crate::tir::ops::AttrValue::Str(kind)) => {
+                crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(kind)
+            }
+            Some(_) => false,
+        }
 }

@@ -17,6 +17,10 @@ from typing import (
     cast,
 )
 
+from molt.compiler_analysis.python_lexical_scope import (
+    PythonLexicalScopeVisitor,
+    class_body_functions,
+)
 from molt.frontend._types import (
     BUILTIN_LAYOUT_MIN,
     BUILTIN_TYPE_TAGS,
@@ -26,13 +30,11 @@ from molt.frontend._types import (
     MoltValue,
     _ClassNsScope,
     _function_is_instance_method,
-    _next_ic_index,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     c3_merge,
-    function_contains_yield,
 )
 from molt.frontend.visitors.class_method_compilation import (
     ClassMethodCompilationMixin,
@@ -274,49 +276,131 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
     def _class_reserved_tail_size(self, mro_names: list[str]) -> int:
         return 16 if "dict" in mro_names else 8
 
-    def _ensure_class_annotation_exec_map(self, class_name: str) -> MoltValue:
-        if self.class_annotation_exec_map is not None:
-            return self.class_annotation_exec_map
-        owner = self._sanitize_module_name(class_name)
-        name = self._annotation_exec_name(owner)
-        self.class_annotation_exec_name = name
-        exec_map = MoltValue(self.next_var(), type_hint="dict")
-        self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
-        self.class_annotation_exec_map = exec_map
-        self._publish_annotation_exec_map(name, exec_map)
-        return exec_map
+    def _setup_class_annotations(
+        self, node: ast.ClassDef, scope: _ClassNsScope
+    ) -> None:
+        """Establish annotation storage before any conditional body execution."""
 
-    def _rewrite_class_annotation_expr(
-        self, expr: ast.expr, class_name: str, class_scope: set[str]
-    ) -> ast.expr:
-        class_name_node = ast.Name(id=class_name, ctx=ast.Load())
+        if (
+            self.python_binding_index is not None
+            and self.python_binding_index.class_annotation_namespace_required(node)
+        ):
+            self._create_class_annotation_namespace(scope)
 
-        class Rewriter(ast.NodeTransformer):
-            def visit_Name(self, node: ast.Name) -> ast.AST:
-                if isinstance(node.ctx, ast.Load) and node.id in class_scope:
-                    return ast.copy_location(
-                        ast.Attribute(
-                            value=class_name_node,
-                            attr=node.id,
-                            ctx=ast.Load(),
-                        ),
-                        node,
-                    )
-                return node
+        class Collector(PythonLexicalScopeVisitor):
+            found = False
 
-            def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-                return node
+            def visit_AnnAssign(self, annotation: ast.AnnAssign) -> None:
+                if isinstance(annotation.target, ast.Name) and annotation.simple:
+                    self.found = True
 
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-                return node
+        collector = Collector(eager_annotations=self.eager_annotations)
+        for statement in node.body:
+            collector.visit(statement)
+        if not collector.found:
+            return
+        if not (self.future_annotations or self.eager_annotations):
+            # Execution marks are private compiler storage, not class attributes
+            # or rebindable outer names. Every body path shares this dominating
+            # map, and the evaluator captures the object directly.
+            exec_map = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
+            self.class_annotation_exec_map = exec_map
+            return
+        if scope.ns is None:
+            annotations = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=annotations))
+            self._class_ns_store(scope, "__annotations__", annotations)
+            return
+        key = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=["__annotations__"], result=key))
+        missing = self._emit_missing_value()
+        existing = self._emit_runtime_call(
+            "molt_namespace_get", [scope.ns, key, missing]
+        )
+        absent = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[existing, missing], result=absent))
+        self.emit(MoltOp(kind="IF", args=[absent], result=MoltValue("none")))
+        annotations = MoltValue(self.next_var(), type_hint="dict")
+        self.emit(MoltOp(kind="DICT_NEW", args=[], result=annotations))
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[scope.ns, key, annotations],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-                return node
+    def _emit_class_annotated_assignment(
+        self, node: ast.AnnAssign, scope: _ClassNsScope
+    ) -> None:
+        """Publish the value before evaluating and publishing its annotation."""
+        assert isinstance(node.target, ast.Name)
+        if node.value is not None:
+            value = self.visit(node.value)
+            if value is None:
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported class body assignment"
+                )
+            self._class_ns_store(scope, node.target.id, value)
+            self.locals[node.target.id] = value
+        if self.future_annotations or self.eager_annotations:
+            value = self._emit_annotation_value(
+                node.annotation, stringize=self.future_annotations
+            )
+            if not node.simple:
+                return
+            annotations = self._class_ns_load(scope, "__annotations__")
+            if annotations is None:
+                annotations = self._emit_global_get("__annotations__")
+            key = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[node.target.id], result=key))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[annotations, key, value],
+                    result=MoltValue("none"),
+                )
+            )
+        elif node.simple:
+            exec_map = self.class_annotation_exec_map
+            if exec_map is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    "Class annotation execution storage was not initialized at body entry",
+                )
+            exec_id = self._annotation_exec_id(is_module=False)
+            self._emit_annotation_exec_mark(exec_map, exec_id)
+            self.class_annotation_items.append(
+                (node.target.id, node.annotation, exec_id)
+            )
 
-            def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-                return node
+    def _create_class_annotation_namespace(self, scope: _ClassNsScope) -> None:
+        """Capture the namespace owner, never the class's rebindable source name.
 
-        return cast(ast.expr, Rewriter().visit(expr))
+        The shared cell initially owns the live body mapping. Type construction
+        replaces its contents with the copied class dict before user callbacks.
+        The binding index requests this once at body entry, before any branch,
+        loop or evaluator can capture it. Classes without such reads allocate
+        neither a namespace cell nor an additional mapping.
+        """
+        if scope.annotation_namespace_cell is not None:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                "Class annotation namespace already has a storage owner",
+            )
+        if scope.ns is None:
+            items: list[MoltValue] = []
+            for name, value in scope.attr_values.items():
+                key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
+                items.extend([key, value])
+            scope.ns = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=items, result=scope.ns))
+        cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[scope.ns], result=cell))
+        scope.annotation_namespace_cell = cell
 
     def _collect_static_attributes(self, class_node: ast.ClassDef) -> tuple[str, ...]:
         """Collect attribute names set via self.X = ... in class body methods.
@@ -407,23 +491,81 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         if self._class_body_depth > 0:
             self.locals[name] = class_val
             return
-        if self.current_func_name == "molt_main":
-            self.globals[name] = class_val
-            self._emit_module_attr_set(name, class_val)
-            if name in self.boxed_locals:
-                self._store_local_value(name, class_val)
-        else:
-            self._store_local_value(name, class_val)
+        self._publish_definition_binding(name, class_val)
+
+    def _verify_classcell_result(
+        self, class_name: str, cell: MoltValue, result: MoltValue
+    ) -> None:
+        """Verify the original cell after metaclass return, before decorators.
+
+        The constructor alone fills cells. A metaclass may copy or consume its
+        input mapping; only the original cell contents and returned type matter.
+        Non-type results deliberately bypass this __build_class__ check.
+        """
+        type_value = self._emit_builtin_type_value("type")
+        actual_type = MoltValue(self.next_var(), type_hint="type")
+        self.emit(MoltOp(kind="TYPE_OF", args=[result], result=actual_type))
+        is_type = self._emit_runtime_call(
+            "molt_issubclass", [actual_type, type_value], type_hint="bool"
+        )
+        self.emit(MoltOp(kind="IF", args=[is_type], result=MoltValue("none")))
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        owner = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=owner))
+        correct = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[owner, result], result=correct))
+        self.emit(MoltOp(kind="IF", args=[correct], result=MoltValue("none")))
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        missing = self._emit_missing_value()
+        empty = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[owner, missing], result=empty))
+        self.emit(MoltOp(kind="IF", args=[empty], result=MoltValue("none")))
+
+        def message(parts: list[str | MoltValue]) -> MoltValue:
+            values = []
+            for part in parts:
+                if isinstance(part, str):
+                    value = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[part], result=value))
+                else:
+                    value = self._emit_repr_from_obj(part)
+                values.append(value)
+            return self._emit_string_join(values)
+
+        missing_message = message(
+            [
+                f"__class__ not set defining {class_name!r} as ",
+                result,
+                ". Was __classcell__ propagated to type.__new__?",
+            ]
+        )
+        exception = self._emit_exception_new("RuntimeError", missing_message)
+        self.emit(MoltOp(kind="RAISE", args=[exception], result=MoltValue("none")))
+        self._emit_raise_exit()
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        wrong_message = message(
+            [
+                "__class__ set to ",
+                owner,
+                f" defining {class_name!r} as ",
+                result,
+            ]
+        )
+        exception = self._emit_exception_new("TypeError", wrong_message)
+        self.emit(MoltOp(kind="RAISE", args=[exception], result=MoltValue("none")))
+        self._emit_raise_exit()
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.local_class_names.add(node.name)
         prev_class_annotations = self.class_annotation_items
         prev_class_exec_map = self.class_annotation_exec_map
-        prev_class_exec_name = self.class_annotation_exec_name
         prev_class_exec_counter = self.class_annotation_exec_counter
         self.class_annotation_items = []
         self.class_annotation_exec_map = None
-        self.class_annotation_exec_name = None
         self.class_annotation_exec_counter = 0
         dataclass_opts = None
         other_decorators: list[ast.expr] = []
@@ -676,7 +818,27 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         base_names: list[str] = []
         base_name_lookup: list[str | None] = []
         has_explicit_bases = bool(node.bases)
-        if node.bases:
+        expanded_bases: MoltValue | None = None
+        if any(isinstance(base, ast.Starred) for base in node.bases):
+            # Class construction includes implicit body/name positional operands,
+            # so even a sole *bases is materialized before keyword evaluation.
+            # Tuple-display lowering already owns this source-ordered expansion.
+            bases_expression = ast.copy_location(
+                ast.Tuple(elts=node.bases, ctx=ast.Load()), node
+            )
+            prev_base_in_annotation = self.in_annotation
+            if type_param_map:
+                self.in_annotation = True
+            try:
+                expanded_bases = self.visit(bases_expression)
+            finally:
+                self.in_annotation = prev_base_in_annotation
+            if expanded_bases is None:
+                raise FrontendRejection(
+                    Diagnostic.TYPE_FORM, "Unsupported expanded class bases"
+                )
+            base_name_lookup.append(None)
+        elif node.bases:
             for base_expr in node.bases:
                 prev_base_in_annotation = self.in_annotation
                 if type_param_map:
@@ -750,20 +912,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             base_names = ["object"]
 
         methods: dict[str, MethodInfo] = {}
-        needs_classcell = any(
-            self._function_needs_classcell(item)
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        )
-        property_updates: dict[int, MethodInfo] = {}
+        method_nodes = class_body_functions(node)
+        needs_classcell = self._lexical_dependencies().summary(node).class_cell_required
         class_attrs: dict[str, ast.expr] = {}
         class_attr_values: dict[str, MoltValue] = {}
-        class_annotation_items: list[tuple[str, MoltValue]] = []
-        pending_methods: set[str] = {
-            item.name
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        pending_methods = {item.name for item in method_nodes}
         if len(base_names) != len(set(base_names)):
             dup = next(name for name in base_names if base_names.count(name) > 1)
             raise FrontendRejection(Diagnostic.TYPE_FORM, f"Duplicate base class {dup}")
@@ -955,7 +1108,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                     add_field(slot_name)
 
             methods_in_body = [
-                item for item in node.body if isinstance(item, ast.FunctionDef)
+                item for item in method_nodes if isinstance(item, ast.FunctionDef)
             ]
             if any(
                 method.name
@@ -1063,93 +1216,20 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 decorated=bool(other_decorators),
             )
 
-        method_names = {
-            item.name
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        method_count = len(method_names)
+        # Layout expectations come from immutable potential slots, not values
+        # eagerly instantiated by a separate method-emission lane. Dynamic class
+        # bodies use runtime layout and never turn conditional methods into
+        # unconditional devirtualization targets.
         self.classes[node.name]["layout_version"] = self._class_layout_version(
             node.name,
             class_attrs,
-            method_count=method_count,
+            method_count=len(pending_methods),
         )
-
-        # ``__class__`` cell — created BEFORE compiling methods so it can be
-        # threaded into each method's closure as the implicit ``__class__``
-        # free variable (CPython semantics).  A cell is a 1-element list whose
-        # slot is filled with the finished class object after the class is
-        # built (see the cell-fill emission on both the dynamic and outlined
-        # paths below).  Zero-arg ``super()`` and bare ``__class__`` loads read
-        # ``cell[0]`` from the closure, so they resolve correctly for
-        # function-local, nested, and module-level classes (including
-        # metaclasses) uniformly — instead of re-deriving the class by
-        # module-attribute name, which fails when the class is not a module
-        # global.
         classcell_val: MoltValue | None = None
-        prev_active_classcell = self._active_classcell_cell
-        prev_classcell_boxed = self.boxed_locals.get("__class__")
-        prev_classcell_hint = self.boxed_local_hints.get("__class__")
-        prev_classcell_locals = self.locals.get("__class__")
         if needs_classcell:
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            empty = self._emit_missing_value()
             classcell_val = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[none_val], result=classcell_val))
-            self._active_classcell_cell = classcell_val
-            self.boxed_locals["__class__"] = classcell_val
-            self.boxed_local_hints["__class__"] = "type"
-            self.locals["__class__"] = classcell_val
-
-        self._push_qualname(node.name, False)
-        try:
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef):
-                    if function_contains_yield(item):
-                        method_info = self._compile_class_generator_method(node, item)
-                    else:
-                        method_info = self._compile_class_method(node, item)
-                    if method_info["descriptor"] == "property_update":
-                        property_updates[id(item)] = method_info
-                    else:
-                        methods[item.name] = method_info
-                elif isinstance(item, ast.AsyncFunctionDef):
-                    method_info = self._compile_class_async_method(node, item)
-                    if method_info["descriptor"] == "property_update":
-                        property_updates[id(item)] = method_info
-                    else:
-                        methods[item.name] = method_info
-        finally:
-            self._pop_qualname()
-            # Restore the enclosing scope's view of ``__class__`` now that the
-            # methods have been compiled: ``__class__`` is only an implicit
-            # closure variable inside the class body, never a real local of the
-            # surrounding function.  The cell MoltValue (``classcell_val``)
-            # remains live and is filled with the finished class object below.
-            self._active_classcell_cell = prev_active_classcell
-            if prev_classcell_boxed is None:
-                self.boxed_locals.pop("__class__", None)
-            else:
-                self.boxed_locals["__class__"] = prev_classcell_boxed
-            if prev_classcell_hint is None:
-                self.boxed_local_hints.pop("__class__", None)
-            else:
-                self.boxed_local_hints["__class__"] = prev_classcell_hint
-            if prev_classcell_locals is None:
-                self.locals.pop("__class__", None)
-            else:
-                self.locals["__class__"] = prev_classcell_locals
-
-        layout_version = self._class_layout_version(
-            node.name, class_attrs, methods=methods
-        )
-        prior_layout = self.classes[node.name].get("layout_version")
-        if prior_layout is not None and prior_layout != layout_version:
-            raise RuntimeError(
-                "Class layout version changed after method compilation for "
-                f"{node.name}: pre={prior_layout} post={layout_version}"
-            )
-        self.classes[node.name]["layout_version"] = layout_version
+            self.emit(MoltOp(kind="LIST_NEW", args=[empty], result=classcell_val))
 
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
@@ -1171,28 +1251,30 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         dynamic_bases_tuple: MoltValue | None = None
         dynamic_meta: MoltValue | None = None
         dynamic_prepared_kwds: MoltValue | None = None
-        dynamic_kw_pairs: list[tuple[str, MoltValue]] = []
-        dynamic_kw_splats: list[MoltValue] = []
+        dynamic_kwds: MoltValue | None = None
         if dynamic_build:
-            for kw in node.keywords:
-                if kw.arg is None:
-                    splat_val = self.visit(kw.value)
-                    if splat_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported class **kwargs value",
-                        )
-                    dynamic_kw_splats.append(splat_val)
-                    continue
-                kw_val = self.visit(kw.value)
-                if kw_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "Unsupported class keyword value",
+            if node.keywords:
+                # __build_class__ has the same keyword assembly contract as a
+                # normal Python call, before base resolution/metaclass entry.
+                keyword_call = ast.Call(
+                    func=ast.Name(id="dict", ctx=ast.Load()),
+                    args=[],
+                    keywords=node.keywords,
+                )
+                dictionary = self._emit_builtin_type_value("dict")
+                keyword_args = self._emit_call_args_builder(keyword_call)
+                dynamic_kwds = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_BIND",
+                        args=[dictionary, keyword_args],
+                        result=dynamic_kwds,
                     )
-                dynamic_kw_pairs.append((kw.arg, kw_val))
+                )
 
-            if has_explicit_bases:
+            if expanded_bases is not None:
+                dynamic_bases_tuple = expanded_bases
+            elif has_explicit_bases:
                 bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_tuple))
                 dynamic_bases_tuple = bases_tuple
@@ -1239,29 +1321,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            kwds_val = none_val
-            if dynamic_kw_pairs or dynamic_kw_splats:
-                kwds_dict = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=[], result=kwds_dict))
-                for kw_name, kw_val in dynamic_kw_pairs:
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_INDEX",
-                            args=[kwds_dict, key_val, kw_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                for splat_val in dynamic_kw_splats:
-                    self.emit(
-                        MoltOp(
-                            kind="DICT_UPDATE_KWSTAR",
-                            args=[kwds_dict, splat_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                kwds_val = kwds_dict
+            kwds_val = dynamic_kwds if dynamic_kwds is not None else none_val
 
             prepare_key = MoltValue(self.next_var(), type_hint="str")
             self.emit(
@@ -1335,61 +1395,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             )
 
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=["__module__"], result=key_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[namespace_val, key_val, module_val],
-                    result=MoltValue("none"),
-                )
-            )
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=["__qualname__"], result=key_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[namespace_val, key_val, qualname_val],
-                    result=MoltValue("none"),
-                )
-            )
-            # __firstlineno__ (CPython 3.13+) — line number of the class statement
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__firstlineno__"], result=key_val)
-            )
-            lineno_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[namespace_val, key_val, lineno_val],
-                    result=MoltValue("none"),
-                )
-            )
             dynamic_namespace = namespace_val
-            if needs_classcell and classcell_val is not None:
-                # Reuse the cell created before the method loop (the same cell
-                # threaded into method closures), and publish it under
-                # ``__classcell__`` so the metaclass's ``type.__new__`` fills it
-                # with the finished class — exactly as CPython does.
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["__classcell__"], result=key_val)
-                )
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[dynamic_namespace, key_val, classcell_val],
-                        result=MoltValue("none"),
-                    )
-                )
 
-        class_scope: dict[str, MoltValue] = {
-            name: info["attr"] for name, info in methods.items()
-        }
         saved_locals = self.locals
-        self.locals = dict(class_scope)
+        self.locals = {}
         self._class_body_depth += 1
         # Block-execution scope for the class body (P0 #50).  ``_store_local_value``
         # / ``_load_local_value`` / ``_emit_delete_name`` consult the top of
@@ -1413,6 +1422,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ),
             class_name=node.name,
             module_name=module_name,
+            class_node=node,
+            class_cell=classcell_val,
+            methods=methods,
+            local_names=frozenset(self._collect_assigned_names(node.body)),
+            global_names=frozenset(self._collect_global_decls(node.body)),
+            nonlocal_names=frozenset(self._collect_nonlocal_decls(node.body)),
+            enclosing_locals=(
+                self._class_ns_stack[-1].enclosing_locals
+                if self._class_ns_stack
+                else saved_locals
+            ),
         )
 
         def bind_class_name(name: str, value: MoltValue) -> None:
@@ -1424,19 +1444,54 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self._class_ns_store(class_ns_scope, name, value)
             self.locals[name] = value
 
-        # The class-ns scope is pushed onto the stack ONLY for bodies that need
-        # block execution (control flow / ``del``).  A straight-line body keeps
-        # the original fast path: its name binds go through ``bind_class_name``
-        # (which updates ``class_attr_values`` / ``self.locals`` and, for a
-        # dynamic class, the namespace dict) but the ``_store_local_value`` /
-        # ``_load_local_value`` / ``_emit_delete_name`` hooks stay INERT (an
-        # empty stack), so emission of field defaults, method defaults, and the
-        # compile-time dataclass path is byte-for-byte unchanged.  (P0 #50.)
-        _push_scope = body_needs_block
-        if _push_scope:
-            self._class_ns_stack.append(class_ns_scope)
+        # All consumers share one namespace owner. Static bodies retain an SSA
+        # projection until a deferred evaluator requires a captured mapping.
+        class_import_state = self._capture_class_import_state()
+        self._class_ns_stack.append(class_ns_scope)
+        self._push_qualname(node.name, False)
+        python_frame_scope = self._enter_python_frame_context_scope(class_body=True)
         try:
+            if dynamic_namespace is not None:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__module__"], result=key_val))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[dynamic_namespace, key_val, module_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(kind="CONST_STR", args=["__qualname__"], result=key_val)
+                )
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[dynamic_namespace, key_val, qualname_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                # __firstlineno__ (CPython 3.13+) — line number of the class statement
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(kind="CONST_STR", args=["__firstlineno__"], result=key_val)
+                )
+                lineno_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[dynamic_namespace, key_val, lineno_val],
+                        result=MoltValue("none"),
+                    )
+                )
+            self._setup_class_annotations(node, class_ns_scope)
             for item in node.body:
+                if isinstance(item, (ast.Global, ast.Nonlocal)):
+                    # Class directives belong to this namespace, never to the
+                    # enclosing function frame used to lower its body.
+                    continue
                 if isinstance(item, ast.ClassDef):
                     # A nested ``class`` statement.  Lower it recursively: this
                     # emits the nested class's own ``CLASS_DEF`` (so the class
@@ -1458,285 +1513,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     bind_class_name(item.name, nested_val)
                     continue
                 if isinstance(item, ast.TypeAlias):
-                    temporary_scope = not _push_scope
-                    if temporary_scope:
-                        self._class_ns_stack.append(class_ns_scope)
-                    try:
-                        self.visit_TypeAlias(item)
-                    finally:
-                        if temporary_scope:
-                            popped_scope = self._class_ns_stack.pop()
-                            assert popped_scope is class_ns_scope
+                    self.visit_TypeAlias(item)
                     continue
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    _, _, kwonly, _, _ = self._split_function_args(item.args)
-                    kwonly_names = [arg.arg for arg in kwonly]
-                    update_info = property_updates.get(id(item))
-                    if update_info is not None:
-                        update_info["func"] = self._emit_function_defaults(
-                            update_info["func"],
-                            item.args.defaults,
-                            item.args.kw_defaults,
-                            kwonly_names,
-                        )
-                        update_kind = update_info.get("property_update")
-                        if update_kind is None:
-                            raise FrontendRejection(
-                                Diagnostic.INTERNAL_INVARIANT,
-                                "Property update kind missing",
-                            )
-                        prop_val = class_scope.get(item.name)
-                        if prop_val is None:
-                            exc_val = self._emit_exception_new(
-                                "NameError", f"name '{item.name}' is not defined"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="RAISE",
-                                    args=[exc_val],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                            prop_val = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(
-                                MoltOp(kind="CONST_NONE", args=[], result=prop_val)
-                            )
-                        prop_attr = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="GETATTR_GENERIC_PTR",
-                                args=[prop_val, update_kind],
-                                result=prop_attr,
-                                metadata={"ic_index": _next_ic_index()},
-                            )
-                        )
-                        callargs = MoltValue(self.next_var(), type_hint="callargs")
-                        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                        self.emit(
-                            MoltOp(
-                                kind="CALLARGS_PUSH_POS",
-                                args=[callargs, update_info["attr"]],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        res = MoltValue(self.next_var(), type_hint="property")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[prop_attr, callargs],
-                                result=res,
-                            )
-                        )
-                        class_scope[item.name] = res
-                        self.locals[item.name] = res
-                        # A method/descriptor name is a class-body binding too:
-                        # register it so in-body loads (e.g. a later
-                        # ``@name.setter``) resolve via the class namespace
-                        # (P0 #50).  Methods publish into the build via
-                        # ``methods``/``class_attr_values`` below, not via
-                        # ``_class_ns_store``, so only the name set is updated.
-                        class_ns_scope.names.add(item.name)
-                        # Keep the canonical method binding in sync so later
-                        # class finalization does not overwrite descriptor
-                        # updates (e.g. @name.setter / @name.deleter) with the
-                        # original pre-update descriptor value.
-                        if item.name in methods:
-                            methods[item.name]["attr"] = res
-                        else:
-                            class_attr_values[item.name] = res
-                        if dynamic_namespace is not None:
-                            key_val = MoltValue(self.next_var(), type_hint="str")
-                            self.emit(
-                                MoltOp(
-                                    kind="CONST_STR", args=[item.name], result=key_val
-                                )
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="STORE_INDEX",
-                                    args=[dynamic_namespace, key_val, res],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                        continue
-                    method_info = methods.get(item.name)
-                    if method_info is not None:
-                        func_val = method_info["func"]
-                        func_val = self._emit_function_defaults(
-                            func_val,
-                            item.args.defaults,
-                            item.args.kw_defaults,
-                            kwonly_names,
-                        )
-                        method_attr = func_val
-                        descriptor = method_info["descriptor"]
-                        if descriptor == "decorated":
-                            property_outer = (
-                                item.decorator_list
-                                and isinstance(item.decorator_list[0], ast.Name)
-                                and item.decorator_list[0].id == "property"
-                            )
-                            if property_outer:
-                                method_decorator_vals: list[MoltValue] = []
-                                for deco in item.decorator_list[1:]:
-                                    decorator_val = self.visit(deco)
-                                    if decorator_val is None:
-                                        raise FrontendRejection(
-                                            Diagnostic.SYNTAX_FORM,
-                                            "Unsupported method decorator",
-                                        )
-                                    method_decorator_vals.append(decorator_val)
-                                decorated = method_attr
-                                for decorator_val in reversed(method_decorator_vals):
-                                    callargs = MoltValue(
-                                        self.next_var(), type_hint="callargs"
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALLARGS_NEW",
-                                            args=[],
-                                            result=callargs,
-                                        )
-                                    )
-                                    push_res = MoltValue(
-                                        self.next_var(), type_hint="None"
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALLARGS_PUSH_POS",
-                                            args=[callargs, decorated],
-                                            result=push_res,
-                                        )
-                                    )
-                                    res = MoltValue(self.next_var(), type_hint="Any")
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALL_BIND",
-                                            args=[decorator_val, callargs],
-                                            result=res,
-                                        )
-                                    )
-                                    decorated = res
-                                none_val = MoltValue(self.next_var(), type_hint="None")
-                                self.emit(
-                                    MoltOp(kind="CONST_NONE", args=[], result=none_val)
-                                )
-                                wrapped = MoltValue(
-                                    self.next_var(), type_hint="property"
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="PROPERTY_NEW",
-                                        args=[decorated, none_val, none_val],
-                                        result=wrapped,
-                                    )
-                                )
-                                method_attr = wrapped
-                            else:
-                                method_decorator_vals = []
-                                for deco in item.decorator_list:
-                                    decorator_val = self.visit(deco)
-                                    if decorator_val is None:
-                                        raise FrontendRejection(
-                                            Diagnostic.SYNTAX_FORM,
-                                            "Unsupported method decorator",
-                                        )
-                                    method_decorator_vals.append(decorator_val)
-                                decorated = method_attr
-                                for decorator_val in reversed(method_decorator_vals):
-                                    callargs = MoltValue(
-                                        self.next_var(), type_hint="callargs"
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALLARGS_NEW",
-                                            args=[],
-                                            result=callargs,
-                                        )
-                                    )
-                                    push_res = MoltValue(
-                                        self.next_var(), type_hint="None"
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALLARGS_PUSH_POS",
-                                            args=[callargs, decorated],
-                                            result=push_res,
-                                        )
-                                    )
-                                    res = MoltValue(self.next_var(), type_hint="Any")
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CALL_BIND",
-                                            args=[decorator_val, callargs],
-                                            result=res,
-                                        )
-                                    )
-                                    decorated = res
-                                method_attr = decorated
-                        elif descriptor == "classmethod":
-                            wrapped = MoltValue(
-                                self.next_var(), type_hint="classmethod"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="CLASSMETHOD_NEW",
-                                    args=[func_val],
-                                    result=wrapped,
-                                )
-                            )
-                            method_attr = wrapped
-                        elif descriptor == "staticmethod":
-                            wrapped = MoltValue(
-                                self.next_var(), type_hint="staticmethod"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="STATICMETHOD_NEW",
-                                    args=[func_val],
-                                    result=wrapped,
-                                )
-                            )
-                            method_attr = wrapped
-                        elif descriptor == "property":
-                            none_val = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(
-                                MoltOp(kind="CONST_NONE", args=[], result=none_val)
-                            )
-                            wrapped = MoltValue(self.next_var(), type_hint="property")
-                            self.emit(
-                                MoltOp(
-                                    kind="PROPERTY_NEW",
-                                    args=[func_val, none_val, none_val],
-                                    result=wrapped,
-                                )
-                            )
-                            method_attr = wrapped
-                        method_info["attr"] = method_attr
-                        class_scope[item.name] = method_attr
-                        self.locals[item.name] = method_attr
-                        # Register the method name as a class-body binding so an
-                        # in-body load resolves through the class namespace
-                        # (P0 #50); the build consumes ``methods`` directly.
-                        class_ns_scope.names.add(item.name)
-                        if dynamic_namespace is not None:
-                            key_val = MoltValue(self.next_var(), type_hint="str")
-                            self.emit(
-                                MoltOp(
-                                    kind="CONST_STR", args=[item.name], result=key_val
-                                )
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="STORE_INDEX",
-                                    args=[
-                                        dynamic_namespace,
-                                        key_val,
-                                        method_attr,
-                                    ],
-                                    result=MoltValue("none"),
-                                )
-                            )
+                    self.visit(item)
                     continue
                 if isinstance(item, ast.Expr):
                     if isinstance(item.value, ast.Constant) and isinstance(
@@ -1762,31 +1542,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         assert isinstance(target, ast.Name)
                         bind_class_name(target.id, val)
                     continue
-                if isinstance(item, ast.AnnAssign) and isinstance(
-                    item.target, ast.Name
-                ):
-                    if self.future_annotations or self.eager_annotations:
-                        ann_val = self._emit_annotation_value(
-                            item.annotation, stringize=self.future_annotations
-                        )
-                        class_annotation_items.append((item.target.id, ann_val))
-                    else:
-                        exec_map = self._ensure_class_annotation_exec_map(node.name)
-                        exec_id = self._annotation_exec_id(is_module=False)
-                        self._emit_annotation_exec_mark(exec_map, exec_id)
-                        self.class_annotation_items.append(
-                            (item.target.id, item.annotation, exec_id)
-                        )
-                    if item.value is None:
-                        continue
-                    val = self.visit(item.value)
-                    if val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported class body assignment",
-                        )
-                    bind_class_name(item.target.id, val)
-                    continue
                 if isinstance(item, ast.Pass):
                     continue
                 # Any remaining class-body statement — control flow
@@ -1800,82 +1555,67 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 # CPython executes the class-body code object.  ``body_needs_block``
                 # guaranteed a real ``dynamic_namespace`` exists for these.
                 self.visit(item)
-        finally:
-            self._class_body_depth -= 1
-            self.locals = saved_locals
-            if _push_scope:
-                popped_scope = self._class_ns_stack.pop()
-                assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
-
-        # __static_attributes__ (CPython 3.13+) — always emitted after class
-        # body, even when empty.  Appears after methods in namespace event order.
-        classdictcell_key: MoltValue | None = None
-        if dynamic_namespace is not None:
-            static_attrs = self._collect_static_attributes(node)
-            attr_vals: list[MoltValue] = []
-            for attr_name in static_attrs:
-                av = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=av))
-                attr_vals.append(av)
-            static_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=attr_vals, result=static_tuple))
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__static_attributes__"], result=key_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[dynamic_namespace, key_val, static_tuple],
-                    result=MoltValue("none"),
+            if (
+                not self.future_annotations
+                and not self.eager_annotations
+                and self.class_annotation_items
+                and "__annotations__" not in class_attr_values
+            ):
+                annotate_value = self._emit_annotate_function_obj(
+                    items=self.class_annotation_items,
+                    exec_map_name=None,
+                    exec_map=self.class_annotation_exec_map,
+                    stringize=False,
+                    module_override=module_name,
+                    class_scope=class_ns_scope,
                 )
-            )
-            # __classdictcell__ (CPython 3.14+) — the class body dict cell,
-            # set when the class has methods.  This is NOT the same as
-            # __classcell__ (which is for super() support).
-            has_methods = any(
-                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                for item in node.body
-            )
-            if has_methods:
-                # The value is the namespace dict itself (class body dict cell)
-                cdc_key = MoltValue(self.next_var(), type_hint="str")
-                classdictcell_key = cdc_key
+                self._class_ns_store(class_ns_scope, "__annotate__", annotate_value)
+            # __static_attributes__ (CPython 3.13+) — always emitted after class
+            # body, even when empty.  Appears after methods in namespace event order.
+            if dynamic_namespace is not None:
+                static_attrs = self._collect_static_attributes(node)
+                attr_vals: list[MoltValue] = []
+                for attr_name in static_attrs:
+                    av = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=av))
+                    attr_vals.append(av)
+                static_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=attr_vals, result=static_tuple))
+                key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
-                    MoltOp(kind="CONST_STR", args=["__classdictcell__"], result=cdc_key)
+                    MoltOp(
+                        kind="CONST_STR", args=["__static_attributes__"], result=key_val
+                    )
                 )
                 self.emit(
                     MoltOp(
                         kind="STORE_INDEX",
-                        args=[dynamic_namespace, cdc_key, dynamic_namespace],
+                        args=[dynamic_namespace, key_val, static_tuple],
                         result=MoltValue("none"),
                     )
                 )
 
-        if (
-            (self.future_annotations or self.eager_annotations)
-            and dynamic_namespace is not None
-            and class_annotation_items
-            and "__annotations__" not in class_attr_values
-        ):
-            ann_items: list[MoltValue] = []
-            for name, val in class_annotation_items:
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                ann_items.extend([key_val, val])
-            ann_dict = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__annotations__"], result=key_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[dynamic_namespace, key_val, ann_dict],
-                    result=MoltValue("none"),
+            if classcell_val is not None:
+                self._class_ns_store(class_ns_scope, "__classcell__", classcell_val)
+            if class_ns_scope.annotation_namespace_cell is not None:
+                self._class_ns_store(
+                    class_ns_scope,
+                    "__classdictcell__",
+                    class_ns_scope.annotation_namespace_cell,
                 )
+        finally:
+            self._pop_qualname()
+            self._class_body_depth -= 1
+            self.locals = saved_locals
+            popped_scope = self._class_ns_stack.pop()
+            assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
+            self._restore_class_import_state(
+                class_import_state,
+                class_ns_scope.global_names,
+                class_ns_scope.nonlocal_names,
             )
+            self._exit_python_frame_context_scope(python_frame_scope)
+
         if dynamic_build:
             if (
                 dynamic_meta is None
@@ -1884,14 +1624,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ):
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported dynamic class build"
-                )
-            if classdictcell_key is not None:
-                self.emit(
-                    MoltOp(
-                        kind="DEL_INDEX",
-                        args=[dynamic_namespace, classdictcell_key],
-                        result=MoltValue("none"),
-                    )
                 )
             callargs = MoltValue(self.next_var(), type_hint="callargs")
             self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
@@ -1939,7 +1671,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            class_val = MoltValue(self.next_var(), type_hint="type")
+            # A user metaclass may return an arbitrary object.
+            class_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(
                 MoltOp(
                     kind="CALL_BIND",
@@ -1947,72 +1680,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     result=class_val,
                 )
             )
-            if needs_classcell and classcell_val is not None:
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["__classcell__"], result=key_val)
-                )
-                cell_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="DICT_GET",
-                        args=[dynamic_namespace, key_val, none_val],
-                        result=cell_val,
-                    )
-                )
-                is_missing = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[cell_val, none_val], result=is_missing)
-                )
-                self.emit(
-                    MoltOp(kind="IF", args=[is_missing], result=MoltValue("none"))
-                )
-                msg = (
-                    "__class__ not set defining "
-                    f"'{node.name}' as <class '{module_name}.{node.name}'>. "
-                    "Was __classcell__ propagated to type.__new__?"
-                )
-                msg_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[msg], result=msg_val))
-                exc_val = self._emit_exception_new("RuntimeError", msg_val)
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
-                self._emit_raise_exit()
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                same_cell = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[cell_val, classcell_val], result=same_cell)
-                )
-                self.emit(MoltOp(kind="IF", args=[same_cell], result=MoltValue("none")))
-                zero_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[classcell_val, zero_val, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(
-                    MoltOp(
-                        kind="DEL_INDEX",
-                        args=[dynamic_namespace, key_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                msg_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[msg], result=msg_val))
-                exc_val = self._emit_exception_new("RuntimeError", msg_val)
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
-                self._emit_raise_exit()
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            if classcell_val is not None:
+                self._verify_classcell_result(node.name, classcell_val, class_val)
         else:
             # Outlined class definition: collect attrs, emit single CLASS_DEF op
             class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
@@ -2083,49 +1752,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 akey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=akey))
                 class_def_attrs.append((akey, val))
-            if (
-                (self.future_annotations or self.eager_annotations)
-                and class_annotation_items
-                and "__annotations__" not in class_attr_values
-            ):
-                ann_items: list[MoltValue] = []
-                for name, val in class_annotation_items:
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                    ann_items.extend([key_val, val])
-                ann_dict = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
-                akey = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["__annotations__"], result=akey)
-                )
-                class_def_attrs.append((akey, ann_dict))
-            if (
-                not self.future_annotations
-                and not self.eager_annotations
-                and self.class_annotation_items
-                and "__annotations__" not in class_attr_values
-            ):
-                class_scope_names = set(class_attr_values) | set(methods)
-                rewritten_items: list[tuple[str, ast.expr, int]] = []
-                for name, expr, exec_id in self.class_annotation_items:
-                    rewritten = self._rewrite_class_annotation_expr(
-                        expr, node.name, class_scope_names
-                    )
-                    rewritten_items.append((name, rewritten, exec_id))
-                annotate_val = self._emit_annotate_function_obj(
-                    items=rewritten_items,
-                    exec_map_name=self.class_annotation_exec_name,
-                    stringize=False,
-                    module_override=module_name,
-                )
-                akey = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["__annotate__"], result=akey))
-                class_def_attrs.append((akey, annotate_val))
-            for method_name, method_info in methods.items():
-                mkey = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[method_name], result=mkey))
-                class_def_attrs.append((mkey, method_info["attr"]))
             if class_info.get("dataclass"):
                 marker_val = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=marker_val))
@@ -2149,6 +1775,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     metadata={"s_value": class_def_meta},
                 )
             )
+            if classcell_val is not None:
+                self._verify_classcell_result(node.name, classcell_val, class_val)
             self._publish_class_value(node.name, class_val)
             # ``@dataclass`` runtime application is construction-method-agnostic:
             # it operates on the finished ``class_val`` via ``setattr`` /
@@ -2197,39 +1825,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     result=MoltValue("none"),
                 )
             )
-            if (
-                not self.future_annotations
-                and not self.eager_annotations
-                and self.class_annotation_items
-                and "__annotations__" not in class_attr_values
-            ):
-                class_scope_names = set(class_attr_values) | set(methods)
-                rewritten_items_d: list[tuple[str, ast.expr, int]] = []
-                for name, expr, exec_id in self.class_annotation_items:
-                    rewritten = self._rewrite_class_annotation_expr(
-                        expr, node.name, class_scope_names
-                    )
-                    rewritten_items_d.append((name, rewritten, exec_id))
-                annotate_val_d = self._emit_annotate_function_obj(
-                    items=rewritten_items_d,
-                    exec_map_name=self.class_annotation_exec_name,
-                    stringize=False,
-                    module_override=module_name,
-                )
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[class_val, "__annotate__", annotate_val_d],
-                        result=MoltValue("none"),
-                    )
-                )
-            self.emit(
-                MoltOp(
-                    kind="CLASS_APPLY_SET_NAME",
-                    args=[class_val],
-                    result=MoltValue("none"),
-                )
-            )
+            # The selected metaclass owns __set_name__ and __init_subclass__
+            # during construction. Replaying either after return is observable.
             layout_version = self.classes[node.name].get("layout_version", 0)
             layout_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
@@ -2249,23 +1846,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             # SAME helper the static-outlined path calls: one code path publishes
             # the dataclass transform regardless of how the class object was built.
             class_val = self._emit_dataclass_application(node, class_info, class_val)
-        # Fill the ``__class__`` cell threaded into method closures with the
-        # freshly built class object.  The ``dynamic_build`` (metaclass) path
-        # fills it from the metaclass call's result earlier; here we cover the
-        # outlined / dynamic-layout non-metaclass paths.  CPython binds the
-        # ``__class__`` cell to the class produced by the class statement BEFORE
-        # any class decorators run, so this fill must precede decorator
-        # application below.
-        if not dynamic_build and needs_classcell and classcell_val is not None:
-            zero_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[classcell_val, zero_val, class_val],
-                    result=MoltValue("none"),
-                )
-            )
         if type_param_vals:
             self._emit_attach_type_params(class_val, type_param_vals)
             class_getitem = self._emit_module_attr_get_on(
@@ -2327,7 +1907,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         self.class_annotation_items = prev_class_annotations
         self.class_annotation_exec_map = prev_class_exec_map
-        self.class_annotation_exec_name = prev_class_exec_name
         self.class_annotation_exec_counter = prev_class_exec_counter
         self.annotation_type_params = prev_type_params
         return None

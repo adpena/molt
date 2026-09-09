@@ -63,16 +63,20 @@ class AttributeAccessMixin(_MixinBase):
     def _instance_attr_mutated(self, class_name: str, attr: str) -> bool:
         return attr in self.instance_attr_mutations.get(class_name, set())
 
-    def _flush_deferred_module_attrs(self) -> None:
+    def _flush_deferred_module_attrs(self, names: set[str] | None = None) -> None:
         if not self.deferred_module_attrs or self.module_obj is None:
             return
-        for name in sorted(self.deferred_module_attrs):
+        pending = self.deferred_module_attrs
+        if names is not None:
+            pending = pending & names
+        for name in sorted(pending):
             # Skip variables that are live in the module dict via
             # module_global_mutations (loop-carried variables).
             # Their current value is in the module dict, not in a
             # local SSA variable.  Writing back the stale SSA value
             # would overwrite the accumulated loop result.
             if name in self.module_global_mutations:
+                self.deferred_module_attrs.discard(name)
                 continue
             val = self._load_local_value(name)
             if val is None:
@@ -81,6 +85,7 @@ class AttributeAccessMixin(_MixinBase):
                 val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
             self._emit_module_attr_set_on(self.module_obj, name, val)
+            self.deferred_module_attrs.discard(name)
 
     def _expr_is_data_descriptor(self, expr: ast.expr) -> bool:
         if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name):
@@ -115,20 +120,19 @@ class AttributeAccessMixin(_MixinBase):
         if self.current_func_name != "molt_main" or self.module_obj is None:
             return
         self._record_app_module_store(name, value)
-        if defer and self.defer_module_attrs:
+        if (
+            defer
+            and self.defer_module_attrs
+            and name not in self.module_global_mutations
+        ):
             self.deferred_module_attrs.add(name)
             return
-        if not defer and self.defer_module_attrs:
+        if self.defer_module_attrs:
+            # Mutation-tracked bindings already belong to the live module
+            # dictionary. The deferred flush deliberately skips them, so their
+            # actual store must happen here and retire any older queued value.
             self.deferred_module_attrs.discard(name)
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        self.emit(
-            MoltOp(
-                kind="MODULE_SET_ATTR",
-                args=[self.module_obj, name_val, value],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_module_attr_set_on(self.module_obj, name, value)
 
     def _emit_module_attr_set_on(
         self, module_val: MoltValue, name: str, value: MoltValue
@@ -854,33 +858,6 @@ class AttributeAccessMixin(_MixinBase):
         obj_name: str | None,
         exact_class: str | None,
     ) -> MoltValue:
-        if obj.type_hint.startswith("super"):
-            super_class = None
-            if obj.type_hint == "super":
-                super_class = self.current_class
-            else:
-                super_class = obj.type_hint.split(":", 1)[1]
-            if super_class:
-                method_info, method_class = self._resolve_super_method_info(
-                    super_class, node.attr
-                )
-                if method_info and method_info["descriptor"] in {
-                    "function",
-                    "classmethod",
-                }:
-                    owner_name = method_class or super_class
-                    res = MoltValue(
-                        self.next_var(),
-                        type_hint=f"BoundMethod:{owner_name}:{node.attr}",
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="GETATTR_GENERIC_OBJ",
-                            args=[obj, node.attr],
-                            result=res,
-                        )
-                    )
-                    return res
         # Canonical imported-module callable acquisition is a producer fact.
         # It must be stamped before type-driven attribute lowering: a module
         # alias loaded through a function's module globals intentionally has an

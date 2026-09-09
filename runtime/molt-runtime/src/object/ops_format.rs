@@ -957,7 +957,13 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return "<property>".to_string();
             }
             if type_id == TYPE_ID_SUPER {
-                return "<super>".to_string();
+                let owner = class_name_for_error(super_type_bits(ptr));
+                let receiver_class = super::layout::super_receiver_class_bits(ptr);
+                if obj_from_bits(receiver_class).is_none() {
+                    return format!("<super: <class '{owner}'>, NULL>");
+                }
+                let receiver = class_name_for_error(receiver_class);
+                return format!("<super: <class '{owner}'>, <{receiver} object>>");
             }
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(ptr);

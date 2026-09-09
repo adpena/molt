@@ -86,6 +86,115 @@ def test_rust_module_cluster_rejects_missing_declared_module(tmp_path: Path) -> 
         _read_rs_module_cluster(root)
 
 
+def test_rust_module_cluster_respects_inline_scopes_and_lexical_boundaries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sample.rs"
+    root.write_text(
+        "/* mod missing_comment; */\n"
+        'const TEXT: &str = r###"mod missing_string; { }"###;\n'
+        "macro_rules! unused { () => { mod missing_macro; } }\n"
+        "#[cfg(test)]\nmod tests {\n"
+        '    const TEST_ONLY: &str = "excluded inline test body";\n'
+        '    #[path = "missing_test.rs"] mod child;\n'
+        "    mod nested { mod missing_nested_test; }\n"
+        "}\n"
+        "#[cfg(not(test))]\nmod production {\n"
+        "    mod leaf;\n"
+        '    #[path = "alternate.rs"] mod renamed;\n'
+        "    #[cfg(test)] mod missing_test;\n"
+        "}\n"
+        '#[path = "direct.rs"] mod direct;\n',
+        encoding="utf-8",
+    )
+    module_dir = tmp_path / "sample" / "production"
+    module_dir.mkdir(parents=True)
+    (module_dir / "leaf.rs").write_text("pub fn inline_leaf() {}\n", encoding="utf-8")
+    (module_dir / "alternate.rs").write_text(
+        "pub fn inline_path() {}\n", encoding="utf-8"
+    )
+    (tmp_path / "direct.rs").write_text("pub fn direct_path() {}\n", encoding="utf-8")
+
+    cluster = _read_rs_module_cluster(root)
+    assert "pub fn inline_leaf" in cluster
+    assert "pub fn inline_path" in cluster
+    assert "pub fn direct_path" in cluster
+    assert "excluded inline test body" not in cluster
+    assert "missing_nested_test" not in cluster
+
+
+def test_rust_module_cluster_inline_path_and_ambiguity(tmp_path: Path) -> None:
+    root = tmp_path / "lib.rs"
+    root.write_text('#[path = "custom"] mod outer { mod inner; }\n', encoding="utf-8")
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "inner.rs").write_text("pub fn custom_inner() {}\n", encoding="utf-8")
+    assert "pub fn custom_inner" in _read_rs_module_cluster(root)
+    (custom / "inner").mkdir()
+    (custom / "inner" / "mod.rs").write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="ambiguous source files"):
+        _read_rs_module_cluster(root)
+
+
+@pytest.mark.parametrize("whitespace", [" ", "\t\n ", "\r\n\t ", "\u2003\u00a0"])
+def test_rust_module_cluster_preserves_attribute_spans_and_scope_cursors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, whitespace: str
+) -> None:
+    from tools.op_kinds import paths
+
+    expression = paths._RUST_MODULE_OR_SCOPE_RE
+    search_count = 0
+
+    class CursorCheckedSearch:
+        def search(self, text: str, start: int, end: int):
+            nonlocal search_count
+            # The declaration expression's whitespace guard relies on this
+            # reader invariant; arbitrary regex callers must not bisect runs.
+            assert start == 0 or not text[start - 1].isspace()
+            search_count += 1
+            return expression.search(text, start, end)
+
+    monkeypatch.setattr(paths, "_RUST_MODULE_OR_SCOPE_RE", CursorCheckedSearch())
+    root = tmp_path / "mod.rs"
+    prefix = (
+        "fn irrelevant() { let nested = { 1 }; }\n"
+        "macro_rules! unused { () => { mod missing_macro; } }\n"
+    )
+    excluded = (
+        whitespace
+        + "#[allow(dead_code)]"
+        + whitespace
+        + "#[cfg(test)]"
+        + whitespace
+        + "mod tests { mod missing_test_child; }"
+    )
+    retained = (
+        whitespace
+        + '#[path = "nested"]'
+        + whitespace
+        + "mod production {"
+        + whitespace
+        + "#[allow(dead_code)]"
+        + whitespace
+        + '#[path = "kept.rs"]'
+        + whitespace
+        + "pub mod renamed;"
+        + whitespace
+        + "}\n"
+    )
+    root.write_text(prefix + excluded + retained, encoding="utf-8", newline="")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    child = "pub fn retained_authority() {}\n"
+    (nested / "kept.rs").write_text(child, encoding="utf-8", newline="")
+
+    # read_text normalizes CRLF before lexical projection, on every host.
+    blanked = "".join(char if char in "\r\n" else " " for char in excluded)
+    expected_root = (prefix + blanked + retained).replace("\r\n", "\n")
+    assert _read_rs_module_cluster(root) == child + "\n" + expected_root
+    assert search_count >= 5
+
+
 def _rust_pub_decl(src: str, kind: str, name: str) -> bool:
     return (
         re.search(rf"\bpub(?:\(crate\))?\s+{kind}\s+{re.escape(name)}\b", src)
@@ -1433,6 +1542,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     )
 
     expected = {
+        "Pow": "dynbox",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
         "ConstFloat": "f64",
@@ -1440,12 +1550,6 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "ConstBool": "bool",
         "ConstNone": "none",
         "ConstBytes": "bytes",
-        "Eq": "bool",
-        "Ne": "bool",
-        "Lt": "bool",
-        "Le": "bool",
-        "Gt": "bool",
-        "Ge": "bool",
         "Is": "bool",
         "IsNot": "bool",
         "In": "bool",
@@ -1462,10 +1566,19 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "ModuleGetGlobal": "dynbox",
         "ModuleGetName": "dynbox",
     }
+    expected = {name: [ty] for name, ty in expected.items()}
+    expected.update(
+        {
+            "CheckedAdd": ["i64", "bool"],
+            "CheckedMul": ["i64", "bool"],
+            "IterNextUnboxed": ["operand", "bool"],
+            "ExceptionPending": ["bool"],
+        }
+    )
     table = {
-        row["name"]: row["operand_independent_result_type"]
+        row["name"]: row["operand_independent_result_types"]
         for row in data["opcode"]
-        if "operand_independent_result_type" in row
+        if "operand_independent_result_types" in row
     }
     assert table == expected
 
@@ -1484,17 +1597,26 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     table_block = rendered.split("fn opcode_operand_independent_result_type_table")[
         1
     ].split("fn opcode_operand_independent_result_tir_type")[0]
-    for opcode, ty in expected.items():
-        assert f"OpCode::{opcode} => Some({variant[ty]})," in table_block
+    for opcode, types in expected.items():
+        slots = ", ".join(
+            "None" if ty == "operand" else f"Some({variant[ty]})" for ty in types
+        )
+        compact = "".join(table_block.split()).replace(",]", "]")
+        assert "".join(f"OpCode::{opcode} => &[{slots}],".split()) in compact
 
     unsafe_opcode_only_facts = {
+        "Eq",
+        "Ne",
+        "Lt",
+        "Le",
+        "Gt",
+        "Ge",
         "Add",
         "Sub",
         "Mul",
         "Div",
         "FloorDiv",
         "Mod",
-        "Pow",
         "Neg",
         "Pos",
         "BitAnd",
@@ -1511,13 +1633,10 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "Copy",
         "TypeGuard",
         "CallBuiltin",
-        "CheckedAdd",
-        "CheckedMul",
-        "IterNextUnboxed",
     }
     assert unsafe_opcode_only_facts.isdisjoint(table)
     for opcode in unsafe_opcode_only_facts:
-        assert f"OpCode::{opcode} => None," in table_block
+        assert f"OpCode::{opcode} => &[]," in table_block
 
     table_name = "opcode_operand_independent_result_tir_type"
     value_proves_body = block_versioning.split("fn value_proves_type", 1)[1].split(
@@ -1527,18 +1646,19 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     for stale in ("OpCode::Div", "OpCode::Shl", "OpCode::Shr", "OpCode::And"):
         assert stale not in value_proves_body
 
-    infer_body = type_refine.split("fn infer_single_result_type_with_attrs", 1)[
-        1
-    ].split("fn fresh_value_kind_result_type", 1)[0]
+    infer_body = type_refine.split("fn infer_result_types_with_attrs", 1)[1].split(
+        "fn fresh_value_kind_result_type", 1
+    )[0]
     assert table_name in infer_body
     assert "OpCode::ConstInt => Some(TirType::I64)" not in infer_body
     assert "OpCode::BuildList => Some(TirType::List" not in infer_body
     assert "OpCode::ModuleCacheGet" not in infer_body
-    for source in (branchless, fast_math, gvn, strength_reduction):
+    for source in (fast_math, gvn, strength_reduction):
         production = source.split("#[cfg(test)]", maxsplit=1)[0]
         assert table_name in production
 
     branchless_production = branchless.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "extract_exact_scalar_map" in branchless_production
     assert "OpCode::Eq\n                | OpCode::Ne" not in branchless_production
     assert "OpCode::ConstFloat =>" not in branchless_production
 
@@ -1591,7 +1711,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
         "Sub": "numeric_arithmetic",
         "InplaceSub": "numeric_arithmetic",
         "Mod": "numeric_arithmetic",
-        "Pow": "numeric_arithmetic",
         "FloorDiv": "numeric_arithmetic",
         "Div": "true_division",
         "Neg": "unary_numeric",
@@ -2578,55 +2697,64 @@ def test_operand_independent_result_type_validation_rejects_drift(tmp_path) -> N
     table = TABLE
     original = table.read_text(encoding="utf-8")
 
-    bad_type = original.replace(
-        'name = "ConstInt"\n'
-        "may_throw = false\n"
-        "side_effecting = false\n"
-        'purity = "pure"\n'
-        'result_arity = "one"\n'
-        'operand_independent_result_type = "i64"',
-        'name = "ConstInt"\n'
-        "may_throw = false\n"
-        "side_effecting = false\n"
-        'purity = "pure"\n'
-        'result_arity = "one"\n'
-        'operand_independent_result_type = "bigint_maybe"',
-        1,
+    def mutate_opcode(name: str, old: str, new: str) -> str:
+        marker = f'[[opcode]]\nname = "{name}"\n'
+        assert original.count(marker) == 1
+        prefix, tail = original.split(marker, 1)
+        body, separator, suffix = tail.partition("\n[[")
+        assert body.count(old) == 1
+        changed = body.replace(old, new, 1)
+        assert changed != body
+        return prefix + marker + changed + separator + suffix
+
+    bad_type = mutate_opcode(
+        "ConstInt",
+        'operand_independent_result_types = ["i64"]',
+        'operand_independent_result_types = ["bigint_maybe"]',
     )
     tmp_table = tmp_path / "op_kinds_bad_type.toml"
     tmp_table.write_text(bad_type, encoding="utf-8", newline="\n")
     try:
         gen.load_table(tmp_table)
     except gen.OpKindTableError as exc:
-        assert "operand_independent_result_type must be one of" in str(exc)
+        assert "operand_independent_result_types must be a nonempty array" in str(exc)
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
         raise AssertionError("invalid operand_independent_result_type was accepted")
 
-    bad_arity = original.replace(
-        'name = "ConstBool"\n'
-        "may_throw = false\n"
-        "side_effecting = false\n"
-        'purity = "pure"\n'
-        'result_arity = "one"\n'
-        'operand_independent_result_type = "bool"',
-        'name = "ConstBool"\n'
-        "may_throw = false\n"
-        "side_effecting = false\n"
-        'purity = "pure"\n'
-        'result_arity = "zero"\n'
-        'operand_independent_result_type = "bool"',
-        1,
+    bad_arity = mutate_opcode(
+        "ConstBool",
+        'result_arity = "one"',
+        'result_arity = "zero"',
     )
     tmp_table = tmp_path / "op_kinds_bad_arity.toml"
     tmp_table.write_text(bad_arity, encoding="utf-8", newline="\n")
     try:
         gen.load_table(tmp_table)
     except gen.OpKindTableError as exc:
-        assert "operand_independent_result_type requires result_arity = 'one'" in str(
+        assert "operand_independent_result_types must match fixed result_arity" in str(
             exc
         )
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
         raise AssertionError("multi-result intrinsic result-type fact was accepted")
+
+    for replacement in (
+        'operand_independent_result_types = "i64"',
+        "operand_independent_result_types = []",
+        'operand_independent_result_types = ["i64", "bool"]',
+        'operand_independent_result_type = "i64"',
+    ):
+        malformed = mutate_opcode(
+            "ConstInt", 'operand_independent_result_types = ["i64"]', replacement
+        )
+        tmp_table.write_text(malformed, encoding="utf-8", newline="\n")
+        try:
+            gen.load_table(tmp_table)
+        except gen.OpKindTableError:
+            pass
+        else:
+            raise AssertionError(
+                f"invalid indexed result schema accepted: {replacement}"
+            )
 
 
 def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path) -> None:
@@ -4624,6 +4752,35 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
     }
 
 
+@pytest.mark.parametrize("kind", ["STRING_EQ", "CAST_BOOL", "NOT_IN"])
+@pytest.mark.parametrize("defect", ["missing_observer", "forbidden_skip"])
+def test_predicate_aliases_require_exception_observers(
+    tmp_path: Path, kind: str, defect: str
+) -> None:
+    gen = _gen()
+    original = TABLE.read_text(encoding="utf-8")
+    if defect == "missing_observer":
+        marker = f'[[frontend_raising_kind]]\nkind = "{kind}"\n'
+        assert original.count(marker) == 1
+        prefix, tail = original.split(marker, 1)
+        _, separator, suffix = tail.partition("\n[[")
+        assert separator
+        mutated = prefix + separator + suffix
+    else:
+        mutated = original + (
+            "\n[[frontend_check_exception_skip]]\n"
+            f'kind = "{kind}"\n'
+            'reason = "test: predicate observer must not be skipped"\n'
+        )
+    assert mutated != original
+    table = tmp_path / "predicate_observer_drift.toml"
+    table.write_text(mutated, encoding="utf-8", newline="\n")
+    # The production boundary validates the source before rendering. A renderer
+    # accepts validated data and is deliberately not a second validation lane.
+    with pytest.raises(gen.OpKindTableError, match=f"predicate frontend kind {kind}"):
+        gen.load_table(table)
+
+
 def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
     py = _load_generated_py()
 
@@ -4631,12 +4788,6 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
         "ADD",
         "SUB",
         "MUL",
-        "EQ",
-        "NE",
-        "LT",
-        "LE",
-        "GT",
-        "GE",
         "NEG",
         "POS",
         "INVERT",
@@ -4646,6 +4797,29 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
         assert py.FRONTEND_EFFECT_CLASS[kind] == "pure"
         assert kind in py.FRONTEND_EFFECT_PURE_KINDS
         assert kind in py.RAISING_KIND_NAMES
+
+    for kind, category in py.FRONTEND_PREDICATE_SEMANTICS.items():
+        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
+        assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
+        assert kind in py.RAISING_KIND_NAMES
+        assert kind not in py.CHECK_EXCEPTION_SKIP_KINDS
+        if category == "truth":
+            assert py.frontend_predicate_facts(kind, "int") == (True, True)
+            assert py.frontend_predicate_facts(kind, None) == (False, False)
+        elif category == "containment":
+            assert py.frontend_predicate_facts(kind, "str", "str") == (False, False)
+        else:
+            assert py.frontend_predicate_facts(kind, "int", "float") == (True, True)
+            assert py.frontend_predicate_facts(kind, None, "int") == (False, False)
+            assert py.frontend_predicate_facts(kind, "None", "int") == (
+                True,
+                category == "equality",
+            )
+        assert py.frontend_predicate_facts(kind) == (False, False)
+    assert (
+        py.FRONTEND_INTRINSIC_SCALAR_RESULTS.keys()
+        == py.FRONTEND_INTRINSIC_SCALAR_ARITIES.keys()
+    )
 
     for kind in {"INDEX", "GET_ATTR", "MODULE_GET_ATTR", "GUARDED_GETATTR"}:
         assert py.FRONTEND_EFFECT_CLASS[kind] == "reads_heap"
@@ -4665,7 +4839,7 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
     assert py.FRONTEND_EFFECT_CLASS["CONST_STR"] == "pure"
     assert "CONST_STR" not in py.RAISING_KIND_NAMES
 
-    for kind in ("ADD", "SUB", "MUL", "EQ", "NEG", "ABS", "INVERT"):
+    for kind in ("ADD", "SUB", "MUL", "NEG", "ABS", "INVERT"):
         assert kind in py.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS
     for kind in ("DIV", "FLOORDIV", "MOD", "POW", "LSHIFT", "RSHIFT", "IN", "NOT_IN"):
         assert kind in py.RAISING_KIND_NAMES
@@ -5240,7 +5414,12 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
         "molt_sys_setprofile",
         "molt_sys_getprofile",
     }
-    assert set(data["simpleir_frame_introspection_runtime_symbols"]) == frame_symbols
+    roles = {row["constant"]: row for row in data["simpleir_runtime_requirement_roles"]}
+    assert set(roles["FRAME_INTROSPECTION"]["runtime_symbols"]) == frame_symbols
+    assert set(roles["EXECUTION_FRAME"]["runtime_symbols"]) == {
+        "molt_frame_context_set",
+        "molt_super_from_frame",
+    }
     assert "simpleir_runtime_symbol_requirements_table" in rendered
     for symbol in frame_symbols:
         assert f'"{symbol}"' in rendered
@@ -5337,6 +5516,50 @@ def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
     assert "PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON" in rendered
     assert rendered == gen.render_rs(gen.load_table())
     assert gen.render_py(reordered) == gen.render_py(gen.load_table())
+
+
+def test_runtime_symbol_roles_union_requirements_and_reject_malformed_symbols(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    roles = {row["constant"]: row for row in data["simpleir_runtime_requirement_roles"]}
+    roles["FRAME_INTROSPECTION"]["runtime_symbols"].append("molt_super_from_frame")
+    mask = (1 << roles["FRAME_INTROSPECTION"]["bit"]) | (
+        1 << roles["EXECUTION_FRAME"]["bit"]
+    )
+    assert (
+        f'"molt_super_from_frame" => SimpleIrRuntimeRequirements({mask})'
+        in gen.render_rs(data)
+    )
+    source = TABLE.read_text(encoding="utf-8")
+    original = '["molt_frame_context_set", "molt_super_from_frame"]'
+    for malformed, message in [
+        ('["molt_frame_context_set", "molt_frame_context_set"]', "duplicate members"),
+        ('["molt_frame_context_set "]', "exact canonical"),
+        ("[42]", "exact canonical"),
+        ('"molt_frame_context_set"', "exact canonical"),
+    ]:
+        table = tmp_path / "symbols.toml"
+        table.write_text(source.replace(original, malformed, 1), encoding="utf-8")
+        with pytest.raises(gen.OpKindTableError, match=message):
+            gen.load_table(table)
+
+
+def test_frontend_repoll_publication_uses_shared_control_authority() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    projected: dict[str, object] = {}
+    exec(gen.render_py(data), projected)
+    assert (
+        projected["FRONTEND_REPOLL_KINDS"]
+        == {
+            row["kind"].upper()
+            for row in data["simpleir_control_kind"]
+            if row["repoll"]
+        }
+        == {"STATE_TRANSITION", "CHAN_SEND_YIELD", "CHAN_RECV_YIELD"}
+    )
 
 
 def test_target_runtime_profiles_are_complete_explicit_and_generated(

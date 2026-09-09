@@ -59,6 +59,8 @@ pub(crate) mod ops_format;
 pub(crate) mod ops_hash;
 pub(crate) mod ops_heapq;
 pub(crate) mod ops_iter;
+pub(crate) mod iterable;
+pub(crate) mod mapping_merge;
 pub(crate) mod ops_list;
 pub(crate) mod ops_memoryview;
 pub(crate) mod ops_set;

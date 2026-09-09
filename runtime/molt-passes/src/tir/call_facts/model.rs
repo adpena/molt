@@ -87,12 +87,30 @@ impl CallTargetFact {
 /// Why a callee is not eligible to inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineWhyNot {
+    ExecutionContext,
+    CodegenPartition,
     Recursive,
     HasHandlers,
     Generator,
     EntryHasPredecessor,
     Closure,
     OverBudget,
+}
+
+impl InlineWhyNot {
+    /// Stable diagnostic spelling owned by the typed rejection reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecutionContext => "ExecutionContext",
+            Self::CodegenPartition => "CodegenPartition",
+            Self::Recursive => "Recursive",
+            Self::HasHandlers => "HasHandlers",
+            Self::Generator => "Generator",
+            Self::EntryHasPredecessor => "EntryHasPredecessor",
+            Self::Closure => "Closure",
+            Self::OverBudget => "OverBudget",
+        }
+    }
 }
 
 /// Whether a callee may be inlined, and if not, the typed reason.

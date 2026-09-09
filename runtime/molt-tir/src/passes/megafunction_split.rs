@@ -1,3 +1,6 @@
+mod name_index;
+use name_index::SplitNameIndex;
+
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator;
 use crate::tir::simple_def_use::{
@@ -24,22 +27,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// rewrites can still inflate a chunk well past that budget. Keep the backend
 /// splitter aligned with that native default so Cranelift does not see giant
 /// `*_molt_module_chunk_*` functions slip through unsplit.
-fn split_live_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
-    let mut live = BTreeSet::new();
-    let mut live_before = vec![BTreeSet::new(); ops.len() + 1];
-    live_before[ops.len()] = live.clone();
-    for idx in (0..ops.len()).rev() {
-        visit_simple_ir_defined_names(&ops[idx], |name| {
-            live.remove(name);
-        });
-        visit_simple_ir_reads(&ops[idx], |source| {
-            live.insert(source.name.to_string());
-        });
-        live_before[idx] = live.clone();
-    }
-    live_before
-}
-
 fn split_param_types_for_names(
     original_params: &[String],
     original_param_types: Option<&Vec<String>>,
@@ -85,56 +72,6 @@ fn split_label_id(occupied: &mut BTreeSet<i64>, cursor: &mut i64) -> Option<i64>
             return Some(candidate);
         }
     }
-}
-
-fn split_defined_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
-    let mut defined = BTreeSet::new();
-    let mut defined_before = vec![BTreeSet::new(); ops.len() + 1];
-    defined_before[0] = defined.clone();
-    for (idx, op) in ops.iter().enumerate() {
-        visit_simple_ir_defined_names(op, |name| {
-            defined.insert(name.to_string());
-        });
-        defined_before[idx + 1] = defined.clone();
-    }
-    defined_before
-}
-
-fn split_suffix_external_reads(ops: &[OpIR]) -> BTreeSet<String> {
-    let mut defined = BTreeSet::new();
-    let mut external_reads = BTreeSet::new();
-    for op in ops {
-        visit_simple_ir_reads(op, |source| {
-            if !defined.contains(source.name) {
-                external_reads.insert(source.name.to_string());
-            }
-        });
-        visit_simple_ir_defined_names(op, |name| {
-            defined.insert(name.to_string());
-        });
-    }
-    external_reads
-}
-
-fn split_available_names_for_suffix_clone(
-    params: &[String],
-    live_before: &[BTreeSet<String>],
-    ops: &[OpIR],
-    start: usize,
-    end: usize,
-) -> BTreeSet<String> {
-    let mut available: BTreeSet<String> = params
-        .iter()
-        .filter(|name| name.as_str() != "none")
-        .cloned()
-        .collect();
-    available.extend(live_before[start].iter().cloned());
-    for op in &ops[start..end] {
-        visit_simple_ir_defined_names(op, |name| {
-            available.insert(name.to_string());
-        });
-    }
-    available
 }
 
 fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
@@ -379,7 +316,6 @@ pub fn split_large_function(
     if func.ops.len() <= max_ops {
         return Err(Box::new(func));
     }
-    let original_for_split_failure = func.clone();
     let execution_context = func.execution_context;
     let local_trace_enter = if execution_context == ExecutionContextPolicy::Local {
         let enters = func
@@ -389,7 +325,7 @@ pub fn split_large_function(
             .cloned()
             .collect::<Vec<_>>();
         if enters.len() != 1 {
-            return Err(Box::new(original_for_split_failure));
+            return Err(Box::new(func));
         }
         enters.into_iter().next()
     } else {
@@ -407,8 +343,12 @@ pub fn split_large_function(
         .take_while(|op| is_drop_fact_marker_op(op))
         .cloned()
         .collect();
-    let live_before = split_live_before_sets(all_ops);
-    let defined_before = split_defined_before_sets(all_ops);
+    let name_index = SplitNameIndex::new(all_ops);
+    let parameter_names = func
+        .params
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
 
     // Exception handling ops (check_exception) are protected by the
     // forbidden-range mechanism below — the splitter never separates a
@@ -461,27 +401,17 @@ pub fn split_large_function(
     // Compute forbidden ranges: a split point at index `sp` is forbidden
     // if it falls strictly between a label reference and its definition.
     let mut label_forbidden_ranges: Vec<(usize, usize, i64, usize)> = Vec::new();
-    let cloneable_suffix_labels: std::collections::BTreeMap<i64, usize> = label_positions
+    // A suffix is cloneable only when it has no value-return terminator.
+    // One reverse location replaces a full suffix scan for every label.
+    let last_value_return = all_ops.iter().rposition(|op| op.kind == "ret");
+    let cloneable_suffix_labels: BTreeMap<i64, usize> = label_positions
         .iter()
-        .filter_map(|(label_id, &label_idx)| {
-            let suffix_ops = &func.ops[label_idx..];
-            if suffix_ops.iter().any(|op| op.kind == "ret") {
-                None
-            } else {
-                Some((*label_id, label_idx))
-            }
+        .filter_map(|(&label_id, &label_idx)| {
+            last_value_return
+                .is_none_or(|last| last < label_idx)
+                .then_some((label_id, label_idx))
         })
         .collect();
-    let suffix_external_reads: std::collections::BTreeMap<i64, BTreeSet<String>> =
-        cloneable_suffix_labels
-            .iter()
-            .map(|(&label_id, &label_idx)| {
-                (
-                    label_id,
-                    split_suffix_external_reads(&func.ops[label_idx..]),
-                )
-            })
-            .collect();
     for (label_id, (earliest_ref, latest_ref)) in &label_refs {
         if let Some(&label_idx) = label_positions.get(label_id) {
             let range_start = (*earliest_ref).min(label_idx);
@@ -525,17 +455,14 @@ pub fn split_large_function(
             if label_idx < chunk_end {
                 return false;
             }
-            let Some(required) = suffix_external_reads.get(&label_id) else {
-                return false;
-            };
-            let available = split_available_names_for_suffix_clone(
-                &func.params,
-                &live_before,
-                all_ops,
-                chunk_start,
-                chunk_end,
-            );
-            required.iter().all(|name| available.contains(name))
+            // Linear live-in facts are precisely the suffix's reads before
+            // local definition. Query sparse events without cloning an entire
+            // available-name set at every candidate boundary.
+            name_index.live_names(label_idx).all(|name| {
+                parameter_names.contains(name)
+                    || name_index.is_live_before(name, chunk_start)
+                    || name_index.is_defined_in(name, chunk_start, chunk_end)
+            })
         };
 
     let chunk_refs_label = |chunk_start: usize, chunk_end: usize, label_id: i64| -> bool {
@@ -628,7 +555,7 @@ pub fn split_large_function(
 
     // If no selected splits, the function is too deeply nested to split.
     if selected.is_empty() {
-        return Err(Box::new(original_for_split_failure));
+        return Err(Box::new(func));
     }
 
     // ---------------------------------------------------------------
@@ -643,10 +570,10 @@ pub fn split_large_function(
     // the function has a deeply nested region that can't be split cleanly.
     for window in boundaries.windows(2) {
         let chunk_size = window[1] - window[0];
-        if chunk_size > max_ops * 2 {
+        if chunk_size > max_ops.saturating_mul(2) {
             // Allow up to 2x max_ops for the final chunk — beyond that,
             // return Err to fall back to single-module compilation.
-            return Err(Box::new(original_for_split_failure));
+            return Err(Box::new(func));
         }
     }
 
@@ -657,13 +584,13 @@ pub fn split_large_function(
         .iter()
         .any(|name| occupied_function_names.contains(name))
     {
-        return Err(Box::new(original_for_split_failure));
+        return Err(Box::new(func));
     }
 
     let func_returns_value = func.ops.iter().any(simple_ir_return_has_value);
     for (idx, op) in func.ops.iter().enumerate() {
         if simpleir_kind_is_return_terminator(op.kind.as_str()) && idx + 1 != func.ops.len() {
-            return Err(Box::new(original_for_split_failure.clone()));
+            return Err(Box::new(func));
         }
     }
     let mut occupied_names = split_collect_names(all_ops, &func.params);
@@ -674,9 +601,9 @@ pub fn split_large_function(
         .skip(1)
         .take(boundaries.len().saturating_sub(2))
     {
-        for name in &live_before[boundary] {
-            if defined_before[boundary].contains(name) {
-                frame_names.insert(name.clone());
+        for name in name_index.live_names(boundary) {
+            if name_index.is_defined_before(name, boundary) {
+                frame_names.insert(name.to_string());
             }
         }
     }
@@ -691,7 +618,7 @@ pub fn split_large_function(
     let Some(exception_return_label) =
         split_label_id(&mut occupied_labels, &mut next_synthetic_label)
     else {
-        return Err(Box::new(original_for_split_failure));
+        return Err(Box::new(func));
     };
 
     struct ChunkPlan {
@@ -712,15 +639,15 @@ pub fn split_large_function(
             prefixed.extend(chunk_ops);
             chunk_ops = prefixed;
         }
-        let live_in: BTreeSet<String> = live_before[start]
-            .iter()
+        let live_in: BTreeSet<String> = name_index
+            .live_names(start)
             .filter(|name| frame_slot_for.contains_key(*name))
-            .cloned()
+            .map(str::to_string)
             .collect();
-        let live_out: BTreeSet<String> = live_before[end]
-            .iter()
+        let live_out: BTreeSet<String> = name_index
+            .live_names(end)
             .filter(|name| frame_slot_for.contains_key(*name))
-            .cloned()
+            .map(str::to_string)
             .collect();
 
         // Collect label IDs defined in THIS chunk.
@@ -752,7 +679,7 @@ pub fn split_large_function(
         if let Some(suffix_start) = suffix_clone_start {
             let Some(skip_label) = split_label_id(&mut occupied_labels, &mut next_synthetic_label)
             else {
-                return Err(Box::new(original_for_split_failure.clone()));
+                return Err(Box::new(func));
             };
             normal_skip_label_for_cloned_suffix = Some(skip_label);
             chunk_ops.push(OpIR {
@@ -771,15 +698,15 @@ pub fn split_large_function(
                 .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
                 .filter_map(|op| op.value)
                 .collect();
-            if chunk_ops.len() > max_ops * 2 {
-                return Err(Box::new(original_for_split_failure.clone()));
+            if chunk_ops.len() > max_ops.saturating_mul(2) {
+                return Err(Box::new(func));
             }
         }
 
         if chunk_ops.iter().any(|op| {
             control_target(op).is_some_and(|target_id| !chunk_labels.contains(&target_id))
         }) {
-            return Err(Box::new(original_for_split_failure.clone()));
+            return Err(Box::new(func));
         }
 
         // The replacement stub is the sole Local frame owner. Chunks retain
@@ -812,7 +739,7 @@ pub fn split_large_function(
                         .iter()
                         .position(|op| op.kind == "jump" && op.value == Some(skip_label))
                     else {
-                        return Err(Box::new(original_for_split_failure.clone()));
+                        return Err(Box::new(func));
                     };
                     chunk_ops.splice(insert_idx..insert_idx, stores);
                 } else {
@@ -847,7 +774,7 @@ pub fn split_large_function(
                         .iter()
                         .position(|op| op.kind == "jump" && op.value == Some(skip_label))
                     else {
-                        return Err(Box::new(original_for_split_failure.clone()));
+                        return Err(Box::new(func));
                     };
                     chunk_ops.splice(insert_idx..insert_idx, stores);
                 } else {
@@ -878,6 +805,7 @@ pub fn split_large_function(
             param_types: chunk_param_types,
             source_file: func.source_file.clone(),
             is_extern: false,
+            codegen_partition: true,
             execution_context: chunk_execution_context,
         });
         plans.push(ChunkPlan {
@@ -946,7 +874,7 @@ pub fn split_large_function(
             let Some(continue_label) =
                 split_label_id(&mut occupied_labels, &mut next_synthetic_label)
             else {
-                return Err(Box::new(original_for_split_failure.clone()));
+                return Err(Box::new(func));
             };
             stub_ops.push(OpIR {
                 kind: "br_if".to_string(),
@@ -1028,6 +956,7 @@ pub fn split_large_function(
         param_types: func.param_types,
         source_file: func.source_file,
         is_extern: false,
+        codegen_partition: true,
         execution_context,
     };
 
@@ -1046,9 +975,7 @@ pub fn split_large_function(
         panic!("megafunction split produced non-canonical stub IR: {detail}");
     }
     let transformed = SimpleIR {
-        functions: std::iter::once(stub.clone())
-            .chain(chunks.iter().cloned())
-            .collect(),
+        functions: std::iter::once(stub).chain(chunks).collect(),
         profile: None,
     };
     if let Err(detail) = crate::validate_simple_ir(&transformed) {
@@ -1057,7 +984,11 @@ pub fn split_large_function(
 
     occupied_function_names.extend(chunk_names);
 
-    Ok((stub, chunks))
+    let mut functions = transformed.functions.into_iter();
+    let stub = functions
+        .next()
+        .expect("split validation preserves the parent");
+    Ok((stub, functions.collect()))
 }
 
 /// Apply megafunction splitting to all oversized functions in the IR.
@@ -1068,19 +999,28 @@ pub fn split_large_function(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub fn split_megafunctions(ir: &mut SimpleIR) {
-    split_megafunctions_with_filter(ir, |_| true);
+pub fn split_megafunctions(ir: &mut SimpleIR) -> BTreeMap<String, String> {
+    split_megafunctions_with_filter(ir, |_| true)
 }
 
 pub fn split_megafunctions_with_filter(
     ir: &mut SimpleIR,
     should_split: impl Fn(&FunctionIR) -> bool,
-) {
+) -> BTreeMap<String, String> {
     let max_ops: usize = std::env::var("MOLT_MAX_FUNCTION_OPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_FUNCTION_OPS);
 
+    split_megafunctions_at_limit(ir, max_ops, should_split)
+}
+
+pub(super) fn split_megafunctions_at_limit(
+    ir: &mut SimpleIR,
+    max_ops: usize,
+    should_split: impl Fn(&FunctionIR) -> bool,
+) -> BTreeMap<String, String> {
+    let mut split_sources = BTreeMap::new();
     let mut new_functions: Vec<FunctionIR> = Vec::new();
     let old_functions = std::mem::take(&mut ir.functions);
     let mut occupied_function_names = old_functions
@@ -1102,6 +1042,9 @@ pub fn split_megafunctions_with_filter(
                     op_count,
                     chunks.len()
                 );
+                for chunk in &chunks {
+                    split_sources.insert(chunk.name.clone(), stub.name.clone());
+                }
                 // Insert chunks first so they are defined before the stub calls them.
                 new_functions.extend(chunks);
                 new_functions.push(stub);
@@ -1113,4 +1056,5 @@ pub fn split_megafunctions_with_filter(
     }
 
     ir.functions = new_functions;
+    split_sources
 }

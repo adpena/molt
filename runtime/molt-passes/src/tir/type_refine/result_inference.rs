@@ -1,7 +1,7 @@
 use super::facts::{contains_bottom_type, is_bottom_type};
 use super::hints::{parse_guard_type, parse_return_type_str, structural_builtin_return_type};
 use crate::tir::op_kinds_generated::{
-    TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule,
+    TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule, opcode_fixed_result_count_table,
     opcode_operand_independent_result_tir_type, opcode_type_refine_attr_result_type_rule_table,
     opcode_type_refine_operand_type_rule_table,
 };
@@ -95,38 +95,6 @@ pub(super) fn attr_result_type_override(opcode: OpCode, attrs: &AttrDict) -> Opt
     }
 }
 
-pub fn infer_scalar_return_result_type(
-    opcode: OpCode,
-    operand_types: &[TirType],
-    attrs: Option<&AttrDict>,
-) -> Option<TirType> {
-    infer_result_type_with_attrs(opcode, operand_types, attrs).filter(|ty| {
-        matches!(
-            ty,
-            TirType::I64
-                | TirType::F64
-                | TirType::Bool
-                | TirType::None
-                | TirType::Str
-                | TirType::Bytes
-        )
-    })
-}
-
-/// Variant of [`infer_result_type`] that consults a structural `return_type`
-/// `AttrValue::Str` for opaque call-like opcodes that operand-only inference
-/// cannot resolve.
-fn infer_result_type_with_attrs(
-    opcode: OpCode,
-    operand_types: &[TirType],
-    attrs: Option<&AttrDict>,
-) -> Option<TirType> {
-    infer_result_types_with_attrs(opcode, operand_types, attrs, 1)
-        .into_iter()
-        .next()
-        .flatten()
-}
-
 pub(super) fn infer_result_types_with_attrs(
     opcode: OpCode,
     operand_types: &[TirType],
@@ -136,29 +104,25 @@ pub(super) fn infer_result_types_with_attrs(
     if result_count == 0 {
         return vec![];
     }
-    if matches!(opcode, OpCode::IterNextUnboxed) && result_count == 2 {
-        let elem_ty = match operand_types {
-            [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
-            _ => None,
-        };
-        return vec![elem_ty, Some(TirType::Bool)];
-    }
-    // CheckedAdd/CheckedMul result types are intrinsic to the opcode:
-    // results[0] is the wrapping i64 sum/product, results[1] the signed-
-    // overflow flag. This must hold through the module phase's SimpleIR
-    // re-lift — the WASM/LIR lowering derives local types from these, and an
-    // untyped flag would fail wasm validation.
-    if matches!(opcode, OpCode::CheckedAdd | OpCode::CheckedMul) && result_count == 2 {
-        return vec![Some(TirType::I64), Some(TirType::Bool)];
-    }
-    if result_count != 1 {
+    if opcode_fixed_result_count_table(opcode).is_some_and(|count| count != result_count) {
         return vec![None; result_count];
     }
-    vec![infer_single_result_type_with_attrs(
-        opcode,
-        operand_types,
-        attrs,
-    )]
+    (0..result_count)
+        .map(|index| {
+            opcode_operand_independent_result_tir_type(opcode, index).or_else(|| {
+                if opcode == OpCode::IterNextUnboxed && index == 0 {
+                    match operand_types {
+                        [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
+                        _ => None,
+                    }
+                } else if result_count == 1 {
+                    infer_single_result_type_with_attrs(opcode, operand_types, attrs)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
 }
 
 fn infer_single_result_type_with_attrs(
@@ -166,12 +130,12 @@ fn infer_single_result_type_with_attrs(
     operand_types: &[TirType],
     attrs: Option<&AttrDict>,
 ) -> Option<TirType> {
+    if let Some(facts) = crate::tir::predicate_semantics::predicate_facts(opcode, operand_types) {
+        return Some(facts.result_type);
+    }
     if let Some(attrs) = attrs
         && let Some(ty) = attr_result_type_override(opcode, attrs)
     {
-        return Some(ty);
-    }
-    if let Some(ty) = opcode_operand_independent_result_tir_type(opcode) {
         return Some(ty);
     }
     match opcode_type_refine_operand_type_rule_table(opcode) {
@@ -185,7 +149,7 @@ fn infer_single_result_type_with_attrs(
             [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
             _ => infer_numeric_arithmetic(operand_types),
         },
-        // Sub, Mod, Pow: numeric only (str-str is TypeError in Python).
+        // Sub, Mod, FloorDiv: numeric only (str-str is TypeError in Python).
         // InplaceSub mirrors Sub for typed scalars; mutable-type sequence
         // ops (list -= ...) are TypeError in CPython for these opcodes.
         TypeRefineOperandTypeRule::NumericArithmetic => infer_numeric_arithmetic(operand_types),
@@ -203,13 +167,6 @@ fn infer_single_result_type_with_attrs(
         TypeRefineOperandTypeRule::UnaryNumeric => match operand_types {
             [TirType::I64] => Some(TirType::I64),
             [TirType::F64] => Some(TirType::F64),
-            _ => None,
-        },
-
-        // Boolean value-select ops remain operand-dependent: the opcode itself
-        // is not enough unless both operands are Bool.
-        TypeRefineOperandTypeRule::BoolSelect => match operand_types {
-            [TirType::Bool, TirType::Bool] => Some(TirType::Bool),
             _ => None,
         },
 
@@ -274,7 +231,8 @@ fn infer_single_result_type_with_attrs(
             _ => None,
         },
 
-        TypeRefineOperandTypeRule::None => None,
+        // Value-select results are owned by predicate_semantics above.
+        TypeRefineOperandTypeRule::BoolSelect | TypeRefineOperandTypeRule::None => None,
     }
 }
 

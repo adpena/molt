@@ -40,12 +40,20 @@ pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) use_ir_pipeline: bool,
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) target_triple: Option<&'a str>,
+    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
+    pub(crate) native_output_kind: super::NativeArtifactKind,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     pub(crate) wasm_options: WasmCliOptions,
 }
 
 pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::Result<()> {
-    let output_file = resolve_backend_output_path(request.output_path, request.output_kind);
+    let output_file = if request.output_kind == BackendOutputKind::Native
+        && request.native_output_kind == super::NativeArtifactKind::Archive
+    {
+        request.output_path.unwrap_or("dist/output.a")
+    } else {
+        resolve_backend_output_path(request.output_path, request.output_kind)
+    };
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -116,6 +124,7 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                     request.module_registry,
                     output_file,
                     request.target_triple,
+                    request.native_output_kind,
                 )?;
                 Ok(())
             }

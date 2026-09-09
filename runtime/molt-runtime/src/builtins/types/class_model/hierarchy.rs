@@ -337,80 +337,134 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace_set_name = matches!(
-            std::env::var("MOLT_TRACE_SET_NAME").ok().as_deref(),
-            Some("1")
-        );
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
             }
-            if !apply_class_slots_layout(_py, class_ptr) {
-                return MoltObject::none().bits();
-            }
-            let dict_bits = class_dict_bits(class_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return MoltObject::none().bits();
-            }
-            let entries = dict_order(dict_ptr).clone();
-            let set_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.set_name_method,
-                b"__set_name__",
-            );
-            for pair in entries.chunks(2) {
-                if pair.len() != 2 {
-                    continue;
-                }
-                let name_bits = pair[0];
-                let val_bits = pair[1];
-                // `entries` is a borrowed snapshot of the class dict.  A user
-                // `__set_name__` hook can mutate that dict, including deleting
-                // the descriptor currently being initialized, so the apply loop
-                // must own the key/value pair across arbitrary hook execution.
-                inc_ref_bits(_py, name_bits);
-                inc_ref_bits(_py, val_bits);
-                let Some(val_ptr) = maybe_ptr_from_bits(val_bits) else {
-                    dec_ref_bits(_py, val_bits);
-                    dec_ref_bits(_py, name_bits);
-                    continue;
-                };
-                if let Some(set_name) = attr_lookup_ptr_allow_missing(_py, val_ptr, set_name_bits) {
-                    if trace_set_name {
-                        let class_name = class_name_for_error(class_bits);
-                        let key = string_obj_to_owned(obj_from_bits(name_bits))
-                            .unwrap_or_else(|| "<non-str>".to_string());
-                        let val_type_id = object_type_id(val_ptr);
-                        let (set_name_type_id, set_name_type) =
-                            if let Some(ptr) = obj_from_bits(set_name).as_ptr() {
-                                (object_type_id(ptr), type_name(_py, obj_from_bits(set_name)))
-                            } else {
-                                (0, type_name(_py, obj_from_bits(set_name)))
-                            };
-                        eprintln!(
-                            "molt set_name: class={} key={} val_type_id={} set_name_type_id={} set_name_type={}",
-                            class_name, key, val_type_id, set_name_type_id, set_name_type,
-                        );
-                    }
-                    crate::call::discard_owned_call_result(
-                        _py,
-                        call_callable2(_py, set_name, class_bits, name_bits),
-                    );
-                    dec_ref_bits(_py, set_name);
-                }
-                dec_ref_bits(_py, val_bits);
-                dec_ref_bits(_py, name_bits);
+            // The public finalization entrypoint includes slot layout. The
+            // canonical type constructor calls the descriptor phase directly
+            // because it has already established layout and published cells.
+            if apply_class_slots_layout(_py, class_ptr) {
+                class_apply_descriptor_names(_py, class_ptr);
             }
         }
         MoltObject::none().bits()
     })
+}
+
+/// Apply descriptor names in snapshot order through special-method lookup.
+/// The caller has established layout and published both compiler cells.
+pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    unsafe {
+        let trace_set_name = matches!(
+            std::env::var("MOLT_TRACE_SET_NAME").ok().as_deref(),
+            Some("1")
+        );
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let dict_bits = class_dict_bits(class_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return false;
+        };
+        let entries = dict_order(dict_ptr).clone();
+        // Retain every pair before the first descriptor can delete a later one.
+        let snapshot = alloc_tuple(_py, &entries);
+        if snapshot.is_null() {
+            return false;
+        }
+        let _snapshot_owner = crate::PtrDropGuard::new(snapshot);
+        for pair in entries.chunks_exact(2) {
+            let name_bits = pair[0];
+            let value_bits = pair[1];
+            let Some(set_name) =
+                crate::builtins::attr::lookup_special_method(_py, value_bits, b"__set_name__")
+            else {
+                if exception_pending(_py) {
+                    return false;
+                }
+                continue;
+            };
+            if trace_set_name {
+                let class_name = class_name_for_error(class_bits);
+                let key = string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<non-str>".to_string());
+                let value_type_id = obj_from_bits(value_bits)
+                    .as_ptr()
+                    .map(|ptr| object_type_id(ptr))
+                    .unwrap_or(0);
+                let set_name_type_id = obj_from_bits(set_name)
+                    .as_ptr()
+                    .map(|ptr| object_type_id(ptr))
+                    .unwrap_or(0);
+                let set_name_type = type_name(_py, obj_from_bits(set_name));
+                eprintln!(
+                    "molt set_name: class={} key={} val_type_id={} set_name_type_id={} set_name_type={}",
+                    class_name, key, value_type_id, set_name_type_id, set_name_type,
+                );
+            }
+            let result = call_callable2(_py, set_name, class_bits, name_bits);
+            crate::call::discard_owned_call_result(_py, result);
+            dec_ref_bits(_py, set_name);
+            if exception_pending(_py) {
+                class_set_name_error_note(_py, class_bits, name_bits, value_bits);
+                return false;
+            }
+        }
+        true
+    }
+}
+
+// All pinned reference interpreters (3.12.13/3.13.11/3.14.3) preserve the
+// descriptor exception and append this note. A failure while constructing
+// the note instead chains the original exception as its context.
+unsafe fn class_set_name_error_note(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) {
+    use crate::builtins::exceptions::{ExceptionFieldSlot, exception_replace_field_bits};
+    let Some(original) = crate::exception_last_bits_noinc(_py) else {
+        return;
+    };
+    inc_ref_bits(_py, original);
+    crate::molt_exception_clear();
+    let name_repr_bits = crate::molt_repr_builtin(name_bits);
+    if !exception_pending(_py) {
+        let name_repr = string_obj_to_owned(obj_from_bits(name_repr_bits));
+        if let Some(name_repr) = name_repr {
+            let descriptor_name: String = type_name(_py, obj_from_bits(value_bits))
+                .chars()
+                .take(100)
+                .collect();
+            let class_name: String = class_name_for_error(class_bits).chars().take(100).collect();
+            let note = format!(
+                "Error calling __set_name__ on '{}' instance {} in '{}'",
+                descriptor_name, name_repr, class_name,
+            );
+            let note_ptr = alloc_string(_py, note.as_bytes());
+            if !note_ptr.is_null() {
+                let note_bits = MoltObject::from_ptr(note_ptr).bits();
+                let result =
+                    crate::builtins::exceptions::molt_exception_add_note(original, note_bits);
+                crate::call::discard_owned_call_result(_py, result);
+                dec_ref_bits(_py, note_bits);
+            }
+        }
+    }
+    dec_ref_bits(_py, name_repr_bits);
+    if let Some(note_error) = crate::exception_last_bits_noinc(_py) {
+        if let Err(message) =
+            exception_replace_field_bits(_py, note_error, ExceptionFieldSlot::Context, original)
+        {
+            let _ = raise_exception::<u64>(_py, "RuntimeError", message);
+        }
+    } else {
+        crate::molt_exception_set_last(original);
+    }
+    dec_ref_bits(_py, original);
 }
 
 #[unsafe(no_mangle)]

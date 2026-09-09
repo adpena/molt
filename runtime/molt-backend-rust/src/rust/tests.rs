@@ -1,6 +1,13 @@
 use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
 #[test]
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
@@ -58,24 +65,33 @@ fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
 }
 
 fn compile_and_run_emitted(source: &str, stem: &str) -> String {
-    let temp = std::env::temp_dir().join(format!("molt_rust_{stem}_{}", std::process::id()));
-    std::fs::create_dir_all(&temp).expect("create emitted-Rust test directory");
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new(stem)
+        .expect("create emitted-Rust outputs within Cargo image custody");
+    let temp = artifacts.path();
     let source_path = temp.join("main.rs");
     let binary_path = temp.join(if cfg!(windows) { "main.exe" } else { "main" });
     std::fs::write(&source_path, source).expect("write emitted Rust source");
-    let compile = std::process::Command::new("rustc")
+    let compile = artifacts
+        .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .expect("resolve fixture compiler")
         .args(["--edition", "2024", "-A", "warnings", "-O", "-o"])
-        .arg(&binary_path)
-        .arg(&source_path)
+        .arg(artifacts.argument("", &binary_path).unwrap())
+        .arg(artifacts.argument("", &source_path).unwrap())
         .status()
         .expect("rustc must compile emitted Rust backend source");
     assert!(compile.success(), "emitted Rust source must compile");
     let output = std::process::Command::new(&binary_path)
         .output()
         .expect("emitted Rust binary must execute");
-    assert!(output.status.success(), "emitted Rust binary must succeed");
+    assert!(
+        output.status.success(),
+        "emitted Rust binary {} failed: status={}\nstdout:\n{}\nstderr:\n{}",
+        binary_path.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).expect("emitted stdout must be UTF-8");
-    let _ = std::fs::remove_dir_all(temp);
     stdout
 }
 
@@ -115,6 +131,7 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -145,6 +162,7 @@ fn compile_checked_keeps_ordinary_programs_available() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -191,6 +209,7 @@ fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary(
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -231,6 +250,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -243,6 +263,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -284,6 +305,7 @@ fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -315,6 +337,7 @@ fn compile_numeric_equality_does_not_fall_back_for_non_numeric_values() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -352,6 +375,7 @@ fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() 
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -392,6 +416,7 @@ fn compile_checked_rejects_typed_integer_arithmetic_before_emission() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -433,6 +458,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -445,6 +471,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             },
         ],
@@ -479,6 +506,7 @@ fn compile_call_method_uses_s_value_method_name() {
             param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -512,6 +540,7 @@ fn compile_ord_at_emits_fused_helper() {
             param_types: Some(vec!["str".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -581,6 +610,7 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: Default::default(),
             }],
             profile: None,
@@ -614,6 +644,7 @@ fn compile_checked_rejects_unsupported_dispatch() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -660,6 +691,7 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -772,6 +804,7 @@ fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -863,6 +896,7 @@ fn compile_unpack_sequence_iterates_unicode_scalars_not_utf8_bytes() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -896,6 +930,7 @@ fn malformed_simple_ir_unpack_is_reported_not_emitted() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -960,6 +995,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1000,6 +1036,7 @@ fn compile_checked_rejects_even_i64_sized_bigint_literals() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1042,6 +1079,7 @@ fn compile_checked_rejects_unrepresented_literal_values() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1092,6 +1130,7 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1155,6 +1194,7 @@ fn jump_after_loop_does_not_capture_scoped_set_item_temps() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1256,6 +1296,7 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1288,6 +1329,7 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -1329,6 +1371,7 @@ fn compile_checked_rejects_malformed_callable_family_without_substitute_values()
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,

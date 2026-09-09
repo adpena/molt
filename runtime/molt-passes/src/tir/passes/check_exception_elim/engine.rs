@@ -11,9 +11,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         ..Default::default()
     };
 
-    let entry_pending = compute_block_entry_pending(func);
     let const_ints = const_int_values(func);
-    let value_types = func.value_types.clone();
+    let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let entry_pending = compute_block_entry_pending(func, &value_types, &const_ints);
 
     for block in func.blocks.values_mut() {
         let mut pending_exception_possible = entry_pending.get(&block.id).copied().unwrap_or(false);

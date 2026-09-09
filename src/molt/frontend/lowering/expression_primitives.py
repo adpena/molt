@@ -88,27 +88,27 @@ class ExpressionPrimitivesMixin(_MixinBase):
         self, op: ast.cmpop, left: MoltValue, right: MoltValue
     ) -> MoltValue:
         if isinstance(op, ast.Eq):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="EQ", args=[left, right], result=res))
             return res
         if isinstance(op, ast.NotEq):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="NE", args=[left, right], result=res))
             return res
         if isinstance(op, ast.Lt):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="LT", args=[left, right], result=res))
             return res
         if isinstance(op, ast.Gt):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="GT", args=[left, right], result=res))
             return res
         if isinstance(op, ast.LtE):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="LE", args=[left, right], result=res))
             return res
         if isinstance(op, ast.GtE):
-            res = MoltValue(self.next_var(), type_hint="bool")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="GE", args=[left, right], result=res))
             return res
         if isinstance(op, ast.Is):
@@ -139,10 +139,10 @@ class ExpressionPrimitivesMixin(_MixinBase):
             return node.args
         return None
 
-    @staticmethod
-    def _can_inline_any_all_genexpr(node: ast.GeneratorExp) -> bool:
+    def _can_inline_any_all_genexpr(self, node: ast.GeneratorExp) -> bool:
         return (
-            len(node.generators) == 1
+            self._comprehension_frame_can_fuse(node)
+            and len(node.generators) == 1
             and not node.generators[0].is_async
             and isinstance(node.generators[0].target, ast.Name)
         )

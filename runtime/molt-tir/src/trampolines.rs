@@ -1,3 +1,6 @@
+mod callable_metadata;
+pub use callable_metadata::CallableMetadata;
+
 use crate::FunctionIR;
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]

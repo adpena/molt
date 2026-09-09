@@ -9,6 +9,7 @@ fn test_compile_checked_lowers_type_check_helpers() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -122,6 +123,7 @@ fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -178,6 +180,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
@@ -367,6 +370,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -379,6 +383,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -391,6 +396,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -403,6 +409,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -415,6 +422,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -427,6 +435,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -500,6 +509,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
@@ -557,6 +567,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -598,6 +609,7 @@ fn test_compile_checked_rejects_internal_marker() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "function_closure_bits".to_string(),
@@ -628,6 +640,7 @@ fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -671,6 +684,7 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "invoke_ffi".to_string(),
@@ -703,6 +717,7 @@ fn test_compile_checked_lowers_object_set_class_metatable() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -745,6 +760,7 @@ fn test_compile_checked_lowers_class_layout_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -846,6 +862,7 @@ fn test_default_luau_dispatch_uses_checked_path() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "unknown_luau_op".to_string(),
@@ -881,6 +898,7 @@ fn test_luau_repr_authority_typed_list_call_method_dispatch() {
             param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {

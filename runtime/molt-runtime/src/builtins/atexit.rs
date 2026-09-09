@@ -8,7 +8,7 @@ use crate::{
     bound_method_self_bits, clear_exception, dec_ref_bits, exception_pending,
     function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
     molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_eq, molt_is_callable, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    molt_is_callable, obj_from_bits, object_type_id, raise_exception, runtime_state,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,11 +133,15 @@ fn atexit_callback_release_refs(_py: &PyToken<'_>, callback: AtexitCallbackEntry
 }
 
 fn py_eq_checked(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Result<bool, u64> {
-    let eq_bits = molt_eq(lhs_bits, rhs_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
+    match crate::object::ops_compare::compare_object_eq_bool(
+        _py,
+        obj_from_bits(lhs_bits),
+        obj_from_bits(rhs_bits),
+    ) {
+        crate::object::ops_compare::CompareBoolOutcome::True => Ok(true),
+        crate::object::ops_compare::CompareBoolOutcome::False => Ok(false),
+        _ => Err(MoltObject::none().bits()),
     }
-    Ok(is_truthy(_py, obj_from_bits(eq_bits)))
 }
 
 fn callable_identity_eq(lhs_bits: u64, rhs_bits: u64) -> bool {

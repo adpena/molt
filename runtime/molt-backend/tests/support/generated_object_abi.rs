@@ -1,11 +1,10 @@
 use object::{Object, ObjectSymbol};
 
-struct TempRoot(std::path::PathBuf);
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
 }
 
 pub fn assert_exact_import_and_dead_strip_link(bytes: &[u8], producer: &str) {
@@ -28,17 +27,12 @@ pub fn assert_exact_import_and_dead_strip_link(bytes: &[u8], producer: &str) {
     };
     assert!(!undefined.contains(opposite));
 
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "molt-{}-generated-object-link-{}-{nonce}",
-        producer.to_ascii_lowercase(),
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root).expect("create generated-object link temp dir");
-    let _cleanup = TempRoot(root.clone());
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new(&format!(
+        "{}-object-link",
+        producer.to_ascii_lowercase()
+    ))
+    .expect("create generated-object outputs within Cargo image custody");
+    let root = artifacts.path();
     let backend_object = root.join(if cfg!(windows) {
         "backend.obj"
     } else {
@@ -72,8 +66,9 @@ pub fn assert_exact_import_and_dead_strip_link(bytes: &[u8], producer: &str) {
         )
         .expect("write runtime symbol provider");
         let executable = root.join(format!("runtime_{label}{}", std::env::consts::EXE_SUFFIX));
-        let mut command =
-            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+        let mut command = artifacts
+            .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .expect("resolve fixture compiler");
         command.args(["--edition=2024", "-C"]);
         if cfg!(windows) {
             command.arg("link-arg=/OPT:REF");
@@ -83,11 +78,11 @@ pub fn assert_exact_import_and_dead_strip_link(bytes: &[u8], producer: &str) {
             command.arg("link-arg=-Wl,--gc-sections");
         }
         let result = command
-            .arg(&source)
+            .arg(artifacts.argument("", &source).unwrap())
             .arg("-C")
-            .arg(format!("link-arg={}", backend_object.display()))
+            .arg(artifacts.argument("link-arg=", &backend_object).unwrap())
             .arg("-o")
-            .arg(executable)
+            .arg(artifacts.argument("", &executable).unwrap())
             .output()
             .expect("link generated object");
         assert_eq!(

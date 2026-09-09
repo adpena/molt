@@ -17,10 +17,16 @@
 //!   3. malformed arity and missing-symbol inputs still fail closed.
 
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
 
 /// The runtime object-call symbol every executable native callable dispatch
 /// must reference. Its ASCII name appears in the emitted object symbol table
@@ -76,6 +82,7 @@ fn native_callable_program(
             param_types: None,
             source_file: None,
             is_extern: false,
+            codegen_partition: false,
             execution_context: Default::default(),
         }],
         profile: None,
@@ -84,27 +91,6 @@ fn native_callable_program(
 
 fn object_contains(bytes: &[u8], needle: &[u8]) -> bool {
     bytes.windows(needle.len()).any(|w| w == needle)
-}
-
-struct RemoveTemp(PathBuf);
-
-impl Drop for RemoveTemp {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn native_link_temp_dir() -> (PathBuf, RemoveTemp) {
-    let path = std::env::temp_dir().join(format!(
-        "molt-native-callable-link-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after epoch")
-            .as_nanos()
-    ));
-    fs::create_dir_all(&path).expect("create native callable link temp dir");
-    (path.clone(), RemoveTemp(path))
 }
 
 fn real_rustc() -> Option<PathBuf> {
@@ -150,12 +136,6 @@ fn native_provider_archive_path(temp: &Path) -> PathBuf {
     } else {
         temp.join("libnative_callable_provider.a")
     }
-}
-
-fn rustc_link_arg(path: &Path) -> OsString {
-    let mut argument = OsString::from("link-arg=");
-    argument.push(path);
-    argument
 }
 
 #[test]
@@ -259,10 +239,12 @@ fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
         &["payload"],
     );
     let output = SimpleBackend::new().compile(ir);
-    let (temp, _remove_temp) = native_link_temp_dir();
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("native-callable-link")
+        .expect("create native callable outputs within Cargo image custody");
+    let temp = artifacts.path();
     let app_object = temp.join("native_callable_app.o");
     let provider_source = temp.join("provider.rs");
-    let provider_archive = native_provider_archive_path(&temp);
+    let provider_archive = native_provider_archive_path(temp);
     let harness_source = temp.join("harness.rs");
     let executable = temp.join(if cfg!(windows) {
         "native_callable_execution.exe"
@@ -274,8 +256,8 @@ fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
         &provider_source,
         format!(
             r#"#![no_std]
-#[no_mangle]
-pub static molt_generated_object_abi_5fce853bad8ac502_gil_v2: u8 = 0;
+#[export_name = "{generated_object_abi_symbol}"]
+pub static GENERATED_OBJECT_ABI: u8 = 0;
 static EXCEPTION_PENDING: u8 = 0;
 #[no_mangle]
 pub extern "C" fn molt_dec_ref(_: u64) {{}}
@@ -295,19 +277,22 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
 #[no_mangle]
 pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
-"#
+"#,
+            generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
         ),
     )
     .expect("write native callable provider source");
     run_checked(
-        Command::new(&rustc)
+        artifacts
+            .command(&rustc)
+            .expect("resolve fixture compiler")
             .arg("--edition=2021")
             .arg("--crate-name=native_callable_provider")
             .arg("--crate-type=rlib")
             .arg("-Cpanic=abort")
-            .arg(&provider_source)
+            .arg(artifacts.argument("", &provider_source).unwrap())
             .arg("-o")
-            .arg(&provider_archive),
+            .arg(artifacts.argument("", &provider_archive).unwrap()),
         "compile native callable provider static archive",
     );
     fs::write(
@@ -320,15 +305,17 @@ pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
     )
     .expect("write native callable execution harness");
     run_checked(
-        Command::new(&rustc)
+        artifacts
+            .command(&rustc)
+            .expect("resolve fixture compiler")
             .arg("--edition=2021")
-            .arg(&harness_source)
+            .arg(artifacts.argument("", &harness_source).unwrap())
             .arg("-C")
-            .arg(rustc_link_arg(&app_object))
+            .arg(artifacts.argument("link-arg=", &app_object).unwrap())
             .arg("-C")
-            .arg(rustc_link_arg(&provider_archive))
+            .arg(artifacts.argument("link-arg=", &provider_archive).unwrap())
             .arg("-o")
-            .arg(&executable),
+            .arg(artifacts.argument("", &executable).unwrap()),
         "final-link Cranelift object with native callable provider archive",
     );
     run_checked(

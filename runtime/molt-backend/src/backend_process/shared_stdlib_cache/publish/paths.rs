@@ -17,8 +17,17 @@ pub(crate) fn stdlib_cache_partition_manifest_sidecar_path(stdlib_path: &Path) -
     stdlib_path.with_extension("partition.json")
 }
 
-pub(super) fn stdlib_cache_object_digest_sidecar_path(stdlib_path: &Path) -> PathBuf {
+pub(super) fn stdlib_cache_archive_digest_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("sha256")
+}
+
+/// Python derives these projections from this archive generation. They share
+/// its publication lock and are invalidated on replacement or generation abort.
+pub(super) fn stdlib_cache_derived_sidecar_paths(stdlib_path: &Path) -> [PathBuf; 2] {
+    [
+        stdlib_path.with_extension("symbol-contract.json"),
+        stdlib_path.with_extension("symbols.json"),
+    ]
 }
 
 pub(super) fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {

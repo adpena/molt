@@ -56,6 +56,18 @@ Outputs:
   declares `runtime_linkage = "static_link"`, `artifact_kind = "static_archive"`,
   the exact target triple, object closure, and explicit link requirements.
 
+Native symbol evidence has one typed reader in `cli/backend_cache.py`, shared
+by application caches, shared-stdlib closure, extension object inspection, and
+external providers. Missing tools, failed reads, malformed output, and partial
+archive inspection are errors, never empty symbol tables or reusable negative
+facts. Diagnostics identify the artifact and bounded tool-attempt details;
+extension builds return them through the normal text/JSON error surface without
+publishing a wheel or manifest. Successfully inspected empty symbol tables remain
+distinct from unavailable evidence. Weak undefined symbols are not providers or
+required strong dependencies. Symbol normalization follows the artifact target,
+not the inspecting host; persisted facts and validation tokens bind that target
+and the versioned symbol contract.
+
 ### 2.2 `molt extension audit`
 Purpose: verify that an extension declares capabilities and matches the expected ABI.
 
@@ -333,6 +345,31 @@ Final-link requirements are a closed typed set: checksummed static inputs,
 bare system providers, and explicitly admitted semantic options. Output modes,
 tool selection, search/sysroot paths, response files, secondary outputs, and
 unsealed scripts are not representable.
+
+Meson source folding uses one ordered linker-operand projection and only
+metadata-declared static-library outputs. Exact output paths outrank basename
+fallback; ambiguous basenames fail instead of selecting multiple targets.
+Archive suffixes, including `.a` and `.lib`, do not independently establish
+source ownership. Source loading, generated-input scheduling, exclusions, and
+final-link handoff consume this identity together. Nested linker groups retain
+operand order and meaningful repeats; compiler flags and linker executables
+are not linker operands. Conflicting mirrored metadata is rejected.
+
+Object pruning consumes module initialization, declared direct callable exports,
+retained linker symbols, and forced source members through one dependency graph.
+Forced membership is a compile-unit plan/digest fact, not an archive basename
+exception in the final-link parser. Missing forced objects and ambiguous admitted
+definitions fail explicitly. Retained symbols supplied externally remain linker
+requirements. Mixed external providers/inputs and lazily folded source closures
+require external member dependency facts. The existing typed link-requirements
+authority rejects that combination before compilation when those facts are
+absent; archive paths, search-name libraries, and default-library syntax cannot
+create separate admission rules.
+Forced folding into ELF extension archives is also rejected: its lazy final
+archive group cannot preserve arbitrary forced members without a per-artifact
+loading policy. COFF and Mach-O use their existing forced archive loading;
+WASM consumes the selected relocatable object directly. These admission contracts
+do not establish emitted-program conformance on an unexecuted target.
 
 ### 5.1 Known eager Python-import authority
 

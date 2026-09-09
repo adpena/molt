@@ -34,6 +34,7 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._protocol import _GeneratorProtocol
+from molt.frontend._types import _ClassNsScope
 from molt.frontend.lowering.generator_state import (
     FUNCTION_CONTEXT_STATE_ATTRS,
     FUNCTION_STATE_SNAPSHOT_ATTRS,
@@ -92,6 +93,7 @@ EXPECTED_MIXINS = [
     "CompileWarningMixin",
     "EmissionCoreMixin",
     "ExpressionPrimitivesMixin",
+    "ConditionFlowMixin",
     "ExceptionLoweringMixin",
     "FunctionLifecycleMixin",
     "FunctionMetadataMixin",
@@ -270,7 +272,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_compile_class_method")
     assert hasattr(SimpleTIRGenerator, "_compile_class_generator_method")
     assert hasattr(SimpleTIRGenerator, "_compile_class_async_method")
-    assert hasattr(SimpleTIRGenerator, "_method_inline_closure_ok")
+    assert hasattr(SimpleTIRGenerator, "_emit_inline_expression")
     assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
     for deleted_classgraph_bridge in (
         "_c3_merge",
@@ -305,16 +307,17 @@ def test_moved_methods_resolve_on_class() -> None:
     # calls (phase 2)
     assert hasattr(SimpleTIRGenerator, "visit_Call")
     assert hasattr(SimpleTIRGenerator, "_emit_call_args_builder")
-    assert hasattr(SimpleTIRGenerator, "_fold_bare_super_static")
+    assert hasattr(SimpleTIRGenerator, "_emit_inline_expression")
+    assert not hasattr(SimpleTIRGenerator, "_fold_bare_super_static")
     # reducer calls (phase 2 semantic subfamily)
     assert hasattr(SimpleTIRGenerator, "_emit_sum_call")
     assert hasattr(SimpleTIRGenerator, "_try_emit_inline_sum_genexpr")
     assert hasattr(SimpleTIRGenerator, "_emit_any_all_call")
     # classes (phase 2)
     assert hasattr(SimpleTIRGenerator, "visit_ClassDef")
-    assert hasattr(SimpleTIRGenerator, "_compute_method_closure")
+    assert hasattr(SimpleTIRGenerator, "_capture_lexical_closure")
     assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
-    assert hasattr(SimpleTIRGenerator, "_function_needs_classcell")
+    assert hasattr(SimpleTIRGenerator, "_emit_class_function_definition")
     # comprehensions
     assert hasattr(SimpleTIRGenerator, "visit_ListComp")
     assert hasattr(SimpleTIRGenerator, "visit_GeneratorExp")
@@ -640,6 +643,31 @@ def test_function_state_snapshot_matches_reset_authority() -> None:
     assert snapshot_attrs == reset_attrs | set(FUNCTION_CONTEXT_STATE_ATTRS)
 
 
+def test_function_state_isolates_and_restores_enclosing_class_storage() -> None:
+    gen = SimpleTIRGenerator()
+    owner = _ClassNsScope(
+        ns=MoltValue("outer_namespace", type_hint="dict"),
+        attr_values={},
+        names=set(),
+        class_name="Outer",
+        module_name="__main__",
+    )
+    scopes = [owner]
+    gen._class_ns_stack = scopes
+    gen._class_body_depth = 2
+    state = gen._capture_function_state()
+
+    gen.start_function("nested")
+    assert gen._class_ns_stack == []
+    assert gen._class_ns_stack is not scopes
+    assert gen._class_body_depth == 0
+
+    gen._restore_function_state(state)
+    assert gen._class_ns_stack is scopes
+    assert gen._class_ns_stack == [owner]
+    assert gen._class_body_depth == 2
+
+
 def _discover_mixin_classes() -> dict[str, type]:
     """Auto-discover every *Mixin class under visitors/ and lowering/ so this
     guard automatically covers new mixins added in later extraction phases."""
@@ -798,8 +826,20 @@ def test_nested_function_compile_restores_class_body_loop_state() -> None:
         and op.get("container_type") == "dict"
         and key_name(op) == "done"
     )
-    done_source = by_out[done_store["args"][2]]
-    assert done_source["kind"] == "index"
+
+    def namespace_probe(value: str) -> dict:
+        # Reuse the condition merge authority: synchronous lookup introduces
+        # no scratch heap allocation and retains branch-local SSA ownership.
+        loaded = by_out[value]
+        assert loaded["kind"] == "phi"
+        present = by_out[loaded["args"][1]]
+        assert present["kind"] == "identity_alias"
+        probe = by_out[present["args"][0]]
+        assert probe["kind"] == "call"
+        assert probe["s_value"] == "molt_namespace_get"
+        return probe
+
+    done_source = namespace_probe(done_store["args"][2])
     assert done_source["args"][0] == done_store["args"][0]
     assert const_names[done_source["args"][1]] == "total"
 
@@ -814,9 +854,7 @@ def test_nested_function_compile_restores_class_body_loop_state() -> None:
         and by_out.get(op["args"][2], {}).get("kind") == "add"
     )
     update_expr = by_out[total_update["args"][2]]
-    update_reads = [by_out[arg] for arg in update_expr["args"] if arg in by_out]
+    update_reads = [namespace_probe(arg) for arg in update_expr["args"]]
     assert {
-        const_names[op["args"][1]]
-        for op in update_reads
-        if op["kind"] == "index" and op["args"][0] == class_ns
+        const_names[op["args"][1]] for op in update_reads if op["args"][0] == class_ns
     } == {"item", "total"}

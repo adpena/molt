@@ -18,14 +18,13 @@ use crate::{
     call_callable1, call_class_init_with_args, class_break_cycles, class_dict_bits,
     class_name_bits, class_name_for_error, code_filename_bits, code_name_bits,
     context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
-    dict_find_entry_fast, dict_get_in_place, dict_hashes, dict_order, dict_set_in_place,
-    dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
-    index_bigint_from_obj, init_atomic_bits, instance_dict_bits, int_bits_from_i64,
-    intern_static_name, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
-    module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index, molt_is_callable,
-    molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, profile_enabled, runtime_state, string_bytes, string_len,
-    string_obj_to_owned, task_exception_depths, task_exception_handler_stacks,
+    dict_get_in_place, dict_order, dict_set_in_place, format_obj, format_obj_str,
+    header_from_obj_ptr, inc_ref_bits, index_bigint_from_obj, init_atomic_bits, instance_dict_bits,
+    int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits, issubclass_bits,
+    maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index,
+    molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj,
+    obj_from_bits, object_class_bits, object_type_id, profile_enabled, runtime_state, string_bytes,
+    string_len, string_obj_to_owned, task_exception_depths, task_exception_handler_stacks,
     task_exception_stacks, task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed,
     tuple_from_iter_bits, type_name, type_of_bits,
 };
@@ -2784,7 +2783,7 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
             return None;
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let value_bits = dict_get_in_place_fast_str(_py, dict_ptr, name_bits);
+        let value_bits = dict_get_in_place(_py, dict_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
         let value_bits = value_bits?;
         let value_ptr = obj_from_bits(value_bits).as_ptr()?;
@@ -2796,20 +2795,6 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
             return None;
         }
         Some(value_bits)
-    }
-}
-
-unsafe fn dict_get_in_place_fast_str(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-) -> Option<u64> {
-    unsafe {
-        let order = dict_order(dict_ptr);
-        let hashes = dict_hashes(dict_ptr);
-        let table = dict_table(dict_ptr);
-        let found = dict_find_entry_fast(_py, order, hashes, table, key_bits);
-        found.map(|idx| order[idx * 2 + 1])
     }
 }
 
@@ -3034,7 +3019,7 @@ fn ensure_exception_in_builtins(_py: &PyToken<'_>, name: &str, class_bits: u64) 
         return;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let existing = unsafe { dict_get_in_place_fast_str(_py, dict_ptr, name_bits) };
+    let existing = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) };
     let needs_set = existing != Some(class_bits);
     if needs_set {
         unsafe {

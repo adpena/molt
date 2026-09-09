@@ -1526,6 +1526,11 @@ pub(crate) unsafe fn super_obj_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
+/// Receiver class resolved once by supercheck, including proxy __class__.
+pub(crate) unsafe fn super_receiver_class_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
 pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
     if step == 0 {
         return 0;

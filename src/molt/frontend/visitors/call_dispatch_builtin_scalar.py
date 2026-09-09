@@ -233,8 +233,7 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             has_unsupported_kw = any(
                 kw.arg not in known_kw for kw in node.keywords if kw.arg is not None
             )
-            has_star_kw = any(kw.arg is None for kw in node.keywords)
-            if has_unsupported_kw or has_star_kw or len(node.args) > 3:
+            if has_unsupported_kw or len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:
                     raise FrontendRejection(

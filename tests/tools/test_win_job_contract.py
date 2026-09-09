@@ -113,68 +113,185 @@ def test_process_ids_grows_query_buffer_without_fixed_ceiling(monkeypatch) -> No
     assert capacities == [16, 33]
 
 
-def test_complete_job_custody_terminates_and_waits_for_exact_members(
-    monkeypatch,
-) -> None:
-    calls: list[str] = []
-    accounting = iter(
-        (
-            win_job.WindowsJobAccounting(8, 3, 5, 4096, 100, 200, 300),
-            win_job.WindowsJobAccounting(8, 0, 8, 4096, 400, 500, 600),
-        )
+@pytest.fixture
+def cleanup_model(monkeypatch):
+    model = SimpleNamespace(
+        now=0.0,
+        active=1,
+        pids=(101,),
+        calls=[],
     )
-    resources = iter(
-        (
-            win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1),
-            win_job.WindowsSystemResources(97, 770, 3900, 30, 1, 2, 2, 3, 1),
-        )
-    )
-    monkeypatch.setattr(win_job, "job_accounting", lambda _job: next(accounting))
-    monkeypatch.setattr(win_job, "system_resources", lambda: next(resources))
-    monkeypatch.setattr(
-        win_job,
-        "terminate_job",
-        lambda _job: calls.append("terminate"),
-    )
-    monkeypatch.setattr(
-        win_job,
-        "wait_until_empty",
-        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
-    )
+    resources = win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1)
 
+    def accounting(job):
+        assert job == 777
+        return win_job.WindowsJobAccounting(8, model.active, 0, 4096, 100, 200, 300)
+
+    def members(job):
+        assert job == 777
+        return model.pids
+
+    def terminate(job):
+        assert job == 777
+        model.calls.append(("terminate", job))
+
+    monkeypatch.setattr(win_job.time, "monotonic", lambda: model.now)
+    monkeypatch.setattr(win_job, "job_accounting", accounting)
+    monkeypatch.setattr(win_job, "system_resources", lambda: resources)
+    monkeypatch.setattr(win_job, "process_ids", members)
+    monkeypatch.setattr(win_job, "active_process_count", lambda _job: model.active)
+    monkeypatch.setattr(win_job, "terminate_job", terminate)
+    return model
+
+
+def test_complete_job_custody_terminates_only_after_bounded_natural_drain(
+    monkeypatch, cleanup_model
+) -> None:
+    model = cleanup_model
+    model.active, model.pids = 3, (101, 202, 303)
+
+    def wait(job, *, timeout):
+        assert job == 777
+        model.calls.append(("wait", timeout))
+        if len(model.calls) == 1:
+            model.now += timeout
+            raise TimeoutError("members remain")
+        model.now += 0.05
+        model.active, model.pids = 0, ()
+
+    monkeypatch.setattr(win_job, "wait_until_empty", wait)
     cleanup = win_job.complete_job_custody(777, timeout=2.5)
 
-    assert cleanup is not None
-    assert cleanup.completed
+    assert cleanup is not None and cleanup.completed
     assert cleanup.terminated_remaining_processes
     assert cleanup.before.active_processes == 3
     assert cleanup.after.active_processes == 0
-    assert calls == ["terminate", "wait:2.5"]
+    assert cleanup.initial_process_ids == (101, 202, 303)
+    assert cleanup.escalation_process_ids == (101, 202, 303)
+    assert cleanup.natural_exit_wait_s == 0.25
+    assert cleanup.elapsed_s == 0.3
+    assert model.calls == [("wait", 0.25), ("terminate", 777), ("wait", 2.25)]
+    payload = payloads.windows_job_cleanup_payload(cleanup)
+    assert payload is not None
+    assert payload["initial_process_ids"] == [101, 202, 303]
+    assert payload["escalation_process_ids"] == [101, 202, 303]
+    assert payload["natural_exit_wait_s"] == 0.25
+    assert payload["terminated_remaining_processes"] is True
 
 
-def test_complete_job_custody_does_not_terminate_an_empty_job(monkeypatch) -> None:
-    empty = win_job.WindowsJobAccounting(1, 0, 1, 2048, 100, 200, 300)
-    resources = win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1)
-    calls: list[str] = []
-    monkeypatch.setattr(win_job, "job_accounting", lambda _job: empty)
-    monkeypatch.setattr(win_job, "system_resources", lambda: resources)
-    monkeypatch.setattr(
-        win_job,
-        "terminate_job",
-        lambda _job: calls.append("terminate"),
-    )
+def test_complete_job_custody_does_not_wait_or_terminate_an_empty_job(
+    monkeypatch, cleanup_model
+) -> None:
+    model = cleanup_model
+    model.active, model.pids = 0, ()
     monkeypatch.setattr(
         win_job,
         "wait_until_empty",
-        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
+        lambda _job, *, timeout: pytest.fail("empty job must not wait"),
     )
-
     cleanup = win_job.complete_job_custody(777, timeout=1.0)
 
-    assert cleanup is not None
-    assert cleanup.completed
+    assert cleanup is not None and cleanup.completed
     assert not cleanup.terminated_remaining_processes
-    assert calls == ["wait:1.0"]
+    assert cleanup.initial_process_ids == ()
+    assert cleanup.escalation_process_ids == ()
+    assert cleanup.natural_exit_wait_s == 0.0
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("timeout, grace", [(2.5, 0.25), (0.1, 0.05)])
+def test_complete_job_custody_allows_accounting_tail_to_retire_naturally(
+    monkeypatch, cleanup_model, timeout, grace
+) -> None:
+    model = cleanup_model
+
+    def wait(job, *, timeout):
+        assert job == 777
+        model.calls.append(("wait", timeout))
+        model.now += 0.01
+        model.active, model.pids = 0, ()
+
+    monkeypatch.setattr(win_job, "wait_until_empty", wait)
+    cleanup = win_job.complete_job_custody(777, timeout=timeout)
+
+    assert cleanup is not None and cleanup.completed
+    assert cleanup.before.active_processes == 1
+    assert cleanup.after.active_processes == 0
+    assert cleanup.before.total_cpu_seconds == cleanup.after.total_cpu_seconds
+    assert not cleanup.terminated_remaining_processes
+    assert cleanup.initial_process_ids == (101,)
+    assert cleanup.escalation_process_ids == ()
+    assert cleanup.natural_exit_wait_s == 0.01
+    assert model.calls == [("wait", grace)]
+
+
+def test_natural_timeout_rechecks_job_before_requesting_termination(
+    monkeypatch, cleanup_model
+) -> None:
+    model = cleanup_model
+
+    def wait(job, *, timeout):
+        assert job == 777
+        model.calls.append(("wait", timeout))
+        model.now += timeout
+        model.active, model.pids = 0, ()
+        raise TimeoutError("last accounting query preceded final retirement")
+
+    monkeypatch.setattr(win_job, "wait_until_empty", wait)
+    cleanup = win_job.complete_job_custody(777, timeout=1.0)
+
+    assert cleanup is not None and cleanup.completed
+    assert not cleanup.terminated_remaining_processes
+    assert cleanup.escalation_process_ids == ()
+    assert model.calls == [("wait", 0.25)]
+
+
+def test_unresolved_job_fails_with_member_evidence_and_one_total_deadline(
+    monkeypatch, cleanup_model
+) -> None:
+    model = cleanup_model
+
+    def wait(job, *, timeout):
+        assert job == 777
+        model.calls.append(("wait", timeout))
+        model.now += timeout
+        raise TimeoutError("Windows job still owns 1 process")
+
+    monkeypatch.setattr(win_job, "wait_until_empty", wait)
+    with pytest.raises(
+        TimeoutError,
+        match=r"initial_pids=\(101,\).*escalation_pids=\(101,\).*termination_requested=True",
+    ):
+        win_job.complete_job_custody(777, timeout=1.0)
+    assert model.now == 1.0
+    assert model.calls == [("wait", 0.25), ("terminate", 777), ("wait", 0.75)]
+
+
+def test_completed_wait_cannot_publish_nonempty_accounting(
+    monkeypatch, cleanup_model
+) -> None:
+    monkeypatch.setattr(win_job, "wait_until_empty", lambda _job, *, timeout: None)
+    with pytest.raises(win_job.WinJobError, match="1 active process"):
+        win_job.complete_job_custody(777, timeout=1.0)
+    assert cleanup_model.calls == []
+
+
+def test_job_membership_query_failure_is_not_reinterpreted_as_empty(
+    monkeypatch, cleanup_model
+) -> None:
+    def failed_members(_job):
+        raise win_job.WinJobError("membership query failed")
+
+    monkeypatch.setattr(win_job, "process_ids", failed_members)
+    with pytest.raises(win_job.WinJobError, match="membership query failed"):
+        win_job.complete_job_custody(777, timeout=1.0)
+    assert cleanup_model.calls == []
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+def test_cleanup_requires_finite_positive_timeout(timeout) -> None:
+    with pytest.raises(ValueError, match="finite and positive"):
+        win_job.complete_job_custody(777, timeout=timeout)
 
 
 def test_job_accounting_payload_serializes_cpu_and_page_fault_totals() -> None:

@@ -55,7 +55,7 @@ prefixes = [
     "is", "string_eq", "eq", "ne", "lt", "le", "gt", "ge",
     "missing", "pending", "not_implemented", "ellipsis",
     "is_truthy", "not", "is_callable", "is_generator",
-    "context_", "code_", "trace_", "frame_locals_set",
+    "context_", "code_", "trace_", "frame_", "super_from_frame",
     "runtime_init", "runtime_shutdown", "sys_set_version_info",
     "print_obj", "print_newline",
     "profile_",

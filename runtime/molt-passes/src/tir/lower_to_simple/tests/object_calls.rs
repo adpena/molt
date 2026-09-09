@@ -48,6 +48,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         param_types: Some(vec!["i64".into()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 
@@ -613,6 +614,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         param_types: Some(vec!["i64".into()]),
         source_file: None,
         is_extern: false,
+        codegen_partition: false,
         execution_context: Default::default(),
     };
 

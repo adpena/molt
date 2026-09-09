@@ -5,6 +5,7 @@ _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
 _OPERAND_INDEPENDENT_RESULT_TYPES = {
+    "operand",
     "i64",
     "f64",
     "bool",
@@ -197,6 +198,7 @@ _REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
     "const_int_not_inline_safe": "ConstIntNotInlineSafe",
 }
 _REPR_PROJECTABLE_BOOL_RESULT_RULES = {
+    "comparison_operands": "ComparisonOperands",
     "always": "Always",
     "result1": "ResultOne",
     "all_operands_bool": "AllOperandsBool",

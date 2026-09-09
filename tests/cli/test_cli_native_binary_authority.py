@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
-from molt.cli import native_binary
+from molt.cli import native_binary, build_results
+from molt.cli import native_link_plan
+from tests.native_artifact_fixtures import (
+    elf_header,
+    pe_header,
+    macho_header,
+    fat_macho,
+)
 
 _NATIVE_BINARY_NAMES = (
     "_NativeBinaryInvalid",
@@ -39,55 +46,76 @@ def test_cli_native_binary_authority_is_single_home() -> None:
         assert marker not in cli_source
 
 
-def _write_binary(tmp_path: Path, name: str, header: bytes) -> None:
-    (tmp_path / name).write_bytes(header + b"\x00" * 16)
-
-
 @pytest.mark.parametrize(
-    ("name", "header", "target"),
+    "payload,target",
     [
-        ("app.macho", bytes((0xCF, 0xFA, 0xED, 0xFE)), "aarch64-apple-darwin"),
-        ("app.elf", b"\x7fELF", "x86_64-unknown-linux-gnu"),
-        ("app.exe", b"MZ\x00\x00", "x86_64-pc-windows-msvc"),
+        (macho_header(cpu=0x0100000C), "aarch64-apple-darwin"),
+        (elf_header(), "x86_64-unknown-linux-gnu"),
+        (pe_header(), "x86_64-pc-windows-msvc"),
+        (elf_header(machine=243), "riscv64gc-unknown-linux-gnu"),
+        (elf_header(machine=22, endian=">"), "s390x-unknown-linux-gnu"),
+        (elf_header(machine=183, endian=">"), "aarch64_be-unknown-linux-gnu"),
+        (elf_header(bits=32), "x86_64-unknown-linux-gnux32"),
+        (macho_header(cpu=0x0200000C), "aarch64_32-apple-darwin"),
     ],
 )
-def test_native_binary_validation_accepts_target_object_magic(
-    tmp_path, name: str, header: bytes, target: str
+def test_native_binary_validation_admits_complete_target_header(
+    tmp_path: Path, payload: bytes, target: str
 ) -> None:
-    _write_binary(tmp_path, name, header)
-
-    native_binary._validate_native_binary_format(tmp_path / name, target)
+    binary = tmp_path / "app"
+    binary.write_bytes(payload)
+    native_binary._validate_native_binary_format(binary, target)
+    native_binary.validate_native_binary_architecture(binary, target)
 
 
 def test_native_binary_validation_rejects_wrong_target_object_magic(tmp_path) -> None:
-    _write_binary(tmp_path, "not-windows.exe", b"\x7fELF")
-
-    with pytest.raises(native_binary._NativeBinaryInvalid, match="PE/COFF"):
-        native_binary._validate_native_binary_format(
-            tmp_path / "not-windows.exe",
-            "x86_64-pc-windows-msvc",
-        )
+    binary = tmp_path / "not-windows.exe"
+    binary.write_bytes(elf_header())
+    with pytest.raises(native_binary._NativeBinaryInvalid, match="expected coff"):
+        native_binary._validate_native_binary_format(binary, "x86_64-pc-windows-msvc")
 
 
-def test_native_binary_validation_rejects_truncated_outputs(tmp_path) -> None:
+@pytest.mark.parametrize("payload", [b"", b"MZ", b"\x7fELF", b"\xcf\xfa\xed\xfe"])
+def test_native_binary_validation_rejects_truncated_outputs(tmp_path, payload) -> None:
     binary = tmp_path / "truncated"
-    binary.write_bytes(b"MZ")
-
+    binary.write_bytes(payload)
     with pytest.raises(native_binary._NativeBinaryInvalid, match="truncated"):
-        native_binary._validate_native_binary_format(
-            binary,
-            "x86_64-pc-windows-msvc",
-        )
+        native_binary._validate_native_binary_format(binary, "x86_64-pc-windows-msvc")
 
 
 def test_native_binary_validation_identifies_32_bit_macho_corruption(tmp_path) -> None:
-    _write_binary(tmp_path, "corrupt-macho", bytes((0xCE, 0xFA, 0xED, 0xFE)))
+    binary = tmp_path / "corrupt-macho"
+    binary.write_bytes(macho_header(cpu=12, bits=32))
+    with pytest.raises(
+        native_binary._NativeBinaryInvalid, match="runtime architecture"
+    ):
+        native_binary._validate_native_binary_format(binary, "aarch64-apple-darwin")
 
-    with pytest.raises(native_binary._NativeBinaryInvalid, match="32-bit magic"):
-        native_binary._validate_native_binary_format(
-            tmp_path / "corrupt-macho",
-            "aarch64-apple-darwin",
-        )
+
+@pytest.mark.parametrize(
+    "payload,target",
+    [
+        (macho_header(cpu=0x0100000C, subtype=2), "aarch64-apple-darwin"),
+        (macho_header(subtype=8), "x86_64-apple-darwin"),
+        (macho_header(subtype=0x80000003), "x86_64-apple-darwin"),
+        (pe_header(machine=0xA641), "aarch64-pc-windows-msvc"),
+        (pe_header(dll=True), "x86_64-pc-windows-msvc"),
+        (elf_header(kind=1), "x86_64-unknown-linux-gnu"),
+        (elf_header(machine=183), "aarch64_be-unknown-linux-gnu"),
+        (elf_header(), "x86_64-unknown-linux-gnux32"),
+        (
+            fat_macho((macho_header(), macho_header(cpu=0x0100000C))),
+            "x86_64-apple-darwin",
+        ),
+    ],
+)
+def test_release_exact_target_never_accepts_wrong_kind_abi_or_subtype(
+    tmp_path, payload, target
+) -> None:
+    binary = tmp_path / "candidate"
+    binary.write_bytes(payload)
+    with pytest.raises(native_binary._NativeBinaryInvalid):
+        native_binary.validate_native_binary_architecture(binary, target)
 
 
 def test_expected_binary_format_for_explicit_targets() -> None:
@@ -104,3 +132,70 @@ def test_expected_binary_format_for_explicit_targets() -> None:
         == "pe"
     )
     assert native_binary._target_is_host_executable("wasm32-wasi") is False
+    for target in (
+        "x86_64-unknown-notlinux-gnu",
+        "x86_64-unknown-linux-windows",
+        "aarch64-apple-ios",
+    ):
+        with pytest.raises(RuntimeError):
+            native_binary._expected_binary_format_for_target(target)
+
+
+def test_smoke_probe_requires_exact_host_shape_and_does_not_assume_rosetta(monkeypatch):
+    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
+    monkeypatch.setattr(native_link_plan.platform, "machine", lambda: "arm64")
+    assert native_binary._target_is_host_executable("aarch64-apple-darwin")
+    assert not native_binary._target_is_host_executable("x86_64-apple-darwin")
+    assert not native_binary._target_is_host_executable("aarch64_32-apple-darwin")
+
+
+def test_darwin_post_link_hook_uses_same_bounded_header_authority(
+    tmp_path, monkeypatch
+):
+    binary = tmp_path / "image"
+    binary.write_bytes(macho_header())
+    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
+    monkeypatch.setattr(native_link_plan.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(Path, "read_bytes", lambda path: pytest.fail("whole-file read"))
+    assert native_binary._darwin_binary_magic_error(binary) is None
+    binary.write_bytes(macho_header(cpu=0x0100000C))
+    assert native_binary._darwin_binary_magic_error(binary) is None
+    binary.write_bytes(elf_header())
+    assert "expected macho" in native_binary._darwin_binary_magic_error(binary)
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_actual_native_finalization_consumer_rejects_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid: bool
+) -> None:
+    candidate = tmp_path / "candidate"
+    output = tmp_path / "published"
+    payload = bytes(elf_header(kind=2 if valid else 1))
+    candidate.write_bytes(payload)
+    output.write_bytes(b"previous-generation")
+    published = []
+    monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
+
+    def publish(source: Path, destination: Path, *, codesign: bool) -> None:
+        assert codesign
+        published.append(source)
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(build_results, "_atomic_copy_file", publish)
+    error = build_results._finalize_native_link_candidate(
+        candidate=candidate,
+        output_binary=output,
+        target_triple="x86_64-unknown-linux-gnu",
+        strip=False,
+    )
+    if valid:
+        assert error is None
+        assert published == [candidate]
+        assert output.read_bytes() == payload
+        assert not candidate.exists()
+    else:
+        assert "native candidate validation failed" in error
+        assert not published
+        assert output.read_bytes() == b"previous-generation"
+        assert candidate.read_bytes() == payload

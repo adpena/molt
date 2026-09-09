@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence, cast
@@ -15,7 +16,6 @@ from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
-    _shared_stdlib_cache_matches_key_locked,
     _stage_shared_stdlib_object_for_link,
 )
 from molt.cli.backend_execution import _backend_bin_path
@@ -37,10 +37,12 @@ from molt.cli.native_binary import (
 )
 from molt.cli.native_link_command import (
     _build_native_link_plan,
-    _build_native_link_driver_command,
-    _windows_coff_library_command,
 )
-from molt.cli.native_link_deps import _native_target_is_windows
+from molt.cli.native_link_plan import (
+    NativeArtifactKind,
+    resolve_native_target_spec,
+    validate_native_object_artifact,
+)
 from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
@@ -129,120 +131,27 @@ def _native_link_execution_command(
     return result
 
 
-def _run_native_partial_link_command(
-    *,
-    input_objects: Sequence[Path],
-    output_path: Path,
-    json_output: bool,
-    link_timeout: float | None,
-    target_triple: str | None = None,
-    sysroot_path: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    if _native_target_is_windows(target_triple):
-        link_cmd = _windows_coff_library_command(
-            input_objects=input_objects,
-            output_path=output_path,
-        )
-        return _run_native_link_command(
-            link_cmd=link_cmd,
-            json_output=json_output,
-            link_timeout=link_timeout,
-        )
-    primary_object = input_objects[0] if input_objects else None
-    link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
-        output_obj=primary_object,
-        target_triple=target_triple,
-        sysroot_path=None,
-        profile="dev",
-    )
-    link_cmd = [arg for arg in link_cmd if not arg.startswith("-fuse-ld=")]
-    link_cmd.extend(
-        ["-Wl,-r", "-o", str(output_path), *[str(path) for path in input_objects]]
-    )
-    return _run_native_link_command(
-        link_cmd=link_cmd,
-        json_output=json_output,
-        link_timeout=link_timeout,
-    )
-
-
 def _prepare_native_object_artifact(
     *,
     output_artifact: Path,
-    artifacts_root: Path,
     stdlib_obj_path: Path | None,
-    stdlib_object_cache_key: str | None,
-    stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
     json_output: bool,
-    link_timeout: float | None,
     target_triple: str | None = None,
-    sysroot_path: Path | None = None,
-) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, _CliFailure | None]:
-    if stdlib_obj_path is None or not stdlib_obj_path.exists():
-        return output_artifact, None, None
-    if not _shared_stdlib_cache_matches_key_locked(
-        stdlib_obj_path,
-        stdlib_object_cache_key,
-        stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
-    ):
-        return (
-            None,
-            None,
-            _fail(
-                "Shared stdlib cache mismatch before native object link",
-                json_output,
-                command="build",
-            ),
+) -> tuple[Path | None, _CliFailure | None]:
+    if stdlib_obj_path is not None:
+        return None, _fail(
+            "Native object output cannot include a separately compiled stdlib; "
+            "--emit obj requires one compilation unit.",
+            json_output,
+            command="build",
         )
-    merged_output = artifacts_root / (
-        f".{output_artifact.stem}_linked."
-        f"{os.getpid()}.{uuid.uuid4().hex}{output_artifact.suffix}"
-    )
     try:
-        link_process = _run_native_partial_link_command(
-            input_objects=[output_artifact, stdlib_obj_path],
-            output_path=merged_output,
-            json_output=json_output,
-            link_timeout=link_timeout,
-            target_triple=target_triple,
-            sysroot_path=sysroot_path,
+        validate_native_object_artifact(
+            output_artifact, resolve_native_target_spec(target_triple)
         )
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        return (
-            None,
-            None,
-            _fail(
-                "Native object partial link timed out",
-                json_output,
-                command="build",
-            ),
-        )
-    except RuntimeError as exc:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        return None, None, _fail(str(exc), json_output, command="build")
-    if link_process.returncode != 0:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        err = (link_process.stderr or "").strip() or (link_process.stdout or "").strip()
-        msg = "Native object partial link failed"
-        if err:
-            msg = f"{msg}: {err}"
-        return None, link_process, _fail(msg, json_output, command="build")
-    try:
-        os.replace(merged_output, output_artifact)
-    finally:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-    return output_artifact, link_process, None
+    except (OSError, RuntimeError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    return output_artifact, None
 
 
 def _darwin_link_validation_failure(
@@ -315,33 +224,26 @@ def _prepare_native_link(
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
-        if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key_locked(
-            stdlib_obj_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-        ):
+        # Admission and snapshotting are one locked transaction. A prior probe
+        # cannot authorize a later read, even when the cache lives in this build.
+        try:
+            link_stdlib_obj = _stage_shared_stdlib_object_for_link(
+                stdlib_obj_path,
+                stdlib_object_cache_key=stdlib_object_cache_key,
+                stdlib_object_manifest=stdlib_object_manifest,
+                stdlib_module_symbols=stdlib_module_symbols,
+                artifacts_root=artifacts_root,
+                target_triple=target_triple,
+            )
+        except OSError as exc:
+            # Built-in formatting preserves staging cleanup notes at the real
+            # text/JSON consumer boundary without expanding a traceback tree.
+            detail = "".join(traceback.format_exception_only(exc)).rstrip()
             return None, _fail(
-                "Shared stdlib cache key mismatch before native link",
+                f"Failed to stage shared stdlib archive for native link: {detail}",
                 json_output,
                 command="build",
             )
-        if stdlib_obj_path.exists() and stdlib_obj_path.parent != artifacts_root:
-            try:
-                staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
-                    stdlib_obj_path,
-                    stdlib_object_cache_key=stdlib_object_cache_key,
-                    stdlib_object_manifest=stdlib_object_manifest,
-                    stdlib_module_symbols=stdlib_module_symbols,
-                    artifacts_root=artifacts_root,
-                )
-            except OSError as exc:
-                return None, _fail(
-                    f"Failed to stage shared stdlib object for native link: {exc}",
-                    json_output,
-                    command="build",
-                )
-            link_stdlib_obj = staged_stdlib_obj
     try:
         staged_external_native_artifacts = (
             _stage_external_package_native_artifacts_for_build(
@@ -387,6 +289,8 @@ def _prepare_native_link(
     try:
         link_plan = _build_native_link_plan(
             output_obj=output_obj,
+            output_kind=NativeArtifactKind.ARCHIVE,
+            stdlib_kind=NativeArtifactKind.ARCHIVE,
             stub_path=stub_path,
             runtime_lib=resolved_runtime_lib,
             output_binary=output_binary,

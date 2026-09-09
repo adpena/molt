@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
@@ -322,6 +323,7 @@ def _install_extension_object_symbol_facts(
                     else ()
                 ),
                 artifact_bytes=artifact_bytes if is_wasm else None,
+                artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
             )
 
         del nm_command, target_triple
@@ -497,7 +499,11 @@ def _write_meson_source_plan_project(
     *,
     linked_static_library: bool = False,
     aggregate_static_library: bool = False,
+    static_library_suffix: str = ".a",
+    nested_linker: bool = False,
 ) -> Path:
+    if static_library_suffix not in {".a", ".lib"}:
+        raise ValueError("unsupported fixture archive suffix")
     src_dir = project_root / "pkg"
     include_dir = src_dir / "include"
     generated_dir = project_root / "build" / "generated"
@@ -711,6 +717,25 @@ def _write_meson_source_plan_project(
                 },
             ]
         )
+    if nested_linker:
+        intro_targets[0]["linker_parameters"] = []
+        intro_targets[0]["target_sources"].append(
+            {"linker": ["lld-link"], "parameters": linker_parameters}
+        )
+
+    # Project the same fixture graph across archive output conventions.
+    def archive_names(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace(".a.p/", static_library_suffix + ".p/").removesuffix(
+                ".a"
+            ) + (static_library_suffix if value.endswith(".a") else "")
+        if isinstance(value, list):
+            return [archive_names(item) for item in value]
+        if isinstance(value, dict):
+            return {key: archive_names(item) for key, item in value.items()}
+        return value
+
+    intro_targets = archive_names(intro_targets)
     intro_path = meson_info_dir / "intro-targets.json"
     intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n")
     compile_commands = [
@@ -793,17 +818,19 @@ def _write_meson_source_plan_project(
             }
         )
         (project_root / "build" / "build.ninja").write_text(
-            "build pkg/lib_multiarray_umath_mtargets.a: STATIC_LINKER "
-            "pkg/libloops_arithmetic.dispatch.h_baseline.a.p/"
-            "loops_arithmetic.dispatch.c.o\n"
-            "  LINK_ARGS = csrDT\n"
-            "build pkg/lib_simd_mtargets.a: STATIC_LINKER "
-            "pkg/lib_simd.dispatch.h_baseline.a.p/simd.dispatch.c.o\n"
-            "  LINK_ARGS = csrDT\n",
+            (
+                "build pkg/lib_multiarray_umath_mtargets.a: STATIC_LINKER "
+                "pkg/libloops_arithmetic.dispatch.h_baseline.a.p/"
+                "loops_arithmetic.dispatch.c.o\n"
+                "  LINK_ARGS = csrDT\n"
+                "build pkg/lib_simd_mtargets.a: STATIC_LINKER "
+                "pkg/lib_simd.dispatch.h_baseline.a.p/simd.dispatch.c.o\n"
+                "  LINK_ARGS = csrDT\n"
+            ).replace(".a", static_library_suffix),
             encoding="utf-8",
         )
     (project_root / "build" / "compile_commands.json").write_text(
-        json.dumps(compile_commands, indent=2) + "\n",
+        json.dumps(archive_names(compile_commands), indent=2) + "\n",
         encoding="utf-8",
     )
     (project_root / "pyproject.toml").write_text(
@@ -1637,7 +1664,25 @@ def test_cpython_abi_pyarg_format_parity_masks() -> None:
     assert "PyByteArray_Check" in parser
 
 
-def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("inspection_failure", "json_output"),
+    [
+        (None, False),
+        ("io", False),
+        ("io", True),
+        ("symbols", False),
+        ("symbols", True),
+        ("replacement", False),
+        ("replacement", True),
+    ],
+)
+def test_extension_build_emits_wheel_and_manifest(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    inspection_failure: str | None,
+    json_output: bool,
+) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
     _write_extension_project(project_root)
@@ -1655,15 +1700,58 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         default_init_symbol="PyInit_demoext",
     )
 
+    if inspection_failure is not None:
+        from molt.cli.backend_cache import NativeSymbolInspectionError
+
+        original_inspection = (
+            cli_source_extensions._inspect_source_extension_artifact_symbols
+        )
+
+        def fail_artifact_inspection(
+            path: Path, **kwargs: Any
+        ) -> cli_source_extensions._SourceExtensionArtifactSymbolInspection | None:
+            if not path.name.endswith(".molt.a"):
+                return original_inspection(path, **kwargs)
+            if inspection_failure == "replacement":
+                inspected = original_inspection(path, **kwargs)
+                path.write_bytes(static_archive_bytes() + b"replacement")
+                return inspected
+            if inspection_failure == "symbols":
+                raise NativeSymbolInspectionError(path, ["symbol reader unavailable"])
+            raise OSError("artifact read denied")
+
+        monkeypatch.setattr(
+            cli_source_extensions,
+            "_inspect_source_extension_artifact_symbols",
+            fail_artifact_inspection,
+        )
+
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
         deterministic=False,
         python_version="3.13",
-        json_output=False,
+        json_output=json_output,
         verbose=False,
     )
+    if inspection_failure is not None:
+        assert rc == 2
+        captured = capsys.readouterr()
+        expected = {
+            "symbols": "symbol reader unavailable",
+            "io": "artifact read denied",
+            "replacement": "Extension artifact changed after symbol inspection",
+        }[inspection_failure]
+        if json_output:
+            payload = json.loads(captured.out)
+            assert payload["status"] == "error"
+            assert expected in " ".join(payload["errors"])
+        else:
+            assert expected in captured.err
+        assert not list(out_dir.glob("*.whl"))
+        assert not (out_dir / "extension_manifest.json").exists()
+        return
     assert rc == 0
 
     wheels = sorted(out_dir.glob("*.whl"))
@@ -2499,11 +2587,12 @@ def test_extension_build_derives_module_attr_support_source_closure(
     ndimage_dir = project_root / "pkg" / "ndimage"
     ndimage_dir.mkdir()
     (ndimage_dir / "_filters.py").write_text(
-        "from typing import TYPE_CHECKING\n"
         "from . import _nd_image\n"
         "from . import _ni_docstrings\n"
         "from . import _ni_support\n"
-        "if TYPE_CHECKING:\n"
+        # Runtime imports may mutate module globals, including TYPE_CHECKING.
+        # This fixture needs a proven dead branch, not a spelling assumption.
+        "if False:\n"
         "    from . import _dead_support\n"
         "def gaussian_filter(value):\n"
         "    _ni_docstrings.docfiller(gaussian_filter)\n"
@@ -2588,14 +2677,23 @@ def test_extension_build_derives_module_attr_support_source_closure(
     assert not (out_dir / "pkg" / "ndimage" / "_dead_support.py").exists()
 
 
+@pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
+@pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_follows_linked_static_library_source_closure(
     tmp_path: Path,
+    static_library_suffix: str,
+    nested_linker: bool,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
-    _write_meson_source_plan_project(project_root, linked_static_library=True)
+    _write_meson_source_plan_project(
+        project_root,
+        linked_static_library=True,
+        static_library_suffix=static_library_suffix,
+        nested_linker=nested_linker,
+    )
     commands: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -2665,8 +2763,12 @@ def test_extension_build_follows_linked_static_library_source_closure(
     assert "array__unique_hash" in defined_symbols
 
 
+@pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
+@pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_excludes_linked_static_library(
     tmp_path: Path,
+    static_library_suffix: str,
+    nested_linker: bool,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -2680,8 +2782,13 @@ def test_extension_build_excludes_linked_static_library(
     """
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
-    _write_meson_source_plan_project(project_root, linked_static_library=True)
-    (project_root / "pkg" / "libunique_hash.a").write_bytes(
+    _write_meson_source_plan_project(
+        project_root,
+        linked_static_library=True,
+        static_library_suffix=static_library_suffix,
+        nested_linker=nested_linker,
+    )
+    (project_root / "pkg" / ("libunique_hash" + static_library_suffix)).write_bytes(
         static_archive_bytes(b"unique-hash")
     )
     commands: list[list[str]] = []
@@ -2710,7 +2817,9 @@ def test_extension_build_excludes_linked_static_library(
     rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
-        source_plan_exclude_linked_static_libraries=["libunique_hash.a"],
+        source_plan_exclude_linked_static_libraries=[
+            "libunique_hash" + static_library_suffix
+        ],
         deterministic=False,
         json_output=False,
         verbose=False,
@@ -2741,13 +2850,22 @@ def test_extension_build_excludes_linked_static_library(
     assert "array__unique_hash" not in defined_symbols
 
 
+@pytest.mark.parametrize("static_library_suffix", [".a", ".lib"])
+@pytest.mark.parametrize("nested_linker", [False, True])
 def test_extension_build_follows_meson_aggregate_static_library_members(
     tmp_path: Path,
+    static_library_suffix: str,
+    nested_linker: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
-    _write_meson_source_plan_project(project_root, aggregate_static_library=True)
+    _write_meson_source_plan_project(
+        project_root,
+        aggregate_static_library=True,
+        static_library_suffix=static_library_suffix,
+        nested_linker=nested_linker,
+    )
     commands: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -6879,3 +6997,450 @@ def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _adversarial_meson_fold_fixture(
+    build_root: Path,
+    suffix: str = ".a",
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Metadata only: no compiler, linker, or archive-content mock is involved."""
+    local: dict[str, Any] = {
+        "id": "local.library",
+        "name": "same",
+        "type": "static library",
+        "filename": str(build_root / "local" / f"libsame{suffix}"),
+        "target_sources": [{"language": "c", "sources": ["local.c"]}],
+    }
+    other: dict[str, Any] = {
+        "id": "other.library",
+        "name": "same",
+        "type": "static library",
+        "filename": str(build_root / "other" / f"libsame{suffix}"),
+        "target_sources": [{"language": "c", "sources": ["other.c"]}],
+    }
+    primary: dict[str, Any] = {
+        "id": "extension",
+        "name": "extension",
+        "type": "shared module",
+        "filename": str(build_root / "extension.so"),
+        "target_sources": [],
+        "linker_parameters": [],
+    }
+    return primary, local, other
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib"])
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_meson_fold_exact_output_beats_same_basename(
+    tmp_path: Path,
+    suffix: str,
+    separator: str,
+) -> None:
+    primary, local, other = _adversarial_meson_fold_fixture(tmp_path, suffix)
+    primary["linker_parameters"] = [f"local{separator}libsame{suffix}", "-lm", "-lm"]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local, other],
+        build_root=tmp_path,
+    )
+    assert [target["id"] for target in projection.targets] == ["local.library"]
+    assert projection.link_args == ("-lm", "-lm")
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib"])
+def test_meson_fold_ambiguous_bare_archive_fails_closed(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    primary, local, other = _adversarial_meson_fold_fixture(tmp_path, suffix)
+    primary["linker_parameters"] = [f"libsame{suffix}"]
+    with pytest.raises(ValueError, match="(?i)ambig"):
+        cli_source_extensions._meson_static_library_projection(
+            primary_target=primary,
+            payload=[primary, local, other],
+            build_root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize("suffix", [".a", ".lib"])
+def test_meson_fold_explicit_external_path_cannot_alias_declared_basename(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path, suffix)
+    external = tmp_path / "external" / f"libsame{suffix}"
+    external.parent.mkdir()
+    external.write_bytes(static_archive_bytes(b"external"))
+    primary["linker_parameters"] = [f"external/libsame{suffix}"]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local],
+        build_root=tmp_path,
+    )
+    assert not projection.targets
+    assert projection.link_args == (f"external/libsame{suffix}",)
+
+
+def test_meson_fold_nested_link_operands_preserve_scope_and_repeats(
+    tmp_path: Path,
+) -> None:
+    primary, local, other = _adversarial_meson_fold_fixture(tmp_path)
+    primary.pop("linker_parameters")
+    primary["target_sources"] = [
+        {"language": "c", "sources": ["main.c"], "parameters": ["other/libsame.a"]},
+        {
+            "linker": ["cc"],
+            "parameters": [
+                "-Wl,--start-group",
+                "-Wl,--whole-archive",
+                "local/libsame.a",
+                "-Wl,--no-whole-archive",
+                "-lm",
+                "-lm",
+                "-Wl,--end-group",
+            ],
+        },
+    ]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local, other],
+        build_root=tmp_path,
+    )
+    assert [target["id"] for target in projection.targets] == ["local.library"]
+    assert set(projection.forced_target_ids) == {"local.library"}
+    assert projection.link_args == (
+        "-Wl,--start-group",
+        "-Wl,--whole-archive",
+        "-Wl,--no-whole-archive",
+        "-lm",
+        "-lm",
+        "-Wl,--end-group",
+    )
+
+
+@pytest.mark.parametrize(
+    "operand",
+    [
+        "/WHOLEARCHIVE:local/libsame.lib",
+        "-Wl,/WHOLEARCHIVE:local/libsame.lib",
+        "-Wl,-force_load,local/libsame.lib",
+    ],
+)
+def test_meson_fold_forced_operand_preserves_member_root_custody(
+    tmp_path: Path,
+    operand: str,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path, ".lib")
+    primary["linker_parameters"] = [operand]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local],
+        build_root=tmp_path,
+    )
+    assert [target["id"] for target in projection.targets] == ["local.library"]
+    assert set(projection.forced_target_ids) == {"local.library"}
+    assert projection.link_args == ()
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "--undefined=registration",
+        "-Wl,--undefined=registration",
+        "/INCLUDE:registration",
+    ],
+)
+def test_meson_fold_retained_symbol_is_forwarded_not_erased(
+    tmp_path: Path,
+    directive: str,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path)
+    primary["linker_parameters"] = [directive, "local/libsame.a"]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local],
+        build_root=tmp_path,
+    )
+    assert [target["id"] for target in projection.targets] == ["local.library"]
+    assert projection.link_args == (directive,)
+
+
+@pytest.mark.parametrize("force_folded", [False, True])
+@pytest.mark.parametrize(
+    "external_operand",
+    [
+        "external/libconsumer.a",
+        "-lconsumer",
+        "/DEFAULTLIB:consumer.lib",
+    ],
+)
+def test_meson_fold_preserves_external_operands_for_typed_custody_validation(
+    tmp_path: Path,
+    force_folded: bool,
+    external_operand: str,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path)
+    external = tmp_path / "external" / "libconsumer.a"
+    external.parent.mkdir()
+    external.write_bytes(static_archive_bytes(b"consumer"))
+    folded = (
+        ["-Wl,--whole-archive", "local/libsame.a", "-Wl,--no-whole-archive"]
+        if force_folded
+        else ["local/libsame.a"]
+    )
+    primary["linker_parameters"] = [
+        "-Wl,--start-group",
+        *folded,
+        external_operand,
+        "-Wl,--end-group",
+    ]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local],
+        build_root=tmp_path,
+    )
+    assert set(projection.forced_target_ids) == (
+        {"local.library"} if force_folded else set()
+    )
+    assert projection.lazy_static_target_ids == (
+        () if force_folded else ("local.library",)
+    )
+    assert [target["id"] for target in projection.targets] == ["local.library"]
+    assert projection.link_args == (
+        "-Wl,--start-group",
+        *(("-Wl,--whole-archive", "-Wl,--no-whole-archive") if force_folded else ()),
+        external_operand,
+        "-Wl,--end-group",
+    )
+
+
+def test_meson_fold_contradictory_ordered_link_views_fail_closed(
+    tmp_path: Path,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path)
+    primary["linker_parameters"] = ["local/libsame.a", "-lm", "-ldl"]
+    primary["target_sources"] = [
+        {
+            "linker": ["cc"],
+            "parameters": ["local/libsame.a", "-ldl", "-lm"],
+        }
+    ]
+    with pytest.raises(ValueError):
+        cli_source_extensions._meson_static_library_projection(
+            primary_target=primary,
+            payload=[primary, local],
+            build_root=tmp_path,
+        )
+
+
+def test_meson_fold_import_library_output_has_no_static_source_authority(
+    tmp_path: Path,
+) -> None:
+    primary, local, _other = _adversarial_meson_fold_fixture(tmp_path, ".lib")
+    local["type"] = "shared library"
+    primary["linker_parameters"] = ["local/libsame.lib"]
+    projection = cli_source_extensions._meson_static_library_projection(
+        primary_target=primary,
+        payload=[primary, local],
+        build_root=tmp_path,
+    )
+    assert not projection.targets
+    assert projection.link_args == ("local/libsame.lib",)
+
+
+def _adversarial_rooted_meson_plan(project_root: Path, root_kind: str) -> Path:
+    intro_path = _write_meson_source_plan_project(
+        project_root, linked_static_library=True
+    )
+    targets: list[dict[str, Any]] = json.loads(intro_path.read_text())
+    # Root custody is independent of the shared fixture's cleaned-source case.
+    for target in targets[1:]:
+        for group in target.get("target_sources", []):
+            group["generated_sources"] = []
+    original_args: list[str] = targets[0]["linker_parameters"]
+    if root_kind == "whole-archive":
+        targets[0]["linker_parameters"] = [
+            f"/WHOLEARCHIVE:{argument}" for argument in original_args
+        ]
+    elif root_kind == "retained-symbol":
+        targets[0]["linker_parameters"] = [
+            "/INCLUDE:array__unique_hash",
+            *original_args,
+        ]
+    elif root_kind == "direct-symbol":
+        pyproject = project_root / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text() + "\n[[tool.molt.extension.callable_exports]]\n"
+            'module = "pkg.demoext"\n'
+            'name = "unique_hash"\n'
+            'binding = "direct_symbol"\n'
+            'abi = "molt.object_call_v1"\n'
+            'symbol = "array__unique_hash"\n'
+            'effects = ["read"]\n'
+            "deterministic = true\n",
+            encoding="utf-8",
+        )
+    elif root_kind != "lazy":
+        raise AssertionError(f"unsupported root fixture: {root_kind}")
+    intro_path.write_text(json.dumps(targets), encoding="utf-8")
+    return intro_path
+
+
+def _adversarial_meson_append_external_operand(intro_path: Path, operand: str) -> None:
+    external = intro_path.parent.parent / "external" / "libconsumer.a"
+    external.parent.mkdir()
+    external.write_bytes(static_archive_bytes(b"consumer"))
+    targets: list[dict[str, Any]] = json.loads(intro_path.read_text(encoding="utf-8"))
+    targets[0]["linker_parameters"].append(operand)
+    intro_path.write_text(json.dumps(targets), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("root_kind", "external_operand"),
+    [
+        ("whole-archive", None),
+        ("retained-symbol", None),
+        ("direct-symbol", None),
+        ("whole-archive", "external/libconsumer.a"),
+        ("whole-archive", "/DEFAULTLIB:consumer.lib"),
+    ],
+)
+def test_extension_build_keeps_folded_member_root_not_reachable_from_init(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root_kind: str,
+    external_operand: str | None,
+) -> None:
+    project_root = tmp_path / "meson_rooted"
+    project_root.mkdir()
+    intro_path = _adversarial_rooted_meson_plan(project_root, root_kind)
+    if external_operand is not None:
+        _adversarial_meson_append_external_operand(intro_path, external_operand)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        _materialize_fake_extension_command(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext"}, {"helper_generated"}),
+            "helper_generated": ({"helper_generated"}, set()),
+            "unique": ({"array__unique_hash"}, set()),
+        },
+    )
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        target="x86_64-pc-windows-msvc",
+        json_output=False,
+        verbose=False,
+    )
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["build"]["linked_object_count"] == 3
+    if external_operand is not None:
+        assert manifest["link_requirements"]["items"]
+    assert any(
+        "array__unique_hash" in obj["defined_symbols"]
+        for obj in manifest["object_closure"]["objects"]
+    )
+    if root_kind == "direct-symbol":
+        assert any(
+            export["binding"] == "direct_symbol"
+            and export["symbol"] == "array__unique_hash"
+            for export in manifest["callable_exports"]
+        )
+    archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
+    assert any("2_unique.o" in part for part in archive_cmd)
+
+
+@pytest.mark.parametrize(
+    ("external_operand", "target"),
+    [
+        ("external/libconsumer.a", "x86_64-pc-windows-msvc"),
+        ("-lconsumer", "x86_64-unknown-linux-gnu"),
+        ("/DEFAULTLIB:consumer.lib", "x86_64-pc-windows-msvc"),
+    ],
+)
+def test_extension_build_rejects_lazy_fold_with_typed_external_provider_before_compile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    external_operand: str,
+    target: str,
+) -> None:
+    project_root = tmp_path / "meson_lazy_external"
+    project_root.mkdir()
+    intro_path = _adversarial_rooted_meson_plan(project_root, "lazy")
+    _adversarial_meson_append_external_operand(intro_path, external_operand)
+    commands: list[list[str]] = []
+
+    def reject_compile(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        if "-c" in cmd:
+            raise AssertionError(
+                "opaque-provider custody must be rejected before compilation"
+            )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", reject_compile)
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        target=target,
+        json_output=False,
+        verbose=False,
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert (
+        "Source-plan lazy static targets lack external member undefined-symbol custody "
+        "for typed link requirements: pkg.libunique_hash"
+    ) in captured.err
+    assert not commands
+    assert not (out_dir / "extension_manifest.json").exists()
+
+
+def test_meson_force_member_target_gate_rejects_lazy_elf_publication(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "meson_elf"
+    project_root.mkdir()
+    intro_path = _adversarial_rooted_meson_plan(project_root, "whole-archive")
+    plan, errors = (
+        cli_source_extensions._load_meson_intro_targets_source_extension_plan(
+            plan_path=intro_path,
+            project_root=project_root,
+            module_name="pkg.demoext",
+            selector="pkg.demoext",
+            source_root=".",
+            build_root="build",
+        )
+    )
+    assert not errors
+    assert plan is not None
+    assert any(unit.force_include for unit in plan.compile_units)
+    errors = cli_source_extensions._validate_source_extension_build_plan_target(
+        plan,
+        target_triple="x86_64-unknown-linux-gnu",
+    )
+    assert any("ELF forced source members require" in error for error in errors)
+    assert not cli_source_extensions._validate_source_extension_build_plan_target(
+        plan,
+        target_triple="x86_64-pc-windows-msvc",
+    )

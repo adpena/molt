@@ -212,7 +212,6 @@ def source_plan():
         include_dirs=(),
         compile_args=(),
         link_args=(),
-        folded_static_archives=(),
         digest="b" * 64,
     )
 

@@ -2,8 +2,8 @@
 
 Free functions over ``ast.Module`` and immutable class tables — the
 ``cfg_analysis.py`` house shape.  The static base graph, C3/static-MRO
-linearization, reachability, class-body block-exec decisions, and zero-arg
-``super()`` fold soundness facts are computed outside the lowering generator
+linearization, reachability, and class-body block-exec decisions are computed
+outside the lowering generator
 and are unit-testable on bare facts (the doc 44 §5.5 testability win).
 """
 
@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from typing import Any
 
 from molt.frontend.sema.result import ClassFacts, ClassGraph
@@ -241,7 +240,6 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
         opaque_member_class_names=frozenset(opaque),
         ambiguous_class_names=ambiguous,
         block_exec_class_nodes=frozenset(block_exec_nodes),
-        super_fold_sound_methods_by_class={},
     )
 
 
@@ -359,174 +357,3 @@ def reachable_base_names(
             if base != "<opaque>":
                 reachable_base_names(class_graph, base, _seen)
     return _seen
-
-
-def _local_class_known(class_facts: ClassFacts, class_name: str) -> bool:
-    return (
-        class_name in class_facts.method_names_by_class
-        or class_name in class_facts.attr_names_by_class
-    )
-
-
-def _class_member_state(
-    class_facts: ClassFacts,
-    imported_classes: ClassTable,
-    class_name: str,
-    member: str,
-) -> str | None:
-    """Return ``method``, ``blocked``, ``absent``, or ``None`` for unknown."""
-    if (
-        class_name in class_facts.ambiguous_class_names
-        or class_name in class_facts.opaque_member_class_names
-    ):
-        return None
-    if _local_class_known(class_facts, class_name):
-        method_names = class_facts.method_names_by_class.get(class_name, frozenset())
-        attr_names = class_facts.attr_names_by_class.get(class_name, frozenset())
-        if member in attr_names:
-            return "blocked"
-        if member in method_names:
-            return "method"
-        return "absent"
-
-    info = imported_classes.get(class_name)
-    if info is None:
-        return None
-    methods = info.get("methods", {})
-    class_attrs = info.get("class_attrs", {})
-    if member in class_attrs:
-        return "blocked"
-    if member in methods:
-        return "method"
-    return "absent"
-
-
-def static_method_owner_after(
-    class_facts: ClassFacts,
-    imported_classes: ClassTable,
-    mro: Sequence[str],
-    start: str,
-    method: str,
-) -> str | None:
-    """Return the first class defining ``method`` strictly after ``start``.
-
-    This mirrors ``super(start, ...).method`` resolution for the static
-    zero-arg-super fold. Missing class metadata and non-method class attribute
-    interposition are fail-closed because either could change runtime lookup.
-    """
-    mro_names = list(mro)
-    if start not in mro_names:
-        return None
-    for name in mro_names[mro_names.index(start) + 1 :]:
-        if name == "object":
-            return None
-        state = _class_member_state(class_facts, imported_classes, name, method)
-        if state is None or state == "blocked":
-            return None
-        if state == "method":
-            return name
-    return None
-
-
-def visible_subclasses_of(
-    class_graph: ClassGraph,
-    class_name: str,
-    classes: ClassTable,
-) -> list[str] | None:
-    """Return visible subclasses of ``class_name``, or ``None`` if uncertain."""
-    subclasses: list[str] = []
-    for other in class_graph.bases_by_class:
-        if other == class_name:
-            continue
-        mro = static_mro_names(class_graph, classes, other)
-        if mro is None:
-            if class_name in reachable_base_names(class_graph, other):
-                return None
-            continue
-        if class_name in mro:
-            subclasses.append(other)
-    return subclasses
-
-
-def super_fold_is_sound(
-    class_name: str,
-    method: str,
-    *,
-    class_facts: ClassFacts,
-    imported_classes: ClassTable,
-    class_graph: ClassGraph,
-    module_name: str | None,
-    entry_module: str | None,
-) -> bool:
-    """Soundness predicate for static zero-arg ``super().method(...)`` folding.
-
-    The static fold is sound only when the class following ``class_name`` that
-    defines ``method`` is identical across ``class_name`` and every visible
-    subclass. Non-entry modules fail closed because downstream subclasses may be
-    invisible to the current compilation unit.
-    """
-    is_entry = module_name == "__main__" or (
-        entry_module is not None and module_name == entry_module
-    )
-    if not is_entry:
-        return False
-    if class_name not in class_graph.bases_by_class:
-        return False
-    own_mro = static_mro_names(class_graph, imported_classes, class_name)
-    if own_mro is None:
-        return False
-    expected_owner = static_method_owner_after(
-        class_facts, imported_classes, own_mro, class_name, method
-    )
-    if expected_owner is None:
-        return False
-    subclasses = visible_subclasses_of(class_graph, class_name, imported_classes)
-    if subclasses is None:
-        return False
-    for sub in subclasses:
-        sub_mro = static_mro_names(class_graph, imported_classes, sub)
-        if sub_mro is None:
-            return False
-        sub_owner = static_method_owner_after(
-            class_facts, imported_classes, sub_mro, class_name, method
-        )
-        if sub_owner != expected_owner:
-            return False
-    return True
-
-
-def class_facts_with_super_fold_sound_methods(
-    *,
-    class_graph: ClassGraph,
-    class_facts: ClassFacts,
-    imported_classes: ClassTable,
-    module_name: str | None,
-    entry_module: str | None,
-) -> ClassFacts:
-    """Return ``class_facts`` with zero-arg-super fold decisions precomputed."""
-    candidate_methods: set[str] = set()
-    for methods in class_facts.method_names_by_class.values():
-        candidate_methods.update(methods)
-    for info in imported_classes.values():
-        candidate_methods.update(info.get("methods", {}).keys())
-
-    sound_by_class: dict[str, frozenset[str]] = {}
-    for class_name in class_graph.bases_by_class:
-        sound_methods = {
-            method
-            for method in candidate_methods
-            if super_fold_is_sound(
-                class_name,
-                method,
-                class_facts=class_facts,
-                imported_classes=imported_classes,
-                class_graph=class_graph,
-                module_name=module_name,
-                entry_module=entry_module,
-            )
-        }
-        sound_by_class[class_name] = frozenset(sound_methods)
-    return replace(
-        class_facts,
-        super_fold_sound_methods_by_class=sound_by_class,
-    )

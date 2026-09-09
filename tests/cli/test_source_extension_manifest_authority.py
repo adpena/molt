@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_manifest_codec import (
     _BUILD_SEQUENCE_FIELDS,
     _OBJECT_SEQUENCE_FIELDS,

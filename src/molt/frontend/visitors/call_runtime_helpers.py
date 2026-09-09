@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-import sys
+from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from typing import (
     TYPE_CHECKING,
 )
@@ -168,7 +168,7 @@ class CallRuntimeHelperMixin(_MixinBase):
     def _emit_locals_dict(self) -> MoltValue:
         if self.current_func_name == "molt_main":
             return self._emit_globals_dict()
-        use_snapshot = sys.version_info >= (3, 13)
+        use_snapshot = self.target_python >= (3, 13)
         if use_snapshot:
             res = MoltValue(self.next_var(), type_hint="dict")
             self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
@@ -388,250 +388,74 @@ class CallRuntimeHelperMixin(_MixinBase):
         return any(isinstance(arg, ast.Starred) for arg in node.args)
 
     def _emit_call_args_builder(self, node: ast.Call) -> MoltValue:
-        items: list[tuple[str, ast.expr, str | None]] = []
-        for arg in node.args:
-            if isinstance(arg, ast.Starred):
-                items.append(("star", arg.value, None))
-            else:
-                items.append(("pos", arg, None))
-        for kw in node.keywords:
-            if kw.arg is None:
-                items.append(("kwstar", kw.value, None))
-            else:
-                items.append(("kw", kw.value, kw.arg))
         callargs = MoltValue(self.next_var(), type_hint="callargs")
-        if not items:
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-            return callargs
-        values: list[MoltValue] = []
-        if not self.is_async():
-            for _, expr, _ in items:
-                val = self.visit(expr)
-                if val is None:
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        pending: dict[int, MoltValue] = {}
+        for step in call_argument_schedule(node):
+            if step.action == "evaluate":
+                # Only values actually live across this suspension need storage.
+                # Consuming each scratch cell clears its retained frame reference.
+                suspends = self.is_async() and self._expr_may_yield(step.expression)
+                builder_cell = (
+                    self._new_scratch_cell(callargs, type_hint="callargs")
+                    if suspends
+                    else None
+                )
+                cells = (
+                    {
+                        index: self._new_scratch_cell(value, type_hint=value.type_hint)
+                        for index, value in pending.items()
+                    }
+                    if suspends
+                    else {}
+                )
+                value = self.visit(step.expression)
+                if value is None:
                     raise FrontendRejection(
                         Diagnostic.OPERAND_VALUE, "Unsupported call argument"
                     )
-                values.append(val)
-        else:
-            yield_flags = [self._expr_may_yield(expr) for _, expr, _ in items]
-            if not any(yield_flags):
-                for _, expr, _ in items:
-                    val = self.visit(expr)
-                    if val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported call argument",
-                        )
-                    values.append(val)
-            else:
-                spills: list[tuple[int, int, str]] = []
-                for idx, (_, expr, _) in enumerate(items):
-                    val = self.visit(expr)
-                    if val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported call argument",
-                        )
-                    values.append(val)
-                    if any(yield_flags[idx + 1 :]):
-                        slot = self._spill_async_value(val)
-                        spills.append((idx, slot, val.type_hint))
-                for idx, slot, hint in spills:
-                    values[idx] = self._reload_async_value(slot, hint)
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-        for (kind, _, name), val in zip(items, values):
-            if kind == "pos":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(kind="CALLARGS_PUSH_POS", args=[callargs, val], result=res)
+                if builder_cell is not None:
+                    callargs = self._consume_scratch_cell(builder_cell)
+                    pending = {
+                        index: self._consume_scratch_cell(cell)
+                        for index, cell in cells.items()
+                    }
+                pending[step.index] = value
+                continue
+            value = pending.pop(step.index)
+            if step.materialization == "tuple":
+                # CALL_FUNCTION_EX consumes a tuple, unlike list accumulation
+                # for mixed stars. The runtime tuple authority owns versioned
+                # length-hint callbacks and exact-tuple identity preservation.
+                value = self._emit_tuple_from_iter(value)
+            args = [callargs, value]
+            if step.action == "kw":
+                if step.name is None:
+                    raise AssertionError("keyword schedule has no name")
+                key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[step.name], result=key))
+                args = [callargs, key, value]
+            kind = {
+                "pos": "CALLARGS_PUSH_POS",
+                "star": "CALLARGS_EXPAND_STAR",
+                "kw": "CALLARGS_PUSH_KW",
+                "kwstar": "CALLARGS_EXPAND_KWSTAR",
+            }[step.action]
+            self.emit(
+                MoltOp(
+                    kind=kind,
+                    args=args,
+                    result=MoltValue(self.next_var(), type_hint="None"),
                 )
-            elif kind == "star":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_STAR",
-                        args=[callargs, val],
-                        result=res,
-                    )
-                )
-            elif kind == "kw":
-                if name is None:
-                    raise FrontendRejection(
-                        Diagnostic.INTERNAL_INVARIANT, "Keyword name is missing"
-                    )
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_KW",
-                        args=[callargs, key_val, val],
-                        result=res,
-                    )
-                )
-            elif kind == "kwstar":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_KWSTAR",
-                        args=[callargs, val],
-                        result=res,
-                    )
-                )
-            else:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT, "Unknown call argument kind"
-                )
+            )
+        if pending:
+            raise AssertionError("call argument schedule left unconsumed values")
         return callargs
 
-    def _emit_print_call_args_builder(self, node: ast.Call) -> tuple[MoltValue, bool]:
-        items: list[tuple[str, ast.expr, str | None]] = []
-        for arg in node.args:
-            if isinstance(arg, ast.Starred):
-                items.append(("star", arg.value, None))
-            else:
-                items.append(("pos", arg, None))
-        for kw in node.keywords:
-            if kw.arg is None:
-                items.append(("kwstar", kw.value, None))
-            else:
-                items.append(("kw", kw.value, kw.arg))
-        callargs = MoltValue(self.next_var(), type_hint="callargs")
-        if not items:
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-            return callargs, False
-        values: list[MoltValue] = []
-        saw_name_error = False
-        if not self.is_async():
-            for _, expr, _ in items:
-                val = self.visit(expr)
-                if val is None:
-                    if isinstance(expr, ast.Name):
-                        exc_val = self._emit_exception_new(
-                            "NameError", f"name '{expr.id}' is not defined"
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="RAISE",
-                                args=[exc_val],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        saw_name_error = True
-                        val = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                    else:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported call argument",
-                        )
-                values.append(val)
-        else:
-            yield_flags = [self._expr_may_yield(expr) for _, expr, _ in items]
-            if not any(yield_flags):
-                for _, expr, _ in items:
-                    val = self.visit(expr)
-                    if val is None:
-                        if isinstance(expr, ast.Name):
-                            exc_val = self._emit_exception_new(
-                                "NameError", f"name '{expr.id}' is not defined"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="RAISE",
-                                    args=[exc_val],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                            saw_name_error = True
-                            val = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                        else:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported call argument",
-                            )
-                    values.append(val)
-            else:
-                spills: list[tuple[int, int, str]] = []
-                for idx, (_, expr, _) in enumerate(items):
-                    val = self.visit(expr)
-                    if val is None:
-                        if isinstance(expr, ast.Name):
-                            exc_val = self._emit_exception_new(
-                                "NameError", f"name '{expr.id}' is not defined"
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="RAISE",
-                                    args=[exc_val],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                            saw_name_error = True
-                            val = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                        else:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported call argument",
-                            )
-                    values.append(val)
-                    if any(yield_flags[idx + 1 :]):
-                        slot = self._spill_async_value(val)
-                        spills.append((idx, slot, val.type_hint))
-                for idx, slot, hint in spills:
-                    values[idx] = self._reload_async_value(slot, hint)
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-        for (kind, _, name), val in zip(items, values):
-            if kind == "pos":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(kind="CALLARGS_PUSH_POS", args=[callargs, val], result=res)
-                )
-            elif kind == "star":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_STAR",
-                        args=[callargs, val],
-                        result=res,
-                    )
-                )
-            elif kind == "kw":
-                if name is None:
-                    raise FrontendRejection(
-                        Diagnostic.INTERNAL_INVARIANT, "Keyword name is missing"
-                    )
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_KW",
-                        args=[callargs, key_val, val],
-                        result=res,
-                    )
-                )
-            elif kind == "kwstar":
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_KWSTAR",
-                        args=[callargs, val],
-                        result=res,
-                    )
-                )
-            else:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT, "Unknown call argument kind"
-                )
-        return callargs, saw_name_error
-
     def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue:
-        items = self._emit_list_from_iter(iterable)
+        constructor = self._emit_builtin_type_value("tuple")
         res = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_FROM_LIST", args=[items], result=res))
+        self.emit(MoltOp(kind="CALL_FUNC", args=[constructor, iterable], result=res))
         return res
 
     def _emit_set_update_from_iter(

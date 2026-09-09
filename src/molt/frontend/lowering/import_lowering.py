@@ -119,7 +119,7 @@ class ImportLoweringMixin(_MixinBase):
         self.local_imported_modules.discard(binding_name)
         if module_name is not None:
             self.imported_modules[binding_name] = module_name
-            if self.current_func_name != "molt_main":
+            if not self._binding_targets_module_namespace(binding_name):
                 self.local_imported_modules.add(binding_name)
         self.imported_module_provenance[binding_name] = (
             provenance
@@ -132,6 +132,36 @@ class ImportLoweringMixin(_MixinBase):
 
     def _clear_imported_module_binding(self, binding_name: str) -> None:
         self._set_imported_module_binding(binding_name, None)
+
+    def _record_import_binding_origin(
+        self, name: str, module_name: str, *, attr_name: str | None = None
+    ) -> None:
+        """Keep lexical and module import projections aligned with storage ownership."""
+        self.imported_names.pop(name, None)
+        self.imported_attr_names.pop(name, None)
+        self.local_imported_names.discard(name)
+        module_owned = self._binding_targets_module_namespace(name)
+        if attr_name is None:
+            self._set_imported_module_binding(name, module_name)
+        else:
+            self.imported_names[name] = module_name
+            self.imported_attr_names[name] = attr_name
+            self._clear_imported_module_binding(name)
+            if not module_owned:
+                self.local_imported_names.add(name)
+        if not module_owned:
+            return
+        self.global_imported_modules.pop(name, None)
+        self.global_imported_module_provenance.pop(name, None)
+        self.global_imported_names.pop(name, None)
+        self.global_imported_attr_names.pop(name, None)
+        self.module_intrinsic_globals.pop(name, None)
+        if attr_name is None:
+            self.global_imported_modules[name] = module_name
+            self.global_imported_module_provenance[name] = frozenset((module_name,))
+        else:
+            self.global_imported_names[name] = module_name
+            self.global_imported_attr_names[name] = attr_name
 
     def _imported_module_alias_target(self, value: ast.AST | None) -> str | None:
         """Resolve exact module identity for an ordinary alias assignment.
