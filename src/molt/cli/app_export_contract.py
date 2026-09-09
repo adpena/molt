@@ -21,6 +21,19 @@ APP_EXPORT_CONTRACT_SCHEMA = 2
 APP_EXPORT_CALL_ABI_SCHEMA = 2
 
 
+def _string_keyed_object(value: object, *, context: str) -> dict[str, object]:
+    """Validate and normalize one JSON object at the untyped input boundary."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{context} must be an object")
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{context} keys must be strings")
+        normalized[key] = item
+    return normalized
+
+
 def _canonical_call_abi() -> dict[str, object]:
     """Return the one browser/WASM app-call boundary ABI.
 
@@ -49,13 +62,13 @@ def _canonical_call_abi() -> dict[str, object]:
 
 def _validated_call_abi(raw_abi: object) -> dict[str, object]:
     expected = _canonical_call_abi()
-    if raw_abi != expected:
+    actual = _string_keyed_object(raw_abi, context="app export contract call_abi")
+    if actual != expected:
         raise ValueError(
             "app export contract call_abi must match the canonical "
             f"{expected['name']} schema {APP_EXPORT_CALL_ABI_SCHEMA} boundary"
         )
-    assert isinstance(raw_abi, Mapping)
-    return dict(raw_abi)
+    return actual
 
 
 def _frontend_resolved_bindings(
@@ -68,10 +81,11 @@ def _frontend_resolved_bindings(
         raise ValueError("backend IR has no functions list for app export custody")
     carriers: list[object] = []
     for index, raw_function in enumerate(raw_functions):
-        if not isinstance(raw_function, Mapping):
-            raise ValueError(f"backend IR function {index} is not an object")
-        if "app_callable_bindings" in raw_function:
-            carriers.append(raw_function["app_callable_bindings"])
+        function = _string_keyed_object(
+            raw_function, context=f"backend IR function {index}"
+        )
+        if "app_callable_bindings" in function:
+            carriers.append(function["app_callable_bindings"])
     if len(carriers) != 1:
         raise ValueError(
             "backend IR must contain exactly one frontend-resolved app callable "
@@ -94,9 +108,9 @@ def _validated_binding_rows(
     seen_names: set[str] = set()
     seen_export_symbols: set[str] = set()
     for index, raw_binding in enumerate(raw_bindings):
-        if not isinstance(raw_binding, Mapping):
-            raise ValueError(f"app export binding {index} must be an object")
-        binding = dict(raw_binding)
+        binding = _string_keyed_object(
+            raw_binding, context=f"app export binding {index}"
+        )
         name = binding.get("name")
         qualified_name = binding.get("qualified_name")
         disposition = binding.get("disposition")
@@ -184,23 +198,26 @@ def build_app_export_contract(
 
 
 def validate_app_export_contract(payload: Mapping[str, object]) -> dict[str, object]:
-    if payload.get("schema") != APP_EXPORT_CONTRACT_SCHEMA:
+    validated = _string_keyed_object(payload, context="app export contract")
+    if validated.get("schema") != APP_EXPORT_CONTRACT_SCHEMA:
         raise ValueError(
             f"app export contract schema must be {APP_EXPORT_CONTRACT_SCHEMA}"
         )
-    registry_digest = payload.get("registry_digest")
+    registry_digest = validated.get("registry_digest")
     if not isinstance(registry_digest, str) or len(registry_digest) != 64:
         raise ValueError("app export contract registry_digest must be SHA-256")
-    entry_module = payload.get("entry_module")
+    entry_module = validated.get("entry_module")
     if not isinstance(entry_module, str) or not entry_module:
         raise ValueError("app export contract entry_module must be non-empty")
-    _validated_call_abi(payload.get("call_abi"))
-    raw_bindings = payload.get("bindings")
+    validated["call_abi"] = _validated_call_abi(validated.get("call_abi"))
+    raw_bindings = validated.get("bindings")
     if not isinstance(raw_bindings, list):
         raise ValueError("app export contract bindings must be a list")
-    _validated_binding_rows(raw_bindings, entry_module=entry_module)
-    supplied_digest = payload.get("contract_digest")
-    unsigned = dict(payload)
+    validated["bindings"] = _validated_binding_rows(
+        raw_bindings, entry_module=entry_module
+    )
+    supplied_digest = validated.get("contract_digest")
+    unsigned = dict(validated)
     unsigned.pop("contract_digest", None)
     expected_digest = _contract_digest(unsigned)
     if supplied_digest != expected_digest:
@@ -208,7 +225,7 @@ def validate_app_export_contract(payload: Mapping[str, object]) -> dict[str, obj
             "app export contract digest mismatch: "
             f"payload has {supplied_digest!r}, expected {expected_digest!r}"
         )
-    return dict(payload)
+    return validated
 
 
 def load_app_export_contract(path: Path) -> dict[str, object]:
@@ -225,13 +242,13 @@ def exported_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
     validated = validate_app_export_contract(contract)
     bindings = validated["bindings"]
     assert isinstance(bindings, list)
-    return tuple(
-        binding["symbol"]
-        for binding in bindings
-        if isinstance(binding, Mapping)
-        and binding.get("disposition") == "export"
-        and isinstance(binding.get("symbol"), str)
-    )
+    exported: list[str] = []
+    for binding in bindings:
+        row = _string_keyed_object(binding, context="validated app export binding")
+        symbol = row.get("symbol")
+        if row.get("disposition") == "export" and isinstance(symbol, str):
+            exported.append(symbol)
+    return tuple(exported)
 
 
 def app_export_call_abi(contract: Mapping[str, object]) -> dict[str, object]:

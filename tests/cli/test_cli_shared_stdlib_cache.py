@@ -36,6 +36,28 @@ BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 
 
+@pytest.fixture(autouse=True)
+def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
+    identity = BACKEND_CACHE.stable_regular_file_identity(
+        Path(sys.executable), label="test symbol reader"
+    )
+
+    @contextmanager
+    def admitted_reader(path, *, label, identity=None):
+        del label
+        assert identity is not None
+        yield path, identity
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_native_symbol_reader_candidate",
+        lambda command: BACKEND_CACHE._NativeSymbolReaderCandidate(
+            tuple(command), executable_identity=identity
+        ),
+    )
+    monkeypatch.setattr(BACKEND_CACHE, "stable_executable_probe", admitted_reader)
+
+
 @pytest.mark.parametrize(
     "matches,actual_key,evicted",
     [(False, "expected", True), (False, "other", False), (True, "expected", False)],
@@ -2654,11 +2676,16 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
 
     assert err is None
     assert output_artifact.exists()
+    reader_identity = BACKEND_CACHE._native_symbol_reader(
+        nm_command=None,
+        target_triple=target_triple,
+    ).cache_identity
     for path in (cache_path, function_cache_path):
         facts = BACKEND_CACHE._read_native_object_symbol_facts(
             path,
             object_digest=cli._sha256_file(path),
             target_triple=target_triple,
+            reader_identity=reader_identity,
         )
         assert facts is not None
         assert facts.defined_functions == {"molt_main"}

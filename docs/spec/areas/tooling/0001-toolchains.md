@@ -39,9 +39,17 @@ manifest release's WebAssembly linker and the pinned WASI sysroot needed by
 Rust workspace truth. `config/llvm_toolchain_releases.toml` owns the wasi-sdk
 release, LLVM compatibility line, URL, byte size, SHA-256, provenance URL, and
 archive root. The action checks the archive size and digest before extraction,
-then verifies headers, libc, VERSION, and exact `wasm-ld` identity before
-projecting `MOLT_WASM_LD`, `MOLT_WASI_SYSROOT`, and `WASI_SYSROOT` to every
-consumer in the job.
+then verifies headers, libc, VERSION, and the exact `wasm-ld` and `llvm-nm`
+identities before projecting `MOLT_WASM_LD`, `MOLT_LLVM_NM`,
+`MOLT_WASI_SYSROOT`, and `WASI_SYSROOT` to every consumer in the job. WASM
+archive inspection consumes only that verified `llvm-nm`; its exact
+version/content receipt is part of persistent symbol-cache identity, with no
+Rust-toolchain or ambient native `nm` fallback.
+
+`MOLT_LLVM_NM` selects one executable, not a shell command. A selected path or
+PATH-resolved name must pass lexical and resolved-content custody before probing;
+the captured executable generation is checked again at execution and cache reuse.
+Quoted paths preserve spaces and native separators without admitting arguments.
 
 Rust via rustup:
 - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`

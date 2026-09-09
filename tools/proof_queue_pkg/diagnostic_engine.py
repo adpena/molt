@@ -28,6 +28,7 @@ QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
     r"proof queue refuses cold-prone single-test Cargo proofs "
     r"\('(?P<filter>[^']+)' under --lib\)"
 )
+QUEUE_POLICY_REJECTION_RE = re.compile(r"^proof queue refuses [^\r\n]+", re.MULTILINE)
 EXECUTION_CUSTODY_FAILURE_RE = re.compile(
     r"proof_queue execution custody: (?P<error>[^\r\n]+)"
 )
@@ -197,25 +198,24 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 )
             )
 
-    if (
-        "proof queue refuses raw `cargo` commands" in log_tail
-        or "proof queue refuses `uv run` commands" in log_tail
-    ):
+    policy_rejection = QUEUE_POLICY_REJECTION_RE.search(log_tail)
+    match = QUEUE_COLD_SINGLE_CARGO_PROOF_RE.search(log_tail)
+    if policy_rejection is not None and match is None:
         diagnostics.append(
             _diagnostic(
                 signal_id="queue-policy-rejection",
                 severity="operator",
                 summary="The queue rejected a noncanonical command before proof execution.",
-                evidence=_last_nonempty_log_line(Path(row["log_path"])) or "",
+                evidence=policy_rejection.group(0),
                 next_action=(
-                    "Resubmit through the queue-native cargo lane or the active "
-                    "uv contract; this row is DX policy evidence, not product proof."
+                    "Correct the rejected command or environment contract named in "
+                    "the evidence, then resubmit the final payload through its typed "
+                    "queue envelope. This row is policy evidence, not product proof."
                 ),
                 scopes=("tools/proof_queue.py", "docs/agent/PROOF_QUEUE.md"),
             )
         )
 
-    match = QUEUE_COLD_SINGLE_CARGO_PROOF_RE.search(log_tail)
     if match is not None:
         diagnostics.append(
             _diagnostic(

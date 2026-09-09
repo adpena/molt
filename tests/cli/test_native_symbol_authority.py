@@ -8,6 +8,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -21,7 +22,25 @@ from tests.native_artifact_fixtures import native_relocatable_object
 
 
 @pytest.fixture(autouse=True)
-def isolated_symbol_cache():
+def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch):
+    identity = cache.stable_regular_file_identity(
+        Path(sys.executable), label="test symbol reader"
+    )
+
+    @contextmanager
+    def admitted_reader(path, *, label, identity=None):
+        del label
+        assert identity is not None
+        yield path, identity
+
+    monkeypatch.setattr(
+        cache,
+        "_native_symbol_reader_candidate",
+        lambda command: cache._NativeSymbolReaderCandidate(
+            tuple(command), executable_identity=identity
+        ),
+    )
+    monkeypatch.setattr(cache, "stable_executable_probe", admitted_reader)
     cache._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     cache._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     yield
@@ -344,20 +363,38 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
         "digest",
     )
     payload = cache._native_object_symbol_facts_payload(
-        object_digest="digest", facts=facts, target_triple=None
+        object_digest="digest",
+        facts=facts,
+        target_triple=None,
+        reader_identity=("llvm-nm",),
     )
     path = cache._native_object_symbol_facts_sidecar_path(artifact)
     path.write_text(json.dumps({**payload, "schema": 3}))
     assert (
         cache._read_native_object_symbol_facts(
-            artifact, object_digest="digest", target_triple=None
+            artifact,
+            object_digest="digest",
+            target_triple=None,
+            reader_identity=("llvm-nm",),
         )
         is None
     )
     path.write_text(json.dumps(payload))
     assert (
         cache._read_native_object_symbol_facts(
-            artifact, object_digest="digest", target_triple=None
+            artifact,
+            object_digest="digest",
+            target_triple=None,
+            reader_identity=("different-llvm-nm",),
+        )
+        is None
+    )
+    assert (
+        cache._read_native_object_symbol_facts(
+            artifact,
+            object_digest="digest",
+            target_triple=None,
+            reader_identity=("llvm-nm",),
         )
         == facts
     )

@@ -178,7 +178,9 @@ inventory; producer-side source remapping is not admitted. Execution metadata is
 parsed once for both content identity and direct-function export checks. Artifact
 inspection is enclosed by stable file/change-time custody, and WASM symbol facts
 are bound to the exact inspected bytes, including when content is restored after
-a transient mutation.
+a transient mutation. Native and WASM object/archive symbol-fact caches also bind
+the ordered reader commands and executable content generations; every invocation
+fences the lexical entrypoint and resolved executable before and after execution.
 
 Candidate journals survive bundle installation and are completed or recovered
 under the candidate-name lock. Shared publication recovery handles both producer
@@ -250,16 +252,23 @@ schema is unchanged by this cut.
 
 The path-only locator runs before proof watches are armed. Native files outside
 environment roots receive exact-file watches, never broad system-directory watches.
-Runtime closure v4 and loaded-dependency policies v2 attest all observed native
-file components and loader-provided virtual contracts, not just runtime-root
-reachability. PE eager imports, ELF `DT_NEEDED` (including lazy symbol binding),
-and Mach-O required/reexport/upward loads remain mandatory. PE delay and Mach-O
-weak/lazy declarations are recorded separately with their importer and kind;
-a matching loaded basename never proves that importer's optional binding.
-Optional targets already in the census retain independent byte custody, without
-invented dependency edges. Native file nodes are allocated in loader-name order,
-independent of absolute installation roots. The parser fences capture with a
-second loader census and retains that fence through outer custody publication.
+Runtime closure v4, PE/ELF loaded-dependency policies v2 and Mach-O policy v3
+attest all observed native file components and loader-provided virtual contracts,
+not just runtime-root reachability. PE eager imports, ELF `DT_NEEDED` (including
+lazy symbol binding), and Mach-O required/reexport/upward loads remain mandatory.
+PE delay and Mach-O weak/lazy declarations are recorded separately with their
+importer and kind; a matching loaded basename never proves that importer's
+optional binding. macOS components use resolved full-path identity, so distinct
+framework images may share a `Python` basename. Direct, `@loader_path`,
+`@executable_path`, and importer-local `LC_RPATH` bindings resolve only to the
+observed file-object census. Inherited dyld run-path stacks are not inferred and
+fail closed. Dyld shared-cache contracts carry canonical absolute install paths;
+an equal basename at a different path cannot satisfy a dependency. Optional
+targets already in the census retain independent byte custody, without invented
+dependency edges. Components are ordered by loader filename and file-node index,
+preserving duplicate macOS basenames without a second identity authority. The
+parser fences capture with a second loader census and retains that fence through
+outer custody publication.
 This is a snapshot of observed files and declarations, not an attestation of
 future dynamic loads: later files require renewed admission and exact watches.
 After capture, every absolute file in the custody envelope must be covered; only
@@ -282,14 +291,22 @@ Failed capture drains watches without claiming that a payload ran.
 `PythonFileCaptureContext` shares handle/change-time-bound hashes across runtime
 and environment inventories. Hashing has bounded workers and pending work; parser
 bytes are read on demand rather than retaining every source/bytecode/native image.
-Each public capture closes its file-mutation fence. Directory capture
-retains membership, object, access-mode and timestamp checks;
+Each public capture closes its file-mutation fence. A freshly prepared stable
+identity is not redundantly reopened before its immediate bind, but bind still
+rejects same-size, restored-mtime mutation and the mandatory final fence verifies
+all bound paths with bounded workers. Runtime-build capture explicitly requests
+four workers. Directory capture retains membership, object, access-mode and
+timestamp checks;
 directory storage allocation size is not semantic identity. Windows can change
 that reported size during read-only enumeration. File lengths remain exact,
 and failed snapshots report the specific differing metadata fields and values.
 Each root retains its compact membership fingerprint through outer publication,
 with its original exclusions/pruning, so later additions and topology changes
 cannot escape by leaving the previously captured regular files untouched.
+An internal directory symlink such as virtualenv `lib64 -> lib` is represented as
+a same-root directory alias and is not traversed, leaving the ordinary target
+tree as the single content authority. External directory aliases, malformed
+targets, access drift and alias cycles remain rejected.
 Receipt-owned tool selection uses the same tree/access/link semantics, including
 Unicode host-name resolution.
 Requirement versions, console entry points and Meson/Ninja/pkg-config discovery
@@ -581,7 +598,12 @@ source search.
   generated runtime imports missing signed top-level `runtime_symbols` custody
   fail admission. Per-object `runtime_symbols` are forbidden: semantic
   consumers use the finalized top-level projection covered by
-  `closure_sha256`.
+  `closure_sha256`. Toolchain provider archives are inventoried lazily only for
+  unresolved symbols eligible for libc, compiler-rt, or libc++ classification.
+  C-API symbols, project definitions, generated external-link/runtime symbols,
+  and unknown `molt_`/`__molt` runtime names never trigger host sysroot reads;
+  they remain governed by their existing board authority and fail closed there.
+  Generated runtime/link authority takes precedence over archive collisions.
   The C/API board classifies `required_c_api_symbols` and `Py*`/NumPy
   `undefined_symbols` as runtime-backed, source-compile-only, project-defined,
   fail-fast, or missing; undefined C/API symbols cannot contain

@@ -177,6 +177,86 @@ def test_hardlink_alias_has_one_hash_and_every_absolute_path(tmp_path):
         pool.read_bound("file-node-0", label="fixture")
 
 
+def test_internal_directory_symlink_is_captured_as_one_owned_alias(tmp_path):
+    target = tmp_path / "lib"
+    target.mkdir()
+    (target / "module.py").write_bytes(b"module")
+    alias = tmp_path / "lib64"
+    try:
+        alias.symlink_to(target.name, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+
+    tree, pool = _tree(tmp_path, files.PythonFileCaptureContext())
+
+    entries = {row["path"]: row for row in tree["entries"]}
+    assert entries["lib64"] == {
+        "path": "lib64",
+        "kind": "directory-symlink",
+        "target_owner": "same-root",
+        "target": "lib",
+        "access": entries["lib"]["access"],
+    }
+    assert "lib64/module.py" not in entries
+    assert tree["file_count"] == 1
+    assert len(pool.nodes) == 1
+
+
+def test_directory_symlink_escape_is_rejected(tmp_path):
+    root = tmp_path / "environment"
+    root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    alias = root / "lib64"
+    try:
+        alias.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+        _tree(root, files.PythonFileCaptureContext())
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+        files._stable_tree_inventory(
+            root,
+            root_id="fixture",
+            label="fixture",
+            pool=files._FileNodePool(),
+            external_symlink_role=(external, "base-executable"),
+        )
+
+
+@pytest.mark.parametrize("fault", ["self-target", "file-target", "access", "shape"])
+def test_directory_symlink_receipt_rejects_malformed_topology(tmp_path, fault):
+    target = tmp_path / "lib"
+    target.mkdir()
+    alias = tmp_path / "lib64"
+    try:
+        alias.symlink_to(target.name, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+    (tmp_path / "payload").write_bytes(b"payload")
+    tree, pool = _tree(tmp_path, files.PythonFileCaptureContext())
+    entries = copy.deepcopy(tree["entries"])
+    row = next(entry for entry in entries if entry["path"] == "lib64")
+    if fault == "self-target":
+        row["target"] = "lib64"
+    elif fault == "file-target":
+        row["target"] = "payload"
+    elif fault == "access":
+        row["access"]["writable"] = not row["access"]["writable"]
+    else:
+        row["node"] = "file-node-0"
+
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="directory symlink|target"
+    ):
+        files._validate_inventory_entries(
+            entries,
+            label="fixture",
+            nodes={node["id"]: node for node in pool.nodes},
+        )
+
+
 def test_file_capture_rejects_same_size_mtime_restore(tmp_path):
     path = tmp_path / "a.py"
     path.write_bytes(b"before")
@@ -187,6 +267,21 @@ def test_file_capture_rejects_same_size_mtime_restore(tmp_path):
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ValueError, match="changed"):
         context.bind(path, path.stat(), label="fixture")
+
+
+def test_file_capture_rejects_same_size_mtime_restore_between_prepare_and_bind(
+    tmp_path,
+):
+    path = tmp_path / "a.py"
+    path.write_bytes(b"before")
+    context = files.PythonFileCaptureContext()
+    before = path.stat()
+    context.prepare([(path, before)], label="fixture")
+    path.write_bytes(b"after!")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    with pytest.raises(ValueError, match="changed"):
+        context.bind(path, before, label="fixture")
 
 
 def test_zero_inode_objects_use_distinct_path_identity(tmp_path, monkeypatch):
@@ -229,8 +324,10 @@ def test_capture_parallel_pending_work_is_bounded(tmp_path, monkeypatch):
             return map(function, work)
 
     monkeypatch.setattr(files, "ThreadPoolExecutor", Executor)
-    _tree(tmp_path, files.PythonFileCaptureContext(hash_workers=2))
-    assert windows == [8] * 5
+    context = files.PythonFileCaptureContext(hash_workers=2)
+    _tree(tmp_path, context)
+    context.verify()
+    assert windows == [8] * 10
 
 
 def _envelope():
@@ -257,7 +354,10 @@ def test_capture_envelope_separates_semantic_identity_from_telemetry():
     assert capture.validate_python_capture(second)["identity"] == first["identity"]
 
 
-@pytest.mark.parametrize("packages", [[], [("example", "1.0")]])
+@pytest.mark.parametrize(
+    "packages",
+    [[], [("example", "1.0")], [("zeta", "2.0"), ("alpha", "1.0")]],
+)
 def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     from tests.python_environment_test_support import realized_environment_manifest
 
@@ -270,6 +370,9 @@ def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     assert environment["scripts_root"] in directories
     assert set(environment["site_roots"]).issubset(directories)
     assert len(environment["distributions"]) == len(packages)
+    assert [row["name"] for row in environment["distributions"]] == sorted(
+        name for name, _version in packages
+    )
     assert environment["tree"]["file_count"] == 2 + len(packages)
 
 

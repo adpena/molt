@@ -45,7 +45,7 @@ def _host_target() -> tuple[str, str, list[str], str]:
     }[operating_system]
     dependency_policy = {
         "windows": "pe-loaded-import-closure-v2",
-        "macos": "mach-o-loaded-dylib-closure-v2",
+        "macos": "mach-o-loaded-dylib-closure-v3",
         "linux": "elf-loaded-needed-closure-v2",
     }[operating_system]
     return operating_system, architecture, root_roles, dependency_policy
@@ -195,7 +195,10 @@ def realized_environment_manifest(
         if os.name == "nt"
         else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     )
-    installed_paths = [f"{site_root}/{name}/__init__.py" for name, _ in packages]
+    ordered_packages = sorted(packages)
+    installed_paths = [
+        f"{site_root}/{name}/__init__.py" for name, _ in ordered_packages
+    ]
     file_paths = sorted(
         [selected, "pyvenv.cfg", *installed_paths],
         key=lambda value: (value.casefold(), value),
@@ -213,7 +216,9 @@ def realized_environment_manifest(
         for path in file_paths
     ]
     distributions: list[dict[str, object]] = []
-    for (name, version), installed_path in zip(packages, installed_paths, strict=True):
+    for (name, version), installed_path in zip(
+        ordered_packages, installed_paths, strict=True
+    ):
         installed = [
             {
                 "path": installed_path,

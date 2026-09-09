@@ -1231,7 +1231,7 @@ def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
     assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc", "git"]
 
 
-def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
+def test_toolchain_identity_rejects_incomplete_python_closure() -> None:
     plan = SimpleNamespace(
         toolchain_policies=(
             SimpleNamespace(
@@ -1240,7 +1240,7 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
             ),
         )
     )
-    with pytest.raises(ValueError, match="violates canonical policy"):
+    with pytest.raises(ValueError, match="complete environment closure"):
         command_identity._validate_toolchain_identity(
             plan,
             "python",
@@ -1248,6 +1248,20 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
                 "version": "3.13.1",
                 "executable_sha256": "a" * 64,
             },
+        )
+
+
+def test_toolchain_identity_rejects_real_but_out_of_policy_version(
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
+    plan = SimpleNamespace(
+        toolchain_policies=(
+            SimpleNamespace(name="python", data={"version_pattern": r"^Python 0\.0\."}),
+        )
+    )
+    with pytest.raises(ValueError, match="violates canonical policy"):
+        command_identity._validate_toolchain_identity(
+            plan, "python", guarded_execution_authorities.python_identity
         )
 
 
@@ -1506,6 +1520,24 @@ def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed(
     assert '"1"' not in serialized
     assert "attacker" not in serialized
     assert "secret" not in serialized
+
+
+def test_deterministic_environment_preserves_complete_ci_custody() -> None:
+    inherited = {
+        "CI": "true",
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_WORKSPACE": "/runner/work/repo",
+        "RUNNER_TEMP": "/runner/temp",
+        "RUNNER_OS": "Linux",
+        "RUNNER_ARCH": "X64",
+        "MOLT_CI_EPHEMERAL_CUSTODY_ROOT": "/runner/temp/molt",
+    }
+    selected, contract = execution_environment._deterministic_execution_environment(
+        inherited, override_names=[]
+    )
+    assert selected == inherited
+    assert contract["passed_names"] == sorted(inherited)
+    assert contract["omitted_names"] == []
 
 
 def test_environment_override_policy_rejects_case_ambiguous_names() -> None:
@@ -1932,6 +1964,26 @@ def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
         stderr=subprocess.PIPE,
         text=True,
     )
+    # PEP 610 identifies the editable source owner, not an import search path.
+    # Admission must not guess between the conflicting root/src modules.
+    assert direct.returncode != 0
+    assert "no exact declared external import region" in direct.stderr
+    (purelib / "custody_ambiguous.pth").write_text(
+        str(source.resolve()) + "\n", encoding="utf-8", newline="\n"
+    )
+    record = direct_metadata / "RECORD"
+    record.write_text(
+        record.read_text(encoding="utf-8") + "custody_ambiguous.pth,,\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    direct = run_custody_subject_process(
+        _capture_probe_command(custody_python, project, hash_workers=1),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     assert direct.returncode == 0, direct.stderr
     identity = python_environment_identity.validate_python_capture(
         json.loads(direct.stdout)
@@ -1943,6 +1995,13 @@ def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
     reference = distribution["external_source"]
     assert roots[reference["root"]] == str(project.resolve())
     assert reference["path"] == "."
+    active_imports = [
+        row for row in identity["active_import_roots"] if row["owner"] == "external"
+    ]
+    assert [(row["root"], row["path"]) for row in active_imports] == [
+        (reference["root"], "src")
+    ]
+    assert reference["import_roles"] == [row["role"] for row in active_imports]
 
 
 @pytest.mark.slow
@@ -4045,8 +4104,25 @@ def test_proof_queue_rejects_invalid_memory_guard_override(
         custody._proof_queue_memory_limits({name: value})
 
 
+@pytest.fixture
+def ample_queue_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        custody.memory_guard,
+        "adaptive_memory_budget",
+        lambda *args, **kwargs: custody.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=64.0,
+            max_total_rss_gb=96.0,
+            max_global_rss_gb=128.0,
+            reserve_gb=8.0,
+            physical_gb=160.0,
+            available_gb=144.0,
+            source="test",
+        ),
+    )
+
+
 def test_proof_queue_memory_guard_defaults_reach_exact_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ample_queue_memory: None
 ) -> None:
     for name in (
         "MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB",
@@ -4069,20 +4145,6 @@ def test_proof_queue_memory_guard_defaults_reach_exact_command(
         "MOLT_MEMORY_GUARD_POLL_SEC",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(
-        custody.memory_guard,
-        "adaptive_memory_budget",
-        lambda *args, **kwargs: custody.memory_guard.AdaptiveMemoryBudget(
-            max_process_rss_gb=64.0,
-            max_total_rss_gb=96.0,
-            max_global_rss_gb=128.0,
-            reserve_gb=8.0,
-            physical_gb=160.0,
-            available_gb=144.0,
-            source="test",
-        ),
-    )
-
     limits = custody._proof_queue_memory_limits({})
     command = custody._memory_guard_command(
         command=["proof-command"],
@@ -4108,7 +4170,9 @@ def test_proof_queue_memory_guard_defaults_reach_exact_command(
     assert command[-2:] == ["--", "proof-command"]
 
 
-def test_proof_queue_low_memory_overrides_reach_exact_command(tmp_path: Path) -> None:
+def test_proof_queue_low_memory_overrides_reach_exact_command(
+    tmp_path: Path, ample_queue_memory: None
+) -> None:
     limits = custody._proof_queue_memory_limits(
         {
             "MOLT_MAX_PROCESS_RSS_GB": "10",
@@ -7872,6 +7936,53 @@ def test_proof_queue_rejects_uv_run_without_active_project_python(
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "refuses `uv run`" in log_text
     assert "should-not-run" in log_text
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "an untyped command envelope: guarded_exec may not delegate another Python authority",
+        "secret-bearing command: secret argument must use admitted transport",
+        "invalid environment override: unsupported execution policy",
+        "`uv run` without a typed Python authority",
+        "`uv run` without a typed launch prefix",
+        "`uv run` commands without the active project environment",
+        "raw `cargo` commands; use the queue-native cargo lane",
+    ],
+)
+def test_queue_policy_rejection_family_has_consumable_diagnostics(tmp_path, reason):
+    conn = state._connect(tmp_path / "queue.sqlite3")
+    conn.row_factory = sqlite3.Row
+    log_path = tmp_path / "rejected.log"
+    rejection = f"proof queue refuses {reason}"
+    log_path.write_text(
+        "command=python -c 'proof queue refuses embedded argument'\n"
+        + rejection
+        + "\nproof_queue finished status=failed exit_code=2\n",
+        encoding="utf-8",
+    )
+    scheduling._insert_run(
+        conn,
+        run_id="rejected",
+        logical_id="rejected",
+        reason="classify pre-execution policy refusal",
+        command=[sys.executable, "-c", "pass"],
+        cwd=state.ROOT,
+        resource_family="python",
+        contention_key="python",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=tmp_path / "absent-summary.json",
+    )
+    state._update_run(conn, "rejected", status="failed", returncode=2)
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?", ("rejected",)
+    ).fetchone()
+    diagnostics = diagnostics_module._run_diagnostics(row)
+    assert [item["signal_id"] for item in diagnostics] == ["queue-policy-rejection"]
+    assert diagnostics[0]["severity"] == "operator"
+    assert diagnostics[0]["evidence"] == rejection
+    assert "not product proof" in diagnostics[0]["next_action"]
 
 
 def test_proof_queue_rejects_raw_cargo_exec(

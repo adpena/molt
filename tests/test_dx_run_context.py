@@ -896,9 +896,16 @@ def test_run_context_fallback_preserves_checkout_family_artifact_custody(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    custody_root = tmp_path / "Molt"
+    # Model a durable family without treating the runner's D: scratch as
+    # durable custody. No paths outside tmp_path are created by this test.
+    custody_root = (
+        Path("C:/Molt-virtual-fixture") if os.name == "nt" else tmp_path / "Molt"
+    )
     worktree = custody_root / "worktrees" / "lane"
-    worktree.mkdir(parents=True)
+    is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", lambda path: path == custody_root or is_dir(path)
+    )
     monkeypatch.setattr(
         dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
     )

@@ -50,6 +50,7 @@ _TREE_HASH_BYTES_PER_WORKER = 2 * 1024 * 1024
 _TREE_HASH_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
 _TREE_HASH_MAX_WORKERS = 32
 _TREE_HASH_LOCAL = threading.local()
+_RUNTIME_BUILD_PYTHON_HASH_WORKERS = 4
 
 
 _RUNTIME_BUILD_TOOLING_RELPATHS = (
@@ -512,7 +513,15 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
         executable,
     ):
         completed = process_guard.run_completed_command(
-            [os.fspath(entrypoint), "-I", "-S", os.fspath(probe), "--capture-runtime"],
+            [
+                os.fspath(entrypoint),
+                "-I",
+                "-S",
+                os.fspath(probe),
+                "--capture-runtime",
+                "--hash-workers",
+                str(_RUNTIME_BUILD_PYTHON_HASH_WORKERS),
+            ],
             check=False,
             capture_output=True,
             text=True,

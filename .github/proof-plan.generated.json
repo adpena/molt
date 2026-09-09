@@ -161,7 +161,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a788901551247d6be18ff71e50bea1cee5a05f5744ef0a0bf3c0f228c3f8c536",
+  "authority_sha256": "b000b0233ee13393167c6fe5326b84ae1c3e35068e5a37bcd54e11e7869ce3d8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3078,7 +3078,9 @@
         "tests/test_python_binding_flow.py",
         "tests/test_frontend_ir_alias_ops.py",
         "tests/test_frontend_package_composition.py",
-        "tests/cli/test_cli_python_import_authority.py"
+        "tests/cli/test_cli_python_import_authority.py",
+        "tests/tools/test_gen_protocol.py",
+        "tests/test_python_execution_frame.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3140,7 +3142,8 @@
         "tests/cli/test_runtime_native_failure_custody.py",
         "tests/cli/test_static_archive_identity.py",
         "tests/cli/test_runtime_wasm_build_timings.py",
-        "tests/test_wasm_link_validation.py"
+        "tests/test_wasm_link_validation.py",
+        "tests/test_wasm_section_spans.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",

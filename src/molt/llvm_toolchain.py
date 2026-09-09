@@ -28,6 +28,11 @@ from molt.llvm_linker_roles import (
     lexical_executable_path,
 )
 from molt.wasi_sysroot import normalize_wasi_sysroot, wasi_sysroot_llvm_version
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    find_executable,
+    stable_executable_probe,
+)
 
 
 class LlvmToolchainConfigError(RuntimeError):
@@ -161,10 +166,19 @@ class WasmCiToolchainVerification:
     llvm_prefix: Path
     wasm_ld: Path
     wasm_ld_fact: "LlvmToolVersionFact"
+    llvm_nm: Path
+    llvm_nm_fact: "LlvmToolVersionFact"
     sysroot: Path
     sysroot_version: str
     sysroot_llvm_version: str
     sysroot_assets: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WasmLlvmNmVerification:
+    path: Path
+    fact: "LlvmToolVersionFact"
+    executable_identity: StableRegularFileIdentity
 
 
 @dataclass(frozen=True)
@@ -197,7 +211,7 @@ LLVM_ATTESTATION_FILENAME = ".molt-llvm-toolchain.json"
 
 
 def reject_poison_toolchain_path(raw: str | Path, *, authority: str) -> None:
-    """Reject the retired D: custody root before host path normalization.
+    """Reject retired D: and OneDrive custody before host path normalization.
 
     ``Path.resolve`` on a non-Windows review host turns ``D:\\...`` into a
     relative POSIX path, so inspect the lexical Windows drive first.  This is a
@@ -205,11 +219,23 @@ def reject_poison_toolchain_path(raw: str | Path, *, authority: str) -> None:
     """
 
     rendered = str(raw).strip()
-    drive = PureWindowsPath(rendered).drive.upper()
-    normalized = rendered.replace("/", "\\").upper()
+    unquoted = (
+        rendered[1:-1]
+        if len(rendered) >= 2
+        and rendered[0] == rendered[-1]
+        and rendered[0] in {'"', "'"}
+        else rendered
+    )
+    windows_path = PureWindowsPath(unquoted)
+    drive = windows_path.drive.upper()
+    normalized = unquoted.replace("/", "\\").upper()
     if drive == "D:" or re.match(r"^(?:\\\\[?.]\\|\\\?\?\\)D:\\", normalized):
         raise LlvmToolchainConfigError(
             f"{authority} cannot use retired D: canonical custody: {raw}"
+        )
+    if any("onedrive" in part.casefold() for part in windows_path.parts):
+        raise LlvmToolchainConfigError(
+            f"{authority} cannot use OneDrive custody; use C:\\Molt: {raw}"
         )
 
 
@@ -1295,27 +1321,39 @@ def _content_manifest(
     return tuple(facts), aggregate.hexdigest() if aggregate is not None else None
 
 
-def _tool_version_fact(
+def _tool_version_fact_and_identity(
     prefix: Path,
     role: str,
     path: Path,
     *,
     expected_version: str,
     exact_version: bool,
-) -> LlvmToolVersionFact:
+) -> tuple[LlvmToolVersionFact, StableRegularFileIdentity]:
     if is_llvm_linker_role(role) and not executable_selects_linker_role(path, role):
         raise LlvmToolchainConfigError(
             f"required LLVM linker role {role} cannot use entrypoint {path}"
         )
     try:
-        result = subprocess.run(
-            [str(path), "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        with stable_executable_probe(path, label=f"LLVM tool {role}") as (
+            entrypoint,
+            executable_identity,
+        ):
+            reject_poison_toolchain_path(
+                entrypoint,
+                authority=f"captured LLVM tool {role} entrypoint",
+            )
+            reject_poison_toolchain_path(
+                executable_identity.path,
+                authority=f"captured LLVM tool {role} content",
+            )
+            result = subprocess.run(
+                [str(entrypoint), "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise LlvmToolchainConfigError(
             f"could not query required LLVM tool {role} at {path}: {exc}"
         ) from exc
@@ -1343,19 +1381,38 @@ def _tool_version_fact(
             f"{'exactly ' + expected_version if exact_version else expected_version + '.x'}: "
             f"{path}"
         )
-    stat = path.stat()
-    sha256 = _sha256_file(path)
     try:
         identity = str(path.relative_to(prefix)).replace("\\", "/")
     except ValueError:
         identity = f"external:{path}"
-    return LlvmToolVersionFact(
-        role=role,
-        path=identity,
-        version=version,
-        size=stat.st_size,
-        sha256=sha256,
+    return (
+        LlvmToolVersionFact(
+            role=role,
+            path=identity,
+            version=version,
+            size=executable_identity.size,
+            sha256=executable_identity.sha256,
+        ),
+        executable_identity,
     )
+
+
+def _tool_version_fact(
+    prefix: Path,
+    role: str,
+    path: Path,
+    *,
+    expected_version: str,
+    exact_version: bool,
+) -> LlvmToolVersionFact:
+    fact, _identity = _tool_version_fact_and_identity(
+        prefix,
+        role,
+        path,
+        expected_version=expected_version,
+        exact_version=exact_version,
+    )
+    return fact
 
 
 def llvm_attestation_path(prefix: Path) -> Path:
@@ -1885,18 +1942,115 @@ def verify_available_llvm_toolchain(
     )
 
 
+def _explicit_wasm_llvm_nm(
+    raw: str,
+    *,
+    environment: dict[str, str],
+) -> Path:
+    """Resolve a single user-selected llvm-nm without consulting ambient state."""
+
+    direct = Path(raw).expanduser()
+    if direct.is_file():
+        candidate = direct.absolute()
+    else:
+        try:
+            argv = _llvm_config_tokens(raw)
+        except ValueError as exc:
+            raise LlvmToolchainConfigError(
+                f"MOLT_LLVM_NM is not a valid executable selection: {exc}"
+            ) from exc
+        if len(argv) != 1:
+            raise LlvmToolchainConfigError(
+                "MOLT_LLVM_NM must select one llvm-nm executable without arguments"
+            )
+        selected = argv[0]
+        selected_path = Path(selected).expanduser()
+        if selected_path.is_absolute() or "/" in selected or "\\" in selected:
+            candidate = selected_path.absolute()
+        else:
+            resolved = find_executable(selected, environment=environment)
+            if resolved is None:
+                raise LlvmToolchainConfigError(
+                    f"MOLT_LLVM_NM executable is unavailable: {selected}"
+                )
+            candidate = resolved.absolute()
+    if not candidate.is_file():
+        raise LlvmToolchainConfigError(
+            f"MOLT_LLVM_NM executable is unavailable: {candidate}"
+        )
+    return candidate
+
+
+def verify_wasm_llvm_nm(
+    root: Path,
+    *,
+    environ: dict[str, str] | None = None,
+    discovery: LlvmToolchainDiscovery | None = None,
+) -> WasmLlvmNmVerification:
+    """Verify the sole LLVM symbol reader admitted for WebAssembly artifacts."""
+
+    environment = dict(os.environ if environ is None else environ)
+    if discovery is None:
+        discovery = discover_llvm_toolchain(root, environ=environment)
+    if discovery is None:
+        raise LlvmToolchainConfigError(
+            "manifest-owned LLVM discovery could not resolve llvm-nm"
+        )
+    pin = required_llvm_backend_pin(root)
+    assert pin is not None
+    configured = environment.get("MOLT_LLVM_NM", "").strip()
+    if configured:
+        reject_poison_toolchain_path(configured, authority="MOLT_LLVM_NM")
+        llvm_nm = _explicit_wasm_llvm_nm(configured, environment=environment)
+    else:
+        suffix = ".exe" if os.name == "nt" else ""
+        llvm_nm = _required_tool(discovery.prefix, f"llvm-nm{suffix}")
+    reject_poison_toolchain_path(
+        llvm_nm.absolute(),
+        authority="selected llvm-nm entrypoint",
+    )
+    try:
+        llvm_nm_content = llvm_nm.resolve(strict=True)
+    except OSError as exc:
+        raise LlvmToolchainConfigError(
+            f"selected llvm-nm entrypoint cannot be resolved: {llvm_nm}: {exc}"
+        ) from exc
+    reject_poison_toolchain_path(
+        llvm_nm_content,
+        authority="selected llvm-nm content",
+    )
+    entrypoint = llvm_nm.name.lower().removesuffix(".exe")
+    if not re.fullmatch(r"llvm-nm(?:-?\d+)?", entrypoint):
+        raise LlvmToolchainConfigError(
+            "MOLT_LLVM_NM must select an llvm-nm entrypoint, not a generic native "
+            f"symbol reader: {llvm_nm}"
+        )
+    fact, executable_identity = _tool_version_fact_and_identity(
+        discovery.prefix,
+        "llvm-nm",
+        llvm_nm,
+        expected_version=pin.default_release,
+        exact_version=True,
+    )
+    return WasmLlvmNmVerification(
+        path=llvm_nm,
+        fact=fact,
+        executable_identity=executable_identity,
+    )
+
+
 def verify_wasm_ci_toolchain(
     root: Path,
     wasi_sysroot: Path,
     *,
     environ: dict[str, str] | None = None,
 ) -> WasmCiToolchainVerification:
-    """Verify the minimal manifest-owned linker/sysroot pair used by Rust truth.
+    """Verify the manifest-owned linker, symbol reader, and sysroot used by CI.
 
     The complete LLVM/MLIR SDK verifier remains the authority for native and
     MLIR jobs. Rust's default workspace truth needs only the same release's
-    WebAssembly linker plus the pinned WASI C runtime, so this profile proves
-    that exact pair without installing the full development SDK.
+    WebAssembly linker and symbol reader plus the pinned WASI C runtime, so this
+    profile proves that exact family without installing the full development SDK.
     """
 
     discovery = discover_llvm_toolchain(root, environ=environ)
@@ -1914,6 +2068,11 @@ def verify_wasm_ci_toolchain(
         wasm_ld,
         expected_version=pin.default_release,
         exact_version=True,
+    )
+    llvm_nm_verification = verify_wasm_llvm_nm(
+        root,
+        environ=environ,
+        discovery=discovery,
     )
 
     reject_poison_toolchain_path(wasi_sysroot, authority="WASI sysroot")
@@ -1963,6 +2122,8 @@ def verify_wasm_ci_toolchain(
         llvm_prefix=discovery.prefix,
         wasm_ld=wasm_ld,
         wasm_ld_fact=wasm_ld_fact,
+        llvm_nm=llvm_nm_verification.path,
+        llvm_nm_fact=llvm_nm_verification.fact,
         sysroot=resolved_sysroot,
         sysroot_version=actual_version,
         sysroot_llvm_version=actual_llvm_version,
@@ -1985,6 +2146,7 @@ def project_wasm_ci_environment(
     result["MOLT_WASI_SYSROOT"] = sysroot
     result["WASI_SYSROOT"] = sysroot
     result["MOLT_WASM_LD"] = str(verification.wasm_ld)
+    result["MOLT_LLVM_NM"] = str(verification.llvm_nm)
     bin_text = str(verification.llvm_prefix / "bin")
     path_parts = [part for part in result.get("PATH", "").split(os.pathsep) if part]
     normalized_bin = os.path.normcase(os.path.normpath(bin_text))
@@ -2167,7 +2329,13 @@ def main(argv: list[str] | None = None) -> int:
                 wasm_verification,
                 environ=dict(os.environ),
             )
-            keys = ("MOLT_WASI_SYSROOT", "WASI_SYSROOT", "MOLT_WASM_LD", "PATH")
+            keys = (
+                "MOLT_WASI_SYSROOT",
+                "WASI_SYSROOT",
+                "MOLT_WASM_LD",
+                "MOLT_LLVM_NM",
+                "PATH",
+            )
             with args.github_env.open("a", encoding="utf-8") as fh:
                 for key in keys:
                     fh.write(f"{key}={projected[key]}\n")
@@ -2209,6 +2377,8 @@ def main(argv: list[str] | None = None) -> int:
                     "llvm_prefix": str(wasm_verification.llvm_prefix),
                     "wasm_ld": str(wasm_verification.wasm_ld),
                     "wasm_ld_fact": asdict(wasm_verification.wasm_ld_fact),
+                    "llvm_nm": str(wasm_verification.llvm_nm),
+                    "llvm_nm_fact": asdict(wasm_verification.llvm_nm_fact),
                     "wasi_sysroot": str(wasm_verification.sysroot),
                     "wasi_sysroot_version": wasm_verification.sysroot_version,
                     "wasi_sysroot_llvm_version": (

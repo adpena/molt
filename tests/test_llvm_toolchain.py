@@ -1,6 +1,7 @@
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
+from contextlib import contextmanager
 from pathlib import Path
 import json
 import os
@@ -22,6 +23,7 @@ from molt.llvm_toolchain import (
     verify_llvm_toolchain_prefix,
     write_llvm_toolchain_attestation,
 )
+from molt.toolchain_identity import stable_regular_file_identity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -612,7 +614,9 @@ def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(
 ) -> None:
     prefix = tmp_path / "llvm"
     wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    llvm_nm = prefix / "bin" / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
     _write(wasm_ld, "linker")
+    _write(llvm_nm, "symbol reader")
     sysroot = tmp_path / "wasi-sysroot-33.0+m"
     _write(
         sysroot / "VERSION",
@@ -632,13 +636,16 @@ def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(
     )
     monkeypatch.setattr(
         llvm_toolchain,
-        "_tool_version_fact",
-        lambda *_args, **_kwargs: llvm_toolchain.LlvmToolVersionFact(
-            role="wasm-ld",
-            path="bin/wasm-ld",
-            version="22.1.8",
-            size=6,
-            sha256="0" * 64,
+        "_tool_version_fact_and_identity",
+        lambda _prefix, role, path, **_kwargs: (
+            llvm_toolchain.LlvmToolVersionFact(
+                role=role,
+                path=f"bin/{path.name}",
+                version="22.1.8",
+                size=path.stat().st_size,
+                sha256="0" * 64,
+            ),
+            stable_regular_file_identity(path, label="test LLVM tool"),
         ),
     )
 
@@ -650,9 +657,12 @@ def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(
     assert verified.sysroot_version == "33.0+m"
     assert verified.sysroot_llvm_version == "22.1.0"
     assert verified.wasm_ld == wasm_ld
+    assert verified.llvm_nm == llvm_nm
+    assert verified.llvm_nm_fact.role == "llvm-nm"
     assert projected["MOLT_WASI_SYSROOT"] == str(sysroot.resolve())
     assert projected["WASI_SYSROOT"] == str(sysroot.resolve())
     assert projected["MOLT_WASM_LD"] == str(wasm_ld)
+    assert projected["MOLT_LLVM_NM"] == str(llvm_nm)
     assert projected["PATH"].split(os.pathsep)[0] == str(prefix / "bin")
 
 
@@ -661,10 +671,48 @@ def test_wasm_ci_profile_rejects_incomplete_or_mismatched_sysroot(
 ) -> None:
     prefix = tmp_path / "llvm"
     wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    llvm_nm = prefix / "bin" / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
     _write(wasm_ld, "linker")
+    _write(llvm_nm, "symbol reader")
     sysroot = tmp_path / "wasi-sysroot"
     _write(sysroot / "VERSION", "32.0+m\nllvm-version: 21.1.0\n")
     _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
+            prefix=prefix,
+            llvm_config=prefix / "bin/llvm-config",
+            version="22.1.8",
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact_and_identity",
+        lambda _prefix, role, path, **_kwargs: (
+            llvm_toolchain.LlvmToolVersionFact(
+                role, f"bin/{path.name}", "22.1.8", path.stat().st_size, "0" * 64
+            ),
+            stable_regular_file_identity(path, label="test LLVM tool"),
+        ),
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="LLVM identity"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+
+
+def test_wasm_ci_profile_rejects_missing_llvm_nm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    _write(wasm_ld, "linker")
+    sysroot = tmp_path / "wasi-sysroot-33.0+m"
+    _write(
+        sysroot / "VERSION",
+        "33.0+m\nwasi-libc: 161b3195fc25\nllvm-version: 22.1.0\n",
+    )
     monkeypatch.setattr(
         llvm_toolchain,
         "discover_llvm_toolchain",
@@ -683,8 +731,292 @@ def test_wasm_ci_profile_rejects_incomplete_or_mismatched_sysroot(
         ),
     )
 
-    with pytest.raises(LlvmToolchainConfigError, match="LLVM identity"):
+    with pytest.raises(LlvmToolchainConfigError, match="missing required tool"):
         llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+
+
+def test_wasm_llvm_nm_explicit_override_uses_manifest_version_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    _write(prefix / "bin" / "llvm-nm", "managed")
+    override = tmp_path / "overrides" / "llvm-nm-22"
+    _write(override, "override")
+    discovery = llvm_toolchain.LlvmToolchainDiscovery(
+        prefix=prefix,
+        llvm_config=prefix / "bin" / "llvm-config",
+        version="22.1.8",
+        source="test",
+    )
+    seen: list[tuple[Path, str, Path, str, bool]] = []
+
+    def verify(prefix_arg, role, path, *, expected_version, exact_version):
+        seen.append((prefix_arg, role, path, expected_version, exact_version))
+        return (
+            llvm_toolchain.LlvmToolVersionFact(
+                role,
+                f"external:{path}",
+                expected_version,
+                path.stat().st_size,
+                "1" * 64,
+            ),
+            stable_regular_file_identity(path, label="test LLVM tool"),
+        )
+
+    monkeypatch.setattr(llvm_toolchain, "_tool_version_fact_and_identity", verify)
+    verification = llvm_toolchain.verify_wasm_llvm_nm(
+        ROOT,
+        environ={"MOLT_LLVM_NM": str(override), "PATH": ""},
+        discovery=discovery,
+    )
+
+    assert verification.path == override
+    assert verification.fact.role == "llvm-nm"
+    assert seen == [(prefix, "llvm-nm", override, "22.1.8", True)]
+
+
+def test_wasm_llvm_nm_rejects_generic_native_reader(
+    tmp_path: Path,
+) -> None:
+    prefix = tmp_path / "llvm"
+    generic_nm = tmp_path / "nm"
+    _write(generic_nm, "generic")
+    discovery = llvm_toolchain.LlvmToolchainDiscovery(
+        prefix=prefix,
+        llvm_config=prefix / "bin" / "llvm-config",
+        version="22.1.8",
+        source="test",
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="llvm-nm entrypoint"):
+        llvm_toolchain.verify_wasm_llvm_nm(
+            ROOT,
+            environ={"MOLT_LLVM_NM": str(generic_nm), "PATH": ""},
+            discovery=discovery,
+        )
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        r"C:\Users\operator\OneDrive\tools\llvm-nm.exe",
+        r'"C:\Users\operator\OneDrive - Example Org\tools\llvm-nm.exe"',
+    ],
+)
+def test_wasm_llvm_nm_rejects_onedrive_custody(configured: str) -> None:
+    with pytest.raises(LlvmToolchainConfigError, match="OneDrive custody"):
+        llvm_toolchain.verify_wasm_llvm_nm(
+            ROOT,
+            environ={"MOLT_LLVM_NM": configured, "PATH": ""},
+            discovery=llvm_toolchain.LlvmToolchainDiscovery(
+                prefix=Path(r"C:\Molt\llvm"),
+                llvm_config=Path(r"C:\Molt\llvm\bin\llvm-config.exe"),
+                version="22.1.8",
+                source="test",
+            ),
+        )
+
+
+@pytest.mark.parametrize("selection", ["bare", "unquoted_path", "quoted_path"])
+def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    prefix = tmp_path / "llvm"
+    selected = tmp_path / "selected tools" / "llvm-nm"
+    _write(selected, "reader")
+    discovery = llvm_toolchain.LlvmToolchainDiscovery(
+        prefix=prefix,
+        llvm_config=prefix / "bin" / "llvm-config",
+        version="22.1.8",
+        source="test",
+    )
+    raw = {
+        "bare": "llvm-nm",
+        "unquoted_path": str(selected),
+        "quoted_path": f'"{selected}"',
+    }[selection]
+    if selection == "bare":
+        monkeypatch.setattr(
+            llvm_toolchain,
+            "find_executable",
+            lambda command, *, environment: selected,
+        )
+    checked: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "reject_poison_toolchain_path",
+        lambda value, *, authority: checked.append((str(value), authority)),
+    )
+
+    def verify(prefix_arg, role, path, *, expected_version, exact_version):
+        return (
+            llvm_toolchain.LlvmToolVersionFact(
+                role, f"external:{path}", expected_version, 6, "1" * 64
+            ),
+            stable_regular_file_identity(path, label="test LLVM tool"),
+        )
+
+    monkeypatch.setattr(llvm_toolchain, "_tool_version_fact_and_identity", verify)
+    verification = llvm_toolchain.verify_wasm_llvm_nm(
+        ROOT,
+        environ={"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)},
+        discovery=discovery,
+    )
+
+    assert verification.path == selected
+    assert checked == [
+        (raw, "MOLT_LLVM_NM"),
+        (str(selected.absolute()), "selected llvm-nm entrypoint"),
+        (str(selected.resolve()), "selected llvm-nm content"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        '"{selected}',
+        '"{selected}" --version',
+        "llvm-nm --version",
+    ],
+)
+def test_wasm_llvm_nm_rejects_invalid_executable_selections(
+    tmp_path: Path,
+    selection: str,
+) -> None:
+    selected = tmp_path / "selected tools" / "llvm-nm"
+    _write(selected, "reader")
+
+    with pytest.raises(
+        LlvmToolchainConfigError,
+        match="valid executable selection|without arguments",
+    ):
+        llvm_toolchain._explicit_wasm_llvm_nm(
+            selection.format(selected=selected),
+            environment={"PATH": str(selected.parent)},
+        )
+
+
+def test_tool_version_rejects_captured_poison_content_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "canonical-alias" / "llvm-nm"
+    captured_content = tmp_path / "poison-content" / "llvm-nm"
+    _write(captured_content, "reader")
+    captured_identity = stable_regular_file_identity(
+        captured_content,
+        label="retargeted LLVM tool",
+    )
+
+    @contextmanager
+    def probe(_path: Path, *, label: str):
+        assert label == "LLVM tool llvm-nm"
+        yield selected, captured_identity
+
+    checked: list[tuple[Path, str]] = []
+
+    def reject(value, *, authority):
+        checked.append((Path(value), authority))
+        if authority == "captured LLVM tool llvm-nm content":
+            raise LlvmToolchainConfigError("retargeted to retired custody")
+
+    monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
+    monkeypatch.setattr(llvm_toolchain, "reject_poison_toolchain_path", reject)
+    monkeypatch.setattr(
+        llvm_toolchain.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("poison content was executed"),
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="retargeted"):
+        llvm_toolchain._tool_version_fact_and_identity(
+            tmp_path / "llvm",
+            "llvm-nm",
+            selected,
+            expected_version="22.1.8",
+            exact_version=True,
+        )
+
+    assert checked == [
+        (selected.absolute(), "captured LLVM tool llvm-nm entrypoint"),
+        (captured_content.absolute(), "captured LLVM tool llvm-nm content"),
+    ]
+
+
+def test_tool_version_rejects_captured_onedrive_alias_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "OneDrive - Example Org" / "llvm-nm"
+    canonical_content = tmp_path / "canonical-tools" / "llvm-nm"
+    _write(canonical_content, "reader")
+    captured_identity = stable_regular_file_identity(
+        canonical_content,
+        label="canonical LLVM tool",
+    )
+
+    @contextmanager
+    def probe(_path: Path, *, label: str):
+        assert label == "LLVM tool llvm-nm"
+        yield selected, captured_identity
+
+    monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
+    monkeypatch.setattr(
+        llvm_toolchain.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("OneDrive alias was executed"),
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="OneDrive custody"):
+        llvm_toolchain._tool_version_fact_and_identity(
+            tmp_path / "llvm",
+            "llvm-nm",
+            selected,
+            expected_version="22.1.8",
+            exact_version=True,
+        )
+
+
+def test_wasm_llvm_nm_rejects_lexical_alias_to_poison_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    content = tmp_path / "poison-content" / "llvm-nm"
+    alias = tmp_path / "canonical-alias" / "llvm-nm"
+    _write(content, "reader")
+    alias.parent.mkdir(parents=True)
+    try:
+        alias.symlink_to(content)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+    discovery = llvm_toolchain.LlvmToolchainDiscovery(
+        prefix=prefix,
+        llvm_config=prefix / "bin" / "llvm-config",
+        version="22.1.8",
+        source="test",
+    )
+    checked: list[tuple[Path, str]] = []
+
+    def reject(value, *, authority):
+        checked.append((Path(value), authority))
+        if authority == "selected llvm-nm content":
+            raise LlvmToolchainConfigError("retired D: canonical custody")
+
+    monkeypatch.setattr(llvm_toolchain, "reject_poison_toolchain_path", reject)
+
+    with pytest.raises(LlvmToolchainConfigError, match="retired D: canonical custody"):
+        llvm_toolchain.verify_wasm_llvm_nm(
+            ROOT,
+            environ={"MOLT_LLVM_NM": str(alias), "PATH": ""},
+            discovery=discovery,
+        )
+
+    assert checked[-2:] == [
+        (alias.absolute(), "selected llvm-nm entrypoint"),
+        (content.resolve(), "selected llvm-nm content"),
+    ]
 
 
 def test_cli_projects_verified_sdk_identity_to_github_environment(

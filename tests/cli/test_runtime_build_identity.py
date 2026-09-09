@@ -1268,6 +1268,8 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
                     / "python_environment_identity.py"
                 ),
                 "--capture-runtime",
+                "--hash-workers",
+                "4",
             ),
             {
                 "check": False,
