@@ -15,60 +15,30 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 try:
-    from tools.import_file import load_sibling_package_module_from_path
+    from tools.import_file import (
+        bind_repository_imports,
+        load_sibling_package_module_from_path,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from import_file import load_sibling_package_module_from_path  # type: ignore
+    from import_file import (
+        bind_repository_imports,
+        load_sibling_package_module_from_path,
+    )
 
 
 def _harness_memory_guard() -> Any:
-    try:
-        from tools import harness_memory_guard
-    except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-        import harness_memory_guard  # type: ignore
+    from tools import harness_memory_guard
 
     return harness_memory_guard
-
-
-def _repo_root(source_file: str | Path) -> Path:
-    source = Path(source_file).resolve()
-    for candidate in (source.parent, *source.parents):
-        if (candidate / "pyproject.toml").is_file() and (candidate / "tools").is_dir():
-            return candidate
-    raise RuntimeError(f"cannot locate Molt repository root from {source}")
 
 
 def _prefix(source_file: str | Path, root: Path) -> str:
     relative = Path(source_file).resolve().relative_to(root).with_suffix("")
     identity = re.sub(r"[^A-Za-z0-9]+", "_", relative.as_posix()).strip("_")
     return f"MOLT_{identity.upper()}"
-
-
-def _bind_repo_import_authority(root: Path) -> None:
-    """Make the executor's repository the sole search authority for ``molt``.
-
-    Proof tools can start under a sitecustomize imported from another worktree.
-    Binding here keeps every CommandExecutor consumer on the repository that
-    owns its source file instead of requiring per-tool ``molt.__path__`` repairs.
-    """
-
-    source_root = root / "src"
-    source_text = str(source_root)
-    if source_text not in sys.path:
-        sys.path.insert(0, source_text)
-    loaded_molt = sys.modules.get("molt")
-    if loaded_molt is not None and hasattr(loaded_molt, "__path__"):
-        loaded_molt.__path__ = [str(source_root / "molt")]
-
-
-def bind_repository_imports(source_file: str | Path) -> Path:
-    """Bind imports to the repository that owns *source_file* and return its root."""
-
-    root = _repo_root(source_file)
-    _bind_repo_import_authority(root)
-    return root
 
 
 @lru_cache(maxsize=None)
@@ -141,7 +111,7 @@ class CommandExecutor:
         stderr: int | None = None,
         encoding: str | None = None,
         errors: str | None = None,
-    ) -> Any:
+    ) -> subprocess.CompletedProcess[Any]:
         if isinstance(args, (str, bytes)):
             raise TypeError("command must be typed argv, not shell text")
         command = [str(part) for part in args]
@@ -174,11 +144,29 @@ class CommandExecutor:
     def check_output(
         self,
         args: Sequence[str],
-        **kwargs: object,
+        *,
+        cwd: str | Path | None = None,
+        env: Mapping[str, str] | None = None,
+        input: str | bytes | None = None,
+        stderr: int | None = None,
+        text: bool | None = False,
+        timeout: float | None = None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> str | bytes:
-        if "stdout" in kwargs:
-            raise ValueError("stdout is owned by CommandExecutor.check_output")
-        result = self.run(args, stdout=subprocess.PIPE, check=True, **kwargs)
+        result = self.run(
+            args,
+            cwd=cwd,
+            env=env,
+            input=input,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=text,
+            timeout=timeout,
+            check=True,
+            encoding=encoding,
+            errors=errors,
+        )
         assert result.stdout is not None
         return result.stdout
 
@@ -188,9 +176,9 @@ class CommandExecutor:
         *,
         cwd: str | Path | None = None,
         env: Mapping[str, str] | None = None,
-        stdin: int | None = None,
-        stdout: object | None = None,
-        stderr: object | None = None,
+        stdin: int | IO[Any] | None = None,
+        stdout: int | IO[Any] | None = None,
+        stderr: int | IO[Any] | None = None,
         text: bool = False,
         encoding: str | None = None,
         errors: str | None = None,
@@ -255,9 +243,9 @@ class CommandExecutor:
         *,
         cwd: str | Path | None = None,
         env: Mapping[str, str] | None = None,
-        stdin: int | None = None,
-        stdout: object | None = None,
-        stderr: object | None = None,
+        stdin: int | IO[Any] | None = None,
+        stdout: int | IO[Any] | None = None,
+        stderr: int | IO[Any] | None = None,
         text: bool = False,
         encoding: str | None = None,
         errors: str | None = None,

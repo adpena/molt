@@ -15,6 +15,7 @@ from molt.cli.runtime_build_identity import (
     _runtime_build_environment_identity,
     _verify_plan_toolchain_content,
 )
+from molt.cli.runtime_cargo_plan import _rust_resource_roots
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     runtime_build_fingerprint,
@@ -175,6 +176,29 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def _metadata_stdout(sysroot: Path, cfg: str = "unix\nselected\n") -> str:
+    return "\n".join(
+        (
+            "___",
+            "lib___.rlib",
+            "lib___.so",
+            "lib___.so",
+            "lib___.a",
+            "lib___.so",
+            str(sysroot),
+            "off",
+            "___",
+            cfg,
+        )
+    )
+
+
+def _metadata(sysroot: Path, cfg: str = "unix\nselected\n"):
+    from molt.cli.cargo_target_cfg import parse_rustc_target_metadata
+
+    return parse_rustc_target_metadata(_metadata_stdout(sysroot, cfg), "")
+
+
 def _plan(
     root: Path,
     *,
@@ -222,11 +246,176 @@ def test_environment_linker_overrides_config_and_cli_overrides_environment(
     )
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "wasm32-wasip1",
+        "wasm32-unknown-unknown",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ],
+)
+def test_cfg_target_plan_uses_rustc_facts_and_pins_selected_tools(
+    plan_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    wasm = target.startswith("wasm32")
+    fact_text = 'target_arch="wasm32"' if wasm else 'target_arch="native-test"'
+    seen = []
+
+    def probe(rustc, selected_target, flags, **kwargs):
+        seen.append((selected_target, flags))
+        return _metadata(plan_root, fact_text)
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", probe)
+    _config(
+        plan_root,
+        "[target.'cfg(not(target_arch=\"wasm32\"))']\nrustflags=[]\n"
+        '[target.\'cfg(target_arch="wasm32")\']\nlinker="wasm-linker"\nrustflags=["--cfg","wasm_selected"]\n'
+        '[build]\nrustflags=["--cfg","baseline"]\n',
+    )
+    plan = _plan(
+        plan_root,
+        args=("--target", target),
+        target=target,
+        env={name: "selected-" + name.lower() for name in ("CC", "CXX", "AR", "RANLIB")}
+        | (
+            {}
+            if wasm or target == "x86_64-unknown-linux-gnu"
+            else {
+                f"CARGO_TARGET_{target.upper().replace('-', '_')}_LINKER": "cross-linker"
+            }
+        ),
+    )
+    assert plan.rustflags == ("--cfg", "wasm_selected" if wasm else "baseline")
+    assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
+    assert seen and all(selected == target for selected, _ in seen)
+    if wasm:
+        assert plan.tools["linker"].name == "wasm-linker"
+        assert any("wasm-linker" in token for token in plan.command)
+
+
+@pytest.mark.parametrize("failure", ["exit", "empty", "mutated", "none"])
+def test_cfg_probe_retains_selected_compiler_and_reports_failure(
+    plan_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    rustc = plan_root / "cfg-rustc"
+    rustc.write_bytes(b"compiler-before")
+    expected = [
+        str(rustc),
+        *plans.cargo_target_query_arguments("wasm32-wasip1", ("--cfg", "selected")),
+    ]
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(command)
+        assert kwargs["cwd"] == plan_root
+        assert kwargs["timeout"] == 30
+        assert kwargs["input"] == ""
+        assert "RUSTC_LOG" not in kwargs["env"]
+        if failure == "mutated":
+            rustc.write_bytes(b"compiler-after!")
+        return subprocess.CompletedProcess(
+            command,
+            7 if failure == "exit" else 0,
+            ""
+            if failure == "empty"
+            else _metadata_stdout(plan_root, 'target_arch="wasm32"\nselected\n'),
+            "cfg diagnostic" if failure == "exit" else "",
+        )
+
+    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    if failure == "none":
+        metadata = plans._rust_target_metadata(
+            rustc,
+            "wasm32-wasip1",
+            ("--cfg", "selected"),
+            root=plan_root,
+            env={"RUSTC_LOG": "debug"},
+        )
+        assert ("target_arch", "wasm32") in metadata.cfg
+        assert ("selected", None) in metadata.cfg
+    else:
+        with pytest.raises((ValueError, OSError)) as exc:
+            plans._rust_target_metadata(
+                rustc,
+                "wasm32-wasip1",
+                ("--cfg", "selected"),
+                root=plan_root,
+                env={},
+            )
+        if failure == "exit":
+            assert "cfg diagnostic" in str(exc.value)
+    assert seen == [expected]
+
+
+def test_cfg_linker_conflicts_are_rejected_unless_exact_target_wins(
+    plan_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        plans, "_rust_target_metadata", lambda *a, **k: _metadata(plan_root, "unix")
+    )
+    _config(
+        plan_root,
+        "[target.'cfg(unix)']\nlinker=\"first\"\n"
+        "[target.'cfg(all(unix))']\nlinker=\"second\"\n",
+    )
+    with pytest.raises(ValueError, match="multiple cfg linkers"):
+        _plan(plan_root)
+    plan = _plan(
+        plan_root, env={"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "exact"}
+    )
+    assert plan.tools["linker"].name == "exact"
+
+
 def test_empty_wrapper_environment_disables_configured_wrapper(plan_root: Path) -> None:
     _config(plan_root, '[build]\nrustc-wrapper="configured-wrapper"\n')
     plan = _plan(plan_root, env={"RUSTC_WRAPPER": ""})
     assert not plan.wrappers
     assert plan.environment["RUSTC_WRAPPER"] == ""
+
+
+@pytest.mark.parametrize("scope", ["build", "target.x86_64-unknown-linux-gnu"])
+@pytest.mark.parametrize("override", [None, "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"])
+def test_cargo_string_lists_merge_file_cli_and_environment_before_cfg_selection(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, scope: str, override: str | None
+) -> None:
+    _config(
+        plan_root,
+        f'[{scope}]\nrustflags=["--cfg","file"]\n'
+        "[target.'cfg(all(file,cli,environment))']\nlinker=\"merged-linker\"\n",
+    )
+    selected_environment = (
+        "CARGO_BUILD_RUSTFLAGS"
+        if scope == "build"
+        else "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"
+    )
+    env = {selected_environment: "--cfg environment"}
+    expected = ("--cfg", "file", "--cfg", "cli", "--cfg", "environment")
+    if override is not None:
+        env[override] = "--cfg override" if override == "RUSTFLAGS" else ""
+        expected = ("--cfg", "override") if override == "RUSTFLAGS" else ()
+    probes = []
+
+    def metadata(rustc, target, flags, **kwargs):
+        probes.append((target, flags))
+        return _metadata(plan_root, "\n".join(("unix", *flags[1::2])))
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
+    plan = _plan(
+        plan_root, env=env, args=("--config", f'{scope}.rustflags=["--cfg","cli"]')
+    )
+    assert plan.rustflags == expected
+    assert probes == [(None, expected)]
+    if override is None:
+        assert plan.tools["linker"].name == "merged-linker"
+    else:
+        assert plan.tools["linker"].name != "merged-linker"
 
 
 def test_encoded_flags_win_and_transform_is_applied_once(plan_root: Path) -> None:
@@ -248,6 +437,65 @@ def test_encoded_flags_win_and_transform_is_applied_once(plan_root: Path) -> Non
     assert seen == [("--cfg", "encoded")]
     assert plan.rustflags == ("--cfg", "encoded", "--cfg", "molt")
     assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
+
+
+def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = "x86_64-unknown-linux-gnu"
+    installed, dependency, final = (
+        plan_root / name for name in ("installed", "dependency", "final")
+    )
+    for sysroot in (installed, dependency, final):
+        libdir = sysroot / "lib" / "rustlib" / host / "lib"
+        libdir.mkdir(parents=True)
+        (libdir / "libcore.rlib").write_bytes(sysroot.name.encode())
+    (installed / "lib" / "rustc_driver.dll").write_bytes(b"installed-driver")
+    (installed / "bin").mkdir()
+    search = plan_root / "search"
+    search.mkdir()
+    original = ("-L", "native=search")
+    normalized = ("-L", "native=" + str(search))
+    final_flags = (*normalized, "--cfg", "final_crate")
+    _config(plan_root, "[target.'cfg(normalized)']\nlinker=\"normalized-linker\"\n")
+    probes = []
+
+    def metadata(rustc, target, flags, **kwargs):
+        wrapped = bool(kwargs["wrappers"])
+        probes.append((target, flags, wrapped))
+        if not wrapped:
+            return _metadata(installed, "unix")
+        selected = final if flags == final_flags else dependency
+        facts = "unix\nnormalized" if flags[:2] == normalized else "unix"
+        return _metadata(selected, facts)
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
+    monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
+    plan = _plan(
+        plan_root,
+        env={"RUSTFLAGS": "-L native=search", "RUSTC_WRAPPER": "metadata-wrapper"},
+        args=("--", "--cfg", "final_crate"),
+    )
+    assert plan.rustflags == normalized
+    assert plan.tools["linker"].name == "normalized-linker"
+    # Resource discovery reuses the normalized cfg probe, while retaining a
+    # distinct final-crate selection and the unwrapped installed driver.
+    assert probes == [
+        (None, original, True),
+        (None, normalized, True),
+        (None, (), False),
+        (None, final_flags, True),
+    ]
+    roots = {entry.label: entry.path for entry in plan.rust_resources.roots}
+    assert (
+        roots["rust/target-libdir/0"] == dependency / "lib" / "rustlib" / host / "lib"
+    )
+    assert roots["rust/target-libdir/1"] == final / "lib" / "rustlib" / host / "lib"
+    assert roots["rust/driver"] == installed / "lib"
+    assert any(
+        item.identity.path == installed / "lib" / "rustc_driver.dll"
+        for item in plan.rust_resources.files
+    )
 
 
 def test_actual_host_target_flags_are_resolved_for_native(plan_root: Path) -> None:
@@ -689,7 +937,7 @@ def test_final_crate_resource_override_retains_dependency_custody(
     seen = []
 
     def roots(*args, **kwargs):
-        seen.append(kwargs["sysroots"])
+        seen.append(kwargs["flag_lanes"])
         return ()
 
     monkeypatch.setattr(plans, "_rust_resource_roots", roots)
@@ -702,7 +950,12 @@ def test_final_crate_resource_override_retains_dependency_custody(
         },
         args=("--", "-C", "linker=final-linker"),
     )
-    assert seen == [(first,)]
+    assert seen == [
+        (
+            plan.rustflags,
+            (*plan.rustflags, "-C", "linker=" + str(plan.tools["final_linker"])),
+        )
+    ]
     assert plan.tools["linker"].name == "dependency-linker"
     assert plan.tools["final_linker"].name == "final-linker"
     custody = {item.label: item.entrypoint for item in plan.executable_custody}
@@ -862,23 +1115,41 @@ def test_unresolved_rust_resource_selector_is_diagnosed(
         _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
 
 
+@pytest.mark.parametrize("wrapped", [False, True])
 def test_selected_sysroot_supplies_target_resources_not_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrapped: bool
 ) -> None:
     compiler = tmp_path / "rustc"
     compiler.write_bytes(b"MZcompiler")
     installed, selected = tmp_path / "installed", tmp_path / "selected"
-    installed.mkdir()
+    (installed / "lib" / "rustlib" / "host" / "lib").mkdir(parents=True)
     selected_lib = selected / "lib" / "rustlib" / "target" / "lib"
     selected_lib.mkdir(parents=True)
+    wrappers = {}
+    if wrapped:
+        for role in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            wrapper = tmp_path / role
+            wrapper.write_bytes(b"MZwrapper")
+            wrappers[role] = wrapper
+    expected_prefix = [*(str(path) for path in wrappers.values()), str(compiler)]
 
     def probe(command, **kwargs):
-        if command[2] == "sysroot":
-            value = installed
-        else:
-            assert command[-2:] == ["--sysroot", str(selected)]
-            value = selected_lib
-        return subprocess.CompletedProcess(command, 0, stdout=str(value), stderr="")
+        is_wrapped = wrapped and command[0] == expected_prefix[0]
+        prefix = expected_prefix if is_wrapped else [str(compiler)]
+        assert command[: len(prefix)] == prefix
+        args = command[len(prefix) :]
+        assert args[:4] == ["-", "--crate-name", "___", "--print=file-names"]
+        assert kwargs["input"] == ""
+        # The wrapper redirects crate queries even without an explicit
+        # --sysroot. A shortened resource query would incorrectly pick installed.
+        value = (
+            selected
+            if "--target" in args and (is_wrapped or "--sysroot" in args)
+            else installed
+        )
+        return subprocess.CompletedProcess(
+            command, 0, stdout=_metadata_stdout(value), stderr=""
+        )
 
     monkeypatch.setattr(plans.process_guard, "run_completed_command", probe)
     roots = plans._rust_resource_roots(
@@ -887,9 +1158,59 @@ def test_selected_sysroot_supplies_target_resources_not_default(
         env={},
         target="target",
         host="host",
-        sysroots=(selected,),
+        flag_lanes=((),) if wrapped else (("--sysroot", str(selected)),),
+        wrappers=wrappers,
+        target_argument="target",
     )
     target_roots = [
         entry.path for entry in roots if entry.label.startswith("rust/target-libdir/")
     ]
     assert target_roots == [selected_lib]
+    assert (
+        next(entry.path for entry in roots if entry.label == "rust/driver")
+        == installed / "lib"
+    )
+
+
+@pytest.mark.parametrize("mutated", [None, "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"])
+def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutated: str | None
+) -> None:
+    rustc = tmp_path / "rustc"
+    rustc.write_bytes(b"MZcompiler")
+    wrappers = {}
+    for role in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+        path = tmp_path / role
+        path.write_bytes(b"MZwrapper")
+        wrappers[role] = path
+
+    def run(command, **kwargs):
+        assert command == [
+            *(str(path) for path in wrappers.values()),
+            str(rustc),
+            *plans.cargo_target_query_arguments("target", ("--cfg", "selected")),
+        ]
+        if mutated is not None:
+            wrappers[mutated].write_bytes(b"MZchanged")
+        return subprocess.CompletedProcess(command, 0, _metadata_stdout(tmp_path), "")
+
+    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    if mutated is None:
+        assert ("selected", None) in plans._rust_target_metadata(
+            rustc,
+            "target",
+            ("--cfg", "selected"),
+            root=tmp_path,
+            env={},
+            wrappers=wrappers,
+        ).cfg
+    else:
+        with pytest.raises((ValueError, OSError), match="changed"):
+            plans._rust_target_metadata(
+                rustc,
+                "target",
+                ("--cfg", "selected"),
+                root=tmp_path,
+                env={},
+                wrappers=wrappers,
+            )

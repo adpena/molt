@@ -16,6 +16,7 @@ from molt.capability_policy import (
     resolve_capability_policy,
 )
 from molt._host_capabilities_generated import (
+    CAPABILITY_PROFILES,
     EXPLICIT_CAPABILITY_TIER,
     MAXIMUM_BUILTIN_CAPABILITY_TIER,
     capabilities_for_tier,
@@ -159,11 +160,8 @@ def test_run_cli_and_manifest_grants_form_one_explicit_runtime_policy(
     )
     assert error is None
     assert env["MOLT_CAPABILITY_TIER"] == EXPLICIT_CAPABILITY_TIER
-    assert env["MOLT_CAPABILITIES"] == (
-        "fs.read,net.asyncio,net.bind,net.connect,net.listen,net.poll,net.resolve,"
-        "net.socket,net.socketpair,ssl.connect,ssl.listen,ssl.read,ssl.write,"
-        "websocket.connect,websocket.listen"
-    )
+    expected = sorted({"fs.read", *CAPABILITY_PROFILES["net"]})
+    assert env["MOLT_CAPABILITIES"] == ",".join(expected)
 
 
 def test_trusted_tier_composes_with_explicit_grants_and_policy_overrides() -> None:

@@ -793,9 +793,17 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         "rust.clippy.workspace-default"
     ]
     assert commands["rust.test.default-truth"]["argv"] == [
+        "uv",
+        "run",
+        "--frozen",
         "python3",
         "tools/run_cargo_test_truth.py",
     ]
+    rust_job = ci_text.split("\n  rust-build-unit-smoke:", 1)[1].split(
+        "\n  llvm-backend:", 1
+    )[0]
+    assert 'uv: "false"' not in rust_job
+    assert 'cache-uv: "false"' not in rust_job
     assert commands["rust.test.default-truth"]["timeout_budget"] == "suite"
     assert commands["rust.clippy.workspace-default"]["argv"] == [
         "cargo",

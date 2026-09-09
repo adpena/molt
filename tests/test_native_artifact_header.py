@@ -19,6 +19,7 @@ from molt.native_artifact_header import (
     LINKED_IMAGE_KINDS,
     LOADED_IMAGE_KINDS,
     OBJECT_KINDS,
+    MachOHeader,
     NativeArtifactError,
     NativeReader,
     decode_native_artifact,
@@ -191,6 +192,25 @@ def test_universal_subtype_selection_never_chooses_first_family_slice():
             kinds=LOADED_IMAGE_KINDS,
             shape=shape,
         )
+
+
+@pytest.mark.parametrize("specialized_first", [False, True])
+def test_universal_runtime_uses_dyld_selected_slice_identity(
+    specialized_first: bool,
+) -> None:
+    generic = macho_header(cpu=0x0100000C, subtype=0)
+    arm64e = macho_header(cpu=0x0100000C, subtype=0x80000002)
+    slices = (arm64e, generic) if specialized_first else (generic, arm64e)
+    artifact = native_artifact_from_bytes(bytes(fat_macho(slices)))
+    shape = native_artifact_shape("aarch64", object_format=NativeObjectFormat.MACHO)
+    selected = artifact.admit(
+        object_format=NativeObjectFormat.MACHO,
+        kinds=LOADED_IMAGE_KINDS,
+        shape=shape,
+        loaded_macho_identity=(0x0100000C, 0x80000002),
+    )
+    assert isinstance(selected.metadata, MachOHeader)
+    assert selected.metadata.subtype == 0x80000002
 
 
 @pytest.mark.parametrize(

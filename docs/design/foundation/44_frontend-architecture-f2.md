@@ -108,6 +108,41 @@ callback. The graph retains the known candidate while lowering preserves runtime
 lookup, failure and warning behavior. A genuinely unknown package still requires
 explicit runtime import custody rather than an invented graph root.
 
+The runtime-support graph producer supplies that custody for its explicitly
+resolved importlib implementation sources on registry-capable targets. The
+immutable catalog contains source-backed existing dispatch roots (and their
+parents) plus the support roots, not every discovered application module. Exact
+owner name/path and AST digest authorize dynamic metadata projection to the
+whole catalog; no lexical package is substituted. Discovery validates source
+identity and retains those rows in runtime dispatch. The same object reaches
+full frontend analysis through the import plan. Custodied owner scans use a
+separate per-build cache identity and never populate strict persisted scans or
+analysis; other sources and protocol-alias identity analysis remain strict.
+Names outside the compiled dispatch surface retain runtime import failure
+behavior. Source emitters without that registry cannot claim this custody.
+
+The invariant-metadata fast path also consumes completed assignment effects,
+including release, deletion and named-expression callbacks. An unrelated
+deferred return must not decide whether import metadata is sound. Regression
+coverage lives in `tests/cli/test_runtime_import_scan_custody.py` and
+`tests/test_python_binding_flow.py`; emitted native/WASM behavior remains a
+separate consumer proof.
+
+Intrinsic dependency classification is not runtime graph admission. Its shared
+`StdlibModuleImportEvidence` retains independently proven import edges and
+explicit unresolved site plans. Only the proven edges establish same-package
+intrinsic/support relationships; unknown metadata never contributes guessed
+dependencies or catalog alternatives. A string ending in `.py` is not an import
+dependency and cannot qualify a private module as intrinsic support. Direct
+intrinsic evidence remains valid despite unresolved imports. The strict
+static-import projection still
+rejects those obligations with the owning module, path and source line. Compiler
+enforcement and the audit command use this same evidence authority.
+Classification returns statuses and the analyzed import evidence together;
+compiler failures and audit text/JSON report unresolved sites without a second
+analysis. Missing, unreadable or target-incompatible source fails with its
+module, path and Python target rather than becoming empty import evidence.
+
 Expression results are owned by `compiler_analysis/static_truth.py`:
 known truth, exact scalar value, required evaluation, and structurally shared
 display segments are separate facts. Source-bound names and members project

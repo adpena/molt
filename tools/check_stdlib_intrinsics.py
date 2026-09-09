@@ -32,6 +32,11 @@ from molt.stdlib_intrinsic_policy import (  # noqa: E402
     intrinsic_names_from_source,
     is_fail_closed_import_policy_gate,
 )
+from molt.target_python import (  # noqa: E402
+    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_target_python_version,
+)
 
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"
 MANIFEST = ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
@@ -603,24 +608,30 @@ def _load_full_coverage_required_intrinsics(
                 "stdlib full-coverage manifest must not include molt.stdlib "
                 "in STDLIB_REQUIRED_INTRINSICS_BY_MODULE"
             )
-        if not isinstance(intrinsic_names, tuple) or not all(
-            isinstance(name, str) for name in intrinsic_names
-        ):
+        if not isinstance(intrinsic_names, tuple):
             raise RuntimeError(
                 "stdlib full-coverage manifest is invalid: "
                 "STDLIB_REQUIRED_INTRINSICS_BY_MODULE values must be tuples[str, ...]"
             )
-        if any(not name.startswith("molt_") for name in intrinsic_names):
-            raise RuntimeError(
-                "stdlib full-coverage manifest is invalid: "
-                "required intrinsic names must start with `molt_`"
-            )
-        if STDLIB_PROBE_INTRINSIC in intrinsic_names:
-            raise RuntimeError(
-                "stdlib full-coverage manifest is invalid: "
-                "`molt_stdlib_probe` cannot satisfy full coverage contracts"
-            )
-        out[module_name] = tuple(dict.fromkeys(intrinsic_names))
+        validated: dict[str, None] = {}
+        for name in intrinsic_names:
+            if not isinstance(name, str):
+                raise RuntimeError(
+                    "stdlib full-coverage manifest is invalid: "
+                    "required intrinsic names must be strings"
+                )
+            if not name.startswith("molt_"):
+                raise RuntimeError(
+                    "stdlib full-coverage manifest is invalid: "
+                    "required intrinsic names must start with `molt_`"
+                )
+            if name == STDLIB_PROBE_INTRINSIC:
+                raise RuntimeError(
+                    "stdlib full-coverage manifest is invalid: "
+                    "`molt_stdlib_probe` cannot satisfy full coverage contracts"
+                )
+            validated[name] = None
+        out[module_name] = tuple(validated)
     return out
 
 
@@ -972,6 +983,12 @@ def _parse_module_list(raw: str) -> tuple[str, ...]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Stdlib intrinsics lint + audit gate")
     parser.add_argument(
+        "--target-python",
+        choices=SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
+        default=_DEFAULT_TARGET_PYTHON_VERSION.short,
+        help="Python language target for shared intrinsic dependency classification.",
+    )
+    parser.add_argument(
         "--update-doc",
         action="store_true",
         help=(
@@ -1111,7 +1128,17 @@ def main() -> int:
         )
 
     module_paths = {audit.module: audit.path for audit in audits}
-    closed_statuses = classify_stdlib_module_statuses(module_paths)
+    intrinsic_classification = classify_stdlib_module_statuses(
+        module_paths, target_python=_parse_target_python_version(args.target_python)
+    )
+    closed_statuses = intrinsic_classification.statuses
+    unresolved_intrinsic_imports = intrinsic_classification.unresolved_imports_payload()
+    if unresolved_intrinsic_imports:
+        print("Intrinsic relationship evidence excludes unresolved import sites:")
+        for site in unresolved_intrinsic_imports:
+            print(
+                f"- {site['module']}: {site['path']}:{site['line']} ({site['name']!r})"
+            )
     audits = [
         ModuleAudit(
             module=audit.module,
@@ -1594,6 +1621,7 @@ def main() -> int:
                 {"module": root, "imports": list(bad)}
                 for root, bad in strict_import_violations
             ],
+            "unresolved_intrinsic_imports": unresolved_intrinsic_imports,
             "strict_fallback_violations": [
                 {"module": root, "errors": list(errors)}
                 for root, errors in strict_fallback_violations

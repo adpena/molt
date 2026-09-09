@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
@@ -23,6 +26,31 @@ def test_cargo_test_topology_cannot_mask_or_skip_binaries() -> None:
     assert MODULE.violations() == []
 
 
+def test_truth_runner_direct_import_uses_canonical_tool_modules(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    code = """
+import runpy
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+runpy.run_path(sys.argv[1])
+assert "tools.check_suite_honesty" in sys.modules
+assert "tools.command_execution" in sys.modules
+assert "check_suite_honesty" not in sys.modules
+assert "command_execution" not in sys.modules
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", code, str(ROOT / "tools" / "run_cargo_test_truth.py")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_cargo_truth_runner_custody_is_proof_plan_owned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -31,7 +59,7 @@ def test_cargo_truth_runner_custody_is_proof_plan_owned(
         """
 [[command]]
 id = "rust.test.renamed"
-argv = ["python3", "tools/run_cargo_test_truth.py"]
+argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 """.lstrip(),
         encoding="utf-8",
     )
@@ -48,7 +76,7 @@ def test_multi_executable_proof_gate_requires_complete_failure_collection(
         """
 [[command]]
 id = "rust.test.default-truth"
-argv = ["python3", "tools/run_cargo_test_truth.py"]
+argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 
 [[rule]]
 name = "unsafe-filtered-package-test"
@@ -69,7 +97,7 @@ def test_every_cargo_compilation_gate_requires_locked_dependency_authority(
         """
 [[command]]
 id = "rust.test.default-truth"
-argv = ["python3", "tools/run_cargo_test_truth.py"]
+argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 
 [[rule]]
 name = "unlocked-package-test"
@@ -109,8 +137,7 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
             "status": "failed" if registered else "success",
             "failure_identities": raw_registered,
             "test_results": [
-                {"identity": identity, "status": "fail"}
-                for identity in raw_registered
+                {"identity": identity, "status": "fail"} for identity in raw_registered
             ],
         }
     ]
@@ -142,8 +169,7 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
     if registered:
         receipts[0]["failure_identities"] = []
         receipts[0]["test_results"] = [
-            {"identity": identity, "status": "pass"}
-            for identity in raw_registered
+            {"identity": identity, "status": "pass"} for identity in raw_registered
         ]
         assert runner.verdict(
             output,
@@ -337,8 +363,7 @@ def test_truth_runner_uses_metadata_for_version_only_and_renamed_path_ids() -> N
     runner = _load_tool("run_cargo_test_truth_metadata_ids", "run_cargo_test_truth.py")
     ordinary_id = "path+file:///molt/runtime/molt-runtime#0.1.0"
     renamed_id = (
-        "path+file:///molt/runtime/molt-cpython-abi#"
-        "molt-lang-cpython-abi@0.1.0"
+        "path+file:///molt/runtime/molt-cpython-abi#molt-lang-cpython-abi@0.1.0"
     )
     metadata = json.dumps(
         {
@@ -509,7 +534,9 @@ def test_truth_runner_retains_explicit_run_identity_evidence(
 def test_truth_runner_terminal_failure_retains_diagnostics_and_termination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool("run_cargo_test_truth_terminal_failure", "run_cargo_test_truth.py")
+    runner = _load_tool(
+        "run_cargo_test_truth_terminal_failure", "run_cargo_test_truth.py"
+    )
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
     started = runner.datetime.now(runner.timezone.utc)
     phase = {
@@ -550,21 +577,25 @@ def test_truth_runner_terminal_failure_retains_diagnostics_and_termination(
 def test_truth_runner_main_finalizes_compile_failure_before_attribution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool("run_cargo_test_truth_compile_checkpoint", "run_cargo_test_truth.py")
+    runner = _load_tool(
+        "run_cargo_test_truth_compile_checkpoint", "run_cargo_test_truth.py"
+    )
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
-    monkeypatch.setattr(
-        runner, "LOCKED_WORKSPACES", (("root", ROOT / "Cargo.toml"),)
-    )
+    monkeypatch.setattr(runner, "LOCKED_WORKSPACES", (("root", ROOT / "Cargo.toml"),))
     monkeypatch.setattr(runner, "run_identity", lambda _started: "run-compile-failure")
     monkeypatch.setattr(runner, "host_target", lambda: "x86_64-pc-windows-msvc")
     commands = iter(
         [
             (0, "prefetch complete\n"),
             (0, json.dumps({"packages": []})),
-            (101, "error[E0004]: compiler diagnostics\nerror: could not compile `molt`\n"),
+            (
+                101,
+                "error[E0004]: compiler diagnostics\nerror: could not compile `molt`\n",
+            ),
         ]
     )
+
     def fake_streamed(
         _command,
         *,
@@ -608,14 +639,19 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
 def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool("run_cargo_test_truth_bounded_stream", "run_cargo_test_truth.py")
-    artifact = json.dumps(
-        {
-            "reason": "compiler-artifact",
-            "profile": {"test": True},
-            "executable": "target/test-binary",
-        }
-    ) + "\n"
+    runner = _load_tool(
+        "run_cargo_test_truth_bounded_stream", "run_cargo_test_truth.py"
+    )
+    artifact = (
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "profile": {"test": True},
+                "executable": "target/test-binary",
+            }
+        )
+        + "\n"
+    )
     diagnostic = "error[E0004]: " + ("x" * 1_000_000) + "\n"
 
     class FakeProcess:
@@ -649,9 +685,10 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
     )
     assert evidence_path.read_text(encoding="utf-8") == artifact + diagnostic
     assert result.evidence["bytes"] == len((artifact + diagnostic).encode())
-    assert result.evidence["sha256"] == hashlib.sha256(
-        (artifact + diagnostic).encode()
-    ).hexdigest()
+    assert (
+        result.evidence["sha256"]
+        == hashlib.sha256((artifact + diagnostic).encode()).hexdigest()
+    )
     assert len(result.evidence["tail"].encode()) <= 16_384
     assert result.evidence["contains_compiler_error"] is True
     assert len(json.dumps(result.evidence).encode()) < 20_000
@@ -871,16 +908,19 @@ def test_binary_runner_preserves_posix_signal_and_windows_fast_fail() -> None:
         "severity": "error",
         "facility": 0,
     }
-    assert binary_runner.termination_payload(0xC00000FD, timed_out=False)[
-        "name"
-    ] == "STATUS_STACK_OVERFLOW"
+    assert (
+        binary_runner.termination_payload(0xC00000FD, timed_out=False)["name"]
+        == "STATUS_STACK_OVERFLOW"
+    )
     unknown = binary_runner.termination_payload(0xC1234567, timed_out=False)
     assert unknown["kind"] == "windows-exception"
     assert unknown["code"] == "0xC1234567"
     assert unknown["raw_code"] == 0xC1234567
 
 
-def test_binary_runner_exact_diagnosis_canonicalizes_inherited_libtest_controls() -> None:
+def test_binary_runner_exact_diagnosis_canonicalizes_inherited_libtest_controls() -> (
+    None
+):
     binary_runner = _load_tool(
         "cargo_test_binary_runner_exact_args", "cargo_test_binary_runner.py"
     )
@@ -1100,7 +1140,9 @@ def test_binary_runner_keeps_structural_candidates_out_of_known_red_identity(
         peak_process_rss_kb=1024,
         peak_tree_rss_kb=2048,
     )
-    monkeypatch.setattr(binary_runner, "execute_binary", lambda _argv, _timeout: baseline)
+    monkeypatch.setattr(
+        binary_runner, "execute_binary", lambda _argv, _timeout: baseline
+    )
     monkeypatch.setattr(
         binary_runner,
         "diagnose_abnormal_exit",
@@ -1169,10 +1211,15 @@ def test_binary_runner_receipts_are_append_only_per_invocation(
     ]
     assert binary_runner.main(args) == 0
     assert binary_runner.main(args) == 0
-    receipts = [json.loads(path.read_text(encoding="utf-8")) for path in tmp_path.glob("*.json")]
+    receipts = [
+        json.loads(path.read_text(encoding="utf-8")) for path in tmp_path.glob("*.json")
+    ]
     assert len(receipts) == 2
     assert len({receipt["invocation_id"] for receipt in receipts}) == 2
-    assert all(receipt["test_results"] == [{"identity": "same::identity", "status": "pass"}] for receipt in receipts)
+    assert all(
+        receipt["test_results"] == [{"identity": "same::identity", "status": "pass"}]
+        for receipt in receipts
+    )
 
 
 def test_binary_runner_immutable_publish_refuses_collision(tmp_path: Path) -> None:
@@ -1505,9 +1552,7 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
         encoding="utf-8",
     )
 
-    assert len(
-        runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")
-    ) == 1
+    assert len(runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")) == 1
     executable.write_bytes(b"tampered executable bytes")
     with pytest.raises(RuntimeError, match="changed after receipt publication"):
         runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")

@@ -56,6 +56,7 @@ from molt.compiler_analysis.python_effects_generated import (
     INVOKES_IMPORT_SYSTEM,
     INVOKES_ITERATION_CALLBACK,
     NO_EFFECTS,
+    NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
     RAISES,
     READS_FRAME_STATE,
     READS_GLOBAL_NAMESPACE,
@@ -3808,7 +3809,17 @@ class _Analyzer:
             target_python=self.policy.target_python,
             execution_kind=self.policy.module_execution_kind,
         )
-        if self._module_import_flow_required:
+        # The invariant-state fast path is valid only when completed binding
+        # effects cannot change import metadata. A release, descriptor store,
+        # unpack, deletion, or named-expression assignment can invoke Python
+        # even when its target is not spelled __package__/__spec__/__name__.
+        # Do not let an unrelated deferred return decide whether these facts
+        # are projected: every target family records its effects here.
+        import_relevant_assignment_effects = any(
+            effects & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA)
+            for effects in self.assignment_effects.values()
+        )
+        if self._module_import_flow_required or import_relevant_assignment_effects:
             module_import_flow = _analyze_module_import_flow_uncached(
                 tree,
                 import_context,

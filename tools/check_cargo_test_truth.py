@@ -15,7 +15,7 @@ _CARGO_TEST = re.compile(r"cargo\s+test\b[^\n\"']*")
 _CARGO_COMPILE = re.compile(r"cargo\s+(?:build|check|clippy|test)\b[^\n\"']*")
 _CANONICAL = "cargo test --locked --workspace --tests --no-fail-fast"
 _RUNNER_ID = "rust.test.default-truth"
-_RUNNER_ARGV = ["python3", "tools/run_cargo_test_truth.py"]
+_RUNNER_ARGV = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 
 
 def _commands(path: Path) -> list[tuple[int, str]]:

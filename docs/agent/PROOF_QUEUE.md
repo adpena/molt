@@ -35,6 +35,11 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
+Windows pytest scratch uses atomically reserved short `pt-*` directories under
+the selected custody root. Keep human-readable run/platform identity in receipts,
+not repeated in every scratch path: native compiler/linker descendants still
+have classic path-length limits. Explicit test roots remain caller-owned.
+
 Python startup guarding is owned by `src/molt/pytest_memory_guard_bootstrap.py`;
 state paths are owned by `src/molt/memory_guard_paths.py`. Source and test-local
 `sitecustomize.py` files are adapters into that package, not repository-wide

@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import cast
 
 from molt.cli import module_resolution as _module_resolution
-from molt.cli.models import ImportScanMode, _RuntimeImportSupportPolicy
+from molt.cli.models import (
+    ImportScanMode,
+    _RuntimeImportScanCustody,
+    _RuntimeImportSupportPolicy,
+)
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -59,10 +63,26 @@ IMPORTER_MODULE_NAME = "_molt_importer"
 def _sealed_import_modules(
     request: StaticImportRequest,
     contexts: Sequence[ModuleImportContext],
+    *,
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    source_path: Path | None = None,
+    source_ast_digest: str | None = None,
 ) -> tuple[str, ...]:
     module_name = contexts[0].module_name if contexts else None
+    plan = plan_static_import_request(request, contexts)
+    if (
+        plan.requires_runtime
+        and runtime_import_custody is not None
+        and runtime_import_custody.admits_scan(
+            module_name, source_path, source_ast_digest
+        )
+    ):
+        # Do not replace poisoned metadata with the lexical package. The runtime
+        # keeps Python's relative-import semantics and may select any retained
+        # catalog row (or fail closed if the requested module is not admitted).
+        return tuple(dict.fromkeys((*plan.modules, *runtime_import_custody.modules)))
     return require_static_import_modules(
-        plan_static_import_request(request, contexts),
+        plan,
         consumer=f"module import scanner ({module_name or '<script>'}: {request.name!r})",
     )
 
@@ -546,7 +566,10 @@ def _collect_imports(
     *,
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    source_path: Path | None = None,
 ) -> list[str]:
+    source_ast_digest = python_ast_digest(tree)
     _validate_import_scan_mode(import_scan_mode)
     selected_static_helper_qualnames = _static_import_helper_qualnames(
         module_name, import_scan_mode
@@ -570,7 +593,7 @@ def _collect_imports(
     )
     binding_index = analyze_python_bindings(
         cast(ast.Module, tree),
-        source_digest=python_ast_digest(tree),
+        source_digest=source_ast_digest,
         policy=PythonBindingPolicy(
             target_python=target_python.feature_version,
             module_name=module_name,
@@ -873,7 +896,13 @@ def _collect_imports(
                     ),
                     globals_were_supplied=payload.globals is not None,
                 )
-            for module in _sealed_import_modules(request, (context,)):
+            for module in _sealed_import_modules(
+                request,
+                (context,),
+                runtime_import_custody=runtime_import_custody,
+                source_path=source_path,
+                source_ast_digest=source_ast_digest,
+            ):
                 if module not in seen:
                     seen.add(module)
                     modules.append(module)
@@ -1023,7 +1052,15 @@ def _collect_imports(
             level=node.level,
             fromlist=tuple(alias.name for alias in node.names),
         )
-        imports.extend(_sealed_import_modules(request, _import_contexts(node)))
+        imports.extend(
+            _sealed_import_modules(
+                request,
+                _import_contexts(node),
+                runtime_import_custody=runtime_import_custody,
+                source_path=source_path,
+                source_ast_digest=source_ast_digest,
+            )
+        )
 
     def _collect_import_call(node: ast.Call) -> None:
         if not import_flow.states_for(node):
@@ -1412,7 +1449,12 @@ def _collect_import_star_modules(
     *,
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    source_path: Path | None = None,
 ) -> tuple[str, ...]:
+    source_ast_digest = (
+        python_ast_digest(tree) if runtime_import_custody is not None else None
+    )
     _validate_import_scan_mode(import_scan_mode)
     base_context = ModuleImportContext(
         module_name,
@@ -1436,6 +1478,9 @@ def _collect_import_star_modules(
         for resolved in _sealed_import_modules(
             StaticImportRequest.statement(node.module or "", level=node.level),
             contexts,
+            runtime_import_custody=runtime_import_custody,
+            source_path=source_path,
+            source_ast_digest=source_ast_digest,
         ):
             if resolved and resolved not in seen:
                 seen.add(resolved)
@@ -1455,6 +1500,8 @@ def _expand_imports_with_static_package_all_star_children(
     stdlib_allowlist: set[str],
     resolution_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    source_path: Path | None = None,
 ) -> tuple[str, ...]:
     out: list[str] = []
     seen: set[str] = set()
@@ -1472,6 +1519,8 @@ def _expand_imports_with_static_package_all_star_children(
         is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        runtime_import_custody=runtime_import_custody,
+        source_path=source_path,
     )
     if not star_modules:
         return tuple(out)

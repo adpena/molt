@@ -14,6 +14,7 @@ import shutil
 import stat
 import tomllib
 from collections.abc import Iterator, MutableMapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -21,6 +22,12 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.cli.cargo_target_cfg import (
+    RustcTargetMetadata,
+    cargo_target_query_arguments,
+    parse_rustc_target_metadata,
+    select_cargo_target_flags,
+)
 from molt.exact_json import canonical_json_sha256
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
@@ -692,6 +699,28 @@ def _pin_rustup_proxy(
             )
 
 
+@contextmanager
+def _rust_probe_command(
+    rustc: Path, wrappers: Mapping[str, Path], *, label: str
+) -> Iterator[list[str]]:
+    """Cargo workspace_process order, with every executable fenced together."""
+    with ExitStack() as stack:
+        command = []
+        for role, path in (
+            *(
+                (role, wrappers[role])
+                for role in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")
+                if role in wrappers
+            ),
+            ("rustc", rustc),
+        ):
+            entrypoint, _identity = stack.enter_context(
+                stable_executable_probe(path, label=f"{label}/{role}")
+            )
+            command.append(os.fspath(entrypoint))
+        yield command
+
+
 def _rust_resource_roots(
     rustc: Path,
     *,
@@ -699,53 +728,43 @@ def _rust_resource_roots(
     env: Mapping[str, str],
     target: str,
     host: str,
-    sysroots: tuple[Path | None, ...] = (None,),
+    flag_lanes: tuple[tuple[str, ...], ...] = ((),),
+    wrappers: Mapping[str, Path] = MappingProxyType({}),
+    target_argument: str | None,
+    metadata_probe: Callable[[str | None, tuple[str, ...], bool], RustcTargetMetadata]
+    | None = None,
 ) -> tuple[CargoResourceRoot, ...]:
-    def probe(entrypoint: Path, args: Sequence[str]) -> str:
-        result = process_guard.run_completed_command(
-            [os.fspath(entrypoint), *args],
-            cwd=root,
-            env=dict(env),
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            memory_guard_prefix=None,
+    def metadata(
+        query_target: str | None, flags: tuple[str, ...], wrapped: bool
+    ) -> RustcTargetMetadata:
+        if metadata_probe is not None:
+            return metadata_probe(query_target, flags, wrapped)
+        return _rust_target_metadata(
+            rustc,
+            query_target,
+            flags,
+            root=root,
+            env=env,
+            wrappers=wrappers if wrapped else {},
         )
-        value = result.stdout.strip()
-        if result.returncode != 0 or not value or "\n" in value or "\r" in value:
-            raise ValueError(
-                f"runtime rustc resource probe failed: {result.stderr.strip()}"
-            )
-        return value
 
-    with stable_executable_probe(rustc, label="runtime rustc resource selection") as (
-        entrypoint,
-        _identity,
-    ):
-        sysroot = Path(probe(entrypoint, ("--print", "sysroot"))).resolve(strict=True)
-        selected = []
-        for index, override in enumerate(sysroots):
-            args = (
-                "--print",
-                "target-libdir",
-                "--target",
-                target,
-                *(("--sysroot", os.fspath(override)) if override is not None else ()),
-            )
-            target_libdir = Path(probe(entrypoint, args)).resolve(strict=True)
+    # The selected compiler's installed driver remains a resource even when a
+    # wrapper or explicit flags select a different target sysroot. Query the
+    # compiler itself here, not the wrapper's virtualized target selection.
+    sysroot = metadata(None, (), False).sysroot.resolve(strict=True)
+    selected: list[CargoResourceRoot] = []
+    for index, flags in enumerate(flag_lanes):
+        info = metadata(target_argument, flags, True)
+        target_libdir = info.target_libdir(target).resolve(strict=True)
+        selected.append(CargoResourceRoot(f"rust/target-libdir/{index}", target_libdir))
+        if info.sysroot.resolve(strict=True) != sysroot:
             selected.append(
-                CargoResourceRoot(f"rust/target-libdir/{index}", target_libdir)
-            )
-            if override is not None and override != sysroot:
-                selected.append(
-                    CargoResourceRoot(
-                        f"rust/target-codegen/{index}",
-                        override / "lib" / "rustlib" / host / "codegen-backends",
-                        required=False,
-                    )
+                CargoResourceRoot(
+                    f"rust/target-codegen/{index}",
+                    info.sysroot / "lib" / "rustlib" / host / "codegen-backends",
+                    required=False,
                 )
+            )
     lib = sysroot / "lib"
     roots = [
         *selected,
@@ -763,9 +782,20 @@ def _rust_resource_roots(
         ),
     ]
     if target != host:
+        host_info = metadata(None, (), True)
         roots.append(
-            CargoResourceRoot("rust/host-libdir", lib / "rustlib" / host / "lib")
+            CargoResourceRoot(
+                "rust/host-libdir", host_info.target_libdir(host).resolve(strict=True)
+            )
         )
+        if host_info.sysroot.resolve(strict=True) != sysroot:
+            roots.append(
+                CargoResourceRoot(
+                    "rust/host-codegen",
+                    host_info.sysroot / "lib" / "rustlib" / host / "codegen-backends",
+                    required=False,
+                )
+            )
     return tuple(roots)
 
 
@@ -775,7 +805,7 @@ class RustFlagResourcePlan:
     command: tuple[str, ...]
     roots: tuple[CargoResourceRoot, ...]
     logical_paths: tuple[tuple[str, Path], ...]
-    sysroots: tuple[Path | None, ...]
+    flag_lanes: tuple[tuple[str, ...], ...]
     dependency_linker: Path | None
     final_linker: Path | None
     link_roots: tuple[CargoResourceRoot, ...]
@@ -796,7 +826,6 @@ def _resolve_rust_flag_resources(
     resources: list[CargoResourceRoot] = []
     link_resources: list[CargoResourceRoot] = []
     logical_paths: list[tuple[str, Path]] = []
-    sysroots: list[Path | None] = []
     linker: Path | None = None
 
     def local_path(value: str, *, label: str, directory: bool) -> Path:
@@ -941,10 +970,9 @@ def _resolve_rust_flag_resources(
     dependency_linker = linker
     linker = None
     separator = command.index("--") if "--" in command else len(command)
-    final_args, final_sysroot = lane(
+    final_args, _final_sysroot = lane(
         command[separator + 1 :], "final-crate", dependency_sysroot
     )
-    sysroots.extend(dict.fromkeys((dependency_sysroot, final_sysroot)))
     normalized_command = (
         *command[:separator],
         *(("--", *final_args) if separator < len(command) else ()),
@@ -954,7 +982,7 @@ def _resolve_rust_flag_resources(
         normalized_command,
         tuple(resources),
         tuple(logical_paths),
-        tuple(sysroots),
+        tuple(dict.fromkeys((normalized, (*normalized, *final_args)))),
         dependency_linker,
         linker,
         tuple(link_resources),
@@ -1284,6 +1312,57 @@ def _flags(value: object, *, label: str) -> tuple[str, ...]:
     ):
         return cast(tuple[str, ...], tuple(value))
     raise ValueError(f"runtime {label} must be a flag string or string array")
+
+
+def _cargo_string_list(
+    configuration: Mapping[str, object],
+    cli: Mapping[str, object],
+    env: Mapping[str, str],
+    keys: tuple[str, ...],
+    environment_name: str,
+) -> tuple[str, ...]:
+    # Cargo StringList deserializes the merged file/CLI value, then appends
+    # its config environment variable. This is not scalar selector precedence.
+    value = _get(_merge(configuration, cli), *keys)
+    configured = _flags(value if value is not None else (), label=".".join(keys))
+    return configured + (
+        _flags(env[environment_name], label=environment_name)
+        if environment_name in env
+        else ()
+    )
+
+
+def _rust_target_metadata(
+    rustc: Path,
+    target: str | None,
+    flags: tuple[str, ...],
+    *,
+    root: Path,
+    env: Mapping[str, str],
+    wrappers: Mapping[str, Path] = MappingProxyType({}),
+) -> RustcTargetMetadata:
+    with _rust_probe_command(
+        rustc, wrappers, label="runtime rustc target metadata"
+    ) as command:
+        probe_environment = dict(env)
+        probe_environment.pop("RUSTC_LOG", None)
+        result = process_guard.run_completed_command(
+            [*command, *cargo_target_query_arguments(target, flags)],
+            cwd=root,
+            env=probe_environment,
+            input="",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            memory_guard_prefix=None,
+            check=False,
+        )
+    if result.returncode != 0:
+        raise ValueError(
+            f"runtime rustc target metadata failed ({result.returncode}): {result.stderr.strip()}"
+        )
+    return parse_rustc_target_metadata(result.stdout, result.stderr)
 
 
 def _pinned_tool_configurations(
@@ -1748,13 +1827,36 @@ def resolve_runtime_cargo_plan(
     rustc = _tool_path(rustc_selector, root=root, env=environment, role="rustc")
     rustc = _pin_rustup_proxy(rustc, role="rustc", root=root, env=environment)
     rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
+    environment["RUSTC"] = os.fspath(rustc)
+    wrappers: dict[str, Path] = {}
+    for name, key in (
+        ("RUSTC_WRAPPER", "rustc-wrapper"),
+        ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
+    ):
+        value = _selected(
+            configuration,
+            cli,
+            environment,
+            ("build", key),
+            (name, "CARGO_BUILD_" + name),
+            "",
+        )
+        if not isinstance(value, str):
+            raise ValueError(f"runtime {name} must be an executable path or empty")
+        environment[name] = ""  # Explicit empty disables inherited config.
+        if value:
+            wrappers[name] = _tool_path(value, root=root, env=environment, role=name)
+            environment[name] = os.fspath(wrappers[name])
+    wrapper_custody = tuple(
+        CargoExecutableCustody.capture("wrapper/" + role, path)
+        for role, path in wrappers.items()
+    )
     if host_target is None:
-        with stable_executable_probe(rustc, label="runtime rustc host") as (
-            entrypoint,
-            _identity,
-        ):
+        with _rust_probe_command(
+            rustc, wrappers, label="runtime rustc host"
+        ) as command:
             result = process_guard.run_completed_command(
-                [os.fspath(entrypoint), "-vV"],
+                [*command, "-vV"],
                 cwd=root,
                 env=environment,
                 capture_output=True,
@@ -1799,34 +1901,80 @@ def resolve_runtime_cargo_plan(
         _table(configured_targets, label="target"),
         _table(cli_targets, label="CLI target"),
     )
-    for key, value in target_tables.items():
-        if (
-            key.startswith("cfg(")
-            and isinstance(value, Mapping)
-            and any(item in value for item in ("linker", "rustflags"))
-        ):
-            raise ValueError(
-                "runtime cfg-selected Cargo tools/flags require a resolved target-cfg plan"
+    cfg_tables = {
+        key: _table(value, label=f"target.{key}")
+        for key, value in target_tables.items()
+        if key.startswith("cfg(")
+    }
+    target_flags = _cargo_string_list(
+        configuration,
+        cli,
+        environment,
+        ("target", target, "rustflags"),
+        f"CARGO_TARGET_{cargo_target}_RUSTFLAGS",
+    )
+    build_flags = _cargo_string_list(
+        configuration,
+        cli,
+        environment,
+        ("build", "rustflags"),
+        "CARGO_BUILD_RUSTFLAGS",
+    )
+    environment_flags = None
+    if "CARGO_ENCODED_RUSTFLAGS" in environment:
+        encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
+        environment_flags = tuple(encoded.split("\x1f")) if encoded else ()
+    elif "RUSTFLAGS" in environment:
+        environment_flags = _flags(environment["RUSTFLAGS"], label="RUSTFLAGS")
+    target_argument = (
+        target if command_target is not None or configured_target is not None else None
+    )
+    metadata_cache: dict[
+        tuple[str | None, tuple[str, ...], bool], RustcTargetMetadata
+    ] = {}
+
+    def metadata_for(
+        query_target: str | None, flags: tuple[str, ...], wrapped: bool
+    ) -> RustcTargetMetadata:
+        key = (query_target, flags, wrapped)
+        if key not in metadata_cache:
+            metadata_cache[key] = _rust_target_metadata(
+                rustc,
+                query_target,
+                flags,
+                root=root,
+                env=environment,
+                wrappers=wrappers if wrapped else {},
             )
-    wrappers: dict[str, Path] = {}
-    for name, key in (
-        ("RUSTC_WRAPPER", "rustc-wrapper"),
-        ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
-    ):
-        value = _selected(
-            configuration,
-            cli,
-            environment,
-            ("build", key),
-            (name, "CARGO_BUILD_" + name),
-            "",
+        return metadata_cache[key]
+
+    flag_plan: RustFlagResourcePlan | None = None
+
+    def finalize_flags(flags: tuple[str, ...]) -> tuple[str, ...]:
+        nonlocal flag_plan
+        transformed = (
+            rustflags_transform(flags) if rustflags_transform is not None else flags
         )
-        if not isinstance(value, str):
-            raise ValueError(f"runtime {name} must be an executable path or empty")
-        environment[name] = ""  # Explicit empty disables inherited config.
-        if value:
-            wrappers[name] = _tool_path(value, root=root, env=environment, role=name)
-            environment[name] = os.fspath(wrappers[name])
+        if not isinstance(transformed, tuple) or any(
+            not isinstance(item, str) or not item or "\x1f" in item
+            for item in transformed
+        ):
+            raise ValueError("runtime resolved Rust flag token is invalid")
+        flag_plan = _resolve_rust_flag_resources(
+            transformed, cargo_command, root=root, env=environment
+        )
+        return flag_plan.flags
+
+    rustflags, matched_cfg = select_cargo_target_flags(
+        cfg_tables,
+        target_flags=target_flags,
+        build_flags=build_flags,
+        environment_flags=environment_flags,
+        flags=lambda value: _flags(value, label="cfg rustflags"),
+        probe=lambda flags: metadata_for(target_argument, flags, True).cfg,
+        transform=finalize_flags,
+    )
+    assert flag_plan is not None
     cargo = _tool_path(cargo_command[0], root=root, env=environment, role="cargo")
     cargo = _pin_rustup_proxy(cargo, role="cargo", root=root, env=environment)
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
@@ -1840,6 +1988,19 @@ def resolve_runtime_cargo_plan(
                 ("target", target, "linker"),
                 (f"CARGO_TARGET_{cargo_target}_LINKER",),
             )
+            if value is None:
+                cfg_linkers = [
+                    (key, table["linker"])
+                    for key, table in matched_cfg
+                    if "linker" in table
+                ]
+                if len(cfg_linkers) > 1:
+                    raise ValueError(
+                        "runtime Cargo target matches multiple cfg linkers: "
+                        + ", ".join(key for key, _ in cfg_linkers)
+                    )
+                if cfg_linkers:
+                    value = cfg_linkers[0][1]
         else:
             names = _c_tool_environment_names(
                 role, target=target, host_target=host_target
@@ -1872,39 +2033,6 @@ def resolve_runtime_cargo_plan(
     _select_host_c_tools(
         tools, environment, root=root, target=target, host_target=host_target
     )
-    if "CARGO_ENCODED_RUSTFLAGS" in environment:
-        encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
-        rustflags = tuple(encoded.split("\x1f")) if encoded else ()
-    elif "RUSTFLAGS" in environment:
-        rustflags = _flags(environment["RUSTFLAGS"], label="RUSTFLAGS")
-    else:
-        selected_flags = _selected(
-            configuration,
-            cli,
-            environment,
-            ("target", target, "rustflags"),
-            (f"CARGO_TARGET_{cargo_target}_RUSTFLAGS",),
-        )
-        if selected_flags is None:
-            selected_flags = _selected(
-                configuration,
-                cli,
-                environment,
-                ("build", "rustflags"),
-                ("CARGO_BUILD_RUSTFLAGS",),
-                (),
-            )
-        rustflags = _flags(selected_flags, label="Cargo rustflags")
-    if rustflags_transform is not None:
-        rustflags = rustflags_transform(rustflags)
-    if not isinstance(rustflags, tuple) or any(
-        not isinstance(item, str) or not item or "\x1f" in item for item in rustflags
-    ):
-        raise ValueError("runtime resolved Rust flag token is invalid")
-    flag_plan = _resolve_rust_flag_resources(
-        rustflags, cargo_command, root=root, env=environment
-    )
-    rustflags = flag_plan.flags
     if flag_plan.dependency_linker is not None:
         tools["linker"] = flag_plan.dependency_linker
         environment[f"CARGO_TARGET_{cargo_target}_LINKER"] = os.fspath(
@@ -1927,10 +2055,7 @@ def resolve_runtime_cargo_plan(
             for role, path in tools.items()
             if role != "rustc"
         ),
-        *(
-            CargoExecutableCustody.capture("wrapper/" + role, path)
-            for role, path in wrappers.items()
-        ),
+        *wrapper_custody,
     )
     rust_roots = _rust_resource_roots(
         rustc,
@@ -1938,7 +2063,10 @@ def resolve_runtime_cargo_plan(
         env=environment,
         target=target,
         host=host_target,
-        sysroots=flag_plan.sysroots,
+        flag_lanes=flag_plan.flag_lanes,
+        wrappers=wrappers,
+        target_argument=target_argument,
+        metadata_probe=metadata_for,
     )
     if capture_inputs is not None:
         capture_inputs(

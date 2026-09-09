@@ -843,8 +843,10 @@ def test_generated_importer_does_not_require_import_support_modules(
     assert calls == ["demo_math"]
 
 
+@pytest.mark.parametrize("target", ["native", "wasm"])
 def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     tmp_path: Path,
+    target: str,
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import importlib\nvalue = importlib.import_module('json')\n")
@@ -861,7 +863,7 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
         diagnostics_enabled=True,
         module_reasons=module_reasons,
         json_output=False,
-        target="native",
+        target=target,
     )
 
     assert error is None
@@ -873,6 +875,12 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     assert "runtime_import_support" in module_reasons["importlib.machinery"]
     assert "import_support" not in module_reasons["importlib.util"]
     assert "import_support" not in module_reasons["importlib.machinery"]
+    # Unknown metadata selects from the existing dispatch surface, not all
+    # statically discovered application sources.
+    custody = prepared.runtime_import_scan_custody
+    assert custody is not None
+    custody.validate_graph(prepared.module_graph)
+    assert set(custody.modules).issubset(prepared.runtime_import_dispatch_roots)
 
 
 def test_materialize_import_plan_does_not_rescan_importlib_support(

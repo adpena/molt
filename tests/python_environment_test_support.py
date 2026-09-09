@@ -386,6 +386,11 @@ def build_environment_manifest(
         dependency_group=dependency_group,
     )
     realized = realized_environment_manifest(runtime, selected_packages)
+    selected_executable = realized.get("selected_executable")
+    assert isinstance(selected_executable, dict)
+    selected_executable_path = selected_executable.get("path")
+    assert isinstance(selected_executable_path, str)
+    realized_executable = Path(selected_executable_path).name
     address = {
         "schema_version": source_build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": dependency_group,
@@ -402,7 +407,7 @@ def build_environment_manifest(
         "python": {
             "implementation": marker["implementation_name"],
             "version": marker["python_full_version"],
-            "executable": Path(sys.executable).name,
+            "executable": realized_executable,
         },
         "requirements": selected_requirements,
         "marker_environment": marker,
