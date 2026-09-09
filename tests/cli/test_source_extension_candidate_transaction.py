@@ -181,7 +181,7 @@ def test_candidate_commit_journal_survives_every_namespace_boundary(
                 )
             else:
 
-                def fail_cleanup(*_args):
+                def fail_cleanup(*_args, **_kwargs):
                     raise OSError("injected cleanup")
 
                 faults.setattr(
@@ -297,5 +297,66 @@ def test_failure_recording_preserves_prepared_commit_intent(
         assert recover_and_prune_source_extension_candidate_transactions(
             custody=custody
         ) == (root,)
+    finally:
+        _release_file_lock(handle)
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_real_recovery_resumes_after_retirement_deleted_the_transaction_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, committed: bool
+) -> None:
+    from molt import file_publication
+
+    output = tmp_path / "candidate"
+    root = tmp_path / ".candidate.attest-interrupted"
+    handle, custody = _held_custody(output)
+    try:
+        _begin(root, custody)
+        seal_hash = None
+        if committed:
+            seal_hash, report_hash = _stage_bundle(root)
+            transaction_authority.commit_source_extension_candidate_transaction(
+                root,
+                custody=custody,
+                seal_sha256=seal_hash,
+                report_sha256=report_hash,
+            )
+        with monkeypatch.context() as faults:
+
+            def partial_remove(path):
+                (path / "candidate-transaction.json").unlink()
+                raise OSError("injected after actual journal unlink")
+
+            faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+            with pytest.raises(file_publication.RetirementError) as caught:
+                recover_and_prune_source_extension_candidate_transactions(
+                    custody=custody, now_ns=10**20, failed_retention_seconds=0
+                )
+        retired = caught.value.retired_path
+        assert not root.exists()
+        assert retired.is_dir()
+        assert not (retired / "candidate-transaction.json").exists()
+        # A later producer may legitimately use the old spelling. Recovery of
+        # retired bytes must neither consult its journal nor delete its payload.
+        _begin(root, custody, now_ns=10**20)
+        unrelated = tmp_path / ".other.attest-live"
+        unrelated.mkdir()
+        (unrelated / "payload").write_bytes(b"preserve")
+        assert (
+            recover_and_prune_source_extension_candidate_transactions(
+                custody=custody, now_ns=10**20 + 1, failed_retention_seconds=100
+            )
+            == ()
+        )
+        assert not retired.exists()
+        assert (root / "candidate-transaction.json").is_file()
+        assert (unrelated / "payload").read_bytes() == b"preserve"
+        if committed:
+            assert (
+                verify_source_package_seal(
+                    output / transaction_authority.CANDIDATE_SEAL_DIRECTORY
+                ).seal_sha256
+                == seal_hash
+            )
     finally:
         _release_file_lock(handle)

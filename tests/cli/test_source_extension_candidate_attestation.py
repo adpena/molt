@@ -471,10 +471,12 @@ def test_promotion_cleanup_failure_reports_committed_namespace(
     attestation, receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
     destination = _promotion_registry(monkeypatch, tmp_path, receipt)
 
-    def fail_cleanup(_path: Path) -> None:
+    def fail_cleanup(_path: Path, **_kwargs) -> None:
         raise OSError("injected cleanup failure")
 
-    monkeypatch.setattr(promotion, "durable_remove_path", fail_cleanup)
+    monkeypatch.setattr(
+        promotion, "complete_source_extension_publication_transaction", fail_cleanup
+    )
     assert (
         promotion.publish_source_extension_set_candidate(
             candidate=str(attestation.root), json_output=True
@@ -488,3 +490,339 @@ def test_promotion_cleanup_failure_reports_committed_namespace(
         verify_source_package_seal(destination).seal_sha256
         == attestation.seal.seal_sha256
     )
+
+
+def test_promotion_real_recovery_reclaims_partially_deleted_committed_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from molt import file_publication
+
+    attestation, receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
+    destination = _promotion_registry(monkeypatch, tmp_path, receipt)
+    real_remove = file_publication.shutil.rmtree
+    interrupted = []
+
+    def partial_remove(path, *args, **kwargs):
+        path = Path(path)
+        # Nested temporary cleanups remain real. Interrupt only the retired
+        # completed promotion whose package-store holds its publication journal.
+        if (
+            path.name.startswith(".molt-retired-v1-")
+            and (path / "package-store").exists()
+        ):
+            journals = list((path / "package-store" / "commits").glob("*.json"))
+            assert journals
+            journals[0].unlink()
+            interrupted.append(path)
+            raise OSError("injected after actual promotion journal unlink")
+        return real_remove(path, *args, **kwargs)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+        assert (
+            promotion.publish_source_extension_set_candidate(
+                candidate=str(attestation.root), json_output=True
+            )
+            == 2
+        )
+    first = capsys.readouterr().out
+    assert "publication committed" in first and "retirement committed" in first
+    assert len(interrupted) == 1 and interrupted[0].exists()
+    assert (
+        verify_source_package_seal(destination).seal_sha256
+        == attestation.seal.seal_sha256
+    )
+    assert (
+        promotion.publish_source_extension_set_candidate(
+            candidate=str(attestation.root),
+            json_output=True,
+            expected_incumbent_seal_sha256=receipt.seal.seal_sha256,
+            expected_incumbent_identity_sha256=receipt.canonical_identity.canonical_sha256,
+        )
+        == 0
+    )
+    assert not interrupted[0].exists()
+    assert (
+        verify_source_package_seal(destination).seal_sha256
+        == attestation.seal.seal_sha256
+    )
+
+
+@pytest.mark.parametrize("operation", ["produce", "promote"])
+def test_publication_recovery_reclaims_only_its_retirement_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from molt import file_publication
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    destination = tmp_path / "installed"
+    prefix = f".{destination.name}.{operation}-"
+    source = tmp_path / (prefix + "old")
+    foreign = tmp_path / ".candidate.attest-old"
+    for root in (source, foreign):
+        root.mkdir()
+        (root / "journal").write_bytes(b"retired evidence")
+    handle = _acquire_file_lock(
+        tmp_path / ".installed.producer.lock",
+        timeout_s=1.0,
+        timeout_message="fixture lock",
+    )
+    try:
+        custody = promotion._source_extension_publication_custody(destination, handle)
+        retired = []
+        with monkeypatch.context() as faults:
+
+            def partial_remove(path):
+                (path / "journal").unlink()
+                raise OSError("injected partial reclamation")
+
+            faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+            for root, scope in ((source, prefix), (foreign, ".candidate.attest-")):
+                with pytest.raises(file_publication.RetirementError) as caught:
+                    file_publication.durable_remove_path(root, retirement_scope=scope)
+                retired.append(caught.value.retired_path)
+        source.mkdir()
+        (source / "new-live").write_bytes(b"preserve")
+        with pytest.warns(RuntimeWarning, match="preserved extension transaction"):
+            promotion.recover_and_prune_source_extension_transactions(
+                destination, custody=custody
+            )
+        assert not retired[0].exists() and retired[1].exists()
+        assert (source / "new-live").read_bytes() == b"preserve"
+    finally:
+        _release_file_lock(handle)
+
+
+@pytest.mark.parametrize("boundary", ["before-retirement", "partial-retirement"])
+def test_producer_public_result_waits_for_real_transaction_retirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    boundary: str,
+) -> None:
+    from molt import file_publication
+    from molt.cli import source_extension_producer as producer
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    attestation, _receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
+    destination = tmp_path / "installed"
+    root = tmp_path / ".installed.produce-result"
+    handle = _acquire_file_lock(
+        tmp_path / ".installed.producer.lock",
+        timeout_s=1.0,
+        timeout_message="fixture publication lock",
+    )
+    try:
+        custody = promotion._source_extension_publication_custody(destination, handle)
+        commit = seal_api.prepare_source_package_seal_commit(
+            root / "package-store", attestation.seal, destination
+        )
+        seal_api.commit_source_package_seal(commit)
+        capsys.readouterr()
+        with monkeypatch.context() as faults:
+            if boundary == "before-retirement":
+
+                def fail_rename(*_args):
+                    raise OSError("injected before retirement")
+
+                faults.setattr(
+                    file_publication,
+                    "_namespace_publish_leaf_exclusive_once",
+                    fail_rename,
+                )
+            else:
+
+                def partial_remove(path):
+                    journal = next((path / "package-store" / "commits").glob("*.json"))
+                    journal.unlink()
+                    # Retired-generation cleanup must not reacquire the old name.
+                    root.mkdir()
+                    (root / "new-live").write_bytes(b"preserve")
+                    raise OSError("injected after actual producer journal unlink")
+
+                faults.setattr(file_publication.shutil, "rmtree", partial_remove)
+            rc = producer._complete_producer_publication(
+                root,
+                custody=custody,
+                command="produce-set",
+                data={"root": str(destination)},
+                messages=("must not emit success",),
+                json_output=True,
+            )
+        records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert rc == 2 and len(records) == 1
+        assert records[0]["status"] == "error"
+        assert records[0]["data"]["publication_committed"] is True
+        assert records[0]["data"]["cleanup_complete"] is False
+        assert records[0]["data"]["returncode"] == 2
+        assert (
+            verify_source_package_seal(destination).seal_sha256
+            == attestation.seal.seal_sha256
+        )
+        assert not handle.file.closed and handle.entry.mutex.locked()
+        if boundary == "partial-retirement":
+            retired = Path(records[0]["data"]["retired_path"])
+            assert records[0]["data"]["namespace_retirement_committed"] is True
+            with pytest.warns(RuntimeWarning, match="preserved extension transaction"):
+                promotion.recover_and_prune_source_extension_transactions(
+                    destination, custody=custody
+                )
+            assert not retired.exists()
+            assert (root / "new-live").read_bytes() == b"preserve"
+        else:
+            assert "namespace_retirement_committed" not in records[0]["data"]
+            assert (root / "package-store" / "commits").is_dir()
+            promotion.recover_and_prune_source_extension_transactions(
+                destination, custody=custody
+            )
+            assert not root.exists()
+    finally:
+        _release_file_lock(handle)
+    assert handle.file.closed
+
+
+def test_producer_prior_retirement_failure_preserves_current_live_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from molt import file_publication
+    from molt.cli import source_extension_producer as producer
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    attestation, _receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
+    destination = tmp_path / "installed"
+    root = tmp_path / ".installed.produce-current"
+    prior = tmp_path / ".installed.produce-prior"
+    handle = _acquire_file_lock(
+        tmp_path / ".installed.producer.lock",
+        timeout_s=1.0,
+        timeout_message="fixture publication lock",
+    )
+    try:
+        custody = promotion._source_extension_publication_custody(destination, handle)
+        commit = seal_api.prepare_source_package_seal_commit(
+            root / "package-store", attestation.seal, destination
+        )
+        seal_api.commit_source_package_seal(commit)
+        prior.mkdir()
+        (prior / "journal").write_bytes(b"old journal")
+        (prior / "residue").write_bytes(b"old residue")
+        with monkeypatch.context() as faults:
+
+            def partial_prior_remove(path):
+                (path / "journal").unlink()
+                raise OSError("injected after actual prior journal unlink")
+
+            faults.setattr(file_publication.shutil, "rmtree", partial_prior_remove)
+            with pytest.raises(file_publication.RetirementError) as caught:
+                file_publication.durable_remove_path(
+                    prior, retirement_scope=".installed.produce-"
+                )
+        retired = caught.value.retired_path
+        assert not prior.exists() and retired.exists()
+        capsys.readouterr()
+        with monkeypatch.context() as faults:
+
+            def fail_prior_reclamation(path):
+                assert path == retired
+                raise OSError("injected prior residue reclamation failure")
+
+            faults.setattr(file_publication.shutil, "rmtree", fail_prior_reclamation)
+            rc = producer._complete_producer_publication(
+                root,
+                custody=custody,
+                command="produce-set",
+                data={"root": str(destination)},
+                messages=("must not emit success",),
+                json_output=True,
+            )
+        records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert rc == 2 and len(records) == 1
+        assert records[0]["status"] == "error"
+        outcome = records[0]["data"]
+        assert outcome["publication_committed"] is True
+        assert outcome["cleanup_complete"] is False
+        assert outcome["namespace_retirement_committed"] is False
+        assert outcome["transaction_root"] == str(root)
+        assert outcome["retired_path"] == str(retired)
+        assert outcome["retirement_phase"] == "physical reclamation"
+        assert outcome["returncode"] == 2
+        assert commit.record_path.is_file()
+        assert root.is_dir() and not prior.exists() and retired.is_dir()
+        assert (
+            verify_source_package_seal(destination).seal_sha256
+            == attestation.seal.seal_sha256
+        )
+        assert not handle.file.closed and handle.entry.mutex.locked()
+        promotion.recover_and_prune_source_extension_transactions(
+            destination, custody=custody
+        )
+        assert not retired.exists() and not root.exists() and not prior.exists()
+    finally:
+        _release_file_lock(handle)
+    assert handle.file.closed
+
+
+@pytest.mark.parametrize("boundary", ["before-call", "inside-call", "verify", "rebind"])
+def test_promotion_publication_outcome_tracks_real_call_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    boundary: str,
+) -> None:
+    attestation, receipt = _finalize_candidate_bundle(tmp_path, monkeypatch)
+    destination = _promotion_registry(monkeypatch, tmp_path, receipt)
+
+    def fail_boundary(*_args, **_kwargs):
+        if boundary != "before-call":
+            assert destination.is_dir()
+        raise ValueError(f"injected publication {boundary} failure")
+
+    real_commit = promotion.commit_source_package_seal
+
+    def commit_then_fail(commit):
+        real_commit(commit)
+        # The caller cannot infer the outcome of an interrupted publication call,
+        # even though this fixture knows its real namespace commit completed.
+        fail_boundary()
+
+    if boundary == "before-call":
+        monkeypatch.setattr(promotion, "_load_candidate_report", fail_boundary)
+    elif boundary == "inside-call":
+        monkeypatch.setattr(promotion, "commit_source_package_seal", commit_then_fail)
+    else:
+        attribute = (
+            "verify_source_package_seal"
+            if boundary == "verify"
+            else "rebind_source_extension_set_receipt"
+        )
+        monkeypatch.setattr(promotion, attribute, fail_boundary)
+    capsys.readouterr()
+    assert (
+        promotion.publish_source_extension_set_candidate(
+            candidate=str(attestation.root), json_output=True
+        )
+        == 2
+    )
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(records) == 1 and records[0]["status"] == "error"
+    outcome = records[0]["data"]
+    expected = {
+        "before-call": False,
+        "inside-call": None,
+        "verify": True,
+        "rebind": True,
+    }
+    assert outcome["publication_committed"] is expected[boundary]
+    assert outcome["returncode"] == 2
+    if boundary == "before-call":
+        assert outcome["transaction_root"] is None and not destination.exists()
+    else:
+        assert (
+            verify_source_package_seal(destination).seal_sha256
+            == attestation.seal.seal_sha256
+        )
+        root = Path(outcome["transaction_root"])
+        assert root.parent == destination.parent and root.is_dir()
+        assert list((root / "package-store" / "commits").glob("*.json"))

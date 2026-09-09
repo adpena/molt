@@ -15,7 +15,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
-import warnings
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
@@ -127,9 +126,11 @@ from molt.cli.source_extension_candidate_transaction import (
     recover_and_prune_source_extension_candidate_transactions,
     source_extension_candidate_transaction_custody,
 )
-from molt.file_publication import durable_remove_path
+from molt.file_publication import RetirementError
 from molt.exact_json import write_exact
 from molt.cli.source_extension_publication import (
+    SourceExtensionPublicationCustody,
+    complete_source_extension_publication_transaction,
     _source_extension_publication_custody,
     publish_source_extension_candidate,
     recover_and_prune_source_extension_transactions,
@@ -2160,7 +2161,6 @@ def _build_source_extension_set(
     candidate_transaction_custody: SourceExtensionCandidateTransactionCustody | None = (
         None
     )
-    published = False
     incumbent_identity: Mapping[str, Any] | None = None
     incumbent_seal = None
     try:
@@ -2686,7 +2686,6 @@ def _build_source_extension_set(
                 ),
             )
             published_seal = published_receipt.seal
-            published = True
             data = {
                 "package": extension_set.package,
                 "module_set": extension_set.name,
@@ -2702,18 +2701,18 @@ def _build_source_extension_set(
                 "target": metadata.target_triple,
                 "abi_tier": abi_tier,
             }
-            if json_output:
-                _emit_json(
-                    _json_payload(f"extension-{command}", "ok", data=data),
-                    json_output=True,
-                )
-            else:
-                action = (
-                    "without replacement" if publication["no_op"] else "by CAS upgrade"
-                )
-                print(f"Reproduced extension set {action}: {destination}")
-                print(f"Canonical identity: {registered_candidate_identity_sha256}")
-            return 0
+            action = "without replacement" if publication["no_op"] else "by CAS upgrade"
+            return _complete_producer_publication(
+                transaction_root,
+                custody=publication_custody,
+                command=command,
+                data=data,
+                json_output=json_output,
+                messages=(
+                    f"Reproduced extension set {action}: {destination}",
+                    f"Canonical identity: {registered_candidate_identity_sha256}",
+                ),
+            )
         if destination.exists():
             raise SourceExtensionProducerError(
                 "internal publication error: incumbent identity guard did not "
@@ -2732,7 +2731,6 @@ def _build_source_extension_set(
                 expected_sha256=seal.seal_sha256,
             ),
         ).seal
-        published = True
         data = {
             "package": extension_set.package,
             "module_set": extension_set.name,
@@ -2744,15 +2742,18 @@ def _build_source_extension_set(
             "target": metadata.target_triple,
             "abi_tier": abi_tier,
         }
-        if json_output:
-            _emit_json(
-                _json_payload(f"extension-{command}", "ok", data=data),
-                json_output=True,
-            )
-        else:
-            print(f"Published extension set: {destination}")
-            print("Modules: " + ", ".join(data["modules"]))
-        return 0
+        assert publication_custody is not None
+        return _complete_producer_publication(
+            transaction_root,
+            custody=publication_custody,
+            command=command,
+            data=data,
+            json_output=json_output,
+            messages=(
+                f"Published extension set: {destination}",
+                "Modules: " + ", ".join(data["modules"]),
+            ),
+        )
     except (
         OSError,
         SourceExtensionProducerError,
@@ -2762,9 +2763,17 @@ def _build_source_extension_set(
         ValueError,
     ) as exc:
         detail = str(exc)
+        if isinstance(exc, RetirementError) and exc.source_path == transaction_root:
+            # The old name no longer carries our transaction custody. A new
+            # live generation there is not failure evidence or cleanup authority.
+            transaction_root = None
         if transaction_root is not None and transaction_root.exists():
             detail += f"; preserved producer transaction: {transaction_root}"
-        if candidate_transaction_custody is not None and transaction_root is not None:
+        if (
+            candidate_transaction_custody is not None
+            and transaction_root is not None
+            and transaction_root.exists()
+        ):
             try:
                 fail_source_extension_candidate_transaction(
                     transaction_root,
@@ -2788,20 +2797,8 @@ def _build_source_extension_set(
                 detail += f"; failure evidence could not be recorded: {recording_error}"
         return _fail(detail, json_output, command=f"extension-{command}")
     finally:
-        try:
-            if published and transaction_root is not None and transaction_root.exists():
-                try:
-                    durable_remove_path(transaction_root)
-                except (OSError, ValueError) as cleanup_error:
-                    warnings.warn(
-                        f"publication committed; transaction cleanup failed at "
-                        f"{transaction_root}: {cleanup_error}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-        finally:
-            if producer_lock is not None:
-                _release_file_lock(producer_lock)
+        if producer_lock is not None:
+            _release_file_lock(producer_lock)
 
 
 def attest_source_extension_set_candidate(
@@ -2831,6 +2828,49 @@ def attest_source_extension_set_candidate(
         candidate_output=output,
         json_output=json_output,
     )
+
+
+def _complete_producer_publication(
+    transaction_root: Path,
+    *,
+    custody: SourceExtensionPublicationCustody,
+    command: str,
+    data: Mapping[str, Any],
+    messages: tuple[str, ...],
+    json_output: bool,
+) -> int:
+    """One public producer result boundary: publication AND cleanup outcome."""
+    outcome = dict(data) | {"publication_committed": True}
+    try:
+        complete_source_extension_publication_transaction(
+            transaction_root, custody=custody
+        )
+    except (OSError, ValueError) as exc:
+        outcome["cleanup_complete"] = False
+        outcome["transaction_root"] = str(transaction_root)
+        if isinstance(exc, RetirementError):
+            outcome["namespace_retirement_committed"] = (
+                exc.source_path == transaction_root
+            )
+            outcome["retired_path"] = str(exc.retired_path)
+            outcome["retirement_phase"] = exc.phase
+        return _fail(
+            f"publication committed at {custody.destination}; "
+            f"producer transaction cleanup failed: {exc}",
+            json_output,
+            command=f"extension-{command}",
+            data=outcome,
+        )
+    outcome["cleanup_complete"] = True
+    if json_output:
+        _emit_json(
+            _json_payload(f"extension-{command}", "ok", data=outcome),
+            json_output=True,
+        )
+    else:
+        for message in messages:
+            print(message)
+    return 0
 
 
 def produce_source_extension_set(

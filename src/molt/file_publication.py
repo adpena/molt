@@ -8,6 +8,7 @@ import ctypes
 import errno
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -198,7 +199,7 @@ def _linux_rename_exclusive(staged: Path, destination: Path) -> None:
     except AttributeError as exc:
         raise OSError(
             errno.ENOSYS,
-            "libc does not expose renameat2 for exclusive directory publication",
+            "libc does not expose renameat2 for exclusive leaf publication",
         ) from exc
     renameat2.argtypes = (
         ctypes.c_int,
@@ -228,7 +229,7 @@ def _macos_rename_exclusive(staged: Path, destination: Path) -> None:
     except AttributeError as exc:
         raise OSError(
             errno.ENOSYS,
-            "libc does not expose renamex_np for exclusive directory publication",
+            "libc does not expose renamex_np for exclusive leaf publication",
         ) from exc
     renamex_np.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
     renamex_np.restype = ctypes.c_int
@@ -237,10 +238,8 @@ def _macos_rename_exclusive(staged: Path, destination: Path) -> None:
         _raise_posix_rename_error(staged, destination)
 
 
-def _namespace_publish_directory_exclusive_once(
-    staged: Path, destination: Path
-) -> None:
-    """Atomically rename a directory while refusing every destination collision."""
+def _namespace_publish_leaf_exclusive_once(staged: Path, destination: Path) -> None:
+    """Atomically rename a leaf while refusing every destination collision."""
 
     if os.name == "nt":
         windows_replace_write_through(
@@ -259,7 +258,7 @@ def _namespace_publish_directory_exclusive_once(
     else:
         raise OSError(
             errno.ENOTSUP,
-            f"exclusive directory publication is unsupported on {sys.platform}",
+            f"exclusive leaf publication is unsupported on {sys.platform}",
         )
 
 
@@ -386,7 +385,7 @@ def durable_publish_directory_exclusive(staged: Path, destination: Path) -> None
             "directory publication destination already exists",
             destination,
         )
-    _namespace_publish_directory_exclusive_once(staged, destination)
+    _namespace_publish_leaf_exclusive_once(staged, destination)
     _sync_publication_parents_after_commit(source_parent, destination_parent)
 
 
@@ -405,31 +404,157 @@ def durable_namespace_publish_directory_exclusive(
     _real_directory(source, label="quarantine source")
     _real_directory(source.parent, label="quarantine source parent")
     _real_directory(destination.parent, label="quarantine destination parent")
-    _namespace_publish_directory_exclusive_once(source, destination)
+    _namespace_publish_leaf_exclusive_once(source, destination)
     _sync_publication_parents_after_commit(source.parent, destination.parent)
 
 
-def durable_remove_path(path: Path) -> None:
-    """Remove one caller-owned leaf and persist its parent namespace change.
+class RetirementError(OSError):
+    """The live name is retired; only physical reclamation/durability failed."""
 
-    Refuse indirect roots and filesystem roots; recursive deletion does not
-    follow symlinks or Windows directory junctions contained in the tree.
+    namespace_committed = True
+
+    def __init__(self, retired_path: Path, phase: str, cause: BaseException) -> None:
+        self.retired_path = retired_path
+        self.source_path: Path | None = None
+        self.phase = phase
+        super().__init__(
+            f"namespace retirement committed; {phase} failed; "
+            f"recoverable retired leaf {retired_path}: {cause}"
+        )
+
+
+def _retirement_prefix(scope: str) -> str:
+    if not isinstance(scope, str) or not scope:
+        raise ValueError("retirement requires a nonempty caller-owned scope")
+    return ".molt-retired-v1-" + hashlib.sha256(os.fsencode(scope)).hexdigest() + "-"
+
+
+def _retirement_identity(metadata: os.stat_result) -> tuple[str, int, int]:
+    if _metadata_is_link_like(metadata):
+        raise ValueError("retirement refuses indirect leaves")
+    kind = "d" if stat.S_ISDIR(metadata.st_mode) else "f"
+    if kind == "f" and not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("retirement refuses special entries")
+    if not metadata.st_ino:
+        raise ValueError("retirement requires a stable filesystem file identity")
+    return kind, metadata.st_dev, metadata.st_ino
+
+
+def _reclaim_retired_leaf(retired: Path, identity: tuple[str, int, int]) -> None:
+    # The caller owns this namespace exclusively. Recheck lexical no-follow
+    # custody and identity immediately before reclamation; never adopt a rival
+    # that replaced a retired name. rmtree does not follow contained symlinks
+    # or Windows directory junctions.
+    try:
+        resolved = resolve_owned_path(retired)
+        if resolved != retired or _retirement_identity(retired.lstat()) != identity:
+            raise ValueError(f"retired leaf identity changed: {retired}")
+        if identity[0] == "d":
+            shutil.rmtree(retired)
+        else:
+            retired.unlink()
+    except (OSError, ValueError) as exc:
+        raise RetirementError(retired, "physical reclamation", exc) from exc
+    try:
+        fsync_directory(retired.parent)
+    except OSError as exc:
+        raise RetirementError(retired, "reclamation durability", exc) from exc
+
+
+def reclaim_retired_paths(parent: Path, *, retirement_scope: str) -> tuple[Path, ...]:
+    """Reclaim only identity-bound retired leaves in one exclusively owned scope.
+
+    Call under the existing consumer lock, or with a private transaction parent.
+    This never retires a live path. Scope hashes and root identities are encoded
+    in bounded names, not in a second journal that reclamation could destroy.
+    An unknown/malformed/changed retired leaf fails closed and remains evidence.
     """
+    prefix = _retirement_prefix(retirement_scope)
+    parent = resolve_owned_path(parent)
+    try:
+        parent_metadata = parent.lstat()
+    except FileNotFoundError:
+        return ()
+    _real_directory(parent, label="retirement parent")
+    parent_identity = _retirement_identity(parent_metadata)
+    # Also retries a previous post-removal barrier when no residue remains.
+    # More importantly, no physical deletion precedes durable retirement.
+    fsync_directory(parent)
+    reclaimed: list[Path] = []
+    for retired in sorted(parent.iterdir()):
+        if not retired.name.startswith(prefix):
+            continue
+        match = re.fullmatch(
+            r"([df])-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{16})",
+            retired.name[len(prefix) :],
+        )
+        if match is None:
+            raise ValueError(f"malformed retired leaf in owned scope: {retired}")
+        if (
+            resolve_owned_path(parent) != parent
+            or _retirement_identity(parent.lstat()) != parent_identity
+        ):
+            raise ValueError(f"retirement parent identity changed: {parent}")
+        identity = (match[1], int(match[2], 16), int(match[3], 16))
+        _reclaim_retired_leaf(retired, identity)
+        reclaimed.append(retired)
+    return tuple(reclaimed)
 
+
+def durable_remove_path(path: Path, *, retirement_scope: str | None = None) -> None:
+    """Retire one owned live leaf atomically, then reclaim its physical storage.
+
+    The caller retains its existing exclusive namespace lock/private-parent
+    custody through this operation and subsequent scoped recovery. No replacement
+    of the live name or retired name is permitted. Once the rename commits, every
+    error names recoverable retirement state; callers must not recreate a journal
+    or claim rollback. A new live leaf at the old spelling is never touched by
+    reclaim_retired_paths.
+    """
     path = resolve_owned_path(path)
     if path == path.parent or is_link_like(path):
         raise ValueError(f"cleanup requires a real owned leaf: {path}")
+    scope = path.name if retirement_scope is None else retirement_scope
+    prefix = _retirement_prefix(scope)
+    reclaim_retired_paths(path.parent, retirement_scope=scope)
     try:
         metadata = path.lstat()
     except FileNotFoundError:
         return
-    if stat.S_ISDIR(metadata.st_mode):
-        shutil.rmtree(path)
-    elif stat.S_ISREG(metadata.st_mode):
-        path.unlink()
-    else:
-        raise ValueError(f"cleanup refuses special entry: {path}")
-    fsync_directory(path.parent)
+    identity = _retirement_identity(metadata)
+    parent_identity = _retirement_identity(
+        _real_directory(path.parent, label="retirement parent")
+    )
+    leaf_digest = hashlib.sha256(os.fsencode(path.name)).hexdigest()[:16]
+    kind, device, inode = identity
+    retired = path.parent / f"{prefix}{kind}-{device:x}-{inode:x}-{leaf_digest}"
+    if (
+        resolve_owned_path(path) != path
+        or _retirement_identity(path.lstat()) != identity
+        or _retirement_identity(path.parent.lstat()) != parent_identity
+    ):
+        raise ValueError(f"retirement source identity changed: {path}")
+    # Same-parent no-replace rename serves BOTH files and directories. Unlike
+    # publication this must not flush/interpret damaged transaction contents.
+    # Windows uses MoveFileExW(WRITE_THROUGH), POSIX its no-replace rename.
+    _namespace_publish_leaf_exclusive_once(path, retired)
+    try:
+        if (
+            resolve_owned_path(retired) != retired
+            or _retirement_identity(retired.lstat()) != identity
+            or _retirement_identity(path.parent.lstat()) != parent_identity
+        ):
+            raise ValueError(f"retirement namespace identity changed: {retired}")
+        fsync_directory(path.parent)
+    except (OSError, ValueError) as exc:
+        error = RetirementError(retired, "retirement durability/identity", exc)
+        error.source_path = path
+        raise error from exc
+    try:
+        _reclaim_retired_leaf(retired, identity)
+    except RetirementError as exc:
+        exc.source_path = path
+        raise
 
 
 def _flush_staged_file(staged: Path) -> int:
