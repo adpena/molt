@@ -20,6 +20,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sys
 from typing import Iterable, cast
 import uuid
 
@@ -30,6 +31,7 @@ from molt.file_publication import (
     durable_publish_directory_exclusive,
     durable_publish_exclusive,
     durable_remove_path,
+    reclaim_retired_paths,
     is_link_like,
     resolve_owned_path,
 )
@@ -42,10 +44,43 @@ _PAYLOAD_DIRECTORY = "files"
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _ROLE_RE = re.compile(r"\A[a-z][a-z0-9_.-]*\Z")
 _COPY_CHUNK_BYTES = 1024 * 1024
+_STAGING_RETIREMENT_SCOPE = "source-package-staging"
+_COPY_RETIREMENT_SCOPE = "source-package-copy"
+
+
+def _reclaim_package_retirements(transaction_root: Path) -> None:
+    # The package store is private to its owning source-extension transaction.
+    reclaim_retired_paths(
+        transaction_root / "staging", retirement_scope=_STAGING_RETIREMENT_SCOPE
+    )
+    reclaim_retired_paths(
+        transaction_root / "commit-candidates", retirement_scope=_COPY_RETIREMENT_SCOPE
+    )
 
 
 class SourcePackageSealError(ValueError):
     """The requested seal or publication transaction is invalid."""
+
+
+class SourcePackageSealCleanupError(SourcePackageSealError):
+    """Retain both primary publication failure and secondary scratch retirement."""
+
+    def __init__(self, primary: Exception, cleanup: Exception) -> None:
+        self.primary_error = primary
+        self.cleanup_error = cleanup
+        super().__init__(f"{primary}; scratch retirement also failed: {cleanup}")
+
+
+def _retire_scratch(path: Path, scope: str, primary: BaseException | None) -> None:
+    try:
+        durable_remove_path(path, retirement_scope=scope)
+    except Exception as cleanup:
+        if primary is None:
+            raise
+        if not isinstance(primary, Exception):
+            primary.add_note(f"scratch retirement also failed: {cleanup}")
+            raise primary from cleanup
+        raise SourcePackageSealCleanupError(primary, cleanup) from primary
 
 
 class SourcePackageSealVerificationError(SourcePackageSealError):
@@ -431,6 +466,7 @@ def stage_source_package_seal(
 
     transaction_root = resolve_owned_path(transaction_root)
     transaction_root.mkdir(parents=True, exist_ok=True)
+    _reclaim_package_retirements(transaction_root)
     admitted: dict[str, tuple[SealFileInventoryEntry, Path]] = {}
     portable_paths: dict[str, str] = {}
     for index, item in enumerate(inputs):
@@ -507,7 +543,7 @@ def stage_source_package_seal(
             verify_source_package_seal(final_root, expected_sha256=seal_sha256)
         return verify_source_package_seal(final_root, expected_sha256=seal_sha256)
     finally:
-        durable_remove_path(staging_root)
+        _retire_scratch(staging_root, _STAGING_RETIREMENT_SCOPE, sys.exception())
 
 
 def _commit_identity_payload(seal_sha256: str, destination: Path) -> dict[str, object]:
@@ -615,6 +651,7 @@ def load_source_package_seal_commit(
 
 
 def _copy_seal_candidate(source: Path, candidate: Path, seal_sha256: str) -> None:
+    reclaim_retired_paths(candidate.parent, retirement_scope=_COPY_RETIREMENT_SCOPE)
     if candidate.exists():
         verify_source_package_seal(candidate, expected_sha256=seal_sha256)
         return
@@ -640,7 +677,7 @@ def _copy_seal_candidate(source: Path, candidate: Path, seal_sha256: str) -> Non
                 raise
             verify_source_package_seal(candidate, expected_sha256=seal_sha256)
     finally:
-        durable_remove_path(temporary)
+        _retire_scratch(temporary, _COPY_RETIREMENT_SCOPE, sys.exception())
 
 
 def prepare_source_package_seal_commit(
@@ -724,6 +761,9 @@ def commit_source_package_seal(
     current = load_source_package_seal_commit(
         commit.transaction_root, commit.record_path
     )
+    reclaim_retired_paths(
+        current.candidate_root.parent, retirement_scope=current.candidate_root.name
+    )
     destination_exists = current.destination.exists()
     if current.state == "committed":
         if not destination_exists:
@@ -792,6 +832,7 @@ def recover_source_package_seal_commits(
     transaction_root = resolve_owned_path(transaction_root)
     records_root = transaction_root / "commits"
     if not records_root.exists():
+        _reclaim_package_retirements(transaction_root)
         return ()
     if not records_root.is_dir() or is_link_like(records_root):
         raise SourcePackageSealVerificationError(
@@ -809,4 +850,5 @@ def recover_source_package_seal_commits(
                     f"seal recovery journal {record.record_path} targets "
                     f"{record.destination}, outside destination custody {destination}"
                 )
+    _reclaim_package_retirements(transaction_root)
     return tuple(commit_source_package_seal(record) for record in records)

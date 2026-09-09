@@ -16,6 +16,7 @@ from molt.file_publication import (
     durable_namespace_publish_directory_exclusive,
     durable_publish_directory_exclusive,
     durable_remove_path,
+    reclaim_retired_paths,
     is_link_like,
     resolve_owned_path,
 )
@@ -519,6 +520,22 @@ def recover_source_extension_publication(
     )
 
 
+def complete_source_extension_publication_transaction(
+    transaction_root: Path, *, custody: SourceExtensionPublicationCustody
+) -> None:
+    """Retire verified completed scratch under the existing publication lock."""
+    destination = custody.destination
+    _require_publication_custody(custody, destination)
+    root = resolve_owned_path(transaction_root)
+    scopes = tuple(f".{destination.name}.{role}-" for role in ("produce", "promote"))
+    scope = next((prefix for prefix in scopes if root.name.startswith(prefix)), None)
+    if root.parent != destination.parent or scope is None:
+        raise SourcePackageSealVerificationError(
+            f"completed transaction escapes publication custody: {root}"
+        )
+    durable_remove_path(root, retirement_scope=scope)
+
+
 def recover_and_prune_source_extension_transactions(
     destination: Path,
     *,
@@ -529,8 +546,11 @@ def recover_and_prune_source_extension_transactions(
     destination = resolve_owned_path(destination)
     _require_publication_custody(custody, destination)
     for operation in ("produce", "promote"):
-        pattern = f".{destination.name}.{operation}-*"
-        for prior in sorted(destination.parent.glob(pattern)):
+        prefix = f".{destination.name}.{operation}-"
+        reclaim_retired_paths(destination.parent, retirement_scope=prefix)
+        for prior in sorted(destination.parent.iterdir()):
+            if not prior.name.startswith(prefix):
+                continue
             if is_link_like(prior) or not prior.is_dir():
                 raise SourcePackageSealVerificationError(
                     f"transaction recovery refuses indirect or non-directory custody: {prior}"
@@ -575,4 +595,4 @@ def recover_and_prune_source_extension_transactions(
                     stacklevel=2,
                 )
                 continue
-            durable_remove_path(prior)
+            complete_source_extension_publication_transaction(prior, custody=custody)
