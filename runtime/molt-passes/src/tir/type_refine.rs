@@ -77,7 +77,7 @@ fn extract_type_map_with_exact(
                 continue;
             }
             if let Some(comparison) =
-                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+                crate::tir::predicate_semantics::predicate_facts_for_op(op, exact)
             {
                 for &result in &op.results {
                     env.insert(result, comparison.result_type.clone());
