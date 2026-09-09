@@ -45,6 +45,11 @@ repository helpers. Already-executed foreign packages or descendants are errors;
 unexecuted namespace search paths are bound to the selected source, including
 resource lookup and parent-first restoration. Git hooks use this same authority,
 not independent `sys.path` rewrites or bypasses.
+The pre-push hook sets the selected worktree's native `PYTHONPATH` before Python
+startup and uses `uv --no-project --offline --no-config` to run an installed
+interpreter without synchronizing environments. Sharing an interpreter does not
+authorize loading the main checkout's source. Hook refreshes retain foreign-hook
+chains across idempotent installation and source updates.
 
 Python startup guarding is owned by `src/molt/pytest_memory_guard_bootstrap.py`;
 state paths are owned by `src/molt/memory_guard_paths.py`. Source and test-local

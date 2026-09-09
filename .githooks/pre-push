@@ -16,25 +16,38 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 gate="$repo_root/tools/drift_harvest.py"
 [ -f "$gate" ] || exit 0
-# The venv lives at the MAIN checkout (git-common-dir's parent), not a linked worktree.
-common_dir="$(git rev-parse --git-common-dir 2>/dev/null)"
-main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)"
+# An installed interpreter may be shared, but startup imports belong to the
+# invoking worktree. Bind before Python/sitecustomize or editable installs run.
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 1
+main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)" || exit 1
+case "$OSTYPE" in
+  msys*|cygwin*)
+    python_root="$(cygpath -m "$repo_root")" || exit 1
+    export PYTHONPATH="$python_root/src;$python_root"
+    vpy="$main_root/.venv/Scripts/python.exe"
+    ;;
+  *)
+    export PYTHONPATH="$repo_root/src:$repo_root"
+    vpy="$main_root/.venv/bin/python"
+    ;;
+esac
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME
 
 run_gate() {
   # --no-fetch: the push already contacts origin; skip a redundant/hang-prone
   # fetch inside the hook. A stale origin/main only risks a benign false positive.
-  # Prefer the repo venv python directly (fast); uv run adds seconds of env
-  # resolution on every push. Fall back to uv, then to PATH python.
-  local vpy
-  for vpy in \
-    "$main_root/.venv/Scripts/python.exe" "$main_root/.venv/bin/python" \
-    "$repo_root/.venv/Scripts/python.exe" "$repo_root/.venv/bin/python"; do
-    if [ -x "$vpy" ]; then "$vpy" "$gate" --gate --no-fetch; return $?; fi
-  done
-  if command -v uv >/dev/null 2>&1; then
-    uv run --python 3.12 python "$gate" --gate --no-fetch; return $?
+  # uv owns every launch. No project sync, dependency resolution, or editable
+  # installation is permitted in a Git hook.
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "pre-push: uv is required for the drift gate" >&2
+    return 1
   fi
-  python "$gate" --gate --no-fetch
+  if [ ! -x "$vpy" ]; then
+    echo "pre-push: provision the common checkout's platform-native uv environment: $vpy" >&2
+    return 1
+  fi
+  uv run --no-project --offline --no-config --python "$vpy" python "$gate" --gate --no-fetch
 }
 
 if ! run_gate; then
