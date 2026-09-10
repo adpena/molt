@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from molt.cli import wasm_link_inputs
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 
 import ast
 import builtins as py_builtins
@@ -24,7 +25,7 @@ import types
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Iterator, Mapping, Sequence, cast
+from typing import Any, Collection, Mapping, Sequence, cast
 
 from molt.cli import native_symbol_inspection
 import pytest
@@ -96,11 +97,15 @@ from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.native_link_test_support import (
+    NativeArchiveFixtureCatalog,
     static_archive_bytes,
     RUNTIME_BUILD_IDENTITY,
     write_test_native_link_manifest,
 )
-from tests.native_artifact_fixtures import native_relocatable_object
+from tests.native_artifact_fixtures import (
+    NativeSymbolFixture,
+    native_relocatable_object,
+)
 from molt.cli.runtime_build_identity import runtime_build_fingerprint
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
@@ -152,33 +157,27 @@ NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TARGET_PYTHON = importlib.import_module("molt.target_python")
 
 
-_STATIC_ARCHIVE_SYMBOL_FACTS: dict[
-    Path, native_symbol_inspection._NativeGlobalSymbolFacts
-] = {}
-
-
-@pytest.fixture(autouse=True)
-def _external_static_archive_symbol_facts(
+@pytest.fixture
+def native_archives(
     monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[None]:
-    def read_symbol_facts(
-        path: Path,
-        *,
-        nm_command: Sequence[str] | None = None,
-        target_triple: str | None = None,
-        identity=None,
-    ) -> native_symbol_inspection._NativeGlobalSymbolFacts | None:
-        del nm_command, target_triple, identity
-        return _STATIC_ARCHIVE_SYMBOL_FACTS.get(path.resolve())
-
-    _STATIC_ARCHIVE_SYMBOL_FACTS.clear()
+    runtime_fixture_root: RuntimeFixtureRoot,
+) -> NativeArchiveFixtureCatalog:
+    catalog = NativeArchiveFixtureCatalog()
+    reader = runtime_fixture_root.native_executable("native-symbol-reader/python")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: [str(reader)]
+    )
     monkeypatch.setattr(
         native_symbol_inspection,
-        "_native_archive_global_symbol_facts",
-        read_symbol_facts,
+        "_read_native_global_symbol_facts",
+        catalog.read_symbols,
     )
-    yield
-    _STATIC_ARCHIVE_SYMBOL_FACTS.clear()
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_default_molt_cache",
+        lambda: runtime_fixture_root.path / "symbol-cache",
+    )
+    return catalog
 
 
 def _empty_app_export_contract(tmp_path: Path) -> Path:
@@ -937,12 +936,15 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
     assert "demo" in import_plan.module_graph
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_retains_external_native_artifact_plan(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import nativepkg\n")
@@ -991,12 +993,15 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     assert "nativepkg._native" not in import_plan.compile_modules
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         manifest_overrides={"python_exports": ["nativepkg.dynamic"]},
     )
     entry_path = tmp_path / "demo.py"
@@ -1166,7 +1171,9 @@ def test_source_extension_eager_import_function_name_precise_cython_modinit() ->
     assert not eager(None)
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1192,6 +1199,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
@@ -1275,6 +1283,7 @@ def _sealed_manifest_custody_overrides() -> dict[str, Any]:
 
 
 def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1308,6 +1317,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     overrides.update(_sealed_manifest_custody_overrides())
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
@@ -1385,6 +1395,7 @@ def test_admission_accepts_attested_empty_runtime_imports() -> None:
     "imported_module", ["nativepkg.missing", "nativepkg._sibling", "nativepkg._native"]
 )
 def test_attested_runtime_module_without_python_source_survives_admission(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     imported_module: str,
 ) -> None:
@@ -1392,11 +1403,13 @@ def test_attested_runtime_module_without_python_source_survives_admission(
     if imported_module == "nativepkg._sibling":
         _write_external_native_artifact(
             external_root,
+            native_archives=native_archives,
             package="nativepkg",
             relative_module="_sibling",
         )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         manifest_overrides={"runtime_python_import_modules": [imported_module]},
@@ -1446,7 +1459,9 @@ def test_runtime_import_producer_replaces_stale_facts_and_records_empty_closure(
     assert manifest["runtime_python_import_modules"] == list(source_imports)
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1462,6 +1477,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -1489,6 +1505,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._ni_label",
         artifact_name="_ni_label.molt.wasm",
@@ -1550,7 +1567,9 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert "nativepkg.ndimage._ni_label" in import_plan.known_modules
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_closes_cross_package_native_support_source(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1585,6 +1604,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     exceptions_sha = hashlib.sha256(exceptions_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -1604,6 +1624,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -1700,7 +1721,9 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     assert "native_support_source" in module_reasons["numpy.exceptions"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_compiles_pruned_native_support_source(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1719,6 +1742,7 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -1918,7 +1942,9 @@ def test_source_extension_manifest_runtime_python_imports_rejects_partial_closur
     assert manifest["runtime_python_import_modules"] == ["nativepkg.persisted"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1956,6 +1982,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -1969,6 +1996,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -2048,7 +2076,9 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     assert "def dtype_error" in internal_source
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_compiles_native_runtime_package_import_init(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2075,6 +2105,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     expired_path.write_text("EXPIRED = {'old': 'new'}\n", encoding="utf-8")
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
@@ -2145,7 +2176,9 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     assert "VALUE = _child.VALUE" in init_source
 
 
+@_source_tree_fingerprint_transaction()
 def test_entry_native_package_import_compiles_package_init_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2173,6 +2206,7 @@ def test_entry_native_package_import_compiles_package_init_closure(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -2241,7 +2275,9 @@ def test_entry_native_package_import_compiles_package_init_closure(
     assert "entry_closure" in module_reasons["nativepkg._globals"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_does_not_compile_package_init_support_without_runtime_import(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2254,6 +2290,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         artifact_name="_native.molt.wasm",
@@ -2313,7 +2350,9 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     assert "nativepkg" not in import_plan.module_graph
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_rejects_missing_native_support_artifact(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2340,6 +2379,7 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -2415,7 +2455,9 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     assert "target-specific source plan" in message
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_accepts_relocated_object_closure_source_custody(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2444,6 +2486,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -2565,7 +2608,9 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     ] == ["nativepkg.ndimage._nd_image"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2581,6 +2626,7 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     support_sha256 = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _artifact_path, manifest_path = _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -2680,7 +2726,9 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     assert "Rebuild the native artifact plan before module discovery" in message
 
 
+@_source_tree_fingerprint_transaction()
 def test_native_support_source_stdlib_imports_join_compile_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2711,6 +2759,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     doc_sha = hashlib.sha256(doc_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -2828,6 +2877,7 @@ def test_entry_collections_closure_preserves_static_helper_import_edges(
     assert "entry_closure" in module_reasons["copy"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_collections_static_helper_copy_reaches_backend_symbol_contract(
     tmp_path: Path,
 ) -> None:
@@ -2871,6 +2921,7 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
             entry_module="demo",
             json_output=False,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            runtime_import_scan_custody=import_plan.runtime_import_scan_custody,
         )
     )
     assert frontend_error is None
@@ -4461,6 +4512,7 @@ def test_module_graph_policy_digest_includes_external_admission(
 
 def _libmolt_source_manifest_fields(
     *,
+    native_symbols: NativeSymbolFixture | None = None,
     module: str,
     artifact_name: str,
     artifact_bytes: bytes,
@@ -4503,7 +4555,9 @@ def _libmolt_source_manifest_fields(
         )
         symbol_authority = SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY
     else:
-        defined_symbols = [init_symbol]
+        defined_symbols = list(
+            (native_symbols or NativeSymbolFixture(functions=(init_symbol,))).defined
+        )
         undefined_symbols = []
         wasm_imports = None
         runtime_symbols = []
@@ -4703,29 +4757,11 @@ def _apply_manifest_overrides(
     finalize_source_extension_object_closure(manifest)
 
 
-def _record_static_archive_symbol_facts(
-    artifact_path: Path,
-    manifest: Mapping[str, Any],
-) -> None:
-    if manifest.get("artifact_kind") != "static_archive":
-        return
-    defined = frozenset(
-        cli_external_native._manifest_object_closure_defined_symbols(manifest)
-    )
-    _STATIC_ARCHIVE_SYMBOL_FACTS[artifact_path.resolve()] = (
-        native_symbol_inspection._NativeGlobalSymbolFacts(
-            defined=defined,
-            undefined=frozenset(
-                cli_external_native._manifest_object_closure_undefined_symbols(manifest)
-            ),
-            defined_functions=defined,
-        )
-    )
-
-
 def _write_external_native_package(
     tmp_path: Path,
     *,
+    native_archives: NativeArchiveFixtureCatalog,
+    native_symbols: NativeSymbolFixture | None = None,
     package: str = "nativepkg",
     artifact_name: str = "_native.a",
     artifact_bytes: bytes | None = None,
@@ -4750,11 +4786,14 @@ def _write_external_native_package(
                 f"PyInit_{artifact_name.split('.', 1)[0]}"
             )
         else:
-            artifact_bytes = b"native-extension"
+            artifact_bytes = native_archives.archive(
+                native_symbols or NativeSymbolFixture(functions=("PyInit__native",))
+            )
     artifact_path.write_bytes(artifact_bytes)
     manifest_path = package_dir / "extension_manifest.json"
     if write_manifest:
         manifest = _libmolt_source_manifest_fields(
+            native_symbols=native_symbols,
             module=f"{package}._native",
             artifact_name=artifact_name,
             artifact_bytes=artifact_bytes,
@@ -4766,7 +4805,6 @@ def _write_external_native_package(
             manifest_overrides,
             intentionally_invalid_object_closure=(intentionally_invalid_object_closure),
         )
-        _record_static_archive_symbol_facts(artifact_path, manifest)
         if derive_runtime_imports:
             errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
                 manifest, manifest_path=manifest_path
@@ -4784,6 +4822,8 @@ def _write_external_native_package(
 def _write_external_native_artifact(
     external_root: Path,
     *,
+    native_archives: NativeArchiveFixtureCatalog,
+    native_symbols: NativeSymbolFixture | None = None,
     package: str,
     relative_module: str,
     artifact_name: str | None = None,
@@ -4810,12 +4850,16 @@ def _write_external_native_artifact(
     elif artifact_path.name.endswith(".molt.wasm"):
         payload = _wasm_exporting_i64_unary_symbol(f"PyInit_{module_parts[-1]}")
     else:
-        payload = f"{relative_module}-extension".encode("utf-8")
+        payload = native_archives.archive(
+            native_symbols
+            or NativeSymbolFixture(functions=(f"PyInit_{module_parts[-1]}",))
+        )
     artifact_path.write_bytes(payload)
     manifest_path = artifact_path.with_name(
         artifact_path.name + ".extension_manifest.json"
     )
     manifest = _libmolt_source_manifest_fields(
+        native_symbols=native_symbols,
         module=f"{package}.{relative_module}",
         artifact_name=artifact_path.name,
         artifact_bytes=payload,
@@ -4825,7 +4869,6 @@ def _write_external_native_artifact(
         manifest_overrides,
         intentionally_invalid_object_closure=intentionally_invalid_object_closure,
     )
-    _record_static_archive_symbol_facts(artifact_path, manifest)
     if derive_runtime_imports:
         errors = cli_source_extensions.canonicalize_source_extension_manifest_runtime_python_imports(
             manifest, manifest_path=manifest_path
@@ -4868,11 +4911,13 @@ def _write_source_only_external_package(
 
 
 def test_external_static_package_native_artifact_plan_validates_manifest(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, artifact_path, manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
 
@@ -4915,45 +4960,135 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
     )
 
 
+def test_native_archive_fixture_preserves_digest_and_cache_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    native_archives: NativeArchiveFixtureCatalog,
+) -> None:
+    artifact_path = tmp_path / "fixture.a"
+    symbols = NativeSymbolFixture(functions=("PyInit__native",), data=("state",))
+    first_bytes = native_archives.archive(symbols, revision=b"first")
+    artifact_path.write_bytes(first_bytes)
+
+    def forbid_reader_execution(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("synthetic symbol reader executable is identity-only")
+
+    monkeypatch.setattr(subprocess, "Popen", forbid_reader_execution)
+    first = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
+    assert first.artifact_digest == hashlib.sha256(first_bytes).hexdigest()
+    assert first.defined == frozenset({"PyInit__native", "state"})
+    assert first.defined_functions == frozenset({"PyInit__native"})
+    assert (
+        native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
+        == first
+    )
+
+    def forbid_uncached_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("persistent facts should serve unchanged archive bytes")
+
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        forbid_uncached_read,
+    )
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    assert (
+        native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
+        == first
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        native_archives.read_symbols,
+    )
+    second_bytes = native_archives.archive(symbols, revision=b"second")
+    artifact_path.write_bytes(second_bytes)
+    second = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
+    assert second.artifact_digest == hashlib.sha256(second_bytes).hexdigest()
+    assert second.artifact_digest != first.artifact_digest
+
+
+def test_native_archive_fixture_rejects_manifest_symbol_lie(
+    tmp_path: Path,
+    native_archives: NativeArchiveFixtureCatalog,
+) -> None:
+    _root, artifact_path, manifest_path = _write_external_native_package(
+        tmp_path,
+        native_archives=native_archives,
+        manifest_overrides={
+            "object_closure": {"defined_symbols": ["PyInit__native", "invented"]}
+        },
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
+        artifact_path=artifact_path,
+        manifest=manifest,
+    )
+    assert any("defined-symbol closure differs" in error for error in errors), errors
+    assert any("invented" in error for error in errors), errors
+
+
+def test_native_archive_fixture_rejects_unregistered_bytes(
+    tmp_path: Path,
+    native_archives: NativeArchiveFixtureCatalog,
+) -> None:
+    artifact_path = tmp_path / "unknown.a"
+    artifact_path.write_bytes(b"malformed-unregistered-archive")
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="unregistered synthetic native artifact bytes",
+    ):
+        native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
+
+
+@pytest.mark.parametrize(
+    "target_triple",
+    [
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ],
+)
+def test_native_archive_fixture_data_sections_match_target_contract(
+    tmp_path: Path,
+    target_triple: str,
+) -> None:
+    catalog = NativeArchiveFixtureCatalog()
+    artifact_path = tmp_path / "fixture.a"
+    artifact_path.write_bytes(
+        catalog.archive(
+            NativeSymbolFixture(functions=("PyInit__native",), data=("state",)),
+            target_triple=target_triple,
+        )
+    )
+    resolve_backend_artifact_contract(target=target_triple, emit_mode="bin").validate(
+        artifact_path
+    )
+
+
 @pytest.mark.parametrize("masquerade", ["init", "direct"])
 def test_native_archive_data_symbol_cannot_satisfy_callable_custody(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    native_archives: NativeArchiveFixtureCatalog,
     masquerade: str,
 ) -> None:
     artifact_path = tmp_path / "nativepkg" / "_native.molt.a"
     artifact_path.parent.mkdir(parents=True)
-    artifact_bytes = b"!<arch>\ndata-symbol-fixture"
+    symbols = NativeSymbolFixture(
+        functions=("PyInit__native",) if masquerade == "direct" else (),
+        data=("invoke",) if masquerade == "direct" else ("PyInit__native",),
+    )
+    artifact_bytes = native_archives.archive(symbols)
     artifact_path.write_bytes(artifact_bytes)
     manifest = _libmolt_source_manifest_fields(
+        native_symbols=symbols,
         module="nativepkg._native",
         artifact_name=artifact_path.name,
         artifact_bytes=artifact_bytes,
     )
-    closure = manifest["object_closure"]
-    assert isinstance(closure, dict)
-    objects = closure["objects"]
-    assert isinstance(objects, list) and isinstance(objects[0], dict)
-    defined = {"PyInit__native"}
-    if masquerade == "direct":
-        defined.add("invoke")
-    closure["defined_symbols"] = sorted(defined)
-    objects[0]["defined_symbols"] = sorted(defined)
-    finalize_source_extension_object_closure(manifest)
-    function_symbols = frozenset(
-        {"PyInit__native"} if masquerade == "direct" else set()
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_archive_global_symbol_facts",
-        lambda *_args, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
-            defined=frozenset(defined),
-            undefined=frozenset(),
-            defined_functions=function_symbols,
-            artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
-        ),
-    )
-
     errors = cli_source_extensions.validate_source_extension_artifact_object_closure(
         artifact_path=artifact_path,
         manifest=manifest,
@@ -5033,11 +5168,13 @@ def test_wasm_closure_binds_symbol_inspection_to_manifest_bytes(tmp_path: Path) 
 
 
 def test_external_native_plan_rejects_manifest_mutation_after_snapshot(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     original_loader = cli_external_native._load_external_artifact_manifest
 
@@ -5064,11 +5201,13 @@ def test_external_native_plan_rejects_manifest_mutation_after_snapshot(
 
 
 def test_external_static_package_wasm_artifact_plan_is_manifest_led(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.molt.wasm",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -5097,11 +5236,13 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
 
 
 def test_external_static_package_wasm_manifest_support_archives_are_link_inputs(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.molt.wasm",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -5147,11 +5288,13 @@ def test_external_static_package_wasm_manifest_support_archives_are_link_inputs(
 
 
 def test_external_static_package_manifest_support_python_source_is_staged_not_linked(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.molt.wasm",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -5250,6 +5393,7 @@ def test_external_package_artifact_specific_manifests_allow_same_directory_modul
 
 
 def test_external_native_artifact_plan_selects_python_exported_imports(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -5260,6 +5404,7 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     (ndimage_dir / "__init__.py").write_text("", encoding="utf-8")
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5300,12 +5445,14 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
 
 
 def test_external_native_artifact_plan_selects_callable_exported_imports(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     native_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5360,6 +5507,7 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
 
 
 def test_external_native_artifact_plan_selects_module_attr_callable_exports(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -5383,6 +5531,7 @@ def test_external_native_artifact_plan_selects_module_attr_callable_exports(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5441,6 +5590,7 @@ def test_external_native_artifact_plan_selects_module_attr_callable_exports(
 
 
 def test_external_native_artifact_plan_rejects_fake_module_attr_export(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -5464,6 +5614,7 @@ def test_external_native_artifact_plan_rejects_fake_module_attr_export(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5501,6 +5652,7 @@ def test_external_native_artifact_plan_rejects_fake_module_attr_export(
 
 
 def test_external_native_artifact_plan_publishes_support_source_module_attr(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -5513,6 +5665,7 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5578,6 +5731,7 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
 
 
 def test_external_native_artifact_plan_rejects_duplicate_module_roots(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     staged_root = tmp_path / "staged"
@@ -5591,6 +5745,7 @@ def test_external_native_artifact_plan_rejects_duplicate_module_roots(
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     _staged_artifact, _staged_manifest = _write_external_native_artifact(
         staged_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5634,6 +5789,7 @@ def test_external_native_artifact_plan_rejects_duplicate_module_roots(
     source_support_path.write_bytes(support_path.read_bytes())
     _write_external_native_artifact(
         source_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5869,11 +6025,13 @@ def test_native_support_function_roots_cross_imported_helpers(
 
 
 def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -5913,11 +6071,13 @@ def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
 
 
 def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_closure(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.a",
@@ -5954,16 +6114,20 @@ def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_c
 
 
 def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     native_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.a",
-        artifact_bytes=b"archive-bytes",
+        native_symbols=NativeSymbolFixture(
+            functions=("PyInit__nd_image", native_symbol)
+        ),
         manifest_overrides={
             "runtime_linkage": "static_link",
             "artifact_kind": "static_archive",
@@ -6030,11 +6194,13 @@ def test_c_api_primitive_class_contract_buckets_shared_surfaces() -> None:
 
 
 def test_external_native_artifact_plan_records_c_api_symbol_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6083,11 +6249,13 @@ def test_external_native_artifact_plan_records_c_api_symbol_board(
 
 
 def test_external_native_artifact_plan_ignores_declaration_only_c_api_requirements(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "artifacts"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="_native",
         manifest_overrides={
@@ -6120,11 +6288,13 @@ def test_external_native_artifact_plan_ignores_declaration_only_c_api_requiremen
 
 
 def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -6182,11 +6352,13 @@ def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
 
 
 def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -6228,11 +6400,13 @@ def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
 
 
 def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6270,6 +6444,7 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
 
 
 def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -6280,6 +6455,7 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
     filters_source.write_text("int NI_Correlate(void) { return 0; }\n")
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6341,11 +6517,13 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
 
 
 def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_imported(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6381,11 +6559,13 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
 
 
 def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6447,6 +6627,7 @@ def test_archive_provider_candidate_authority_excludes_non_provider_classes() ->
 
 
 def test_external_native_artifact_plan_records_external_link_symbol_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6458,6 +6639,7 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6497,6 +6679,7 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
 
 
 def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6510,6 +6693,7 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -6549,6 +6733,7 @@ def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
 
 
 def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6562,6 +6747,7 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -6613,12 +6799,24 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     ]
 
 
+@pytest.mark.parametrize("provider_classes", [{}, {"malloc": "wasm_libc_link_import"}])
 def test_external_native_artifact_plan_rejects_package_native_symbol_without_owner(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_classes: dict[str, str],
 ) -> None:
+    # The package-owned symbol is absent with or without unrelated external
+    # providers. Host toolchain archives are not inputs to this admission case.
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: provider_classes,
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -6662,6 +6860,7 @@ def test_external_native_artifact_plan_rejects_package_native_symbol_without_own
 
 
 def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6675,6 +6874,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6711,6 +6911,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
 
 
 def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6724,6 +6925,7 @@ def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6760,11 +6962,13 @@ def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
 
 
 def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6795,6 +6999,7 @@ def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
 
 
 def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -6813,6 +7018,7 @@ def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
     ]
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._ni_label",
         artifact_name="_ni_label.molt.wasm",
@@ -6846,11 +7052,13 @@ def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
 
 
 def test_external_native_artifact_plan_rejects_undefined_numpy_c_api_symbol(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6887,11 +7095,13 @@ def test_external_native_artifact_plan_rejects_undefined_numpy_c_api_symbol(
 
 
 def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -6981,7 +7191,9 @@ def test_source_recompiled_static_subpackage_requires_native_artifact_candidate(
     assert "scipy.ndimage" in stderr
 
 
+@_source_tree_fingerprint_transaction()
 def test_admitted_external_native_package_does_not_close_source_only_ndimage_initializers(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6992,6 +7204,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
     entry.write_text("import scipy.ndimage\n", encoding="utf-8")
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -7113,12 +7326,14 @@ def test_native_artifact_plan_rejects_source_recompiled_package_without_candidat
 
 
 def test_external_static_package_native_artifact_requires_sidecar_manifest(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.pyd",
         write_manifest=False,
     )
@@ -7138,12 +7353,14 @@ def test_external_static_package_native_artifact_requires_sidecar_manifest(
 
 
 def test_external_static_package_native_artifact_requires_matching_checksum(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         checksum_override="0" * 64,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -7159,12 +7376,14 @@ def test_external_static_package_native_artifact_requires_matching_checksum(
 
 
 def test_external_static_package_native_artifact_rejects_module_mismatch(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         manifest_overrides={"module": "otherpkg._native"},
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -7181,11 +7400,13 @@ def test_external_static_package_native_artifact_rejects_module_mismatch(
 
 @pytest.mark.parametrize("artifact_target", ["py313", "py314"])
 def test_external_native_artifact_plan_rejects_target_python_mismatch(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     artifact_target: str,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         manifest_overrides={"target_python": artifact_target},
     )
 
@@ -7205,12 +7426,14 @@ def test_external_native_artifact_plan_rejects_target_python_mismatch(
 
 
 def test_external_static_package_native_artifact_rejects_extension_path_mismatch(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.so",
         manifest_overrides={"extension": "nested/_native.so"},
     )
@@ -7227,12 +7450,14 @@ def test_external_static_package_native_artifact_rejects_extension_path_mismatch
 
 
 def test_external_static_package_native_artifact_rejects_invalid_manifest_json(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, _artifact_path, manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.so",
     )
     manifest_path.write_text("{", encoding="utf-8")
@@ -7263,10 +7488,12 @@ def test_external_native_artifact_error_summary_is_bounded() -> None:
 
 
 def test_external_native_artifact_plan_filters_to_required_modules(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.pyd",
         write_manifest=False,
     )
@@ -7293,11 +7520,13 @@ def test_external_native_artifact_plan_filters_to_required_modules(
 
 
 def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -7338,6 +7567,7 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
     owned_root = tmp_path / "site_owned"
     _write_external_native_artifact(
         owned_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -7366,12 +7596,14 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
 
 
 def test_external_static_package_admission_can_defer_native_artifact_validation(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.so",
         write_manifest=False,
     )
@@ -7425,6 +7657,7 @@ def test_wasm_external_static_package_with_native_source_requires_static_artifac
 
 
 def test_wasm_source_recompiled_static_package_requires_export_custody(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -7432,6 +7665,7 @@ def test_wasm_source_recompiled_static_package_requires_export_custody(
     external_root = tmp_path / "artifacts"
     _artifact_path, _manifest_path = _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -7461,11 +7695,13 @@ def test_wasm_source_recompiled_static_package_requires_export_custody(
 
 
 def test_source_recompiled_package_root_import_requires_export_owner(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "artifacts"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -7493,6 +7729,7 @@ def test_source_recompiled_package_root_import_requires_export_owner(
 
 
 def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7509,6 +7746,7 @@ def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
     artifact_root = tmp_path / "artifacts"
     _write_external_native_artifact(
         artifact_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -7558,11 +7796,13 @@ def test_wasm_external_static_package_allows_pure_python_source_closure(
 
 
 def test_wasm_external_static_package_allows_deferred_static_link_artifact(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         artifact_name="_native.molt.wasm",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -7591,12 +7831,14 @@ def test_wasm_external_static_package_allows_deferred_static_link_artifact(
 
 
 def test_external_native_artifact_plan_closes_over_capsule_providers(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -7610,6 +7852,7 @@ def test_external_native_artifact_plan_closes_over_capsule_providers(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -7643,12 +7886,14 @@ def test_external_native_artifact_plan_closes_over_capsule_providers(
 
 
 def test_reachable_native_artifact_plan_keeps_capsule_providers(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -7662,6 +7907,7 @@ def test_reachable_native_artifact_plan_keeps_capsule_providers(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -7725,6 +7971,7 @@ def test_case_exact_file_refreshes_stale_directory_cache(
 
 
 def test_reachable_native_artifact_plan_keeps_child_callable_exports(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -7747,8 +7994,12 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
         direct_symbols = [f"molt_nativepkg_ndimage_{name}" for name, _abi in operations]
         _write_external_native_artifact(
             external_root,
+            native_archives=native_archives,
             package="nativepkg",
             relative_module=relative_module,
+            native_symbols=NativeSymbolFixture(
+                functions=(f"PyInit_{module_leaf}", *direct_symbols)
+            ),
             manifest_overrides={
                 "callable_exports": [
                     {
@@ -7864,7 +8115,9 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
     ] == ["nativepkg.ndimage._nd_image"]
 
 
+@_source_tree_fingerprint_transaction()
 def test_source_recompiled_package_callable_export_reaches_frontend_scope(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7912,6 +8165,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         symbols = tuple(f"molt_nativepkg_ndimage_{name}" for name, _abi in operations)
         _write_external_native_artifact(
             external_root,
+            native_archives=native_archives,
             package="nativepkg",
             relative_module=relative_module,
             artifact_name=f"{module_tail}.molt.wasm",
@@ -7998,6 +8252,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         json_output=False,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         dependency_known_modules=set(import_plan.known_modules),
+        runtime_import_scan_custody=import_plan.runtime_import_scan_custody,
     )
     assert analysis_error is None
     assert analysis is not None
@@ -8045,6 +8300,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
 
 
 def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8057,6 +8313,7 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8064,6 +8321,7 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8099,6 +8357,7 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
 
 
 def test_external_native_artifact_plan_publishes_capsule_owner_alias_modules(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8111,6 +8370,7 @@ def test_external_native_artifact_plan_publishes_capsule_owner_alias_modules(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8143,6 +8403,7 @@ def test_external_native_artifact_plan_publishes_capsule_owner_alias_modules(
 
 
 def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8157,6 +8418,7 @@ def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8185,6 +8447,7 @@ def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(
 
 
 def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8206,6 +8469,7 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8213,6 +8477,7 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8239,6 +8504,7 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
 
 
 def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest_sources(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8266,6 +8532,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8273,6 +8540,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8315,6 +8583,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_manifest
 
 
 def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_sources(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8342,6 +8611,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_so
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8349,6 +8619,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_so
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8391,6 +8662,7 @@ def test_external_native_artifact_plan_does_not_guess_stale_source_plan_build_so
 
 
 def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_runtime_imports(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8413,6 +8685,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8420,6 +8693,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
     )
     _artifact_path, missing_runtime_manifest = _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8476,6 +8750,7 @@ def test_external_native_artifact_plan_rejects_sealed_missing_sources_without_ru
 
 
 def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8489,6 +8764,7 @@ def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="numpy",
         relative_module="_core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8496,6 +8772,7 @@ def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8534,6 +8811,7 @@ def test_external_native_artifact_plan_rejects_unsealed_missing_sources(
 
 
 def test_external_native_artifact_plan_rejects_declared_source_hash_mismatch(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8556,6 +8834,7 @@ def test_external_native_artifact_plan_rejects_declared_source_hash_mismatch(
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8594,6 +8873,7 @@ def test_external_native_artifact_plan_rejects_declared_source_hash_mismatch(
 
 
 def test_external_native_artifact_plan_rejects_sealed_source_checksum_mismatch(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8601,6 +8881,7 @@ def test_external_native_artifact_plan_rejects_sealed_source_checksum_mismatch(
     source_path.write_text("int module_exec(void) { return 0; }\n", encoding="utf-8")
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="scipy",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
@@ -8636,6 +8917,7 @@ def test_external_native_artifact_plan_rejects_sealed_source_checksum_mismatch(
 
 
 def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -8648,6 +8930,7 @@ def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers
     }
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         artifact_name="_multiarray_umath.molt.wasm",
@@ -8655,6 +8938,7 @@ def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -8681,18 +8965,21 @@ def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers
 
 
 def test_external_native_artifact_plan_rejects_target_skewed_capsule_provider(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="core._multiarray_umath",
         manifest_overrides={"provided_capsules": [capsule]},
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -8722,12 +9009,14 @@ def test_external_native_artifact_plan_rejects_target_skewed_capsule_provider(
 
 
 def test_external_native_artifact_plan_rejects_missing_capsule_provider(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -8755,12 +9044,14 @@ def test_external_native_artifact_plan_rejects_missing_capsule_provider(
 
 
 def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="providers.provider_a",
         artifact_name="provider_a.molt.wasm",
@@ -8774,6 +9065,7 @@ def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="providers.provider_b",
         artifact_name="provider_b.molt.wasm",
@@ -8787,6 +9079,7 @@ def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
     )
     _write_external_native_artifact(
         external_root,
+        native_archives=native_archives,
         package="nativepkg",
         relative_module="consumer",
         artifact_name="consumer.molt.wasm",
@@ -8814,12 +9107,16 @@ def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
 
 
 def test_module_graph_policy_digest_includes_native_artifact_plan(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, artifact_path, manifest_path = _write_external_native_package(
         tmp_path,
-        artifact_bytes=b"native-extension-v1",
+        native_archives=native_archives,
+        artifact_bytes=native_archives.archive(
+            NativeSymbolFixture(functions=("PyInit__native",)), revision=b"v1"
+        ),
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     first_policy, first_error = cli._resolve_import_admission_policy(
@@ -8829,7 +9126,11 @@ def test_module_graph_policy_digest_includes_native_artifact_plan(
     assert first_error is None
     assert first_policy is not None
 
-    artifact_path.write_bytes(b"native-extension-v2")
+    artifact_path.write_bytes(
+        native_archives.archive(
+            NativeSymbolFixture(functions=("PyInit__native",)), revision=b"v2"
+        )
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["extension_sha256"] = hashlib.sha256(
         artifact_path.read_bytes()
@@ -8901,11 +9202,13 @@ def test_module_graph_policy_digest_includes_native_runtime_import_modules(
 
 
 def test_external_native_artifact_output_custody_accepts_native_binary(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, error = cli._resolve_import_admission_policy(
@@ -8941,11 +9244,13 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
 
 
 def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, error = cli._resolve_import_admission_policy(
@@ -10421,11 +10726,13 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
 
 
 def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         shim_source="value = 911\n",
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -10458,11 +10765,13 @@ def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
 
 
 def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custody(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     external_root, artifact_path, manifest_path = _write_external_native_package(
         tmp_path,
+        native_archives=native_archives,
         shim_source="value = 911\n",
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
@@ -10608,12 +10917,14 @@ def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
 
 
 def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
+    native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     external_root, artifact_path, _manifest_path = _write_external_native_package(
-        tmp_path
+        tmp_path,
+        native_archives=native_archives,
     )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
@@ -14934,6 +15245,7 @@ def test_module_dependencies_from_imports_resolves_direct_graph_edges() -> None:
     assert deps == {"alpha", "beta", "warnings"}
 
 
+@_source_tree_fingerprint_transaction()
 def test_frontend_analysis_resolves_known_native_artifact_dependencies(
     tmp_path: Path,
 ) -> None:
@@ -17063,6 +17375,7 @@ def test_read_module_source_falls_back_for_encoding_cookie(
     )
 
 
+@_source_tree_fingerprint_transaction()
 def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
     tmp_path: Path,
 ) -> None:
