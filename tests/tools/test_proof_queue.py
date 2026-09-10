@@ -2078,6 +2078,66 @@ class GuardedExecutionAuthorities:
     supervisor_target: Path
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket paths have SUN_LEN")
+def test_supervisor_build_environment_bounds_posix_sccache_startup_socket_path(
+    tmp_path: Path,
+) -> None:
+    deep_root = tmp_path.joinpath(*(["deep-proof-result-custody"] * 8))
+    target = deep_root / "proof-supervisor-target"
+    target.mkdir(parents=True)
+    inherited_tmp = deep_root / "tmp"
+    wrappers = {
+        "RUSTC_WRAPPER": "/opt/cache/sccache",
+        "RUSTC_WORKSPACE_WRAPPER": "/opt/cache/workspace-wrapper",
+        "CARGO_BUILD_RUSTC_WRAPPER": "/opt/cache/build-wrapper",
+    }
+    execution_env = {
+        **wrappers,
+        "SCCACHE_DIR": str(deep_root / "shared-sccache"),
+        "TMPDIR": str(inherited_tmp),
+        "TMP": str(inherited_tmp),
+        "TEMP": str(inherited_tmp),
+    }
+
+    build_env = guarded_execution._supervisor_build_environment(
+        execution_env, target=target
+    )
+
+    assert build_env["CARGO_TARGET_DIR"] == str(target.resolve(strict=True))
+    assert {name: build_env[name] for name in wrappers} == wrappers
+    assert build_env["SCCACHE_DIR"] == execution_env["SCCACHE_DIR"]
+    assert execution_env["TMPDIR"] == str(inherited_tmp)
+    socket_root = Path("/tmp").resolve(strict=True)
+    assert {build_env[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(socket_root)}
+    startup_suffix = Path("sccache12345678") / "sock"
+    assert len(os.fsencode(inherited_tmp / startup_suffix)) > 120
+    assert len(os.fsencode(socket_root / startup_suffix)) < 100
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment contract")
+def test_supervisor_build_environment_preserves_windows_temp_authority(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "proof-supervisor-target"
+    target.mkdir()
+    execution_env = {
+        "RUSTC_WRAPPER": r"C:\tools\sccache.exe",
+        "SCCACHE_DIR": r"C:\Molt\.sccache",
+        "TMPDIR": r"C:\Molt\tmp",
+        "TMP": r"C:\Molt\tmp",
+        "TEMP": r"C:\Molt\tmp",
+    }
+
+    build_env = guarded_execution._supervisor_build_environment(
+        execution_env, target=target
+    )
+
+    assert build_env == {
+        **execution_env,
+        "CARGO_TARGET_DIR": str(target.resolve(strict=True)),
+    }
+
+
 @pytest.fixture(scope="module")
 def guarded_execution_authorities(
     tmp_path_factory: pytest.TempPathFactory,

@@ -98,6 +98,26 @@ def _run_supervisor_with_transcripts(
     return returncode
 
 
+def _supervisor_build_environment(
+    execution_env: Mapping[str, str],
+    *,
+    target: Path,
+) -> dict[str, str]:
+    """Keep bootstrap outputs external and Unix startup sockets bounded."""
+    build_env = dict(execution_env)
+    build_env["CARGO_TARGET_DIR"] = str(target.resolve(strict=True))
+    if os.name != "nt":
+        # sccache creates its server-startup notification socket below TMPDIR.
+        # A proof run's result-root TMPDIR can exceed sockaddr_un.sun_path even
+        # though its Cargo target is valid. /tmp is the established POSIX socket
+        # authority; this override is private to supervisor provisioning and
+        # deliberately preserves the selected wrappers and SCCACHE_DIR.
+        socket_temp_root = Path("/tmp").resolve(strict=True)
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            build_env[name] = str(socket_temp_root)
+    return build_env
+
+
 def execute_guarded_request(request_path: Path) -> int:
     """Run identity, preflight, proof, and completion custody under one guard."""
     request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -202,7 +222,6 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         if preflight:
             raise ValueError("toolchain preflight failed: " + "; ".join(preflight))
-        supervisor_build_env = dict(execution_env)
         # The result custody root is already proven external to the admitted
         # source tree.  It is therefore the single authority for the reusable
         # supervisor build as well; inherited Cargo target state must not move
@@ -215,8 +234,8 @@ def execute_guarded_request(request_path: Path) -> int:
         ):
             raise ValueError("native proof supervisor target overlaps admitted source")
         supervisor_target.mkdir(parents=True, exist_ok=True)
-        supervisor_build_env["CARGO_TARGET_DIR"] = str(
-            supervisor_target.resolve(strict=True)
+        supervisor_build_env = _supervisor_build_environment(
+            execution_env, target=supervisor_target
         )
         built_supervisor, supervisor_provision_telemetry = (
             supervisor._provision_proof_supervisor(cwd=cwd, env=supervisor_build_env)
