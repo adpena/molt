@@ -401,6 +401,7 @@ def _capture_runtime_with_context(
             label="Python runtime",
             pool=pool,
             pruned_components=frozenset({"site-packages", "dist-packages"}),
+            external_symlink_roles=explicit_paths,
         )
         runtime_roots.append(inventory)
     root_entries = {
@@ -592,6 +593,68 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     _nodes, nodes_by_id = _validate_file_nodes(
         payload.get("file_nodes"), label="Python runtime"
     )
+    explicit = payload.get("explicit_files")
+    if not isinstance(explicit, list):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime explicit-file closure is invalid"
+        )
+    explicit_rows: list[Mapping[str, object]] = []
+    explicit_role_nodes: dict[str, str] = {}
+    for raw_row in explicit:
+        if not isinstance(raw_row, Mapping):
+            raise PythonEnvironmentIdentityError(
+                "Python runtime explicit-file closure is invalid"
+            )
+        row = cast(Mapping[str, object], raw_row)
+        role = raw_row.get("role")
+        node = raw_row.get("node")
+        if (
+            not isinstance(role, str)
+            or role in explicit_role_nodes
+            or role not in expected_explicit_roles
+            or not isinstance(node, str)
+            or node not in nodes_by_id
+        ):
+            raise PythonEnvironmentIdentityError(
+                "Python runtime explicit-file closure is invalid"
+            )
+        kind = row.get("kind")
+        if kind == "node-reference":
+            filename = row.get("filename")
+            valid = (
+                set(row) == {"role", "kind", "filename", "node"}
+                and isinstance(filename, str)
+                and filename
+                and not any(separator in filename for separator in ("/", "\\"))
+            )
+        elif kind == "root-reference":
+            valid = (
+                set(row) == {"role", "kind", "root", "path", "node"}
+                and isinstance(row.get("root"), str)
+                and _valid_relative_payload_path(row.get("path"))
+            )
+        else:
+            valid = False
+        if not valid:
+            raise PythonEnvironmentIdentityError(
+                "Python runtime explicit-file reference is invalid"
+            )
+        explicit_rows.append(row)
+        explicit_role_nodes[role] = node
+    if set(explicit_role_nodes) != set(expected_explicit_roles) or explicit != sorted(
+        explicit, key=lambda row: str(row["role"])
+    ):
+        raise PythonEnvironmentIdentityError(
+            "Python runtime explicit-file closure is not canonical"
+        )
+    roles_by_node: dict[str, set[str]] = {}
+    for role, node in explicit_role_nodes.items():
+        roles_by_node.setdefault(node, set()).add(role)
+    external_runtime_roles = {
+        role: node
+        for role, node in explicit_role_nodes.items()
+        if len(roles_by_node[node]) == 1
+    }
     roots = payload.get("runtime_roots")
     if not isinstance(roots, list) or not roots:
         raise PythonEnvironmentIdentityError("Python runtime root closure is invalid")
@@ -609,7 +672,10 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
                 "Python runtime root closure is invalid"
             )
         entries, _paths, root_nodes = _validate_inventory_entries(
-            root.get("entries"), label="Python runtime", nodes=nodes_by_id
+            root.get("entries"),
+            label="Python runtime",
+            nodes=nodes_by_id,
+            external_runtime_roles=external_runtime_roles,
         )
         root_id = root.get("id")
         expected_node_ids = sorted(
@@ -727,58 +793,22 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             "Python runtime root closure contains an unreferenced root"
         )
-    explicit = payload.get("explicit_files")
-    if not isinstance(explicit, list):
-        raise PythonEnvironmentIdentityError(
-            "Python runtime explicit-file closure is invalid"
-        )
-    explicit_roles: set[str] = set()
-    for raw_row in explicit:
-        if not isinstance(raw_row, Mapping):
-            raise PythonEnvironmentIdentityError(
-                "Python runtime explicit-file closure is invalid"
-            )
-        row = cast(Mapping[str, object], raw_row)
-        role = str(row.get("role"))
-        kind = row.get("kind")
-        if role in explicit_roles or role not in expected_explicit_roles:
-            raise PythonEnvironmentIdentityError(
-                "Python runtime explicit-file closure is invalid"
-            )
-        if kind == "node-reference":
-            filename = row.get("filename")
-            node = row.get("node")
-            valid = (
-                set(row) == {"role", "kind", "filename", "node"}
-                and isinstance(filename, str)
-                and filename
-                and not any(separator in filename for separator in ("/", "\\"))
-                and isinstance(node, str)
-                and node in nodes_by_id
-            )
-        elif kind == "root-reference":
+    for row in explicit_rows:
+        if row.get("kind") == "root-reference":
             root_id = str(row.get("root"))
             target = root_entries.get(root_id, {}).get(str(row.get("path")))
             valid = (
-                set(row) == {"role", "kind", "root", "path", "node"}
-                and target is not None
+                target is not None
                 and _is_file_entry(target)
                 and target.get("node") == row.get("node")
             )
         else:
-            valid = False
+            valid = True
         if not valid:
             raise PythonEnvironmentIdentityError(
                 "Python runtime explicit-file reference is invalid"
             )
-        explicit_roles.add(role)
         referenced_nodes.add(str(row.get("node")))
-    if explicit_roles != set(expected_explicit_roles) or explicit != sorted(
-        explicit, key=lambda row: str(row["role"])
-    ):
-        raise PythonEnvironmentIdentityError(
-            "Python runtime explicit-file closure is not canonical"
-        )
     dependency = payload.get("native_dependency_closure")
     if not isinstance(dependency, Mapping) or set(dependency) != {
         "status",
@@ -824,10 +854,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     component_roles: set[str] = set()
     filenames_by_id: dict[str, str] = {}
     component_keys: set[tuple[str, int]] = set()
-    role_nodes = {
-        str(row["role"]): row["node"]
-        for row in cast(list[Mapping[str, object]], explicit)
-    }
+    role_nodes = explicit_role_nodes
     expected_roots: list[str] = []
     prior_component_key = ("", -1)
     for index, raw_component in enumerate(components):

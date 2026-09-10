@@ -221,7 +221,159 @@ def test_directory_symlink_escape_is_rejected(tmp_path):
             root_id="fixture",
             label="fixture",
             pool=files._FileNodePool(),
-            external_symlink_role=(external, "base-executable"),
+            external_symlink_roles={"base-executable": external},
+        )
+
+
+def test_macos_framework_stdlib_symlink_uses_exact_runtime_library_role(tmp_path):
+    version = tmp_path / "Python.framework" / "Versions" / "3.12"
+    stdlib = version / "lib" / "python3.12"
+    config = stdlib / "config-3.12-darwin"
+    config.mkdir(parents=True)
+    runtime_library = version / "Python"
+    runtime_library.write_bytes(b"framework runtime")
+    archive = config / "libpython3.12.a"
+    try:
+        archive.symlink_to(runtime_library)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    tree, _paths, _metadata = files._stable_tree_inventory(
+        stdlib,
+        root_id="runtime-root-0",
+        label="Python runtime",
+        pool=files._FileNodePool(),
+        external_symlink_roles={"runtime-library": runtime_library},
+    )
+
+    row = next(
+        entry
+        for entry in tree["entries"]
+        if entry["path"] == "config-3.12-darwin/libpython3.12.a"
+    )
+    assert row == {
+        "path": "config-3.12-darwin/libpython3.12.a",
+        "kind": "symlink",
+        "target_owner": "base-runtime",
+        "target_role": "runtime-library",
+        "access": row["access"],
+    }
+    assert tree["file_count"] == 1
+
+
+@pytest.mark.parametrize("role", ["base-executable", "runtime-library", "unicodedata"])
+def test_external_runtime_symlink_roles_are_derived_from_exact_files(tmp_path, role):
+    root = tmp_path / "runtime-root"
+    root.mkdir()
+    external = tmp_path / role
+    external.write_bytes(role.encode())
+    link = root / "component"
+    try:
+        link.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    tree, _paths, _metadata = files._stable_tree_inventory(
+        root,
+        root_id="fixture",
+        label="fixture",
+        pool=files._FileNodePool(),
+        external_symlink_roles={role: external},
+    )
+
+    assert tree["entries"] == [
+        {
+            "path": "component",
+            "kind": "symlink",
+            "target_owner": "base-runtime",
+            "target_role": role,
+            "access": tree["entries"][0]["access"],
+        }
+    ]
+
+
+@pytest.mark.parametrize("target_kind", ["unrelated", "sibling", "mismatched-role"])
+def test_external_runtime_symlink_rejects_non_authority_file(tmp_path, target_kind):
+    root = tmp_path / "runtime-root"
+    root.mkdir()
+    framework = tmp_path / "Python.framework"
+    framework.mkdir()
+    runtime_library = framework / "Python"
+    runtime_library.write_bytes(b"runtime")
+    sibling = framework / "Python.debug"
+    sibling.write_bytes(b"sibling")
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"unrelated")
+    target = unrelated if target_kind == "unrelated" else sibling
+    declared = runtime_library if target_kind != "mismatched-role" else sibling
+    link = root / "component"
+    try:
+        link.symlink_to(target if target_kind != "mismatched-role" else runtime_library)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink escapes custody"):
+        files._stable_tree_inventory(
+            root,
+            root_id="fixture",
+            label="fixture",
+            pool=files._FileNodePool(),
+            external_symlink_roles={"runtime-library": declared},
+        )
+
+
+def test_external_runtime_symlink_rejects_ambiguous_component_identity(tmp_path):
+    root = tmp_path / "runtime-root"
+    root.mkdir()
+    external = tmp_path / "Python"
+    external.write_bytes(b"runtime")
+    link = root / "component"
+    try:
+        link.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="ambiguous"):
+        files._stable_tree_inventory(
+            root,
+            root_id="fixture",
+            label="fixture",
+            pool=files._FileNodePool(),
+            external_symlink_roles={
+                "base-executable": external,
+                "runtime-library": external,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["unknown-role", "invented-owner", "target-path", "extra-metadata"],
+)
+def test_external_runtime_symlink_receipt_requires_canonical_role_reference(fault):
+    access = {"readable": True, "writable": False, "executable": True}
+    row = {
+        "path": "component",
+        "kind": "symlink",
+        "target_owner": "base-runtime",
+        "target_role": "runtime-library",
+        "access": access,
+    }
+    if fault == "unknown-role":
+        row["target_role"] = "framework/Python"
+    elif fault == "invented-owner":
+        row["target_owner"] = "framework-runtime"
+    elif fault == "target-path":
+        row["target"] = "/Library/Frameworks/Python.framework/Versions/3.12/Python"
+    else:
+        row["target_metadata"] = {"role": "runtime-library"}
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink entry"):
+        files._validate_inventory_entries(
+            [row],
+            label="fixture",
+            nodes={},
+            external_runtime_roles={"runtime-library": "file-node-0"},
         )
 
 

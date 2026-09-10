@@ -651,7 +651,7 @@ def _stable_tree_inventory(
     pool: _FileNodePool,
     excluded: frozenset[str] = frozenset(),
     pruned_components: frozenset[str] = frozenset(),
-    external_symlink_role: tuple[Path, str] | None = None,
+    external_symlink_roles: Mapping[str, Path] | None = None,
 ) -> tuple[dict[str, object], set[str], dict[str, os.stat_result]]:
     """Capture a tree with one hash per file object and a closing snapshot."""
 
@@ -730,19 +730,26 @@ def _stable_tree_inventory(
                 raise PythonEnvironmentIdentityError(
                     f"{label} directory symlink escapes custody: {path} -> {resolved}"
                 ) from None
-            if external_symlink_role is None:
+            external_matches: list[str] = []
+            for external_role, external_path in sorted(
+                (external_symlink_roles or {}).items()
+            ):
+                try:
+                    same_external = resolved.samefile(external_path)
+                except OSError:
+                    same_external = False
+                if same_external:
+                    external_matches.append(external_role)
+            if not external_matches:
                 raise PythonEnvironmentIdentityError(
                     f"{label} file symlink escapes custody: {path} -> {resolved}"
                 ) from None
-            external_path, external_role = external_symlink_role
-            try:
-                same_external = resolved.samefile(external_path)
-            except OSError:
-                same_external = False
-            if not same_external:
+            if len(external_matches) != 1:
                 raise PythonEnvironmentIdentityError(
-                    f"{label} file symlink escapes custody: {path} -> {resolved}"
+                    f"{label} file symlink has ambiguous external runtime custody: "
+                    f"{path} -> {resolved}"
                 )
+            external_role = external_matches[0]
             rows.append(
                 {
                     "path": relative,
@@ -884,7 +891,7 @@ def _validate_inventory_entries(
     *,
     label: str,
     nodes: Mapping[str, Mapping[str, object]],
-    allow_base_runtime: bool = False,
+    external_runtime_roles: Mapping[str, object] | None = None,
 ) -> tuple[list[Mapping[str, object]], set[str], set[str]]:
     if not isinstance(value, list):
         raise PythonEnvironmentIdentityError(f"{label} entries are invalid")
@@ -933,11 +940,12 @@ def _validate_inventory_entries(
                 )
                 if valid:
                     referenced_nodes.add(str(raw["node"]))
-            elif owner == "base-runtime" and allow_base_runtime:
+            elif owner == "base-runtime" and external_runtime_roles is not None:
                 valid = (
                     set(raw)
                     == {"path", "kind", "target_owner", "target_role", "access"}
-                    and raw.get("target_role") == "base-executable"
+                    and isinstance(raw.get("target_role"), str)
+                    and raw.get("target_role") in external_runtime_roles
                     and _valid_access(raw.get("access"))
                 )
             else:
