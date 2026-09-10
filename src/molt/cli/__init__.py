@@ -233,7 +233,6 @@ from molt.cli.profile_feedback import (
 )
 from molt.cli.lockfiles import (
     _LOCK_CHECK_CACHE_VERSION,
-    _cargo_lock_manifest_paths,
     _check_lockfiles,
     _is_lock_check_cache_valid,
     _load_lock_check_cache,

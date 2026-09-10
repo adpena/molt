@@ -459,7 +459,7 @@ runtime/molt-diagnostics/
   tests/render_parity.rs    # unit-level renderer parity (Phase 1)
   tests/suggest.rs          # nearest-match unit tests (Phase 3)
 ```
-Workspace wiring: add to the runtime workspace members; `molt-runtime` depends on
+Workspace wiring: add to the root `Cargo.toml` members; `molt-runtime` depends on
 `molt-diagnostics` (one-directional, leaf). This composes with doc 21b crate-graph
 blueprint (a new leaf crate has no cycle — verify-first confirmed the diagnostics concern
 has no inbound deps today).

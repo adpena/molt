@@ -208,15 +208,12 @@ def _load_tool(name: str, filename: str):
     return module
 
 
-def test_truth_runner_prefetches_every_workspace_lock_used_by_nested_tests(
+def test_truth_runner_owns_only_the_root_workspace_and_binary_runner_custody(
     tmp_path: Path,
 ) -> None:
     runner = _load_tool("run_cargo_test_truth_prefetch", "run_cargo_test_truth.py")
 
-    assert runner.LOCKED_WORKSPACES == (
-        ("root", ROOT / "Cargo.toml"),
-        ("runtime", ROOT / "runtime" / "Cargo.toml"),
-    )
+    assert runner.WORKSPACE_MANIFEST == ROOT / "Cargo.toml"
     config = runner.target_runner_config("x86_64-unknown-linux-gnu", tmp_path)
     assert config.startswith("target.x86_64-unknown-linux-gnu.runner=[")
     assert "cargo_test_binary_runner.py" in config
@@ -236,19 +233,21 @@ def test_truth_runner_prefetches_every_workspace_lock_used_by_nested_tests(
     assert "molt.git-source.v1" in config
 
 
-def test_truth_runner_executes_every_locked_workspace_with_exact_manifest_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("publish_binary", [False, True])
+def test_truth_runner_traverses_the_root_workspace_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_binary: bool
 ) -> None:
     runner = _load_tool(
         "run_cargo_test_truth_workspace_execution", "run_cargo_test_truth.py"
     )
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
-    monkeypatch.setattr(runner, "run_identity", lambda _started: "workspace-matrix")
+    monkeypatch.setattr(runner, "run_identity", lambda _started: "root-workspace")
     monkeypatch.setattr(runner, "host_target", lambda: "x86_64-pc-windows-msvc")
     source_identity = {"schema": "molt.git-source.v1", "head": "exact"}
     monkeypatch.setattr(runner, "git_source_identity", lambda: source_identity)
     commands: list[tuple[str, ...]] = []
+    package_id = "path+file:///molt/runtime/molt-runtime#0.1.0"
 
     def fake_streamed(
         command,
@@ -260,13 +259,53 @@ def test_truth_runner_executes_every_locked_workspace_with_exact_manifest_path(
         del retain_cargo_artifacts, timeout_seconds
         command = tuple(command)
         commands.append(command)
-        output = json.dumps({"packages": []}) if command[1] == "metadata" else ""
+        output = (
+            json.dumps(
+                {
+                    "packages": [
+                        {"id": package_id, "name": "molt-runtime", "version": "0.1.0"}
+                    ]
+                }
+            )
+            if command[1] == "metadata"
+            else ""
+        )
+        artifacts = ()
+        if command[1] == "test" and publish_binary:
+            executable = tmp_path / "runtime-test"
+            executable.write_bytes(b"exact executable")
+            size, digest = runner._file_identity(executable)
+            artifacts = (
+                {
+                    "executable": str(executable),
+                    "target": {"name": "molt_runtime", "kind": ["lib"]},
+                    "package_id": package_id,
+                },
+            )
+            receipt_dir = tmp_path / "runs" / "root-workspace" / "binaries" / "root"
+            (receipt_dir / "one.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "molt.cargo-test-binary.v1",
+                        "invocation_id": "one",
+                        "run_id": "root-workspace",
+                        "source_identity": source_identity,
+                        "executable_resolved": str(executable),
+                        "executable_size": size,
+                        "executable_sha256": digest,
+                        "status": "success",
+                        "test_results": [{"identity": "test_one", "status": "pass"}],
+                        "failure_identities": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(output, encoding="utf-8")
         return runner.StreamedCommandResult(
             returncode=0,
             retained_output=output,
-            cargo_test_artifacts=(),
+            cargo_test_artifacts=artifacts,
             evidence={
                 "path": str(evidence_path),
                 "bytes": len(output),
@@ -280,23 +319,124 @@ def test_truth_runner_executes_every_locked_workspace_with_exact_manifest_path(
     monkeypatch.setattr(runner, "run_streamed", fake_streamed)
     monkeypatch.setattr(runner, "verdict", lambda *_args, **_kwargs: [])
 
-    # Empty synthetic Cargo JSON intentionally fails coverage, after the full
-    # command matrix has executed and published terminal evidence.
-    assert runner.main() == 1
-    for workspace, manifest in runner.LOCKED_WORKSPACES:
-        matching = [command for command in commands if str(manifest) in command]
-        assert [command[1] for command in matching] == ["fetch", "metadata", "test"]
-        for command in matching:
-            assert command[command.index("--manifest-path") + 1] == str(manifest)
-        [test_command] = [command for command in matching if command[1] == "test"]
-        config = test_command[test_command.index("--config") + 1]
-        assert '"--run-id","workspace-matrix"' in config
-        assert "molt.git-source.v1" in config
-        runner_argv = json.loads(config.split("=", 1)[1])
-        receipt_index = runner_argv.index("--receipt-dir") + 1
-        assert runner_argv[receipt_index] == str(
-            tmp_path / "runs" / "workspace-matrix" / "binaries" / workspace
+    # Missing synthetic artifacts must fail coverage after the same complete
+    # root traversal used for a fully attributed binary receipt.
+    assert runner.main() == (0 if publish_binary else 1)
+    assert [command[1] for command in commands] == ["fetch", "metadata", "test"]
+    for command in commands:
+        assert command[command.index("--manifest-path") + 1] == str(ROOT / "Cargo.toml")
+        assert "--locked" in command
+    test_command = commands[-1]
+    assert test_command[: len(runner.CANONICAL_COMMAND)] == runner.CANONICAL_COMMAND
+    config = test_command[test_command.index("--config") + 1]
+    assert '"--run-id","root-workspace"' in config
+    assert "molt.git-source.v1" in config
+    runner_argv = json.loads(config.split("=", 1)[1])
+    receipt_index = runner_argv.index("--receipt-dir") + 1
+    run_dir = tmp_path / "runs" / "root-workspace"
+    assert runner_argv[receipt_index] == str(run_dir / "binaries" / "root")
+    assert [path.name for path in (run_dir / "binaries").iterdir()] == ["root"]
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == ("success" if publish_binary else "failed")
+    assert manifest["source_identity"] == source_identity
+    assert [phase["kind"] for phase in manifest["phases"]] == [
+        "dependency-prefetch",
+        "package-metadata",
+        "workspace-test",
+    ]
+    assert all(phase["workspace"] == "root" for phase in manifest["phases"])
+    assert all(phase["manifest"] == "Cargo.toml" for phase in manifest["phases"])
+    if publish_binary:
+        assert manifest["problems"] == []
+        assert manifest["observed_test_count"] == 1
+        [binary] = manifest["test_binaries"]
+        [expected] = manifest["expected_test_binaries"]
+        assert binary["workspace"] == expected["workspace"] == "root"
+        assert expected["package"] == "molt-runtime@0.1.0"
+        assert manifest["phases"][-1]["binary_receipt_count"] == 1
+        assert manifest["phases"][-1]["expected_binary_count"] == 1
+    else:
+        assert "Cargo JSON reported zero expected test binaries" in manifest["problems"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_commands", "termination", "problem"),
+    [
+        (
+            "fetch",
+            ["fetch"],
+            {"kind": "exit", "returncode": 101},
+            "Cargo dependency prefetch failed; diagnostics retained in terminal phase",
+        ),
+        (
+            "metadata",
+            ["fetch", "metadata"],
+            {"kind": "exit", "returncode": 101},
+            "Cargo package metadata failed; diagnostics retained in terminal phase",
+        ),
+        (
+            "invalid-metadata",
+            ["fetch", "metadata"],
+            {"kind": "metadata-validation", "returncode": 2},
+            "Cargo package identity metadata was invalid",
+        ),
+    ],
+)
+def test_truth_runner_preflight_failure_is_terminal_without_starting_tests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_commands: list[str],
+    termination: dict,
+    problem: str,
+) -> None:
+    runner = _load_tool(
+        "run_cargo_test_truth_preflight_failure", "run_cargo_test_truth.py"
+    )
+    monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
+    monkeypatch.setattr(runner, "run_identity", lambda _started: failure)
+    source_identity = {"schema": "molt.git-source.v1", "head": "exact"}
+    monkeypatch.setattr(runner, "git_source_identity", lambda: source_identity)
+    commands: list[str] = []
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail(
+            "preflight failure must not start tests or replace its terminal verdict"
         )
+
+    monkeypatch.setattr(runner, "host_target", forbidden)
+    monkeypatch.setattr(runner, "verdict", forbidden)
+
+    def fake_streamed(command, *, evidence_path, **_kwargs):
+        commands.append(command[1])
+        assert command[command.index("--manifest-path") + 1] == str(ROOT / "Cargo.toml")
+        output = "preflight diagnostics\n"
+        return runner.StreamedCommandResult(
+            returncode=101 if command[1] == failure else 0,
+            retained_output=output,
+            cargo_test_artifacts=(),
+            evidence={"path": str(evidence_path), "tail": output},
+        )
+
+    monkeypatch.setattr(runner, "run_streamed", fake_streamed)
+    assert runner.main() == 1
+    assert commands == expected_commands
+    receipt = json.loads(runner.RECEIPT.read_text(encoding="utf-8"))
+    assert receipt["status"] == "failed"
+    assert receipt["source_identity"] == source_identity
+    assert receipt["problems"] == [problem]
+    assert receipt["phases"][-1]["termination"] == termination
+    assert receipt["phases"][-1]["evidence"]["tail"] == "preflight diagnostics\n"
+    assert all(phase["workspace"] == "root" for phase in receipt["phases"])
+    assert all(phase["manifest"] == "Cargo.toml" for phase in receipt["phases"])
+    assert (
+        json.loads(
+            (runner.RUNS_ROOT / failure / "manifest.json").read_text(encoding="utf-8")
+        )
+        == receipt
+    )
+    assert runner._ACTIVE_RUN_TERMINALIZER is None
 
 
 def test_truth_runner_derives_complete_binary_coverage_from_cargo_json() -> None:
@@ -582,7 +722,6 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
     )
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
-    monkeypatch.setattr(runner, "LOCKED_WORKSPACES", (("root", ROOT / "Cargo.toml"),))
     monkeypatch.setattr(runner, "run_identity", lambda _started: "run-compile-failure")
     monkeypatch.setattr(runner, "host_target", lambda: "x86_64-pc-windows-msvc")
     commands = iter(

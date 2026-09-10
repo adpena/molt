@@ -1315,8 +1315,10 @@ re-baselines the contract.
 FOLLOW-UPS (unclaimed): (a) `molt-gpu` has NO clippy gate + 6 pre-existing
 clippy errors (`molt_gpu_prim_read_data` needs `unsafe`; 5 `collapsible_if` in
 `render/{cuda,hip,msl,opencl,wgsl}.rs`) blocking a graphlib-parity gate;
-(b) `molt-runtime-stringprep` is in NEITHER workspace (contract flags it, the one
-real `non_member_layer_crates` finding) — add it to `runtime/Cargo.toml` members.
+(b) **Closed by workspace consolidation:** `molt-runtime-stringprep` and all
+ordinary runtime/compiler crates are explicit root `Cargo.toml` members. The
+secondary runtime manifest/lock is retired. Follow the current Cargo workspace
+contract in `docs/spec/areas/tooling/0001-toolchains.md` for new crates.
 
 LANE VISIBILITY (protocol): `git worktree list` is the GROUND-TRUTH registry of
 in-flight lanes (`E:/Molt/worktrees/codex-*`), which hold UNCOMMITTED WIP not

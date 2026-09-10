@@ -32,6 +32,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="${MOLT_DISCOVERY_PROFILE:-dev}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+[[ "$TARGET_DIR" == /* ]] || TARGET_DIR="$REPO_ROOT/$TARGET_DIR"
 NUMPY_WHEEL_DIR="${NUMPY_WHEEL_DIR:-$HOME/molt-discovery-numpy/wheel}"
 SCIPY_WHEEL_DIR="${SCIPY_WHEEL_DIR:-$HOME/molt-discovery-scipy/wheel}"
 
@@ -46,12 +48,11 @@ esac
 echo "== building molt-cext-discovery ($PROFILE) to enumerate molt's exported ABI ..."
 if [[ "$PROFILE" == "dev" ]]; then
     PROFILE_DIR="debug"
-    ( cd "$REPO_ROOT/runtime" && cargo build -p molt-cext-discovery ) || { echo "FATAL: harness build failed"; exit 3; }
+    ( cd "$REPO_ROOT" && cargo build --locked --target-dir "$TARGET_DIR" -p molt-cext-discovery ) || { echo "FATAL: harness build failed"; exit 3; }
 else
     PROFILE_DIR="$PROFILE"
-    ( cd "$REPO_ROOT/runtime" && cargo build -p molt-cext-discovery --profile "$PROFILE" ) || { echo "FATAL: harness build failed"; exit 3; }
+    ( cd "$REPO_ROOT" && cargo build --locked --target-dir "$TARGET_DIR" -p molt-cext-discovery --profile "$PROFILE" ) || { echo "FATAL: harness build failed"; exit 3; }
 fi
-TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/runtime/target}"
 HARNESS="$TARGET_DIR/$PROFILE_DIR/libmolt_cext_discovery.$DYLIB_EXT"
 [[ -f "$HARNESS" ]] || { echo "FATAL: harness lib not found at $HARNESS"; exit 3; }
 

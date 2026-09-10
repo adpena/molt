@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, "src")
 
 import molt.dx as molt_dx
@@ -13,6 +15,71 @@ from molt.harness_layers import (
     get_layers_for_profile,
 )
 from molt.harness_report import LayerStatus
+
+
+def test_cargo_layers_execute_from_root_membership(monkeypatch, tmp_path: Path):
+    import molt.harness_layers as layers
+
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text('[workspace]\nmembers = ["runtime/backend-dir"]\n')
+    member = tmp_path / "runtime" / "backend-dir" / "Cargo.toml"
+    member.parent.mkdir(parents=True)
+    member.write_text('[package]\nname = "molt-backend"\n')
+    calls = []
+
+    def run(args, *, cwd=None, **kwargs):
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(layers, "_run_cmd", run)
+    config = layers.HarnessConfig(project_root=tmp_path)
+    assert layers.run_layer_compile(config).status == LayerStatus.PASS
+    assert layers.run_layer_lint(config).status == LayerStatus.PASS
+    assert calls[0][0][:3] == ["cargo", "check", "--workspace"]
+    assert calls[1][0] == [
+        "cargo",
+        "clippy",
+        "-p",
+        "molt-backend",
+        "--",
+        "-D",
+        "warnings",
+    ]
+    assert all(cwd == tmp_path for _args, cwd in calls)
+
+
+def test_lint_does_not_convert_bad_workspace_into_skipped_coverage(tmp_path: Path):
+    import molt.harness_layers as layers
+
+    with pytest.raises(ValueError, match="Cargo manifest"):
+        layers.run_layer_lint(layers.HarnessConfig(project_root=tmp_path))
+
+
+@pytest.mark.parametrize(
+    "profile,folder",
+    [("dev", "debug"), ("release-size", "release-size"), ("", "release-output")],
+)
+def test_size_uses_compiler_target_profile_and_archive_authorities(
+    tmp_path: Path, monkeypatch, profile: str, folder: str
+):
+    import molt.harness_layers as layers
+    from molt.cli.runtime_paths import _runtime_lib_archive_names
+
+    target = tmp_path / "selected-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", profile)
+    monkeypatch.setattr(layers.shutil, "which", lambda _name: None)
+    artifact = target / folder / _runtime_lib_archive_names()[0]
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"selected")
+    stale = tmp_path / "runtime" / "target" / "release" / artifact.name
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"obsolete")
+
+    result = layers.run_layer_size(layers.HarnessConfig(project_root=tmp_path))
+    assert result.status == LayerStatus.PASS
+    assert result.metrics == {f"{artifact.name}_bytes": len(b"selected")}
+    assert str(artifact.parent) in result.details
 
 
 def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
