@@ -604,6 +604,40 @@ def test_runtime_rejects_duplicate_deferred_imports() -> None:
         runtime.validate_python_runtime_identity(payload)
 
 
+def test_runtime_deferred_import_order_is_component_numeric_then_name() -> None:
+    payload = _runtime_payload(operating_system="macos")
+    dependency = payload["native_dependency_closure"]
+    dependency["deferred_imports"] = [
+        {
+            "from": "native-component-0",
+            "name": "a-future.dylib",
+            "kind": "lazy",
+        },
+        {
+            "from": "native-component-0",
+            "name": "a-future.dylib",
+            "kind": "weak",
+        },
+        {
+            "from": "native-component-0",
+            "name": "z-future.dylib",
+            "kind": "weak",
+        },
+        {
+            "from": "native-component-1",
+            "name": "a-future.dylib",
+            "kind": "weak",
+        },
+    ]
+    _reseal(payload)
+    assert runtime.validate_python_runtime_identity(payload) == payload
+
+    dependency["deferred_imports"].reverse()
+    _reseal(payload)
+    with pytest.raises(PythonEnvironmentIdentityError, match="not canonical"):
+        runtime.validate_python_runtime_identity(payload)
+
+
 def test_runtime_rejects_orphaned_file_node_and_stale_digest() -> None:
     payload = _runtime_payload()
     payload["file_nodes"].append({"id": "file-node-3", "size": 1, "sha256": "4" * 64})

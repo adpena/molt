@@ -47,6 +47,21 @@ DEFERRED_DEPENDENCY_KINDS = {
 }
 
 
+def _canonical_deferred_dependency_key(
+    source: str,
+    name: str,
+    kind: str,
+    operating_system: str,
+) -> tuple[int, str, str]:
+    """Order by published component id, normalized loader name, then kind."""
+
+    return (
+        int(source.removeprefix("native-component-")),
+        _loader_name(name, operating_system),
+        kind,
+    )
+
+
 @dataclass(frozen=True, order=True, slots=True)
 class NativeDependency:
     name: str
@@ -701,10 +716,18 @@ def _native_dependency_closure(
     observed_components = [
         ids[name] for name in ordered_names if discovered[name] in observed_paths
     ]
-    deferred_imports = [
+    deferred_imports: list[dict[str, str]] = [
         {"from": ids[source], "name": declaration.name, "kind": declaration.kind}
-        for source, declaration in sorted(deferred)
+        for source, declaration in deferred
     ]
+    deferred_imports.sort(
+        key=lambda declaration: _canonical_deferred_dependency_key(
+            declaration["from"],
+            declaration["name"],
+            declaration["kind"],
+            operating_system,
+        )
+    )
 
     def verify_census() -> None:
         if _loaded_native_module_snapshot(operating_system) != loader_snapshot:

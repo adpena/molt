@@ -32,6 +32,7 @@ from molt.python_identity_common import (
 )
 from molt.python_native_dependency_custody import (
     DEFERRED_DEPENDENCY_KINDS,
+    _canonical_deferred_dependency_key,
     _native_dependency_closure,
 )
 from molt.python_native_locations import _native_contract_valid
@@ -967,7 +968,12 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
                 "Python runtime native dependency deferred declaration is invalid"
             )
         deferred_keys.append(
-            (int(source.removeprefix("native-component-")), name, kind)
+            _canonical_deferred_dependency_key(
+                source,
+                name,
+                kind,
+                operating_system,
+            )
         )
     if deferred_keys != sorted(set(deferred_keys)):
         raise PythonEnvironmentIdentityError(
