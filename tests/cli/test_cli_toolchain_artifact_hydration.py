@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import contextlib
 import json
 import os
@@ -7,7 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
-from tests.runtime_build_identity_helper import runtime_cargo_plan
+from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from typing import cast
 
 import pytest
@@ -47,9 +49,13 @@ _TEST_RUNTIME_INPUTS_DIGEST = "ef" * 32
 
 
 @pytest.fixture(autouse=True)
-def _native_cargo_plan_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+def _native_cargo_plan_authority(
+    runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_NATIVE_BUILD,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
 
 
@@ -96,6 +102,7 @@ def _cargo_cpython_abi_artifact_stdout(path: Path) -> bytes:
 
 
 def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_artifact(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -149,6 +156,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
         cargo_plan=runtime_cargo_plan(
             tmp_path,
+            fixture_root=runtime_fixture_root,
             env={"CARGO_TARGET_DIR": str(target_root)},
             requested_target="wasm32-wasip1",
             cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
@@ -184,6 +192,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
 
 
 def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_report(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -216,6 +225,7 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
     build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
         cargo_plan=runtime_cargo_plan(
             tmp_path,
+            fixture_root=runtime_fixture_root,
             env={"CARGO_TARGET_DIR": str(target_root)},
             requested_target="wasm32-wasip1",
             cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
@@ -249,6 +259,7 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
 
 
 def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,6 +292,7 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
     _build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
         cargo_plan=runtime_cargo_plan(
             tmp_path,
+            fixture_root=runtime_fixture_root,
             env={"CARGO_TARGET_DIR": str(target_root)},
             requested_target="wasm32-wasip1",
             cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
@@ -311,6 +323,7 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
 
 
 def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticlib(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -349,6 +362,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     _build, src = RUNTIME_WASM_BUILD_SUPPORT._run_runtime_wasm_cargo_build(
         cargo_plan=runtime_cargo_plan(
             tmp_path,
+            fixture_root=runtime_fixture_root,
             env={"CARGO_TARGET_DIR": str(target_root)},
             requested_target="wasm32-wasip1",
             cargo_command=RUNTIME_WASM_BUILD_SUPPORT._cargo_cmd_with_json_artifact_messages(
@@ -381,6 +395,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
 
 @pytest.mark.parametrize("report_artifact", [True, False])
 def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     report_artifact: bool,
@@ -423,7 +438,9 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         lambda *a, **k: identity,
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_WASM_BUILD_SUPPORT,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT, "runtime_build_tooling_authority", lambda _root: {}
@@ -503,6 +520,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     ],
 )
 def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -544,7 +562,11 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
             else {"MOLT_WASI_SYSROOT": str(tmp_path / "sysroot")}
         ),
     )
-    monkeypatch.setattr(support, "resolve_runtime_cargo_plan", runtime_cargo_plan)
+    monkeypatch.setattr(
+        support,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+    )
     monkeypatch.setattr(support, "runtime_build_tooling_authority", lambda _root: {})
     monkeypatch.setattr(support, "_read_runtime_fingerprint", lambda _path: None)
     monkeypatch.setattr(
@@ -992,6 +1014,7 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
 @pytest.mark.parametrize("reloc", (False, True), ids=("shared", "reloc"))
 @pytest.mark.parametrize("placement", ("primary", "deps", "hashed", "reported"))
 def test_runtime_member_hydration_selects_attested_target_and_replays_without_cargo(
+    runtime_fixture_root: RuntimeFixtureRoot,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     reloc: bool,
@@ -1019,12 +1042,16 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     ):
         monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_WASM_BUILD_SPEC,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(tmp_path, env=kwargs["env"]),
+        lambda **kwargs: runtime_wasm_link_inputs(
+            runtime_fixture_root, env=kwargs["env"]
+        ),
     )
     monkeypatch.setattr(RUNTIME_WASM_BUILD, "_build_state_root", lambda _root: state)
     monkeypatch.setattr(pair_build, "_build_state_root", lambda _root: state)

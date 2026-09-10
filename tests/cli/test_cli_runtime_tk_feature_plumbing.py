@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
 import contextlib
@@ -9,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
-from tests.runtime_build_identity_helper import runtime_cargo_plan
+from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from types import SimpleNamespace
 
 import molt.cli as cli
@@ -45,8 +47,14 @@ _NATIVE_STATICLIBS_NOTE = "note: native-static-libs: -lc\n"
 
 
 @pytest.fixture(autouse=True)
-def _native_cargo_plan_authority(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(RUNTIME_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan)
+def _native_cargo_plan_authority(
+    runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+    )
 
 
 def _source_fingerprint(hash_value: str) -> dict[str, object]:

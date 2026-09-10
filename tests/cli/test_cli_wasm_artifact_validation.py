@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import importlib
 import json
 import os
@@ -14,6 +16,7 @@ from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
 from molt.cli import runtime_build_identity as BUILD_IDENTITY
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     bind_runtime_wasm_specs,
     runtime_cargo_plan,
     runtime_wasm_link_inputs,
@@ -406,7 +409,9 @@ def test_wasm_link_args_response_file_path_is_absolute(
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     staticlib = Path("target") / "wasm32-wasip1" / "release" / "libmolt_runtime.a"
@@ -460,13 +465,18 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     )
 
     output = Path("runtime") / "molt_runtime_reloc.wasm"
-    inputs = runtime_wasm_link_inputs(tmp_path)
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=output,
         json_output=True,
         link_timeout=5.0,
-        cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            fixture_root=runtime_fixture_root,
+            env={},
+            cargo_command=("cargo",),
+        ),
         link_inputs=inputs,
         export_link_args="-C link-arg=--export-if-defined=molt_required",
     )
@@ -540,7 +550,9 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     staticlib = tmp_path / "libmolt_runtime.a"
     staticlib.write_bytes(b"archive")
@@ -583,13 +595,18 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         raising=True,
     )
 
-    inputs = runtime_wasm_link_inputs(tmp_path)
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=runtime_wasm,
         json_output=True,
         link_timeout=5.0,
-        cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+        cargo_plan=runtime_cargo_plan(
+            tmp_path,
+            fixture_root=runtime_fixture_root,
+            env={},
+            cargo_command=("cargo",),
+        ),
         link_inputs=inputs,
         export_link_args=export_link_args,
     )
@@ -608,7 +625,11 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
 
 
 @pytest.fixture
-def validation_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def validation_specs(
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Real feature/flag plans and exact family receipts, no tool probes/builds."""
     root = tmp_path / "repo with spaces"
     root.mkdir()
@@ -616,12 +637,16 @@ def validation_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_root = tmp_path / "state with spaces"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_WASM_BUILD_SPEC,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(tmp_path, env=kwargs["env"]),
+        lambda **kwargs: runtime_wasm_link_inputs(
+            runtime_fixture_root, env=kwargs["env"]
+        ),
     )
     monkeypatch.setattr(WASM_LINK_ARGS, "_build_state_root", lambda _root: state_root)
     monkeypatch.setattr(
