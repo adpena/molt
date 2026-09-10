@@ -85,6 +85,16 @@ def _selected_command_lines(output: str) -> list[list[str]]:
     return commands
 
 
+def _selected_rust_link_command(stdout: str, stderr: str) -> list[str]:
+    """Select exactly one rustc link command from its complete output stream."""
+    commands = _selected_command_lines(stdout + "\n" + stderr)
+    if len(commands) != 1:
+        raise ValueError(
+            f"synthetic Rust linker selection returned {len(commands)} commands"
+        )
+    return commands[0]
+
+
 def capture_rust_link_process_images(
     *,
     rustc: Path,
@@ -272,12 +282,7 @@ def capture_rust_link_process_images(
                 "synthetic Rust linker selection failed: "
                 + (completed.stderr.strip() or completed.stdout.strip())
             )
-        commands = _selected_command_lines(completed.stdout)
-        if len(commands) != 1:
-            raise ValueError(
-                f"synthetic Rust linker selection returned {len(commands)} commands"
-            )
-        selected = commands[0]
+        selected = _selected_rust_link_command(completed.stdout, completed.stderr)
         primary = _resolve_executable(selected[0], probe_env)
         selected_paths = [primary]
         driver_name = primary.name.casefold()
