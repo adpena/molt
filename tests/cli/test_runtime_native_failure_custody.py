@@ -12,13 +12,18 @@ from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     native_runtime_staticlib_identity,
     runtime_cargo_plan,
 )
 
 
 @pytest.fixture
-def plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def plan(
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     identity = native_runtime_staticlib_identity(cargo_profile="dev-fast")
     archive = tmp_path / "molt_runtime.lib"
     write_test_static_archive(archive)
@@ -47,7 +52,10 @@ def plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         stage_timings_ms=None,
         runtime_state=_RuntimeArtifactState(),
         cargo_plan=runtime_cargo_plan(
-            tmp_path, env={}, cargo_command=("cargo", "rustc")
+            tmp_path,
+            fixture_root=runtime_fixture_root,
+            env={},
+            cargo_command=("cargo", "rustc"),
         ),
         fingerprint_features=("stdlib_micro",),
         fingerprint_path=tmp_path / "runtime.fingerprint",

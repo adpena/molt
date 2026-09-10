@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence
@@ -40,6 +42,57 @@ from molt.cli.runtime_wasm_build_spec import (
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.runtime_wasm_build_support import RuntimeWasmLinkInputs
 from molt.toolchain_identity import stable_regular_file_identity
+
+
+@dataclass(frozen=True)
+class RuntimeFixtureRoot:
+    """Writable runtime fixtures owned by pytest's temporary-directory lifetime.
+
+    Obtain this value through the shared ``runtime_fixture_root`` fixture, not
+    from a compiler source path. Source roots remain separate read-only inputs.
+    """
+
+    path: Path
+
+    def __post_init__(self) -> None:
+        path = self.path.resolve(strict=True)
+        source = _compiler_root().resolve(strict=True)
+        if (
+            not path.is_dir()
+            or source.is_relative_to(path)
+            or path.is_relative_to(source)
+        ):
+            raise ValueError("runtime fixture root cannot own the compiler source root")
+        object.__setattr__(self, "path", path)
+
+    def native_executable(self, relative: str) -> Path:
+        """Own real native image bytes for custody-only, never-executed tools.
+
+        The running interpreter supplies a valid executable for this host. It
+        does not become a Cargo, linker, compiler or wrapper implementation;
+        consumers testing tool behavior must provide real tools instead.
+        Existing files are retained so deliberate custody mutations stay visible.
+        """
+        relative_path = Path(relative)
+        if relative_path.anchor or ".." in relative_path.parts:
+            raise ValueError(
+                "native executable fixture requires a confined relative path"
+            )
+        path = (self.path / relative_path).resolve()
+        if path == self.path or not path.is_relative_to(self.path):
+            raise ValueError("native executable fixture escaped its pytest-owned root")
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(sys.executable).resolve(strict=True), path)
+        return path
+
+
+def _fixture_path(root: RuntimeFixtureRoot) -> Path:
+    if not isinstance(root, RuntimeFixtureRoot):
+        raise TypeError(
+            "runtime fixtures require the pytest-owned runtime_fixture_root"
+        )
+    return root.path
 
 
 def _tree_identity(seed: str) -> dict[str, object]:
@@ -245,10 +298,10 @@ def fingerprint_for_identity(
 
 
 def runtime_wasm_link_inputs(
-    root: Path, *, env: Mapping[str, str] | None = None
+    fixture_root: RuntimeFixtureRoot, *, env: Mapping[str, str] | None = None
 ) -> RuntimeWasmLinkInputs:
-    """Tiny file-backed input custody; never inspects a live WASI toolchain."""
-    directory = root / "runtime-link-inputs"
+    """File-backed custody only; the native-image linker fixture is never run."""
+    directory = _fixture_path(fixture_root) / "runtime-link-inputs"
     directory.mkdir(parents=True, exist_ok=True)
     identities = []
     for name in (
@@ -260,7 +313,10 @@ def runtime_wasm_link_inputs(
     ):
         path = directory / name
         if not path.exists():
-            path.write_bytes(b"!<arch>\n" if name.endswith(".a") else b"test-linker")
+            if name.endswith(".a"):
+                path.write_bytes(b"!<arch>\n")
+            else:
+                fixture_root.native_executable(f"runtime-link-inputs/{name}")
         identities.append(
             stable_regular_file_identity(path, label=f"test runtime link {name}")
         )
@@ -275,12 +331,12 @@ def bind_runtime_wasm_specs(
     shared: _RuntimeWasmBuildSpec,
     reloc: _RuntimeWasmBuildSpec,
     *,
-    root: Path | None = None,
+    root: Path,
     family_seed: str = "family",
     compile_seed: str | None = None,
 ) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
     shared, reloc = _resolve_runtime_wasm_cargo_specs(
-        root or _compiler_root(),
+        root,
         shared,
         reloc,
         simd_enabled=True,
@@ -313,6 +369,7 @@ def bind_runtime_wasm_specs(
 def runtime_cargo_plan(
     project_root: Path,
     *,
+    fixture_root: RuntimeFixtureRoot,
     env: Mapping[str, str],
     cargo_command: Sequence[str],
     requested_target: str | None = None,
@@ -320,10 +377,11 @@ def runtime_cargo_plan(
     capture_inputs=None,
     **_kwargs: object,
 ) -> RuntimeCargoPlan:
-    """Live-plan fixture with no executable probes; consumers remain real."""
+    """Live plan with immutable source input and pytest-owned generated tools."""
     root = project_root.resolve()
+    fixtures = _fixture_path(fixture_root)
     environment = _CargoEnvironment(env)
-    environment["CARGO_HOME"] = str(root / "test-cargo-home")
+    environment["CARGO_HOME"] = str(fixtures / "test-cargo-home")
     host = "x86_64-unknown-linux-gnu"
     executable = Path(sys.executable)
     profiles = {
@@ -354,10 +412,7 @@ def runtime_cargo_plan(
     for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
         selected = environment.get(name, "")
         if selected:
-            path = root / "test-tools" / Path(selected).name
-            path.parent.mkdir(exist_ok=True)
-            if not path.exists():
-                path.write_bytes(b"MZfixture-" + path.name.encode())
+            path = fixture_root.native_executable(f"test-tools/{Path(selected).name}")
             wrappers[name] = path
             environment[name] = str(path)
         else:
@@ -388,7 +443,7 @@ def runtime_cargo_plan(
     command = _pin_cargo_command(
         flag_plan.command, tools, wrappers, requested_target or host
     )
-    target_libdir = root / "test-rustlib" / (requested_target or host) / "lib"
+    target_libdir = fixtures / "test-rustlib" / (requested_target or host) / "lib"
     target_libdir.mkdir(parents=True, exist_ok=True)
     builtins = target_libdir / "libcompiler_builtins.fixture.rlib"
     if not builtins.exists():

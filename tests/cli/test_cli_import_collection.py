@@ -22,6 +22,7 @@ import threading
 import time
 import types
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 
@@ -102,6 +103,7 @@ from tests.cli.native_link_test_support import (
 from tests.native_artifact_fixtures import native_relocatable_object
 from molt.cli.runtime_build_identity import runtime_build_fingerprint
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     runtime_cargo_plan,
     native_runtime_staticlib_identity,
 )
@@ -22020,13 +22022,17 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
 
 
 def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / cli._runtime_lib_archive_name("micro", None)
     runtime_lib.write_bytes(b"archive")
     fingerprint = runtime_build_fingerprint(RUNTIME_BUILD_IDENTITY)
     monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_NATIVE_BUILD,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
     monkeypatch.setattr(
         RUNTIME_NATIVE_BUILD,
@@ -22094,6 +22100,7 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
 
 
 def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -22103,7 +22110,9 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     verification_calls: list[frozenset[str]] = []
 
     monkeypatch.setattr(
-        RUNTIME_NATIVE_BUILD, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        RUNTIME_NATIVE_BUILD,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
 
     def build_identity(project_root: Path, **kwargs: Any):

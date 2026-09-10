@@ -3,13 +3,25 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MOLT_STDLIB_ROOT = str(ROOT / "src" / "molt" / "stdlib")
 _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
+
+
+@pytest.fixture
+def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
+    """Separate writable synthetic runtime tools from compiler source custody."""
+    from tests.runtime_build_identity_helper import RuntimeFixtureRoot
+
+    return RuntimeFixtureRoot(tmp_path)
 
 
 def _remove_molt_stdlib_top_level_root() -> None:

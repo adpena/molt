@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import contextlib
 import inspect
 import json
@@ -37,6 +39,7 @@ from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.cli.process_guard import run_cli_test_process
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     native_runtime_staticlib_identity,
     runtime_cargo_plan,
 )
@@ -49,8 +52,14 @@ _RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
 
 
 @pytest.fixture(autouse=True)
-def _cargo_plan_authority(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runtime_build, "resolve_runtime_cargo_plan", runtime_cargo_plan)
+def _cargo_plan_authority(
+    runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        runtime_build,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
+    )
 
 
 class _RuntimeBuildArgs(TypedDict):
@@ -1516,7 +1525,9 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
 
 
 def test_runtime_manifest_refresh_uses_exact_cargo_json_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = tmp_path / "dev-fast" / "molt_runtime.stdlib_micro.lib"
     scratch = runtime.with_name("molt_runtime.lib")
@@ -1587,7 +1598,9 @@ def test_runtime_manifest_refresh_uses_exact_cargo_json_command(
         cargo_timeout=1.0,
         stage_timings_ms=None,
         runtime_state=None,
-        cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=command),
+        cargo_plan=runtime_cargo_plan(
+            tmp_path, fixture_root=runtime_fixture_root, env={}, cargo_command=command
+        ),
         fingerprint_features=("stdlib_micro",),
         fingerprint_path=tmp_path / "runtime.fingerprint",
         stored_fingerprint=None,

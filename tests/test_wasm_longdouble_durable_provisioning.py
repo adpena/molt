@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_build_identity_helper import RuntimeFixtureRoot
+
 from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
 from molt.cli import runtime_wasm_build_timings as timings
@@ -87,10 +89,12 @@ def test_archives_resolve_in_fresh_session_without_sysroot(
 
 
 @pytest.fixture
-def frozen_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def frozen_inputs(
+    runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch
+):
     from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
 
-    inputs = runtime_wasm_link_inputs(tmp_path)
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     monkeypatch.setattr(
         wasm_toolchain,
         "resolve_wasm_linker",
@@ -158,12 +162,13 @@ def test_runtime_link_inputs_capture_complete_archive_set(frozen_inputs) -> None
 
 
 def test_runtime_link_capture_uses_effective_environment_and_selected_rust_root(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
 
-    inputs = runtime_wasm_link_inputs(tmp_path)
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     selected = tmp_path / "selected-rust-root"
     (selected / "self-contained").mkdir(parents=True)
     libc = selected / "self-contained" / "libc.a"
@@ -200,13 +205,14 @@ def test_runtime_link_capture_uses_effective_environment_and_selected_rust_root(
 
 
 def test_runtime_link_custody_preserves_symlink_entrypoint(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
 ) -> None:
     from dataclasses import replace
     from molt.cli.runtime_cargo_plan import CargoExecutableCustody
     from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
 
-    inputs = runtime_wasm_link_inputs(tmp_path)
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     alias = tmp_path / "wasm-ld"
     try:
         alias.symlink_to(inputs.linker.entrypoint)
@@ -225,6 +231,7 @@ def test_runtime_link_custody_preserves_symlink_entrypoint(
 
 
 def test_link_hard_errors_before_invoking_wasm_ld(
+    runtime_fixture_root: RuntimeFixtureRoot,
     frozen_inputs,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -246,7 +253,12 @@ def test_link_hard_errors_before_invoking_wasm_ld(
             json_output=True,
             link_timeout=1.0,
             link_inputs=frozen_inputs,
-            cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+            cargo_plan=runtime_cargo_plan(
+                tmp_path,
+                fixture_root=runtime_fixture_root,
+                env={},
+                cargo_command=("cargo",),
+            ),
         )
 
 
@@ -278,6 +290,7 @@ def test_runtime_archive_capture_rejects_missing_mandatory_content(
     ),
 )
 def test_reloc_link_rejects_changed_inputs_without_replacing_output(
+    runtime_fixture_root: RuntimeFixtureRoot,
     frozen_inputs,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -316,6 +329,7 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
             link_inputs=frozen_inputs,
             cargo_plan=runtime_cargo_plan(
                 tmp_path,
+                fixture_root=runtime_fixture_root,
                 env={"CAPTURED_LINK_ENV": "original"},
                 cargo_command=("cargo",),
             ),
@@ -329,6 +343,7 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
 
 @pytest.mark.parametrize("timeout", (False, True))
 def test_reloc_link_failure_retains_child_evidence(
+    runtime_fixture_root: RuntimeFixtureRoot,
     frozen_inputs,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -357,7 +372,12 @@ def test_reloc_link_failure_retains_child_evidence(
             json_output=True,
             link_timeout=1.0,
             link_inputs=frozen_inputs,
-            cargo_plan=runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo",)),
+            cargo_plan=runtime_cargo_plan(
+                tmp_path,
+                fixture_root=runtime_fixture_root,
+                env={},
+                cargo_command=("cargo",),
+            ),
         )
     assert caught.value.command[0] == str(frozen_inputs.linker.entrypoint)
     assert caught.value.stdout == "partial stdout"
