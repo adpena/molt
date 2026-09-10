@@ -208,12 +208,15 @@ the implementation. For forward-looking priorities, use
   emits exhaustive `opcode_may_throw_table`, `opcode_is_side_effecting_table`,
   generated `ALL_OPCODES`, and typed `opcode_effects_table` facts, so
   `effects.rs` no longer carries a pass-local opcode classifier.
-- Deferred refcount heap exposure is generated from
-  `refcount_heap_exposure_opcodes` as the exhaustive
-  `opcode_is_refcount_heap_exposure_table` classifier. The classifier is
-  intentionally distinct from alias heap barriers: it answers whether operands
-  become heap/external roots for deferred RC, not whether an op creates a generic
-  heap memory definition.
+- Refcount elimination preserves runtime destruction in pre- and post-drop
+  pipelines. Only proven stack references and forward retain/release pairs on
+  callback-free, exception-free execution are removed; cross-block pairing
+  requires an unconditional one-to-one edge. The opcode-only deferred-RC and
+  per-block direct-Free lanes were deleted. Binary-image heap-exposure categories
+  remain diagnostic and do not authorize ownership rewrites.
+- Fact-graph `ownership.escape_state` is a conservative projection of shared
+  CFG/alias-aware escape analysis; `NoEscape` is not permission to erase a
+  heap-backed object's final release.
 - Escape-analysis allocation roots are generated from
   `escape_alloc_site_opcodes` as the exhaustive
   `opcode_is_escape_alloc_site_table` classifier. The classifier is intentionally
