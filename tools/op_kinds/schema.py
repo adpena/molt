@@ -95,10 +95,12 @@ _TYPE_REFINE_OPERAND_TYPE_RULES = {
     "mul": "Mul",
     "numeric_arithmetic": "NumericArithmetic",
     "true_division": "TrueDivision",
+    "power": "Power",
     "unary_numeric": "UnaryNumeric",
     "bool_select": "BoolSelect",
-    "bitwise_i64": "BitwiseI64",
-    "bit_not_i64": "BitNotI64",
+    "integer_bitwise": "IntegerBitwise",
+    "integer_shift": "IntegerShift",
+    "integer_invert": "IntegerInvert",
     "build_tuple": "BuildTuple",
     "get_iter": "GetIter",
     "iter_next": "IterNext",
@@ -130,9 +132,7 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "ge": "Ge",
     "neg": "Neg",
     "not": "Not",
-    "build_list": "BuildList",
-    "build_dict": "BuildDict",
-    "build_tuple_as_list": "BuildTupleAsList",
+    "build_tuple": "BuildTuple",
 }
 _VALUE_RANGE_TRANSFER_RULES = {
     "add": "Add",
@@ -232,10 +232,6 @@ _TIR_VERIFY_ATTR_RULES = {
     "call_method": "CallMethod",
     "positive_payload_bytes": "PositivePayloadBytes",
     "unpack_sequence_shape": "UnpackSequenceShape",
-}
-_SROA_CONST_IMMEDIATE_RULES = {
-    "always_immediate": "AlwaysImmediate",
-    "inline_int_if_range": "InlineIntIfRange",
 }
 _STRENGTH_REDUCTION_RULES = {
     "mul_by_two": "MulByTwo",
@@ -402,6 +398,7 @@ _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_heap_alloc_opcodes", "heap_alloc"),
 )
 _OPCODE_FACT_SETS = (
+    "opcode_has_local_only_operands_opcodes",
     "alias_rc_barrier_opcodes",
     "alias_memory_inert_opcodes",
     "alias_typed_slot_load_opcodes",
@@ -417,7 +414,6 @@ _OPCODE_FACT_SETS = (
     "escape_alloc_site_opcodes",
     "polyhedral_loop_header_opcodes",
     "polyhedral_affine_body_opcodes",
-    "refcount_heap_exposure_opcodes",
     "refcount_balance_inc_opcodes",
     "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
@@ -529,7 +525,6 @@ __all__ = (
     "_SIMPLEIR_FIELD_ROLE_FACT_SETS",
     "_SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS",
     "_SIMPLEIR_CALL_TARGET_ROLES",
-    "_SROA_CONST_IMMEDIATE_RULES",
     "_SSA_S_VALUE_ATTR_KEYS",
     "_STRENGTH_REDUCTION_RULES",
     "_TERMINATOR_OWNERSHIP_LEAVES",

@@ -1,6 +1,7 @@
 # @generated SEED — hand-reviewed; thereafter the SINGLE SOURCE OF TRUTH.
 
-# Exact primitive rich-comparison domains. Equality is total across domains;
+# Exact primitive rich-comparison domains. Equality is total across domains
+# except option-dependent BytesWarning pairs, retained as observable below;
 # ordering is nothrow only within an ordering-enabled domain. This policy is
 # projected into both frontend Python and shared native/WASM Rust consumers.
 comparison_scalar_domains = [
@@ -8,6 +9,34 @@ comparison_scalar_domains = [
     { name = "text", ordering = true, tir_types = ["Str"], frontend_types = ["str"] },
     { name = "bytes", ordering = true, tir_types = ["Bytes"], frontend_types = ["bytes"] },
     { name = "none", ordering = false, tir_types = ["None"], frontend_types = ["None"] },
+]
+
+# Equality/inequality may warn or raise under CPython -b/-bb. Without a proven
+# disabled warning policy these pairs must retain observable effects. Exact
+# float/None comparisons with bytes do not produce BytesWarning.
+comparison_warning_pairs = [
+    ["Bytes", "Str"], ["Bytes", "I64"], ["Bytes", "BigInt"], ["Bytes", "Bool"],
+]
+
+# Exact primitive operation effects, shared by Rust passes and the Python
+# frontend. I64 denotes semantic unbounded int, not a physical carrier. Missing
+# operand combinations remain impure; in particular ~Bool retains warnings.
+# Resource-exhaustion failures are outside this semantic exception lattice.
+primitive_operator_effect_cases = [
+    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
+    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["F64","Bool"]], purity = "pure" },
+    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["Bool"],["F64"]], purity = "pure" },
+    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt"],["F64"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["I64","BigInt"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","InplaceAdd"], operands = [["Str"],["Str"]], purity = "pure" },
+    { opcodes = ["Add","InplaceAdd"], operands = [["Bytes"],["Bytes"]], purity = "pure" },
+    { opcodes = ["Mul","InplaceMul"], operands = [["Str","Bytes"],["I64","BigInt","Bool"]], purity = "pure_may_throw" },
+    { opcodes = ["Mul","InplaceMul"], operands = [["I64","BigInt","Bool"],["Str","Bytes"]], purity = "pure_may_throw" },
+    { opcodes = ["Div","FloorDiv","Mod","Pow"], operands = [["I64","BigInt","Bool","F64"],["I64","BigInt","Bool","F64"]], purity = "pure_may_throw" },
+    { opcodes = ["Neg","Pos"], operands = [["I64","BigInt","Bool","F64"]], purity = "pure" },
+    { opcodes = ["BitAnd","BitOr","BitXor"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
+    { opcodes = ["Shl","Shr"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure_may_throw" },
+    { opcodes = ["BitNot"], operands = [["I64","BigInt"]], purity = "pure" },
 ]
 
 # Op-kind registry (molt task #57, phase 2). See
@@ -178,9 +207,6 @@ comparison_scalar_domains = [
 #   - escape_alloc_site_opcodes - opcode-only allocation-root facts for
 #                  escape_analysis.rs. Omitted opcodes are not tracked as
 #                  allocation roots.
-#   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
-#                  whose operands become heap/external roots and therefore cannot
-#                  be treated as non-escaping by refcount_elim.rs.
 #   - refcount_balance_inc_opcodes / refcount_balance_dec_opcodes -
 #                  opcode-role facts for reference-count balance accounting.
 #                  Rendered as one exhaustive role table for refcount_elim.rs.
@@ -231,8 +257,6 @@ comparison_scalar_domains = [
 #   - tir_verify_attr_rules - opcode-role facts consumed by verify.rs for
 #                  required attr/operand payload checks; the verifier owns
 #                  diagnostics and payload value validation.
-#   - sroa_const_immediate_rules - opcode-role facts consumed by sroa.rs for
-#                  immediate constant recognition; SROA owns range proof.
 #   - strength_reduction_rules - opcode-role facts consumed by
 #                  strength_reduction.rs; the pass owns constant/type proof and
 #                  the concrete replacement shape.
@@ -886,6 +910,31 @@ canonicalize_binary_rules = [
     { opcode = "Or", predicate = "lhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
 ]
 
+# Positive non-capture authority for opcodes whose operands cannot flow into a
+# heap-owned or externally retained location. Absence is deliberately
+# conservative: effect-free, nothrow, or borrowed ABI operands do not imply
+# local-only behavior. Escape analysis consumes this table together with
+# explicit SSA alias/absorption facts; callback and opaque storage families are
+# therefore global-escape boundaries unless another generated fact proves them.
+opcode_has_local_only_operands_opcodes = [
+    "Is",
+    "IsNot",
+    "CheckedAdd",
+    "CheckedMul",
+    "IncRef",
+    "DecRef",
+    "DeleteVar",
+    "DelBoundary",
+    "Free",
+    "CheckException",
+    "ExceptionPending",
+    "TryStart",
+    "TryEnd",
+    "StateBlockStart",
+    "StateBlockEnd",
+    "FunctionDefaultsVersion",
+]
+
 alias_rc_barrier_opcodes = [
     "Call",
     "CallBuiltin",
@@ -912,7 +961,9 @@ alias_rc_barrier_opcodes = [
 # state matters?", not "do operands flow into heap/external ownership?".
 escape_alloc_site_opcodes = [
     "Alloc",
+    "StackAlloc",
     "ObjectNewBound",
+    "ObjectNewBoundStack",
     "BuildList",
     "BuildDict",
     "BuildTuple",
@@ -920,35 +971,6 @@ escape_alloc_site_opcodes = [
     "AllocTask",
 ]
 
-# refcount_heap_exposure_opcodes: operands of these ops flow into a heap-owned
-# or externally visible root for deferred reference-count elimination. This is
-# NOT the alias heap barrier set: constructors (`Build*`, `AllocTask`) retain
-# operands without necessarily being alias barriers, while frees/deletes/module
-# metadata writes are barriers without exposing every operand as a retained root.
-refcount_heap_exposure_opcodes = [
-    "AllocTask",
-    "BuildDict",
-    "BuildList",
-    "BuildSet",
-    "BuildSlice",
-    "BuildTuple",
-    "Call",
-    "CallBuiltin",
-    "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
-    "ChanRecvYield",
-    "ChanSendYield",
-    "ClosureStore",
-    "Import",
-    "ImportFrom",
-    "Raise",
-    "StateYield",
-    "StoreAttr",
-    "StoreIndex",
-    "Yield",
-    "YieldFrom",
-]
 
 # refcount_balance_*_opcodes: the opcode-level role in RC balance accounting.
 # IncRef adds one temporary reference; DecRef releases one. Keeping this as a
@@ -1146,12 +1168,6 @@ tir_verify_attr_rules = [
     { opcode = "UnpackSequence", rule = "unpack_sequence_shape" },
 ]
 
-sroa_const_immediate_rules = [
-    { opcode = "ConstNone", rule = "always_immediate" },
-    { opcode = "ConstBool", rule = "always_immediate" },
-    { opcode = "ConstFloat", rule = "always_immediate" },
-    { opcode = "ConstInt", rule = "inline_int_if_range" },
-]
 
 strength_reduction_rules = [
     { opcode = "Mul", rule = "mul_by_two" },
@@ -1205,6 +1221,7 @@ i64_overflow_box_dispatch_opcodes = [
     "InplaceSub",
     "Mod",
     "Mul",
+    "Neg",
     "Sub",
 ]
 
@@ -1356,14 +1373,17 @@ type_refine_operand_type_rules = [
     { opcode = "Mod", rule = "numeric_arithmetic" },
     { opcode = "FloorDiv", rule = "numeric_arithmetic" },
     { opcode = "Div", rule = "true_division" },
+    { opcode = "Pow", rule = "power" },
     { opcode = "Neg", rule = "unary_numeric" },
     { opcode = "Pos", rule = "unary_numeric" },
     { opcode = "And", rule = "bool_select" },
     { opcode = "Or", rule = "bool_select" },
-    { opcode = "BitAnd", rule = "bitwise_i64" },
-    { opcode = "BitOr", rule = "bitwise_i64" },
-    { opcode = "BitXor", rule = "bitwise_i64" },
-    { opcode = "BitNot", rule = "bit_not_i64" },
+    { opcode = "BitAnd", rule = "integer_bitwise" },
+    { opcode = "BitOr", rule = "integer_bitwise" },
+    { opcode = "BitXor", rule = "integer_bitwise" },
+    { opcode = "Shl", rule = "integer_shift" },
+    { opcode = "Shr", rule = "integer_shift" },
+    { opcode = "BitNot", rule = "integer_invert" },
     { opcode = "BuildTuple", rule = "build_tuple" },
     { opcode = "GetIter", rule = "get_iter" },
     { opcode = "ForIter", rule = "iter_next" },
@@ -1382,6 +1402,8 @@ sccp_constant_seed_rules = [
     { opcode = "ConstNone", rule = "none_singleton" },
 ]
 
+# Flow-insensitive SCCP constants are immutable snapshots. Mutable containers
+# require memory-state/alias proof and must not enter this value domain.
 sccp_constant_eval_rules = [
     { opcode = "Add", rule = "add" },
     { opcode = "Sub", rule = "sub" },
@@ -1398,9 +1420,7 @@ sccp_constant_eval_rules = [
     { opcode = "Ge", rule = "ge" },
     { opcode = "Neg", rule = "neg" },
     { opcode = "Not", rule = "not" },
-    { opcode = "BuildList", rule = "build_list" },
-    { opcode = "BuildDict", rule = "build_dict" },
-    { opcode = "BuildTuple", rule = "build_tuple_as_list" },
+    { opcode = "BuildTuple", rule = "build_tuple" },
 ]
 
 value_range_transfer_rules = [
@@ -2682,27 +2702,27 @@ operand = "all"
 
 [[opcode]]
 name = "Add"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Sub"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Mul"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2729,27 +2749,27 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceAdd"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceSub"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceMul"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2757,8 +2777,8 @@ result_absorbs_operands = false
 [[opcode]]
 name = "Div"
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2766,8 +2786,8 @@ result_absorbs_operands = false
 [[opcode]]
 name = "FloorDiv"
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2775,8 +2795,8 @@ result_absorbs_operands = false
 [[opcode]]
 name = "Mod"
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2787,8 +2807,8 @@ name = "Pow"
 # non-integer exponent returns complex (NOT a float) — both are observable and
 # must never be const-folded away or hoisted above a guard. `pure_may_throw`.
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 # Exact int/float operands alone do not prove the result carrier: negative
 # integer exponents produce float and fractional powers can produce complex.
@@ -2799,18 +2819,18 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Neg"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "Pos"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2923,36 +2943,36 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitAnd"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "BitOr"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "BitXor"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "BitNot"
-may_throw = false
-side_effecting = false
-purity = "pure"
+may_throw = true
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2965,8 +2985,8 @@ name = "Shl"
 # guard ⇒ `pure_may_throw` (was mis-classified `pure`, which let DCE silently
 # drop a dead negative-count shift — a no-raise miscompile).
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -2975,8 +2995,8 @@ result_absorbs_operands = false
 name = "Shr"
 # `1 >> -1` raises ValueError("negative shift count") — same contract as `Shl`.
 may_throw = true
-side_effecting = false
-purity = "pure_may_throw"
+side_effecting = true
+purity = "impure"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3073,7 +3093,7 @@ result_absorbs_operands = false
 [[opcode]]
 name = "LoadAttr"
 may_throw = true
-side_effecting = false
+side_effecting = true
 purity = "impure"
 result_arity = "one"
 # The attribute READ borrows its source object (operand 0) AND its result may be
@@ -3110,7 +3130,7 @@ result_absorbs_operands = false
 [[opcode]]
 name = "Index"
 may_throw = true
-side_effecting = false
+side_effecting = true
 purity = "impure"
 result_arity = "one"
 # Subscript READ `cont[key]`: operand 0 (the container) is interior-borrowed —
@@ -4611,6 +4631,26 @@ kind = "INDEX"
 opcode = "Index"
 
 [[frontend_raising_kind]]
+kind = "GETATTR"
+reason = "legacy frontend attribute lookup can invoke __getattribute__, descriptors, or __getattr__ and raise"
+
+[[frontend_raising_kind]]
+kind = "HASATTR_NAME"
+reason = "hasattr lookup can invoke arbitrary attribute callbacks and propagate non-AttributeError exceptions"
+
+[[frontend_raising_kind]]
+kind = "ISINSTANCE"
+reason = "isinstance can invoke metaclass __instancecheck__ and raise"
+
+[[frontend_raising_kind]]
+kind = "LEN"
+reason = "dynamic len dispatch invokes __len__, whose callback and index conversion can raise"
+
+[[frontend_raising_kind]]
+kind = "LOAD_ATTR"
+opcode = "LoadAttr"
+
+[[frontend_raising_kind]]
 kind = "STORE_INDEX"
 opcode = "StoreIndex"
 
@@ -4673,47 +4713,47 @@ opcode = "ImportFrom"
 [[frontend_raising_kind]]
 kind = "ADD"
 reason = "pre-specialization: OpCode::Add is the nothrow typed lane, but a pre-spec `a + b` may lower to boxed molt_add / __add__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "SUB"
 reason = "pre-specialization: OpCode::Sub is the nothrow typed lane, but a pre-spec `a - b` may lower to boxed molt_sub / __sub__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "MUL"
 reason = "pre-specialization: OpCode::Mul is the nothrow typed lane, but a pre-spec `a * b` may lower to boxed molt_mul / __mul__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "BIT_AND"
 reason = "pre-specialization: OpCode::BitAnd is the nothrow typed lane, but a pre-spec `a & b` may lower to boxed molt_bit_and / __and__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "BIT_OR"
 reason = "pre-specialization: OpCode::BitOr is the nothrow typed lane, but a pre-spec `a | b` may lower to boxed molt_bit_or / __or__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "BIT_XOR"
 reason = "pre-specialization: OpCode::BitXor is the nothrow typed lane, but a pre-spec `a ^ b` may lower to boxed molt_bit_xor / __xor__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "INPLACE_ADD"
 reason = "pre-specialization: OpCode::InplaceAdd is the nothrow typed lane, but a pre-spec `a += b` may lower to boxed molt_inplace_add / __iadd__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "INPLACE_SUB"
 reason = "pre-specialization: OpCode::InplaceSub is the nothrow typed lane, but a pre-spec `a -= b` may lower to boxed molt_inplace_sub / __isub__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "INPLACE_MUL"
 reason = "pre-specialization: OpCode::InplaceMul is the nothrow typed lane, but a pre-spec `a *= b` may lower to boxed molt_inplace_mul / __imul__ which raises"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "EQ"
@@ -4782,22 +4822,21 @@ opcode = "Bool"
 [[frontend_raising_kind]]
 kind = "NEG"
 reason = "pre-specialization: OpCode::Neg is the nothrow typed lane, but a pre-spec `-a` may lower to boxed molt_neg / __neg__ which raises TypeError on an unsupported operand type"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "POS"
 reason = "pre-specialization: OpCode::Pos is the nothrow typed lane, but a pre-spec `+a` may lower to boxed molt_pos / __pos__ which raises TypeError on an unsupported operand type"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "INVERT"
 reason = "pre-specialization: the typed bit_not lane (OpCode::BitNot) is nothrow, but a pre-spec `~a` may lower to boxed molt_invert / __invert__ which raises TypeError on an unsupported operand type"
-nothrow_on_primitives = true
+
 
 [[frontend_raising_kind]]
 kind = "ABS"
 reason = "frontend intrinsic: a pre-spec `abs(a)` lowers to molt_abs_builtin / __abs__ which raises TypeError on an operand type without __abs__ (no first-class mapper opcode; lowers to Copy with _original_kind = ABS)"
-nothrow_on_primitives = true
 
 # FRONTEND-SPECIFIC (b) preserved-Copy / no-[[kind]]-row: frontend-internal
 # op.kinds that serialization rewrites to a may-throw wire kind with no
@@ -4833,6 +4872,22 @@ reason = "preserved-Copy: serializes to wire `inplace_rshift`; molt_inplace_rshi
 [[frontend_raising_kind]]
 kind = "INPLACE_MATMUL"
 reason = "preserved-Copy: serializes to wire `inplace_matmul`; molt_inplace_matmul dispatches __imatmul__/__matmul__ which raise"
+
+[[frontend_raising_kind]]
+kind = "MATMUL"
+reason = "matrix multiplication dispatches observable and raising Python callbacks"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_BIT_AND"
+reason = "augmented bitwise dispatch and fallback callbacks may raise"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_BIT_OR"
+reason = "augmented bitwise dispatch and fallback callbacks may raise"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_BIT_XOR"
+reason = "augmented bitwise dispatch and fallback callbacks may raise"
 
 [[frontend_raising_kind]]
 kind = "GETATTR_GENERIC_OBJ"
@@ -4912,23 +4967,23 @@ reason = "exception matching predicate reads exception/type state"
 
 [[frontend_effect_kind]]
 kind = "GETATTR"
-effect = "reads_heap"
-reason = "legacy frontend spelling for attribute read; reads heap and must not be DCE-pure"
+effect = "writes_heap"
+reason = "dynamic attribute lookup may invoke callbacks that mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "HASATTR_NAME"
-effect = "reads_heap"
-reason = "hasattr-name helper reads attribute state"
+effect = "writes_heap"
+reason = "hasattr lookup may invoke attribute callbacks that mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "ISINSTANCE"
-effect = "reads_heap"
-reason = "isinstance helper reads type/object state"
+effect = "writes_heap"
+reason = "metaclass __instancecheck__ may mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "LEN"
-effect = "reads_heap"
-reason = "len helper reads container/object state"
+effect = "writes_heap"
+reason = "dynamic __len__ and index-conversion callbacks may mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "LOAD_VAR"
@@ -4942,83 +4997,114 @@ reason = "frontend local/module slot write; aliases Copy in the wire mapper but 
 
 [[frontend_effect_kind]]
 kind = "ABS"
-effect = "pure"
-reason = "unary arithmetic: abs(a) is memory-pure; raising on unsupported operands is the separate raising axis"
+effects_like_opcode = "Neg"
+effect = "writes_heap"
+reason = "dynamic unary dispatch may invoke observable __abs__; exact primitive recovery is instance-specific"
 
 [[frontend_effect_kind]]
 kind = "INVERT"
-effect = "pure"
-reason = "unary arithmetic: ~a is memory-pure; raising on unsupported operands is the separate raising axis"
+effects_like_opcode = "BitNot"
+effect = "writes_heap"
+reason = "dynamic unary dispatch may invoke observable __invert__; ~bool also emits a warning"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_DIV"
-effect = "pure"
-reason = "inplace arithmetic: scalar a /= b is memory-pure; ZeroDivisionError is the separate raising axis"
+effects_like_opcode = "Div"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __itruediv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_FLOORDIV"
-effect = "pure"
-reason = "inplace arithmetic: scalar a //= b is memory-pure; ZeroDivisionError is the separate raising axis"
+effects_like_opcode = "FloorDiv"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __ifloordiv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_MOD"
-effect = "pure"
-reason = "inplace arithmetic: scalar a %= b is memory-pure; ZeroDivisionError is the separate raising axis"
+effects_like_opcode = "Mod"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __imod__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_POW"
-effect = "pure"
-reason = "inplace arithmetic: scalar a **= b is memory-pure; ZeroDivisionError is the separate raising axis"
+effects_like_opcode = "Pow"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __ipow__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_LSHIFT"
-effect = "pure"
-reason = "inplace arithmetic: scalar a <<= b is memory-pure; negative-count ValueError is the separate raising axis"
+effects_like_opcode = "Shl"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __ilshift__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_RSHIFT"
-effect = "pure"
-reason = "inplace arithmetic: scalar a >>= b is memory-pure; negative-count ValueError is the separate raising axis"
+effects_like_opcode = "Shr"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __irshift__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_MATMUL"
-effect = "pure"
-reason = "inplace arithmetic: scalar a @= b is memory-pure; dunder TypeError is the separate raising axis"
+effect = "writes_heap"
+reason = "dynamic inplace dispatch may invoke observable __imatmul__ or fallback callbacks"
+
+[[frontend_effect_kind]]
+kind = "MATMUL"
+effect = "writes_heap"
+reason = "operator callbacks can mutate arbitrary captured objects"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_BIT_AND"
+effects_like_opcode = "BitAnd"
+effect = "writes_heap"
+reason = "operator callbacks can mutate arbitrary captured objects"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_BIT_OR"
+effects_like_opcode = "BitOr"
+effect = "writes_heap"
+reason = "operator callbacks can mutate arbitrary captured objects"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_BIT_XOR"
+effects_like_opcode = "BitXor"
+effect = "writes_heap"
+reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "MODULE_GET_ATTR"
-effect = "reads_heap"
-reason = "module attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "module __getattr__ may invoke callbacks that mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_GENERIC_OBJ"
-effect = "reads_heap"
-reason = "attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "generic object lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_GENERIC_PTR"
-effect = "reads_heap"
-reason = "attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "generic pointer lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_NAME"
-effect = "reads_heap"
-reason = "attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "named lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_NAME_DEFAULT"
-effect = "reads_heap"
-reason = "attribute read with default; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "lookup with default may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_SPECIAL_OBJ"
-effect = "reads_heap"
-reason = "special attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "special-method lookup may invoke observable attribute machinery"
 
 [[frontend_effect_kind]]
 kind = "GUARDED_GETATTR"
-effect = "reads_heap"
-reason = "guarded attribute read; AttributeError is the separate raising axis"
+effect = "writes_heap"
+reason = "a guard does not prove exact callback-free attribute semantics"
 
 [[frontend_effect_kind]]
 kind = "SETATTR_GENERIC_OBJ"

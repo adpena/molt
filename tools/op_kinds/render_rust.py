@@ -5,6 +5,7 @@ import re
 from tools import harness_memory_guard
 
 from .paths import ROOT
+from .primitive_effects import render_primitive_effects_rs
 from .schema import (
     _CALL_OPCODE_ROLES,
     _EXCEPTION_REGION_NESTING_ROLES,
@@ -313,6 +314,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
 
     out.append(_render_predicate_semantics(opcodes, data))
+    out.append(render_primitive_effects_rs(data))
     out.append(_render_operand_independent_result_type(opcodes))
     out.append("\n")
     out.append(_render_type_refine_attr_result_type_rule(opcodes, data))
@@ -358,6 +360,21 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, proven_result_type_seeds))
+    out.append("    }\n}\n\n")
+
+    local_only_operands = list(
+        data.get("opcode_has_local_only_operands_opcodes", [])
+    )
+    out.append(
+        "/// Whether every operand remains local to this opcode: it cannot be\n"
+        "/// retained by a heap object or opaque external callee. This positive\n"
+        "/// non-capture fact is independent from purity, effects, and ABI borrow\n"
+        "/// mode. Absence fails closed. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, local_only_operands))
     out.append("    }\n}\n\n")
 
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
@@ -407,17 +424,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, polyhedral_affine_body))
     out.append("    }\n}\n\n")
 
-    refcount_heap_exposures = list(data.get("refcount_heap_exposure_opcodes", []))
-    out.append(
-        "/// Whether this opcode makes its operands heap/external roots for\n"
-        "/// deferred reference-count elimination. DISTINCT from alias heap\n"
-        "/// barriers: this answers ownership exposure, not memory-def effects.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_refcount_heap_exposure_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, refcount_heap_exposures))
-    out.append("    }\n}\n\n")
 
     out.append(_render_refcount_balance_role(opcodes, data))
     out.append("\n")

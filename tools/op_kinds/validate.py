@@ -54,7 +54,6 @@ from .schema import (
     _SIMPLEIR_RETURN_SHAPES,
     _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS,
     _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
-    _SROA_CONST_IMMEDIATE_RULES,
     _SSA_S_VALUE_ATTR_KEYS,
     _STRENGTH_REDUCTION_RULES,
     _TERMINATOR_OWNERSHIP_LEAVES,
@@ -75,7 +74,6 @@ from .errors import OpKindTableError
 from .frontend_validate import (
     _frontend_effect_class_map,  # noqa: F401 - generator facade export
     _frontend_effect_from_opcode,  # noqa: F401 - generator facade export
-    _frontend_raising_nothrow_on_primitives,  # noqa: F401 - generator facade export
     _frontend_wire_spelling_to_op_kind,  # noqa: F401 - generator facade export
     _simpleir_registered_runtime_kinds,
     _validate_frontend_tables,
@@ -158,12 +156,19 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "the opcode to _VARIABLE_RESULT_ARITY_OPCODES with a rationale"
             )
         if "operand_independent_result_type" in row:
-            raise OpKindTableError(f"opcode {name}: use result-indexed operand_independent_result_types")
+            raise OpKindTableError(
+                f"opcode {name}: use result-indexed operand_independent_result_types"
+            )
         result_types = row.get("operand_independent_result_types")
         if result_types is not None:
-            if not isinstance(result_types, list) or not result_types or any(
-                not isinstance(ty, str) or ty not in _OPERAND_INDEPENDENT_RESULT_TYPES
-                for ty in result_types
+            if (
+                not isinstance(result_types, list)
+                or not result_types
+                or any(
+                    not isinstance(ty, str)
+                    or ty not in _OPERAND_INDEPENDENT_RESULT_TYPES
+                    for ty in result_types
+                )
             ):
                 raise OpKindTableError(
                     f"opcode {name}: operand_independent_result_types must be a nonempty array "
@@ -174,7 +179,11 @@ def load_table(table_path: Path = TABLE) -> dict:
                 raise OpKindTableError(
                     f"opcode {name}: operand_independent_result_types must match fixed result_arity"
                 )
-        result_type = result_types[0] if result_types is not None and len(result_types) == 1 else None
+        result_type = (
+            result_types[0]
+            if result_types is not None and len(result_types) == 1
+            else None
+        )
         comparison = row.get("predicate_semantics")
         exact_scalar = row.get("exact_scalar_result_type")
         if exact_scalar is not None or result_type in {
@@ -709,13 +718,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     )
     _validate_opcode_rule_rows(
         data,
-        "sroa_const_immediate_rules",
-        seen_opcodes,
-        _SROA_CONST_IMMEDIATE_RULES,
-        "SROA const-immediate rule",
-    )
-    _validate_opcode_rule_rows(
-        data,
         "strength_reduction_rules",
         seen_opcodes,
         _STRENGTH_REDUCTION_RULES,
@@ -831,6 +833,11 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     _validate_terminators(data)
 
+    from .primitive_effects import comparison_warning_pairs, frontend_operator_map
+
+    comparison_warning_pairs(data)
+
+    frontend_operator_map(data)
     _validate_frontend_tables(data, opcodes)
 
     unknown_requirement_carriers = set(
