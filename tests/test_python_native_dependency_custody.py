@@ -700,6 +700,46 @@ def test_deferred_census_order_is_numeric_and_independent_of_enumeration(
     ]
 
 
+def test_deferred_order_key_normalizes_name_after_numeric_component_identity() -> None:
+    assert native._canonical_deferred_dependency_key(
+        "native-component-10", "FUTURE.DLL", "delay", "windows"
+    ) == (10, "future.dll", "delay")
+
+
+def test_deferred_order_uses_component_identity_not_source_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_first = tmp_path / "a-path" / "z-importer.dll"
+    component_first = tmp_path / "z-path" / "a-importer.dll"
+    path_first.parent.mkdir()
+    component_first.parent.mkdir()
+    path_first.write_bytes(_pe_image(b"future-z.dll", delay=True))
+    component_first.write_bytes(_pe_image(b"future-a.dll", delay=True))
+
+    closure = _capture_loaded_closure(
+        monkeypatch,
+        path_first,
+        (path_first, component_first),
+    )
+
+    assert [row["filename"] for row in closure["components"]] == [
+        "a-importer.dll",
+        "z-importer.dll",
+    ]
+    assert closure["deferred_imports"] == [
+        {
+            "from": "native-component-0",
+            "name": "future-a.dll",
+            "kind": "delay",
+        },
+        {
+            "from": "native-component-1",
+            "name": "future-z.dll",
+            "kind": "delay",
+        },
+    ]
+
+
 def test_native_census_file_nodes_are_invariant_under_directory_order_relocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
