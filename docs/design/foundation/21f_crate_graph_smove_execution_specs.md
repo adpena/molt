@@ -32,9 +32,9 @@ change the mechanics. Absorb all eight.
    `molt-ir`; S2 renames the residual `molt-tir` into `molt-passes` + `molt-lower`. The molt-tir
    crate name is RETIRED by end of S2 (or kept as a deprecated re-export shell -- see S2.6).
 
-2. **The real workspace root is `<repo-root>/Cargo.toml`**, NOT `runtime/Cargo.toml` (the latter
-   is a stale secondary manifest with a different, shorter members list -- do not edit it; every
-   new crate is added to the ROOT members list). New crates live under `runtime/`
+2. **The workspace root is `<repo-root>/Cargo.toml`**. Ordinary crates join its
+   explicit members list and share its lockfile and profile policy; there is no
+   secondary runtime workspace. New crates live under `runtime/`
    (`runtime/molt-ir`, `runtime/molt-passes`, ...).
 
 3. **The precise-visibility + `test-util` lesson is ALREADY APPLIED at the molt-backend->molt-tir
@@ -397,8 +397,8 @@ After S2b, `molt-tir` has no files. RECOMMENDED: remove the crate + its root mem
 molt-backend dep (cleanest; the build order has no molt-tir node). ALTERNATIVE (only if some
 out-of-tree tooling pins `molt_tir::`): a 3-line `molt-tir/src/lib.rs` `pub use molt_lower::*; pub
 use molt_passes::*; pub use molt_ir::*;` deprecation shell. Decision: REMOVE it -- grep confirms
-the only `molt_tir`/`molt-tir` references are molt-backend (re-pointed in S2) + the stale
-runtime/Cargo.toml (not the build root) -- no external pins.
+the owning workspace registration is in the root Cargo.toml. Re-audit live
+consumers before retiring the crate; the historical reference count is not proof.
 
 ---
 
@@ -750,7 +750,7 @@ own move-only commit, G1-G7 gated.
 | symbol-identity break (C-ABI/no_mangle) | S7 (native), S4 (llvm) | G5 nm before/after; the object/`.ll` export surface byte-identical. |
 | extracting from under the active LLVM editor | S4/S7 | Verify no `llvm_backend/*` editor live; freeze-window or sequence after their arc (21 section-0.3). |
 | shared molt-backend/lib.rs+Cargo.toml contention across S4-S7 | S4-S7 | Each agent edits only its own backend's lines; rebase in commit order; S8 reconciles. |
-| stale `runtime/Cargo.toml` secondary manifest edited by mistake | all | The build root is the REPO-ROOT Cargo.toml; never touch runtime/Cargo.toml. |
+| duplicate Cargo workspace authority introduced under runtime | all | Add ordinary members to root Cargo.toml; the Rust toolchain contract rejects a secondary runtime workspace or lock. |
 | `NanBoxConsts::new(_builder)` de-Cranelift misses a call site | S3 | Mechanical sweep of all `NanBoxConsts::new(` call sites -> `NanBoxConsts::new()`; G1 compile + G3 byte-identical catch any miss. |
 
 ---
@@ -780,4 +780,4 @@ retired; #2 both lenses satisfied; one-authority-per-invariant for op-effects + 
 - `runtime/molt-backend/src/native_backend/mod.rs` (S7 `use super::*` @:1 -> explicit-import
   rewrite, the ancestry root above the fc/ tree) + `simple_backend.rs`
   (Cranelift-typed NaN-box helpers stay; scalar ABI facts live in `runtime/molt-codegen-abi`)
-- `Cargo.toml` (REPO ROOT -- the workspace members list every new crate joins; NOT runtime/Cargo.toml)
+- `Cargo.toml` (REPO ROOT -- the workspace members list every ordinary new crate joins)

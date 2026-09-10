@@ -45,8 +45,8 @@ stringprep, XML, ipaddress, zoneinfo, protobuf, and Tk. The canonical pattern is
    subsystem owns them.
 4. Depend on the satellite from `molt-runtime` and re-export the satellite only
    as the runtime-facing authority.
-5. Add the crate to `runtime/Cargo.toml`, root `Cargo.toml` when appropriate,
-   and `runtime/crate_graph.toml`.
+5. Add the crate to the root `Cargo.toml` members and `runtime/crate_graph.toml`.
+   Ordinary runtime/compiler crates share the root lockfile and profiles.
 6. Prove the satellite and the fan-in consumer.
 
 ## 2026-07-07 C1-A: VFS Extraction

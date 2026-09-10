@@ -750,8 +750,8 @@ the implementation. For forward-looking priorities, use
   `molt-runtime-stringprep` leaf sub-registry, and feature-on/feature-off
   runtime checks prove the aggregate runtime no longer carries a second stringprep
   implementation. Runtime static-archive fingerprints now
-  include all extracted `molt-runtime-*` leaf crates plus the runtime workspace
-  manifests, so edits to leaves such as `molt-runtime-stringprep` invalidate
+  include extracted `molt-runtime-*` leaf crate inputs plus the root workspace
+  manifest and lockfile, so edits to leaves such as `molt-runtime-stringprep` invalidate
   profile-qualified `libmolt_runtime.*.a` artifacts instead of linking stale
   archives. Persisted JSON/text/byte cache,
   diagnostics, deployment, validation, package/archive, vendor file, linker

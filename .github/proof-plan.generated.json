@@ -37,6 +37,7 @@
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
     "src/molt/cargo_execution_policy.py",
+    "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
@@ -161,7 +162,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f130e62e2d9832bcbc6d2309fec1f904449d934e324ac146977c9f492e9f869a",
+  "authority_sha256": "029c73539a040bfd91e3c45cb70ac79164a89bd37ae6ecd3a47810b4f96dee4f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -4229,7 +4230,7 @@
       "local.rust-toolchain.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.source-extension-package-sets.0": "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
       "local.source-extension-package-sets.1": "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
-      "local.stringprep-leaf.0": "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
+      "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python3 tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.1": "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
       "local.suite-honesty.0": "python3 tools/check_differential_suite_layout.py",
@@ -4703,7 +4704,7 @@
         ],
         "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
         "gates": [
-          "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib"
+          "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib"
         ],
         "globs": [
           "runtime/molt-runtime-stringprep/**/*.rs",

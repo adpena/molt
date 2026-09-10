@@ -128,12 +128,6 @@ def _planned_update_steps(
                     "lock",
                 ),
                 _MaintenanceStep(
-                    "cargo-update-runtime",
-                    ["cargo", "update", "--manifest-path", "runtime/Cargo.toml"],
-                    root,
-                    "lock",
-                ),
-                _MaintenanceStep(
                     "cargo-update-fuzz",
                     ["cargo", "update", "--manifest-path", "fuzz/Cargo.toml"],
                     root,
@@ -168,18 +162,6 @@ def _planned_update_steps(
                         "--incompatible",
                         "--manifest-path",
                         "Cargo.toml",
-                    ],
-                    root,
-                    "manifest",
-                ),
-                _MaintenanceStep(
-                    "cargo-upgrade-runtime",
-                    [
-                        "cargo",
-                        "upgrade",
-                        "--incompatible",
-                        "--manifest-path",
-                        "runtime/Cargo.toml",
                     ],
                     root,
                     "manifest",

@@ -31,10 +31,7 @@ RUNS_ROOT = EVIDENCE_ROOT / "cargo-test-truth-runs"
 RECEIPT = EVIDENCE_ROOT / "cargo-test-truth.json"
 TARGET_RUNNER = ROOT / "tools" / "cargo_test_binary_runner.py"
 BINARY_TIMEOUT_SECONDS = 300.0
-LOCKED_WORKSPACES = (
-    ("root", ROOT / "Cargo.toml"),
-    ("runtime", ROOT / "runtime" / "Cargo.toml"),
-)
+WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
 FETCH_TIMEOUT_SECONDS = 600.0
 METADATA_TIMEOUT_SECONDS = 300.0
 WORKSPACE_TEST_TIMEOUT_SECONDS = 7_200.0
@@ -832,7 +829,6 @@ def _main() -> int:
     combined: list[str] = []
     binary_receipts: list[dict] = []
     expected_binaries: dict[str, dict[str, str]] = {}
-    package_identities: dict[str, str] = {}
     coverage_problems: list[str] = []
     compiler_error_observed = False
     failed = False
@@ -859,220 +855,188 @@ def _main() -> int:
         )
 
     _ACTIVE_RUN_TERMINALIZER = terminalize_unfinished_run
-    for workspace, manifest in LOCKED_WORKSPACES:
-        command = (
-            "cargo",
-            "fetch",
-            "--locked",
-            "--manifest-path",
-            str(manifest),
+    command = (
+        "cargo",
+        "fetch",
+        "--locked",
+        "--manifest-path",
+        str(WORKSPACE_MANIFEST),
+    )
+    result = run_streamed(
+        command,
+        evidence_path=run_dir / "phases" / "00-dependency-prefetch.log",
+        retain_cargo_artifacts=True,
+        timeout_seconds=FETCH_TIMEOUT_SECONDS,
+    )
+    returncode = result.returncode
+    phase = {
+        "kind": "dependency-prefetch",
+        "workspace": "root",
+        "manifest": "Cargo.toml",
+        "argv": list(command),
+        "returncode": returncode,
+        "termination": command_termination(returncode),
+        "evidence": result.evidence,
+    }
+    phases.append(phase)
+    if returncode != 0:
+        publish_terminal_failure(
+            run_manifest,
+            identity=identity,
+            run_dir=run_dir,
+            started=started,
+            context=context,
+            phases=phases,
+            problem="Cargo dependency prefetch failed; diagnostics retained in terminal phase",
+            source_identity=source_identity,
         )
-        phase_index = len(phases)
+        return 1
+    metadata_command = (
+        "cargo",
+        "metadata",
+        "--locked",
+        "--no-deps",
+        "--format-version=1",
+        "--manifest-path",
+        str(WORKSPACE_MANIFEST),
+    )
+    metadata_result = run_streamed(
+        metadata_command,
+        evidence_path=run_dir / "phases" / "01-package-metadata.log",
+        timeout_seconds=METADATA_TIMEOUT_SECONDS,
+    )
+    metadata_returncode = metadata_result.returncode
+    phase = {
+        "kind": "package-metadata",
+        "workspace": "root",
+        "manifest": "Cargo.toml",
+        "argv": list(metadata_command),
+        "returncode": metadata_returncode,
+        "termination": command_termination(metadata_returncode),
+        "evidence": metadata_result.evidence,
+    }
+    phases.append(phase)
+    if metadata_returncode != 0:
+        publish_terminal_failure(
+            run_manifest,
+            identity=identity,
+            run_dir=run_dir,
+            started=started,
+            context=context,
+            phases=phases,
+            problem="Cargo package metadata failed; diagnostics retained in terminal phase",
+            source_identity=source_identity,
+        )
+        return 1
+    try:
+        package_identities = package_identities_from_metadata(
+            metadata_result.retained_output
+        )
+    except RuntimeError as exc:
+        output = f"cargo-test-truth-metadata: {exc}\n"
+        print(output, end="", file=sys.stderr)
+        phase["diagnostic_tail"] = output[-16_384:]
+        phase["termination"] = {"kind": "metadata-validation", "returncode": 2}
+        phase["returncode"] = 2
+        publish_terminal_failure(
+            run_manifest,
+            identity=identity,
+            run_dir=run_dir,
+            started=started,
+            context=context,
+            phases=phases,
+            problem="Cargo package identity metadata was invalid",
+            source_identity=source_identity,
+        )
+        return 1
+
+    target = ""
+    workspace_phase = None
+    try:
+        target = host_target()
+        root_receipt_dir = binary_receipt_dir / "root"
+        root_receipt_dir.mkdir()
+        command = (
+            *CANONICAL_COMMAND,
+            "--manifest-path",
+            str(WORKSPACE_MANIFEST),
+            "--message-format=json-render-diagnostics",
+            "--config",
+            target_runner_config(
+                target,
+                root_receipt_dir,
+                identity,
+                source_identity,
+            ),
+        )
         result = run_streamed(
             command,
-            evidence_path=run_dir
-            / "phases"
-            / f"{phase_index:02d}-dependency-prefetch.log",
+            evidence_path=run_dir / "phases" / "02-root-workspace-test.log",
             retain_cargo_artifacts=True,
-            timeout_seconds=FETCH_TIMEOUT_SECONDS,
+            timeout_seconds=WORKSPACE_TEST_TIMEOUT_SECONDS,
         )
         returncode = result.returncode
-        phase = {
-            "kind": "dependency-prefetch",
-            "workspace": workspace,
-            "manifest": str(manifest.relative_to(ROOT)).replace("\\", "/"),
+        failed = returncode != 0
+        compiler_error_observed = bool(result.evidence["contains_compiler_error"])
+        workspace_phase = {
+            "kind": "workspace-test",
+            "workspace": "root",
+            "manifest": "Cargo.toml",
+            "host_target": target,
             "argv": list(command),
             "returncode": returncode,
             "termination": command_termination(returncode),
             "evidence": result.evidence,
+            "binary_timeout_seconds": BINARY_TIMEOUT_SECONDS,
+            "binary_receipt_count": 0,
+            "expected_binary_count": 0,
         }
-        phases.append(phase)
-        if returncode != 0:
-            publish_terminal_failure(
-                run_manifest,
-                identity=identity,
-                run_dir=run_dir,
-                started=started,
-                context=context,
-                phases=phases,
-                problem="Cargo dependency prefetch failed; diagnostics retained in terminal phase",
-                source_identity=source_identity,
-            )
-            failed = True
-            break
-        metadata_command = (
-            "cargo",
-            "metadata",
-            "--locked",
-            "--no-deps",
-            "--format-version=1",
-            "--manifest-path",
-            str(manifest),
+        phases.append(workspace_phase)
+        expected_binaries = expected_test_binaries_from_artifacts(
+            result.cargo_test_artifacts,
+            package_identities,
+            workspace="root",
         )
-        phase_index = len(phases)
-        metadata_result = run_streamed(
-            metadata_command,
-            evidence_path=run_dir
-            / "phases"
-            / f"{phase_index:02d}-package-metadata.log",
-            timeout_seconds=METADATA_TIMEOUT_SECONDS,
+        binary_receipts = load_binary_receipts(
+            root_receipt_dir,
+            expected_run_id=identity,
+            expected_source_identity=source_identity,
+            workspace="root",
         )
-        metadata_returncode = metadata_result.returncode
-        metadata_output = metadata_result.retained_output
-        phase = {
-            "kind": "package-metadata",
-            "workspace": workspace,
-            "manifest": str(manifest.relative_to(ROOT)).replace("\\", "/"),
-            "argv": list(metadata_command),
-            "returncode": metadata_returncode,
-            "termination": command_termination(metadata_returncode),
-            "evidence": metadata_result.evidence,
-        }
-        phases.append(phase)
-        if metadata_returncode != 0:
-            publish_terminal_failure(
-                run_manifest,
-                identity=identity,
-                run_dir=run_dir,
-                started=started,
-                context=context,
-                phases=phases,
-                problem="Cargo package metadata failed; diagnostics retained in terminal phase",
-                source_identity=source_identity,
-            )
-            failed = True
-            break
-        try:
-            for package_id, package_identity in package_identities_from_metadata(
-                metadata_output
-            ).items():
-                previous = package_identities.setdefault(package_id, package_identity)
-                if previous != package_identity:
-                    raise RuntimeError(
-                        f"Cargo workspaces contradicted package identity {package_id!r}"
-                    )
-        except RuntimeError as exc:
-            output = f"cargo-test-truth-metadata: {exc}\n"
-            print(output, end="", file=sys.stderr)
-            combined.append(output)
-            phase["diagnostic_tail"] = output[-16_384:]
-            phase["termination"] = {"kind": "metadata-validation", "returncode": 2}
-            phase["returncode"] = 2
-            publish_terminal_failure(
-                run_manifest,
-                identity=identity,
-                run_dir=run_dir,
-                started=started,
-                context=context,
-                phases=phases,
-                problem="Cargo package identity metadata was invalid",
-                source_identity=source_identity,
-            )
-            failed = True
-            break
-
-    target = ""
-    if not failed:
-        try:
-            target = host_target()
-            for workspace, manifest in LOCKED_WORKSPACES:
-                workspace_receipt_dir = binary_receipt_dir / workspace
-                workspace_receipt_dir.mkdir()
-                command = (
-                    *CANONICAL_COMMAND,
-                    "--manifest-path",
-                    str(manifest),
-                    "--message-format=json-render-diagnostics",
-                    "--config",
-                    target_runner_config(
-                        target,
-                        workspace_receipt_dir,
-                        identity,
-                        source_identity,
-                    ),
-                )
-                phase_index = len(phases)
-                workspace_result = run_streamed(
-                    command,
-                    evidence_path=(
-                        run_dir
-                        / "phases"
-                        / f"{phase_index:02d}-{workspace}-workspace-test.log"
-                    ),
-                    retain_cargo_artifacts=True,
-                    timeout_seconds=WORKSPACE_TEST_TIMEOUT_SECONDS,
-                )
-                returncode = workspace_result.returncode
-                failed |= returncode != 0
-                compiler_error_observed |= bool(
-                    workspace_result.evidence["contains_compiler_error"]
-                )
-                workspace_phase = {
-                    "kind": "workspace-test",
-                    "workspace": workspace,
-                    "manifest": str(manifest.relative_to(ROOT)).replace("\\", "/"),
-                    "host_target": target,
-                    "argv": list(command),
-                    "returncode": returncode,
-                    "termination": command_termination(returncode),
-                    "evidence": workspace_result.evidence,
-                    "binary_timeout_seconds": BINARY_TIMEOUT_SECONDS,
-                    "binary_receipt_count": 0,
-                    "expected_binary_count": 0,
-                }
-                phases.append(workspace_phase)
-                workspace_expected = expected_test_binaries_from_artifacts(
-                    workspace_result.cargo_test_artifacts,
-                    package_identities,
-                    workspace=workspace,
-                )
-                workspace_receipts = load_binary_receipts(
-                    workspace_receipt_dir,
-                    expected_run_id=identity,
-                    expected_source_identity=source_identity,
-                    workspace=workspace,
-                )
-                coverage_problems.extend(
-                    binary_coverage_problems(workspace_expected, workspace_receipts)
-                )
-                overlap = set(expected_binaries).intersection(workspace_expected)
-                if overlap:
-                    raise RuntimeError(
-                        f"workspace executable authority collided: {sorted(overlap)!r}"
-                    )
-                expected_binaries.update(workspace_expected)
-                binary_receipts.extend(workspace_receipts)
-                workspace_phase["binary_receipt_count"] = len(workspace_receipts)
-                workspace_phase["expected_binary_count"] = len(workspace_expected)
-        except RuntimeError as exc:
-            returncode = 2
-            failed = True
-            output = f"cargo-test-truth-runner: {exc}\n"
-            print(output, end="", file=sys.stderr)
-            if "workspace_phase" not in locals():
-                workspace_phase = {
-                    "kind": "workspace-test",
-                    "host_target": target,
-                    "argv": list(command) if target else list(CANONICAL_COMMAND),
-                    "returncode": returncode,
-                    "termination": {
-                        "kind": "runner-validation",
-                        "returncode": returncode,
-                    },
-                    "diagnostic_tail": output[-16_384:],
-                    "binary_timeout_seconds": BINARY_TIMEOUT_SECONDS,
-                    "binary_receipt_count": len(binary_receipts),
-                    "expected_binary_count": len(expected_binaries),
-                }
-                phases.append(workspace_phase)
-            else:
-                workspace_phase["returncode"] = returncode
-                workspace_phase["termination"] = {
+        coverage_problems = binary_coverage_problems(expected_binaries, binary_receipts)
+        workspace_phase["binary_receipt_count"] = len(binary_receipts)
+        workspace_phase["expected_binary_count"] = len(expected_binaries)
+    except RuntimeError as exc:
+        returncode = 2
+        failed = True
+        output = f"cargo-test-truth-runner: {exc}\n"
+        print(output, end="", file=sys.stderr)
+        if workspace_phase is None:
+            workspace_phase = {
+                "kind": "workspace-test",
+                "workspace": "root",
+                "manifest": "Cargo.toml",
+                "host_target": target,
+                "argv": list(command) if target else list(CANONICAL_COMMAND),
+                "returncode": returncode,
+                "termination": {
                     "kind": "runner-validation",
                     "returncode": returncode,
-                }
-                workspace_phase["diagnostic_tail"] = output[-16_384:]
-            combined.append(output)
+                },
+                "diagnostic_tail": output[-16_384:],
+                "binary_timeout_seconds": BINARY_TIMEOUT_SECONDS,
+                "binary_receipt_count": len(binary_receipts),
+                "expected_binary_count": len(expected_binaries),
+            }
+            phases.append(workspace_phase)
+        else:
+            workspace_phase["returncode"] = returncode
+            workspace_phase["termination"] = {
+                "kind": "runner-validation",
+                "returncode": returncode,
+            }
+            workspace_phase["diagnostic_tail"] = output[-16_384:]
+        combined.append(output)
 
     output = "".join(combined)
     if compiler_error_observed:

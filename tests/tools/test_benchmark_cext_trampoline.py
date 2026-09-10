@@ -26,12 +26,15 @@ def test_parse_sample_requires_exactly_one_valid_record() -> None:
         "baseline_rounds_ns_per_call": [10.1, 9.9],
         "candidate_rounds_ns_per_call": [9.1, 8.9],
     }
-    assert bench.parse_sample(
-        "running 1 test\ntest module::bench ... "
-        + bench.SAMPLE_PREFIX
-        + json.dumps(payload)
-        + "\nok\n"
-    ) == payload
+    assert (
+        bench.parse_sample(
+            "running 1 test\ntest module::bench ... "
+            + bench.SAMPLE_PREFIX
+            + json.dumps(payload)
+            + "\nok\n"
+        )
+        == payload
+    )
     with pytest.raises(ValueError, match="exactly one"):
         bench.parse_sample("noise only")
     with pytest.raises(ValueError, match="invalid benchmark field"):
@@ -68,6 +71,38 @@ def test_executable_identity_binds_path_size_and_bytes(tmp_path) -> None:
     }
     executable.write_bytes(b"other")
     assert bench.executable_identity(executable) != identity
+
+
+def test_benchmark_build_uses_locked_root_profile(tmp_path, monkeypatch) -> None:
+    commands = []
+    binary = tmp_path / "runtime-test"
+    output = tmp_path / "cargo-output.jsonl"
+    output.write_text(
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "executable": str(binary),
+                "target": {"name": "molt_runtime"},
+                "profile": {"test": True},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return None, {"stdout_path": str(output)}
+
+    monkeypatch.setattr(bench, "_run_with_evidence", run)
+    result, _receipt = bench._discover_release_test_binary(tmp_path, 1.0)
+    assert result == binary
+    [command] = commands
+    assert command[:3] == ["cargo", "test", "--locked"]
+    assert command[command.index("--manifest-path") + 1] == str(
+        bench.ROOT / "Cargo.toml"
+    )
+    assert "--release" in command
 
 
 def test_sample_process_contract_requires_guarded_exact_child(monkeypatch) -> None:
