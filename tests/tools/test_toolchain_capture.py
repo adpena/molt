@@ -662,6 +662,41 @@ def test_custody_cas_recursively_fsyncs_new_directories(
     )
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ('"/usr/bin/cc" "-o" "probe"\n', ""),
+        ("", 'note: emitted on stderr\n"/usr/bin/cc" "-o" "probe"\n'),
+    ],
+)
+def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
+    stdout: str, stderr: str
+) -> None:
+    assert toolchain_capture._selected_rust_link_command(stdout, stderr) == [
+        "/usr/bin/cc",
+        "-o",
+        "probe",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "count"),
+    [
+        ("selection emitted no quoted command\n", "", 0),
+        (
+            '"/usr/bin/cc" "one"\n',
+            '"/usr/bin/ld" "two"\n',
+            2,
+        ),
+    ],
+)
+def test_rust_link_selection_fails_closed_on_zero_or_multiple_commands(
+    stdout: str, stderr: str, count: int
+) -> None:
+    with pytest.raises(ValueError, match=rf"returned {count} commands"):
+        toolchain_capture._selected_rust_link_command(stdout, stderr)
+
+
 def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
