@@ -47,13 +47,21 @@
 # bug.
 #
 # AUTHORITY: this declares INTENT; the measured graph comes from `cargo metadata`
-# over the ROOT workspace `Cargo.toml` (never runtime/Cargo.toml -- that nested
-# workspace is not what cargo resolves from the repo root). Dev-dependencies are
+# over the root workspace `Cargo.toml`; intentionally isolated workspaces are
+# outside this graph. Dev-dependencies are
 # excluded from the lib-recompile cone (a dev edge only rebuilds the dependent's
 # test target, not its lib) but are still required to respect the layering so a
 # test-only edge can never silently become the seed of a production cycle.
 
 schema_version = 1
+
+# runtime_layer is the independent semantic organization axis consumed by
+# canonicalization_contract: core, stdlib, third_party, runtime, or outside.
+# Every crate declares it explicitly. outside means this crate is not governed
+# by the runtime/stdlib dependency-direction contract, not an unknown role.
+# stdlib_domain is required only for stdlib crates and owns their implementation
+# domain independent of package spelling, directory names, and human role prose.
+# Numeric layer remains build_graph_audit's build-DAG depth.
 
 # ---------------------------------------------------------------------------
 # Layer 0 -- vocabulary / ABI / primitive fixpoints (zero workspace deps).
@@ -63,46 +71,55 @@ schema_version = 1
 
 [[crate]]
 name = "molt-ir"
+runtime_layer = "outside"
 layer = 0
 role = "TIR vocabulary + SimpleIR transport + Repr vocab + backend-visible proof facts"
 
 [[crate]]
 name = "molt-codegen-abi"
+runtime_layer = "core"
 layer = 0
 role = "NaN-box / header-layout / type-id ABI shared by every backend"
 
 [[crate]]
 name = "molt-db"
+runtime_layer = "outside"
 layer = 0
 role = "embedded storage primitive (runtime + worker leaf)"
 
 [[crate]]
 name = "molt-gpu"
+runtime_layer = "outside"
 layer = 0
 role = "gpu/tensor compute and rendering primitive; independent of Python object runtime"
 
 [[crate]]
 name = "molt-wasm-facts"
+runtime_layer = "outside"
 layer = 0
 role = "WASM link-fact vocabulary and callable-table attestation shared by backend and host"
 
 [[crate]]
 name = "molt-harness"
+runtime_layer = "outside"
 layer = 0
 role = "test/bench harness primitive"
 
 [[crate]]
 name = "molt-runtime-protobuf"
+runtime_layer = "outside"
 layer = 0
 role = "protobuf codec primitive"
 
 [[crate]]
 name = "molt-snapshot"
+runtime_layer = "outside"
 layer = 0
 role = "snapshot primitive"
 
 [[crate]]
 name = "molt-runtime-platform"
+runtime_layer = "core"
 layer = 0
 role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-in"
 
@@ -112,16 +129,19 @@ role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-
 
 [[crate]]
 name = "molt-passes"
+runtime_layer = "outside"
 layer = 1
 role = "TIR transforms + analyses + pass orchestration (deps molt-ir only)"
 
 [[crate]]
 name = "molt-lang-obj-model"
+runtime_layer = "core"
 layer = 1
 role = "object-model vocabulary (deps molt-codegen-abi); root of the runtime stack"
 
 [[crate]]
 name = "molt-worker"
+runtime_layer = "outside"
 layer = 1
 role = "worker over molt-db"
 
@@ -134,16 +154,19 @@ role = "worker over molt-db"
 
 [[crate]]
 name = "molt-tir"
+runtime_layer = "outside"
 layer = 2
 role = "TIR->{LIR,SimpleIR,WASM-IR} lowering + representation-plan logic"
 
 [[crate]]
 name = "molt-lang-cpython-abi"
+runtime_layer = "third_party"
 layer = 2
 role = "CPython ABI surface over the object model"
 
 [[crate]]
 name = "molt-runtime-core"
+runtime_layer = "core"
 layer = 2
 role = "runtime core consumed by every stdlib satellite (deps obj-model)"
 
@@ -159,151 +182,201 @@ role = "runtime core consumed by every stdlib satellite (deps obj-model)"
 
 [[crate]]
 name = "molt-backend-native"
+runtime_layer = "outside"
 layer = 3
 role = "native (Cranelift) backend + fc/ codegen tree"
 
 [[crate]]
 name = "molt-backend-wasm"
+runtime_layer = "outside"
 layer = 3
 role = "WASM backend (encoder + import planning)"
 
 [[crate]]
 name = "molt-backend-luau"
+runtime_layer = "outside"
 layer = 3
 role = "Luau backend"
 
 [[crate]]
 name = "molt-backend-rust"
+runtime_layer = "outside"
 layer = 3
 role = "Rust-source backend"
 
 [[crate]]
 name = "molt-gpu-runtime"
+runtime_layer = "outside"
 layer = 3
 role = "GPU Python-object runtime integration over molt-gpu and runtime-core"
 
 [[crate]]
 name = "molt-runtime-asyncio"
+runtime_layer = "stdlib"
+stdlib_domain = "asyncio"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-collections"
+runtime_layer = "stdlib"
+stdlib_domain = "collections"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-compression"
+runtime_layer = "stdlib"
+stdlib_domain = "compression"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-crypto"
+runtime_layer = "stdlib"
+stdlib_domain = "crypto"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-stdlib-difflib"
+runtime_layer = "stdlib"
+stdlib_domain = "difflib"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-stdlib-graphlib"
+runtime_layer = "stdlib"
+stdlib_domain = "graphlib"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-http"
+runtime_layer = "stdlib"
+stdlib_domain = "http"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-ipaddress"
+runtime_layer = "stdlib"
+stdlib_domain = "ipaddress"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-itertools"
+runtime_layer = "stdlib"
+stdlib_domain = "itertools"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-logging"
+runtime_layer = "stdlib"
+stdlib_domain = "logging"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-math"
+runtime_layer = "stdlib"
+stdlib_domain = "math"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-net"
+runtime_layer = "stdlib"
+stdlib_domain = "net"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-path"
+runtime_layer = "stdlib"
+stdlib_domain = "path"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-regex"
+runtime_layer = "stdlib"
+stdlib_domain = "regex"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-audit"
+runtime_layer = "core"
 layer = 3
 role = "runtime audit policy satellite"
 
 [[crate]]
 name = "molt-runtime-constants"
+runtime_layer = "core"
 layer = 3
 role = "runtime-local bind/table constants and counters satellite"
 
 [[crate]]
 name = "molt-runtime-diagnostics"
+runtime_layer = "core"
 layer = 3
 role = "runtime diagnostics policy satellite"
 
 [[crate]]
 name = "molt-runtime-resource"
+runtime_layer = "core"
 layer = 3
 role = "runtime resource policy satellite"
 
 [[crate]]
 name = "molt-runtime-serial"
+runtime_layer = "stdlib"
+stdlib_domain = "serial"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-stringprep"
+runtime_layer = "stdlib"
+stdlib_domain = "stringprep"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-stdlib-text"
+runtime_layer = "stdlib"
+stdlib_domain = "text"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-tk"
+runtime_layer = "stdlib"
+stdlib_domain = "tk"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-vfs"
+runtime_layer = "core"
 layer = 3
 role = "runtime filesystem satellite"
 
 [[crate]]
 name = "molt-runtime-xml"
+runtime_layer = "stdlib"
+stdlib_domain = "xml"
 layer = 3
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-zoneinfo"
+runtime_layer = "stdlib"
+stdlib_domain = "zoneinfo"
 layer = 3
 role = "stdlib satellite"
 
@@ -314,11 +387,13 @@ role = "stdlib satellite"
 
 [[crate]]
 name = "molt-backend"
+runtime_layer = "outside"
 layer = 4
 role = "thin backend driver + daemon bin; fans in every backend crate"
 
 [[crate]]
 name = "molt-runtime"
+runtime_layer = "runtime"
 layer = 4
 role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
 
@@ -328,18 +403,30 @@ role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
 
 [[crate]]
 name = "molt-embed"
+runtime_layer = "outside"
 layer = 5
 role = "runtime embedder over molt-runtime"
 
 [[crate]]
 name = "molt-ffi"
+runtime_layer = "outside"
 layer = 5
 role = "FFI surface over molt-runtime + obj-model"
 
 [[crate]]
 name = "molt-wasm-host"
+runtime_layer = "outside"
 layer = 5
 role = "WASM host over molt-runtime + obj-model"
+
+[[crate]]
+name = "molt-cext-discovery"
+runtime_layer = "outside"
+layer = 5
+# Consolidation enrolls this existing runtime-workspace consumer in the root
+# graph. The baseline's +1 runtime cones reflect that scope correction; removing
+# this observer from the measured cones reproduces every prior radius exactly.
+role = "native extension discovery harness over CPython ABI and molt-runtime"
 
 # ---------------------------------------------------------------------------
 # Allowed same-layer edges -- the documented exceptions to "siblings must be

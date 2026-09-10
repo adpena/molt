@@ -610,12 +610,20 @@ def test_cli_update_check_json() -> None:
     assert "--target" in cmd
     assert "wasm32-wasip1" in cmd
     assert "cargo-update-root" in names
-    assert "cargo-update-runtime" in names
     assert "cargo-update-fuzz" in names
     assert "uv-lock-upgrade" in names
     assert "cargo-upgrade-root" in names
-    assert "cargo-upgrade-runtime" in names
     assert "cargo-upgrade-fuzz" in names
+    for operation in ("update", "upgrade"):
+        commands = [
+            entry["cmd"] for entry in steps if entry["cmd"][:2] == ["cargo", operation]
+        ]
+        assert [
+            command[command.index("--manifest-path") + 1] for command in commands
+        ] == [
+            "Cargo.toml",
+            "fuzz/Cargo.toml",
+        ]
 
 
 def test_required_llvm_backend_major_matches_manifest() -> None:
@@ -643,7 +651,6 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
     names = [step.name for step in steps]
     assert names[0] == "cargo-edit-bootstrap"
     assert "cargo-upgrade-root" in names
-    assert "cargo-upgrade-runtime" in names
     assert "cargo-upgrade-fuzz" in names
 
 

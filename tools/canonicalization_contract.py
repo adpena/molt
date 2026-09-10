@@ -42,8 +42,8 @@ Modes (mirrors tools/gen_op_kinds.py / structural_audit.py CI convention):
 from __future__ import annotations
 
 import argparse
-import functools
 import json
+import re
 import sys
 import tomllib
 from dataclasses import asdict, dataclass
@@ -56,6 +56,10 @@ else:
 
 ROOT = bind_repository_imports(__file__)
 
+from molt.cargo_workspace import (  # noqa: E402
+    workspace_manifest_facts,
+    workspace_member_manifests,
+)
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
 
 BASELINE_REL = "tools/canonicalization_contract_baseline.json"
@@ -71,19 +75,8 @@ LAYERS: dict[str, dict] = {
     "runtime": {"rank": 3, "may_depend_on": {"core", "stdlib", "third_party"}},
 }
 
-# Explicit crate (directory-name) -> layer. Canonical `molt-stdlib-*` crates are
-# matched by prefix; legacy `molt-runtime-*` stdlib satellites are classified by
-# their `runtime/crate_graph.toml` role so runtime-support satellites do not get
-# mistaken for Python stdlib modules.
-CRATE_LAYER: dict[str, str] = {
-    "molt-obj-model": "core",
-    "molt-codegen-abi": "core",
-    "molt-runtime-core": "core",  # the API-surface facade (rename pending -> molt-runtime-api)
-    "molt-cpython-abi": "third_party",
-    "molt-runtime": "runtime",
-}
-STDLIB_PREFIX = "molt-stdlib-"
-LEGACY_RUNTIME_STDLIB_PREFIX = "molt-runtime-"
+# Package assignments and stdlib domains live only in runtime/crate_graph.toml.
+# Its numeric build-DAG layer is a separate axis from this semantic contract.
 
 # Stdlib-domain implementations that MUST live in their own crate, never as a
 # large non-bridge module inside the god-crate `builtins/`. A large builtins
@@ -118,51 +111,88 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(fh)
 
 
-@functools.cache
-def _crate_graph_roles() -> dict[str, str]:
-    data = _load_toml(ROOT / "runtime" / "crate_graph.toml")
-    out: dict[str, str] = {}
-    for item in data.get("crate", []):
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        role = item.get("role")
-        if isinstance(name, str) and isinstance(role, str):
-            out[name] = role
-    return out
+@dataclass(frozen=True)
+class RuntimeSemantics:
+    layer: str
+    domain: str | None
 
 
-def _members_of(cargo_path: Path, base: Path) -> list[Path]:
-    if not cargo_path.exists():
-        return []
-    members = _load_toml(cargo_path).get("workspace", {}).get("members", [])
-    out = []
-    for m in members:
-        # members may contain globs like "runtime/*"; expand simply.
-        if "*" in m:
-            out.extend(p.parent for p in base.glob(m + "/Cargo.toml"))
-        else:
-            p = base / m
-            if (p / "Cargo.toml").exists():
-                out.append(p)
+def load_runtime_semantics(
+    root: Path, crates: dict[str, Path] | None = None
+) -> dict[str, RuntimeSemantics]:
+    """Project typed package metadata to actual directory aliases, fail closed."""
+    graph = root / "runtime" / "crate_graph.toml"
+    entries = _load_toml(graph).get("crate")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"{graph}: expected nonempty [[crate]] entries")
+    packages: dict[str, RuntimeSemantics] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{graph}: crate entry must be a table")
+        name = entry.get("name")
+        layer = entry.get("runtime_layer")
+        domain = entry.get("stdlib_domain")
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ValueError(f"{graph}: crate requires a package name")
+        if name in packages:
+            raise ValueError(f"{graph}: duplicate crate package {name!r}")
+        if not isinstance(layer, str) or layer not in {*LAYERS, "outside"}:
+            raise ValueError(f"{graph}: {name}: invalid runtime_layer {layer!r}")
+        if layer == "stdlib":
+            if (
+                not isinstance(domain, str)
+                or re.fullmatch(r"[a-z][a-z0-9_]*", domain) is None
+            ):
+                raise ValueError(
+                    f"{graph}: {name}: stdlib requires a valid stdlib_domain"
+                )
+        elif "stdlib_domain" in entry:
+            raise ValueError(
+                f"{graph}: {name}: stdlib_domain requires runtime_layer='stdlib'"
+            )
+        packages[name] = RuntimeSemantics(layer, domain)
+
+    if crates is None:
+        crates = discover_crates(root)
+    declared = {manifest.resolve() for manifest in workspace_member_manifests(root)}
+    out: dict[str, RuntimeSemantics] = {}
+    seen: dict[str, Path] = {}
+    for cid, directory in crates.items():
+        manifest = directory / "Cargo.toml"
+        package = _load_toml(manifest).get("package")
+        name = package.get("name") if isinstance(package, dict) else None
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ValueError(f"{manifest}: missing package.name")
+        if name in seen:
+            raise ValueError(
+                f"{manifest}: duplicate package.name {name!r}; also {seen[name]}"
+            )
+        seen[name] = manifest
+        if name in packages:
+            out[cid] = packages[name]
+        elif manifest.resolve() in declared:
+            raise ValueError(
+                f"{graph}: missing runtime semantics for workspace package {name!r}"
+            )
+    missing = packages.keys() - seen.keys()
+    if missing:
+        raise ValueError(
+            f"{graph}: crate packages have no manifest authority: {sorted(missing)!r}"
+        )
     return out
 
 
 def workspace_members(root: Path) -> list[Path]:
-    """Union members across ALL workspace roots. Molt has TWO: the repo-root
-    Cargo.toml and `runtime/Cargo.toml` (the runtime crates -- molt-runtime-*,
-    molt-obj-model, molt-cpython-abi -- are members of the LATTER). Reading only
-    the root silently mis-reports every runtime crate as a non-member."""
-    out = _members_of(root / "Cargo.toml", root)
-    out += _members_of(root / "runtime" / "Cargo.toml", root / "runtime")
-    return out
+    """Project crate directories from the sole root membership authority."""
+    return [manifest.parent for manifest in workspace_member_manifests(root)]
 
 
 def discover_crates(root: Path) -> dict[str, Path]:
-    """All runtime crates by directory scan UNION the workspace members. Scanning
-    `runtime/*/Cargo.toml` is authoritative because not every crate is listed in
-    `[workspace].members` (e.g. molt-runtime-asyncio is a path-dep only) -- a
-    members-only view silently misses those crates and their violations."""
+    """All runtime crate directories plus the declared workspace members.
+
+    The directory scan intentionally includes isolated and unregistered crates
+    so the membership audit can report missing registrations. It does not
+    determine which crates Cargo or the harness executes."""
     dirs: dict[str, Path] = {}
     for cargo in sorted(root.glob("runtime/*/Cargo.toml")):
         dirs[cargo.parent.name] = cargo.parent
@@ -176,65 +206,57 @@ def crate_id(crate_dir: Path) -> str:
     return crate_dir.name
 
 
-def _dep_dirs(crate_dir: Path) -> set[str]:
-    """Directory names of workspace-internal (path) dependencies, from every
-    dependencies table including target-specific ones."""
-    data = _load_toml(crate_dir / "Cargo.toml")
-    dirs: set[str] = set()
-
-    def scan(tbl: dict) -> None:
-        for _name, spec in tbl.items():
-            if isinstance(spec, dict) and isinstance(spec.get("path"), str):
-                p = spec["path"]
-                if p.startswith("../") or p.startswith("..\\"):
-                    dirs.add(Path(p).name)
-
-    scan(data.get("dependencies", {}))
-    scan(data.get("dev-dependencies", {}))
-    for tgt in data.get("target", {}).values():
-        if isinstance(tgt, dict):
-            scan(tgt.get("dependencies", {}))
-    return dirs
+def layer_of(
+    cid: str,
+    semantics: dict[str, RuntimeSemantics] | None = None,
+    *,
+    root: Path = ROOT,
+) -> str | None:
+    item = (load_runtime_semantics(root) if semantics is None else semantics).get(cid)
+    return item.layer if item is not None and item.layer != "outside" else None
 
 
-def layer_of(cid: str) -> str | None:
-    if cid in CRATE_LAYER:
-        return CRATE_LAYER[cid]
-    if cid.startswith(STDLIB_PREFIX):
-        return "stdlib"
-    role = _crate_graph_roles().get(cid, "")
-    if "stdlib satellite" in role:
-        return "stdlib"
-    if role.startswith("runtime ") and "satellite" in role:
-        return "core"
-    return None  # unclassified (backends/ir/passes/tooling) -- not layer-governed
-
-
-def _stdlib_domain(cid: str) -> str | None:
-    if cid.startswith(STDLIB_PREFIX):
-        return cid[len(STDLIB_PREFIX) :]
-    if cid.startswith(
-        LEGACY_RUNTIME_STDLIB_PREFIX
-    ) and "stdlib satellite" in _crate_graph_roles().get(cid, ""):
-        return cid[len(LEGACY_RUNTIME_STDLIB_PREFIX) :]
-    return None
+def _stdlib_domain(
+    cid: str,
+    semantics: dict[str, RuntimeSemantics] | None = None,
+    *,
+    root: Path = ROOT,
+) -> str | None:
+    item = (load_runtime_semantics(root) if semantics is None else semantics).get(cid)
+    return item.domain if item is not None else None
 
 
 # --- checks ---------------------------------------------------------------
 
 
-def check_dependency_direction(crates: dict[str, Path]) -> list[Violation]:
+def check_dependency_direction(
+    crates: dict[str, Path],
+    semantics: dict[str, RuntimeSemantics] | None = None,
+    *,
+    root: Path = ROOT,
+) -> list[Violation]:
     """A crate in layer L may depend only on crates in L or in
     LAYERS[L].may_depend_on. The load-bearing rule: a `stdlib` crate depending on
     `runtime` is the cycle that keeps the god-crate un-splittable."""
+    if semantics is None:
+        semantics = load_runtime_semantics(root, crates)
+    known = {
+        (directory / "Cargo.toml").resolve(): cid for cid, directory in crates.items()
+    }
+    adjacency: dict[str, set[str]] = {}
+    for edge in workspace_manifest_facts(root).dependencies:
+        source = known.get(edge.source_manifest)
+        dependency = known.get(edge.dependency_manifest)
+        if source is not None and dependency is not None:
+            adjacency.setdefault(source, set()).add(dependency)
     out = []
-    for cid, cdir in sorted(crates.items()):
-        L = layer_of(cid)
+    for cid in sorted(crates):
+        L = layer_of(cid, semantics)
         if L is None:
             continue
         allowed = LAYERS[L]["may_depend_on"] | {L}
-        for dep in sorted(_dep_dirs(cdir)):
-            dL = layer_of(dep)
+        for dep in sorted(adjacency.get(cid, ())):
+            dL = layer_of(dep, semantics)
             if dL is None:
                 continue
             if dL not in allowed:
@@ -279,15 +301,21 @@ def _builtins_domain_impl(root: Path, domain: str) -> list[tuple[Path, int]]:
     return hits
 
 
-def check_duplicate_authority(root: Path, crates: dict[str, Path]) -> list[Violation]:
+def check_duplicate_authority(
+    root: Path,
+    crates: dict[str, Path],
+    semantics: dict[str, RuntimeSemantics] | None = None,
+) -> list[Violation]:
     """A stdlib crate exists AND a large non-bridge builtins module for the same
     domain also exists -> the implementation has two homes (facade crate + impl
     left behind). Single-home is the contract."""
+    if semantics is None:
+        semantics = load_runtime_semantics(root, crates)
     out = []
     for cid, cdir in sorted(crates.items()):
-        if layer_of(cid) != "stdlib":
+        if layer_of(cid, semantics) != "stdlib":
             continue
-        domain = _stdlib_domain(cid)
+        domain = _stdlib_domain(cid, semantics)
         if domain is None:
             continue
         crate_lines = (
@@ -334,24 +362,28 @@ def check_misplaced_modules(root: Path) -> list[Violation]:
     return out
 
 
-def check_workspace_membership(root: Path, crates: dict[str, Path]) -> list[Violation]:
-    """Every layer crate should be a `[workspace].members` entry, or it escapes
-    workspace-wide gates (cargo build --workspace, clippy-all). asyncio/math/etc.
-    are path-deps only today."""
+def check_workspace_membership(
+    root: Path,
+    crates: dict[str, Path],
+    semantics: dict[str, RuntimeSemantics] | None = None,
+) -> list[Violation]:
+    """Every ordinary layer crate must declare its membership explicitly.
+
+    Cargo can auto-enroll local path dependencies, but that implicit graph must
+    not be a competing membership authority for tools and documentation.
+    """
+    if semantics is None:
+        semantics = load_runtime_semantics(root, crates)
     members = {crate_id(d) for d in workspace_members(root)}
     out = []
     for cid in sorted(crates):
-        if (
-            layer_of(cid) in ("core", "stdlib", "third_party", "runtime")
-            and cid not in members
-        ):
+        if layer_of(cid, semantics) in LAYERS and cid not in members:
             out.append(
                 Violation(
                     kind="not_workspace_member",
                     severity="medium",
                     crate=cid,
-                    detail="layer crate is a path-dep but NOT in [workspace].members -- "
-                    "escapes workspace-wide gates (clippy-all, build --workspace)",
+                    detail="layer crate is NOT explicitly declared in [workspace].members",
                     metric=1,
                 )
             )
@@ -360,11 +392,12 @@ def check_workspace_membership(root: Path, crates: dict[str, Path]) -> list[Viol
 
 def run_all(root: Path) -> list[Violation]:
     crates = discover_crates(root)
+    semantics = load_runtime_semantics(root, crates)
     vs = []
-    vs += check_dependency_direction(crates)
-    vs += check_duplicate_authority(root, crates)
+    vs += check_dependency_direction(crates, semantics, root=root)
+    vs += check_duplicate_authority(root, crates, semantics)
     vs += check_misplaced_modules(root)
-    vs += check_workspace_membership(root, crates)
+    vs += check_workspace_membership(root, crates, semantics)
     vs.sort(
         key=lambda v: (-{"high": 2, "medium": 1}.get(v.severity, 0), -v.metric, v.crate)
     )
@@ -418,7 +451,14 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         p.error(str(exc))
 
-    vs = run_all(root)
+    try:
+        vs = run_all(root)
+    except (ValueError, OSError, UnicodeError) as exc:
+        print(
+            f"canonicalization contract: invalid crate authority: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     metrics = ratchet_metrics(vs)
 
     baseline: dict[str, float] | None = None
@@ -485,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
                 {"violations": [asdict(v) for v in vs], "metrics": metrics}, indent=2
             )
         )
-        return 1 if receipt_destination is not None and regressed else 0
+        return 1 if (args.check or receipt_destination is not None) and regressed else 0
 
     if args.update_baseline:
         (root / BASELINE_REL).write_text(

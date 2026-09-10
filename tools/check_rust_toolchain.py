@@ -24,6 +24,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+from molt.cargo_workspace import workspace_member_manifests  # noqa: E402
 
 RUST_EDITION = "2024"
 RUST_VERSION = "1.96.1"
@@ -77,9 +78,8 @@ def _git_files(*patterns: str) -> tuple[Path, ...]:
     proc = _run(["git", "ls-files", "-z", "--", *patterns])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "git ls-files failed")
-    return tuple(
-        Path(raw.decode("utf-8")) for raw in proc.stdout.encode().split(b"\0") if raw
-    )
+    paths = (Path(raw) for raw in proc.stdout.split("\0") if raw)
+    return tuple(path for path in paths if (ROOT / path).is_file())
 
 
 def _read_toml(path: Path) -> dict:
@@ -88,19 +88,6 @@ def _read_toml(path: Path) -> dict:
 
 def _is_vendor(path: Path) -> bool:
     return path.as_posix().startswith(VENDOR_PREFIX)
-
-
-def _workspace_member_manifests(workspace: Path) -> set[Path]:
-    data = _read_toml(workspace)
-    base = workspace.parent
-    manifests: set[Path] = set()
-    for member in data.get("workspace", {}).get("members", []):
-        if "*" in member:
-            continue
-        manifest = base / member / "Cargo.toml"
-        if (ROOT / manifest).exists():
-            manifests.add(manifest)
-    return manifests
 
 
 def check_repository_contract() -> CheckReport:
@@ -122,15 +109,23 @@ def check_repository_contract() -> CheckReport:
     if toolchain.get("targets") != RUST_TARGETS:
         errors.append(f"rust-toolchain.toml targets must be {RUST_TARGETS!r}")
 
-    workspace_manifests = _workspace_member_manifests(
-        Path("Cargo.toml")
-    ) | _workspace_member_manifests(Path("runtime/Cargo.toml"))
+    for obsolete in ("runtime/Cargo.toml", "runtime/Cargo.lock"):
+        if (ROOT / obsolete).exists():
+            errors.append(
+                f"{obsolete}: ordinary crates must use the root Cargo workspace and lock"
+            )
+    try:
+        workspace_manifests = {
+            manifest.relative_to(ROOT) for manifest in workspace_member_manifests(ROOT)
+        }
+    except ValueError as exc:
+        return CheckReport((*errors, str(exc)))
 
     for manifest in _git_files("*Cargo.toml"):
         if _is_vendor(manifest):
             continue
         data = _read_toml(manifest)
-        if manifest in {Path("Cargo.toml"), Path("runtime/Cargo.toml")}:
+        if manifest == Path("Cargo.toml"):
             workspace_package = data.get("workspace", {}).get("package", {})
             if workspace_package.get("edition") != RUST_EDITION:
                 errors.append(

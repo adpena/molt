@@ -1,6 +1,17 @@
 [workspace]
 members = [
     "runtime/molt-runtime",
+    "runtime/molt-runtime-core",
+    "runtime/molt-runtime-net",
+    "runtime/molt-runtime-asyncio",
+    "runtime/molt-runtime-math",
+    "runtime/molt-runtime-serial",
+    "runtime/molt-runtime-regex",
+    "runtime/molt-runtime-logging",
+    "runtime/molt-runtime-http",
+    "runtime/molt-runtime-xml",
+    "runtime/molt-runtime-ipaddress",
+    "runtime/molt-runtime-zoneinfo",
     "runtime/molt-runtime-collections",
     "runtime/molt-runtime-itertools",
     "runtime/molt-runtime-crypto",
@@ -14,6 +25,8 @@ members = [
     "runtime/molt-runtime-platform",
     "runtime/molt-runtime-resource",
     "runtime/molt-stdlib-text",
+    "runtime/molt-stdlib-difflib",
+    "runtime/molt-stdlib-graphlib",
     "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",
     "runtime/molt-backend",
@@ -24,6 +37,9 @@ members = [
     "runtime/molt-db",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
+    "runtime/molt-wasm-facts",
+    "runtime/molt-cpython-abi",
+    "runtime/molt-cext-discovery",
     "runtime/molt-snapshot",
     "runtime/molt-embed",
     "runtime/molt-harness",
@@ -52,8 +68,7 @@ edition = "2024"
 rust-version = "1.96.1"
 
 [workspace.dependencies]
-# Correctly rounded decimal float parsing for JSON IR/runtime values. Keep this
-# aligned with runtime/Cargo.toml for builds rooted at either workspace.
+# Correctly rounded decimal float parsing for JSON IR/runtime values.
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 [profile.dev]

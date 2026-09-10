@@ -1423,8 +1423,6 @@ def resolve_wasm_cpython_abi_build_identity(
         extra_source_paths=(
             root / "Cargo.toml",
             root / "Cargo.lock",
-            root / "runtime" / "Cargo.toml",
-            root / "runtime" / "Cargo.lock",
             root / "runtime" / "build_support",
             root / "include" / "molt" / "shared",
         ),

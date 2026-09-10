@@ -238,8 +238,6 @@ def test_runtime_source_paths_follow_runtime_feature_closure() -> None:
         "runtime/molt-runtime-core",
         "runtime/molt-runtime-vfs",
         "runtime/build_support",
-        "runtime/Cargo.toml",
-        "runtime/Cargo.lock",
         "Cargo.toml",
         "Cargo.lock",
         "LICENSE",

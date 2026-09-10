@@ -152,17 +152,33 @@ WASM targets:
 
 ## Cargo workspace truth custody
 
-The canonical Rust truth runner separates network custody from execution. It
-prefetches both committed workspace lock domains (`Cargo.lock` and
-`runtime/Cargo.lock`) before starting the complete locked workspace test; this
-is required because trybuild deliberately launches an offline child using the
-nested runtime lock. Cargo still owns the single `--workspace --tests
---no-fail-fast` traversal. A host target-runner hook gives each
+The canonical Rust truth runner separates network custody from execution. Root
+`Cargo.toml` and `Cargo.lock` own the ordinary compiler/runtime workspace,
+including the dependency resolution used by trybuild's offline child. The runner
+performs one locked fetch, one locked package-metadata query, and one locked
+`--workspace --tests --no-fail-fast` traversal, all with the root manifest.
+Intentionally isolated MLIR, fuzz, bootstrap, and probe workspaces are not added
+to this traversal. A host target-runner hook gives each
 `resource_enforcement` test a fresh process so process-global address-space
 limits cannot poison sibling tests or convert an exact failure into an
 unattributed SIGABRT. The outer Rust proof receipt uploads the runner's nested
-receipt containing prefetch return codes, exact observed red identities, and
-the suite-honesty verdict.
+receipt containing root-scoped phase return codes, exact observed red identities,
+and the suite-honesty verdict. Binary receipts remain under `binaries/root`, bound
+to the run, source snapshot, and exact executable bytes; Cargo metadata and
+compiler artifacts own package/target identity and complete binary coverage.
+Prefetch or metadata failure publishes a terminal receipt without starting tests.
+
+`molt.cargo_workspace` projects declared members for the harness and structural
+checks. Lock validation additionally follows local dependency manifests (including
+excluded helpers, target/dev/build dependencies, and workspace inheritance), so a
+cached lock check cannot overlook a changed input. Cargo remains the dependency
+resolver. Add ordinary crates explicitly to the root members list; independent
+workspace exclusions are not a second ordinary runtime workspace.
+
+Root profiles are the only profile authority: compiler `release` retains unwind
+support; shipping native runtimes use `release-output`/`release-size`, and WASM
+uses `wasm-release`. Select profiles explicitly rather than changing policy by
+launching Cargo from a different directory.
 
 ## Platform Pitfalls
 - **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.

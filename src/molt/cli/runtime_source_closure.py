@@ -18,8 +18,6 @@ def _runtime_manifest_cache_stamp(project_root: Path) -> str:
     manifests = [
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
-        runtime_root / "Cargo.toml",
-        runtime_root / "Cargo.lock",
     ]
     manifests.extend(sorted(runtime_root.glob("*/Cargo.toml")))
     digest = hashlib.sha256()
@@ -69,8 +67,6 @@ def _runtime_source_paths_cached(
             extra_source_paths=(
                 project_root / "Cargo.toml",
                 project_root / "Cargo.lock",
-                project_root / "runtime/Cargo.toml",
-                project_root / "runtime/Cargo.lock",
                 project_root / "runtime/build_support",
                 # Compiled by molt-runtime's sitebuiltins implementation.
                 project_root / "LICENSE",

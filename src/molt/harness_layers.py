@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from molt.cargo_workspace import workspace_package_names
 from molt.dx import development_artifact_env
 from molt.harness_report import LayerResult, LayerStatus
 
@@ -90,38 +91,6 @@ def harness_repo_sentinel(
         yield sentinel
 
 
-def _discover_workspace_crates(project_root: Path) -> list[str]:
-    """Discover crates in the workspace by reading Cargo.toml.
-
-    Returns a list of crate *package* names (e.g. ``molt-backend``).
-    Falls back to an empty list if the file is missing or unparseable.
-    """
-    import tomllib
-
-    cargo_toml = project_root / "runtime" / "Cargo.toml"
-    if not cargo_toml.exists():
-        return []
-    try:
-        with open(cargo_toml, "rb") as f:
-            data = tomllib.load(f)
-    except Exception:
-        return []
-    members = data.get("workspace", {}).get("members", [])
-    crates: list[str] = []
-    for member in members:
-        member_cargo = project_root / "runtime" / member / "Cargo.toml"
-        if member_cargo.exists():
-            try:
-                with open(member_cargo, "rb") as f:
-                    crate_data = tomllib.load(f)
-                name = crate_data.get("package", {}).get("name", "")
-                if name:
-                    crates.append(name)
-            except Exception:
-                continue
-    return crates
-
-
 @dataclass
 class HarnessConfig:
     """Configuration for a harness run."""
@@ -131,18 +100,6 @@ class HarnessConfig:
     fuzz_duration_s: int = 30
     molt_cmd: str = "molt"
     verbose: bool = False
-
-    @property
-    def molt_crates(self) -> list[str]:
-        """Return the list of molt workspace crate directory names."""
-        runtime_dir = self.project_root / "runtime"
-        if not runtime_dir.is_dir():
-            return []
-        return sorted(
-            d.name
-            for d in runtime_dir.iterdir()
-            if d.is_dir() and (d / "Cargo.toml").exists()
-        )
 
 
 @dataclass
@@ -211,7 +168,7 @@ def run_layer_compile(config: HarnessConfig) -> LayerResult:
     t0 = time.monotonic()
     proc = _run_cmd(
         ["cargo", "check", "--workspace", "--message-format=short"],
-        cwd=config.project_root / "runtime",
+        cwd=config.project_root,
     )
     elapsed = time.monotonic() - t0
 
@@ -269,7 +226,7 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
         "molt-runtime-protobuf",
         "molt-ffi",
     }
-    available = set(_discover_workspace_crates(config.project_root))
+    available = set(workspace_package_names(config.project_root))
     lint_crates = sorted(known_clean & available)
 
     if not lint_crates:
@@ -285,7 +242,7 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
         cmd += ["-p", crate]
     cmd += ["--", "-D", "warnings"]
 
-    proc = _run_cmd(cmd, cwd=config.project_root / "runtime")
+    proc = _run_cmd(cmd, cwd=config.project_root)
     elapsed = time.monotonic() - t0
 
     if proc.returncode != 0:
@@ -319,7 +276,7 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     breaks this layer.
     """
     t0 = time.monotonic()
-    available = set(_discover_workspace_crates(config.project_root))
+    available = set(workspace_package_names(config.project_root))
 
     # Targeted test runs — each must pass for the layer to pass.
     # We only run modules/crates that exist in the workspace and are known
@@ -387,7 +344,7 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     failures: list[str] = []
 
     for label, cmd in test_runs:
-        proc = _run_cmd(cmd, cwd=config.project_root / "runtime", timeout_s=600)
+        proc = _run_cmd(cmd, cwd=config.project_root, timeout_s=600)
         if proc.returncode != 0:
             combined = proc.stdout + proc.stderr
             failures.append(f"{label}: rc={proc.returncode} {combined[-200:]}")
@@ -832,18 +789,33 @@ def run_layer_conformance(config: HarnessConfig) -> LayerResult:
 
 
 def run_layer_size(config: HarnessConfig) -> LayerResult:
-    """Measure binary and WASM sizes."""
+    """Measure CLI and selected native runtime artifacts without rebuilding."""
+    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
+    from molt.cli.runtime_paths import (
+        _cargo_profile_dir,
+        _cargo_target_root,
+        _runtime_lib_archive_names,
+    )
+
     start = time.monotonic()
     metrics: dict[str, int | float] = {}
+    profile, error = _resolve_cargo_profile_name("release")
+    if error is not None:
+        return LayerResult(
+            name="size",
+            status=LayerStatus.FAIL,
+            duration_s=time.monotonic() - start,
+            details=error,
+        )
 
     # Check molt binary size
     molt_path = shutil.which("molt")
     if molt_path:
         metrics["molt_binary_bytes"] = os.path.getsize(molt_path)
 
-    # Check runtime library sizes
-    target_dir = config.project_root / "runtime" / "target" / "release"
-    for name in ["libmolt_runtime.a", "libmolt_runtime.rlib"]:
+    # Use the same target, profile and platform archive names as the compiler.
+    target_dir = _cargo_target_root(config.project_root) / _cargo_profile_dir(profile)
+    for name in (*_runtime_lib_archive_names(), "libmolt_runtime.rlib"):
         path = target_dir / name
         if path.exists():
             metrics[f"{name}_bytes"] = path.stat().st_size
@@ -862,7 +834,7 @@ def run_layer_size(config: HarnessConfig) -> LayerResult:
         name="size",
         status=LayerStatus.PASS,
         duration_s=dur,
-        details="; ".join(detail_parts),
+        details=f"{target_dir}: " + "; ".join(detail_parts),
         metrics=metrics,
     )
 

@@ -16,8 +16,6 @@ def _manifest_tree(root: Path) -> None:
     for path, text in (
         (root / "Cargo.toml", "[workspace]\n"),
         (root / "Cargo.lock", "# lock\n"),
-        (root / "runtime" / "Cargo.toml", "[workspace]\n"),
-        (root / "runtime" / "Cargo.lock", "# lock\n"),
         (root / "runtime" / "crate-a" / "Cargo.toml", "[package]\nname='a'\n"),
     ):
         path.write_text(text, encoding="utf-8")
