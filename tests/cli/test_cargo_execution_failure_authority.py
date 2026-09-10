@@ -11,7 +11,7 @@ import pytest
 
 from molt.cli.models import _RuntimeArtifactState
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
-from tests.runtime_build_identity_helper import runtime_cargo_plan
+from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
 
 CARGO = importlib.import_module("molt.cli.cargo_execution")
@@ -413,10 +413,13 @@ def test_native_failure_receipt_carries_attempts_signal_timing_and_rss(
 
 
 def test_resolved_runtime_plan_never_changes_environment_or_retries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = runtime_cargo_plan(
         tmp_path,
+        fixture_root=runtime_fixture_root,
         env={"RUSTC_WRAPPER": "sccache", "CARGO_INCREMENTAL": "0"},
         cargo_command=("cargo", "rustc"),
     )
@@ -447,9 +450,16 @@ def test_resolved_runtime_plan_never_changes_environment_or_retries(
 
 
 def test_resolved_plan_drift_preserves_guarded_execution_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = runtime_cargo_plan(tmp_path, env={}, cargo_command=("cargo", "rustc"))
+    plan = runtime_cargo_plan(
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        env={},
+        cargo_command=("cargo", "rustc"),
+    )
 
     def run(command: list[str], **_kwargs: object):
         config = tmp_path / ".cargo" / "config.toml"

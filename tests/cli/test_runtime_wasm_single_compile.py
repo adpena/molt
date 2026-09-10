@@ -13,10 +13,16 @@ Verifies the combined-compile design invariants that make the dedup correct:
 
 from __future__ import annotations
 
+from functools import partial
+
+import hashlib
 import json
+import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from molt.capability_manifest import CapabilityManifest
@@ -47,6 +53,7 @@ from molt.cli.runtime_wasm_build_timings import (
     _runtime_wasm_build_timings_snapshot,
 )
 from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
     runtime_wasm_link_inputs,
     bind_runtime_wasm_specs as _bind_specs,
     runtime_build_identity as make_runtime_build_identity,
@@ -66,14 +73,24 @@ _COMMON = dict(
 
 
 @pytest.fixture(autouse=True)
-def _synthetic_cargo_plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _synthetic_cargo_plan(
+    runtime_fixture_root: RuntimeFixtureRoot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(
-        runtime_wasm_build_spec, "resolve_runtime_cargo_plan", runtime_cargo_plan
+        runtime_wasm_build_spec,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
     monkeypatch.setattr(
         runtime_wasm_build_spec,
         "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(tmp_path, env=kwargs["env"]),
+        lambda **kwargs: runtime_wasm_link_inputs(
+            runtime_fixture_root, env=kwargs["env"]
+        ),
     )
 
 
@@ -84,7 +101,101 @@ def _specs(root: Path):
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
     )
-    return _bind_specs(shared, reloc)
+    return _bind_specs(shared, reloc, root=root)
+
+
+def test_synthetic_tools_do_not_mutate_read_only_source_root(
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbid_tool_execution(*_args, **_kwargs):
+        raise AssertionError("identity-only native fixture must not launch tools")
+
+    monkeypatch.setattr(subprocess, "Popen", forbid_tool_execution)
+    source = tmp_path / "read-only-source"
+    source.mkdir()
+    manifest = source / "Cargo.toml"
+    manifest.write_text("[workspace]\n", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in source.iterdir()}
+    plan = runtime_cargo_plan(
+        source,
+        fixture_root=runtime_fixture_root,
+        env={
+            **{
+                f"HOST_{role}": sys.executable for role in ("CC", "CXX", "AR", "RANLIB")
+            },
+            "RUSTC_WRAPPER": "fixture-wrapper",
+            "RUSTC_WORKSPACE_WRAPPER": "fixture-workspace-wrapper",
+        },
+        cargo_command=("cargo", "rustc"),
+    )
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
+    executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+    assert inputs.linker.identity.sha256 == executable_digest
+    if os.name == "posix":
+        assert (
+            inputs.linker.entrypoint.stat().st_mode & 0o7777
+            == Path(sys.executable).stat().st_mode & 0o7777
+        )
+    assert len(plan.wrappers) == 2
+    assert all(
+        item.identity.sha256 == executable_digest
+        for item in plan.executable_custody
+        if item.label.startswith("wrapper/")
+    )
+    assert plan.project_root == source
+    assert {path.name: path.read_bytes() for path in source.iterdir()} == before
+    assert Path(plan.environment["CARGO_HOME"]).is_relative_to(
+        runtime_fixture_root.path
+    )
+    assert all(
+        path.is_relative_to(runtime_fixture_root.path)
+        for path in plan.wrappers.values()
+    )
+    assert all(
+        item.entrypoint.is_relative_to(runtime_fixture_root.path)
+        for item in plan.rust_resources.files
+    )
+    assert inputs.linker.entrypoint.is_relative_to(runtime_fixture_root.path)
+    assert (runtime_fixture_root.path / "test-rustlib").is_dir()
+    assert (runtime_fixture_root.path / "runtime-link-inputs").is_dir()
+
+
+@pytest.mark.parametrize(
+    "root", [_compiler_root(), _compiler_root().parent, _compiler_root() / "src"]
+)
+def test_actual_source_root_cannot_become_fixture_owner(root: Path) -> None:
+    with pytest.raises(ValueError, match="cannot own the compiler source root"):
+        RuntimeFixtureRoot(root)
+
+
+@pytest.mark.parametrize(
+    "relative", ["..", "../escape", "nested/../../escape", ".", "absolute"]
+)
+def test_native_executable_fixture_rejects_unowned_paths(
+    runtime_fixture_root: RuntimeFixtureRoot, relative: str
+) -> None:
+    if relative == "absolute":
+        relative = str(runtime_fixture_root.path / "absolute-in-root")
+    with pytest.raises(
+        ValueError, match="confined relative path|escaped its pytest-owned root"
+    ):
+        runtime_fixture_root.native_executable(relative)
+
+
+def test_synthetic_runtime_writes_require_typed_fixture_ownership(
+    tmp_path: Path,
+) -> None:
+    unowned = cast(RuntimeFixtureRoot, tmp_path)
+    with pytest.raises(TypeError, match="pytest-owned runtime_fixture_root"):
+        runtime_cargo_plan(
+            tmp_path, fixture_root=unowned, env={}, cargo_command=("cargo",)
+        )
+    with pytest.raises(TypeError, match="pytest-owned runtime_fixture_root"):
+        runtime_wasm_link_inputs(unowned)
+    assert not (tmp_path / "test-rustlib").exists()
+    assert not (tmp_path / "runtime-link-inputs").exists()
 
 
 def test_runtime_publication_authority_is_exact_and_content_addressed(
@@ -129,11 +240,15 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         assert flag in shared.link_flags
 
 
-def test_reloc_linker_custody_tracks_exact_binary_bytes(tmp_path: Path) -> None:
-    inputs = runtime_wasm_link_inputs(tmp_path)
+def test_reloc_linker_custody_tracks_exact_binary_bytes(
+    runtime_fixture_root: RuntimeFixtureRoot,
+) -> None:
+    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     before = inputs.linker.identity.sha256
-    inputs.linker.entrypoint.write_bytes(b"other-linker")
-    after = runtime_wasm_link_inputs(tmp_path).linker.identity.sha256
+    inputs.linker.entrypoint.write_bytes(
+        inputs.linker.entrypoint.read_bytes() + b"fixture-change"
+    )
+    after = runtime_wasm_link_inputs(runtime_fixture_root).linker.identity.sha256
     assert before != after
     with pytest.raises(ValueError, match="changed"):
         inputs.verify()
@@ -218,10 +333,10 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
     )
     _, early = _bind_specs(
-        early_shared, early, family_seed="early", compile_seed="same-compile"
+        early_shared, early, root=root, family_seed="early", compile_seed="same-compile"
     )
     _, final = _bind_specs(
-        final_shared, final, family_seed="final", compile_seed="same-compile"
+        final_shared, final, root=root, family_seed="final", compile_seed="same-compile"
     )
     assert early.fingerprint is not None and final.fingerprint is not None
     assert early.staticlib_fingerprint is not None
@@ -336,6 +451,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         shared, reloc = _bind_specs(
             shared,
             reloc,
+            root=root,
             family_seed=label,
             compile_seed="shared-compile",
         )

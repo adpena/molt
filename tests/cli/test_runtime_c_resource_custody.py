@@ -12,7 +12,7 @@ from molt.cli.runtime_cargo_plan import (
     _c_tool_environment_names,
     runtime_c_flag_environment_names,
 )
-from tests.runtime_build_identity_helper import runtime_cargo_plan
+from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
 
 TARGET = "wasm32-wasip1"
@@ -201,13 +201,18 @@ def test_c_optional_search_directory_creation_is_fenced(tmp_path: Path) -> None:
         custody.verify()
 
 
-def test_resolved_cargo_plan_consumes_c_resource_custody(tmp_path: Path) -> None:
+def test_resolved_cargo_plan_consumes_c_resource_custody(
+    runtime_fixture_root: RuntimeFixtureRoot, tmp_path: Path
+) -> None:
     include = tmp_path / "include"
     include.mkdir()
     header = include / "selected.h"
     header.write_bytes(b"original")
     plan = runtime_cargo_plan(
-        tmp_path, env={"CPATH": str(include)}, cargo_command=("cargo", "rustc")
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        env={"CPATH": str(include)},
+        cargo_command=("cargo", "rustc"),
     )
     plan.verify()
     assert plan.c_environment["CPATH"] == ("${c/CPATH/search/0}",)
@@ -225,11 +230,13 @@ def test_unbound_c_resource_grammar_fails_closed(flags: str) -> None:
 
 
 @pytest.mark.parametrize("role", ["cc", "cxx", "ar", "ranlib"])
-def test_explicit_host_c_tool_is_selected_and_fenced(tmp_path: Path, role: str) -> None:
-    host_tool = tmp_path / (role + ".exe")
-    host_tool.write_bytes(b"MZ-selected-host-tool")
+def test_explicit_host_c_tool_is_selected_and_fenced(
+    runtime_fixture_root: RuntimeFixtureRoot, tmp_path: Path, role: str
+) -> None:
+    host_tool = runtime_fixture_root.native_executable(role + ".exe")
     plan = runtime_cargo_plan(
         tmp_path,
+        fixture_root=runtime_fixture_root,
         env={"HOST_" + role.upper(): str(host_tool)},
         cargo_command=("cargo", "rustc", "--target", TARGET),
         requested_target=TARGET,
@@ -252,12 +259,14 @@ def test_cc_rs_native_tool_precedence_uses_host_not_target() -> None:
     ) == ("CC_wasm32-wasip1", "CC_wasm32_wasip1", "TARGET_CC", "CC")
 
 
-def test_host_triple_selector_wins_over_host_generic_tool(tmp_path: Path) -> None:
-    first, second = tmp_path / "specific.exe", tmp_path / "generic.exe"
-    first.write_bytes(b"MZ-specific-host")
-    second.write_bytes(b"MZ-generic-host")
+def test_host_triple_selector_wins_over_host_generic_tool(
+    runtime_fixture_root: RuntimeFixtureRoot, tmp_path: Path
+) -> None:
+    first = runtime_fixture_root.native_executable("specific.exe")
+    second = runtime_fixture_root.native_executable("generic.exe")
     plan = runtime_cargo_plan(
         tmp_path,
+        fixture_root=runtime_fixture_root,
         env={"CC_x86_64-unknown-linux-gnu": str(first), "HOST_CC": str(second)},
         cargo_command=("cargo", "rustc", "--target", TARGET),
         requested_target=TARGET,
