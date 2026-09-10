@@ -805,6 +805,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "GUARD_TAG"
         | "GUARD_TYPE"
         | "HASATTR_NAME"
+        | "INPLACE_BIT_AND"
+        | "INPLACE_BIT_OR"
+        | "INPLACE_BIT_XOR"
         | "INPLACE_DIV"
         | "INPLACE_FLOORDIV"
         | "INPLACE_LSHIFT"
@@ -823,6 +826,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "LIST_REMOVE"
         | "LIST_REVERSE"
         | "LOAD_VAR"
+        | "MATMUL"
         | "MISSING"
         | "MODULE_GET_ATTR"
         | "PHI"
@@ -2107,20 +2111,20 @@ pub const ALL_OPCODES: &[OpCode] = &[
 #[inline]
 pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
     match opcode {
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
+        OpCode::Add => true,
+        OpCode::Sub => true,
+        OpCode::Mul => true,
         OpCode::CheckedAdd => false,
         OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => false,
-        OpCode::InplaceSub => false,
-        OpCode::InplaceMul => false,
+        OpCode::InplaceAdd => true,
+        OpCode::InplaceSub => true,
+        OpCode::InplaceMul => true,
         OpCode::Div => true,
         OpCode::FloorDiv => true,
         OpCode::Mod => true,
         OpCode::Pow => true,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
+        OpCode::Neg => true,
+        OpCode::Pos => true,
         OpCode::Eq => true,
         OpCode::Ne => true,
         OpCode::Lt => true,
@@ -2131,10 +2135,10 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::IsNot => false,
         OpCode::In => true,
         OpCode::NotIn => true,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
+        OpCode::BitAnd => true,
+        OpCode::BitOr => true,
+        OpCode::BitXor => true,
+        OpCode::BitNot => true,
         OpCode::Shl => true,
         OpCode::Shr => true,
         OpCode::And => true,
@@ -2226,20 +2230,20 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
     match opcode {
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
+        OpCode::Add => true,
+        OpCode::Sub => true,
+        OpCode::Mul => true,
         OpCode::CheckedAdd => false,
         OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => false,
-        OpCode::InplaceSub => false,
-        OpCode::InplaceMul => false,
-        OpCode::Div => false,
-        OpCode::FloorDiv => false,
-        OpCode::Mod => false,
-        OpCode::Pow => false,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
+        OpCode::InplaceAdd => true,
+        OpCode::InplaceSub => true,
+        OpCode::InplaceMul => true,
+        OpCode::Div => true,
+        OpCode::FloorDiv => true,
+        OpCode::Mod => true,
+        OpCode::Pow => true,
+        OpCode::Neg => true,
+        OpCode::Pos => true,
         OpCode::Eq => true,
         OpCode::Ne => true,
         OpCode::Lt => true,
@@ -2250,12 +2254,12 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::IsNot => false,
         OpCode::In => true,
         OpCode::NotIn => true,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
-        OpCode::Shl => false,
-        OpCode::Shr => false,
+        OpCode::BitAnd => true,
+        OpCode::BitOr => true,
+        OpCode::BitXor => true,
+        OpCode::BitNot => true,
+        OpCode::Shl => true,
+        OpCode::Shr => true,
         OpCode::And => true,
         OpCode::Or => true,
         OpCode::Not => true,
@@ -2265,10 +2269,10 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::ObjectNewBound => true,
         OpCode::ObjectNewBoundStack => false,
         OpCode::Free => true,
-        OpCode::LoadAttr => false,
+        OpCode::LoadAttr => true,
         OpCode::StoreAttr => true,
         OpCode::DelAttr => true,
-        OpCode::Index => false,
+        OpCode::Index => true,
         OpCode::StoreIndex => true,
         OpCode::DelIndex => true,
         OpCode::DeleteVar => true,
@@ -2371,20 +2375,20 @@ pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {
 #[inline]
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     match opcode {
-        OpCode::Add => OPCODE_EFFECTS_PURE,
-        OpCode::Sub => OPCODE_EFFECTS_PURE,
-        OpCode::Mul => OPCODE_EFFECTS_PURE,
+        OpCode::Add => OPCODE_EFFECTS_IMPURE,
+        OpCode::Sub => OPCODE_EFFECTS_IMPURE,
+        OpCode::Mul => OPCODE_EFFECTS_IMPURE,
         OpCode::CheckedAdd => OPCODE_EFFECTS_IMPURE,
         OpCode::CheckedMul => OPCODE_EFFECTS_IMPURE,
-        OpCode::InplaceAdd => OPCODE_EFFECTS_PURE,
-        OpCode::InplaceSub => OPCODE_EFFECTS_PURE,
-        OpCode::InplaceMul => OPCODE_EFFECTS_PURE,
-        OpCode::Div => OPCODE_EFFECTS_PURE_MAY_THROW,
-        OpCode::FloorDiv => OPCODE_EFFECTS_PURE_MAY_THROW,
-        OpCode::Mod => OPCODE_EFFECTS_PURE_MAY_THROW,
-        OpCode::Pow => OPCODE_EFFECTS_PURE_MAY_THROW,
-        OpCode::Neg => OPCODE_EFFECTS_PURE,
-        OpCode::Pos => OPCODE_EFFECTS_PURE,
+        OpCode::InplaceAdd => OPCODE_EFFECTS_IMPURE,
+        OpCode::InplaceSub => OPCODE_EFFECTS_IMPURE,
+        OpCode::InplaceMul => OPCODE_EFFECTS_IMPURE,
+        OpCode::Div => OPCODE_EFFECTS_IMPURE,
+        OpCode::FloorDiv => OPCODE_EFFECTS_IMPURE,
+        OpCode::Mod => OPCODE_EFFECTS_IMPURE,
+        OpCode::Pow => OPCODE_EFFECTS_IMPURE,
+        OpCode::Neg => OPCODE_EFFECTS_IMPURE,
+        OpCode::Pos => OPCODE_EFFECTS_IMPURE,
         OpCode::Eq => OPCODE_EFFECTS_IMPURE,
         OpCode::Ne => OPCODE_EFFECTS_IMPURE,
         OpCode::Lt => OPCODE_EFFECTS_IMPURE,
@@ -2395,12 +2399,12 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::IsNot => OPCODE_EFFECTS_PURE,
         OpCode::In => OPCODE_EFFECTS_IMPURE,
         OpCode::NotIn => OPCODE_EFFECTS_IMPURE,
-        OpCode::BitAnd => OPCODE_EFFECTS_PURE,
-        OpCode::BitOr => OPCODE_EFFECTS_PURE,
-        OpCode::BitXor => OPCODE_EFFECTS_PURE,
-        OpCode::BitNot => OPCODE_EFFECTS_PURE,
-        OpCode::Shl => OPCODE_EFFECTS_PURE_MAY_THROW,
-        OpCode::Shr => OPCODE_EFFECTS_PURE_MAY_THROW,
+        OpCode::BitAnd => OPCODE_EFFECTS_IMPURE,
+        OpCode::BitOr => OPCODE_EFFECTS_IMPURE,
+        OpCode::BitXor => OPCODE_EFFECTS_IMPURE,
+        OpCode::BitNot => OPCODE_EFFECTS_IMPURE,
+        OpCode::Shl => OPCODE_EFFECTS_IMPURE,
+        OpCode::Shr => OPCODE_EFFECTS_IMPURE,
         OpCode::And => OPCODE_EFFECTS_IMPURE,
         OpCode::Or => OPCODE_EFFECTS_IMPURE,
         OpCode::Not => OPCODE_EFFECTS_IMPURE,
@@ -3383,12 +3387,46 @@ pub fn comparison_scalar_domain(ty: &crate::tir::types::TirType) -> Option<(u8, 
     }
 }
 
-pub fn comparison_scalar_pair_nothrow(
+pub fn comparison_scalar_pair_effects(
     category: PredicateSemantics,
-    left: (u8, bool),
-    right: (u8, bool),
-) -> bool {
-    category == PredicateSemantics::Equality || (left == right && left.1)
+    left: &crate::tir::types::TirType,
+    right: &crate::tir::types::TirType,
+) -> OpcodeEffects {
+    use crate::tir::types::TirType;
+    if let TirType::Box(inner) = left {
+        return comparison_scalar_pair_effects(category, inner, right);
+    }
+    if let TirType::Box(inner) = right {
+        return comparison_scalar_pair_effects(category, left, inner);
+    }
+    if category == PredicateSemantics::Equality
+        && matches!(
+            (left, right),
+            (TirType::BigInt, TirType::Bytes)
+                | (TirType::Bytes, TirType::BigInt)
+                | (TirType::Bool, TirType::Bytes)
+                | (TirType::Bytes, TirType::Bool)
+                | (TirType::Bytes, TirType::I64)
+                | (TirType::I64, TirType::Bytes)
+                | (TirType::Bytes, TirType::Str)
+                | (TirType::Str, TirType::Bytes)
+        )
+    {
+        return OPCODE_EFFECTS_IMPURE;
+    }
+    let (Some(left), Some(right)) = (
+        comparison_scalar_domain(left),
+        comparison_scalar_domain(right),
+    ) else {
+        return OPCODE_EFFECTS_IMPURE;
+    };
+    if category == PredicateSemantics::Equality
+        || (category == PredicateSemantics::Ordering && left == right && left.1)
+    {
+        OPCODE_EFFECTS_PURE
+    } else {
+        OPCODE_EFFECTS_PURE_MAY_THROW
+    }
 }
 
 pub fn opcode_exact_scalar_result_tir_type(
@@ -3399,6 +3437,151 @@ pub fn opcode_exact_scalar_result_tir_type(
         (OpCode::ConstBigInt, 0) => Some(crate::tir::types::TirType::BigInt),
         _ => opcode_operand_independent_result_tir_type(opcode, result_index)
             .filter(|ty| comparison_scalar_domain(ty).is_some()),
+    }
+}
+
+/// Exact primitive effects; annotations must not supply operand facts.
+pub fn opcode_primitive_effects_table(
+    opcode: OpCode,
+    operands: &[&TirType],
+) -> Option<OpcodeEffects> {
+    fn scalar_type(mut ty: &TirType) -> &TirType {
+        while let TirType::Box(inner) = ty {
+            ty = inner;
+        }
+        ty
+    }
+    let left = operands
+        .first()
+        .map(|ty| scalar_type(ty))
+        .unwrap_or(&TirType::DynBox);
+    let right = operands
+        .get(1)
+        .map(|ty| scalar_type(ty))
+        .unwrap_or(&TirType::DynBox);
+    match (opcode, operands.len(), left, right) {
+        (
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul,
+            2,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+        ) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul,
+            2,
+            TirType::F64,
+            TirType::F64 | TirType::Bool,
+        ) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul,
+            2,
+            TirType::Bool,
+            TirType::F64,
+        ) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul,
+            2,
+            TirType::I64 | TirType::BigInt,
+            TirType::F64,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul,
+            2,
+            TirType::F64,
+            TirType::I64 | TirType::BigInt,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Str, TirType::Str) => {
+            Some(OPCODE_EFFECTS_PURE)
+        }
+        (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Bytes, TirType::Bytes) => {
+            Some(OPCODE_EFFECTS_PURE)
+        }
+        (
+            OpCode::Mul | OpCode::InplaceMul,
+            2,
+            TirType::Str | TirType::Bytes,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (
+            OpCode::Mul | OpCode::InplaceMul,
+            2,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+            TirType::Str | TirType::Bytes,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (
+            OpCode::Div | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow,
+            2,
+            TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64,
+            TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (
+            OpCode::Neg | OpCode::Pos,
+            1,
+            TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64,
+            _,
+        ) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor,
+            2,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+        ) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::Shl | OpCode::Shr,
+            2,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+            TirType::I64 | TirType::BigInt | TirType::Bool,
+        ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
+        (OpCode::BitNot, 1, TirType::I64 | TirType::BigInt, _) => Some(OPCODE_EFFECTS_PURE),
+        (
+            OpCode::Add
+            | OpCode::BitAnd
+            | OpCode::BitNot
+            | OpCode::BitOr
+            | OpCode::BitXor
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::InplaceAdd
+            | OpCode::InplaceMul
+            | OpCode::InplaceSub
+            | OpCode::Mod
+            | OpCode::Mul
+            | OpCode::Neg
+            | OpCode::Pos
+            | OpCode::Pow
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Sub,
+            _,
+            _,
+            _,
+        ) => Some(OPCODE_EFFECTS_IMPURE),
+        _ => None,
     }
 }
 
@@ -3718,17 +3901,19 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
 pub enum TypeRefineOperandTypeRule {
     None,
     Add,
-    BitNotI64,
-    BitwiseI64,
     BoolSelect,
     BoxVal,
     BuildTuple,
     Copy,
     GetIter,
     Index,
+    IntegerBitwise,
+    IntegerInvert,
+    IntegerShift,
     IterNext,
     Mul,
     NumericArithmetic,
+    Power,
     TrueDivision,
     UnaryNumeric,
     UnboxVal,
@@ -3750,7 +3935,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::Div => TypeRefineOperandTypeRule::TrueDivision,
         OpCode::FloorDiv => TypeRefineOperandTypeRule::NumericArithmetic,
         OpCode::Mod => TypeRefineOperandTypeRule::NumericArithmetic,
-        OpCode::Pow => TypeRefineOperandTypeRule::None,
+        OpCode::Pow => TypeRefineOperandTypeRule::Power,
         OpCode::Neg => TypeRefineOperandTypeRule::UnaryNumeric,
         OpCode::Pos => TypeRefineOperandTypeRule::UnaryNumeric,
         OpCode::Eq => TypeRefineOperandTypeRule::None,
@@ -3763,12 +3948,12 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::IsNot => TypeRefineOperandTypeRule::None,
         OpCode::In => TypeRefineOperandTypeRule::None,
         OpCode::NotIn => TypeRefineOperandTypeRule::None,
-        OpCode::BitAnd => TypeRefineOperandTypeRule::BitwiseI64,
-        OpCode::BitOr => TypeRefineOperandTypeRule::BitwiseI64,
-        OpCode::BitXor => TypeRefineOperandTypeRule::BitwiseI64,
-        OpCode::BitNot => TypeRefineOperandTypeRule::BitNotI64,
-        OpCode::Shl => TypeRefineOperandTypeRule::None,
-        OpCode::Shr => TypeRefineOperandTypeRule::None,
+        OpCode::BitAnd => TypeRefineOperandTypeRule::IntegerBitwise,
+        OpCode::BitOr => TypeRefineOperandTypeRule::IntegerBitwise,
+        OpCode::BitXor => TypeRefineOperandTypeRule::IntegerBitwise,
+        OpCode::BitNot => TypeRefineOperandTypeRule::IntegerInvert,
+        OpCode::Shl => TypeRefineOperandTypeRule::IntegerShift,
+        OpCode::Shr => TypeRefineOperandTypeRule::IntegerShift,
         OpCode::And => TypeRefineOperandTypeRule::BoolSelect,
         OpCode::Or => TypeRefineOperandTypeRule::BoolSelect,
         OpCode::Not => TypeRefineOperandTypeRule::None,
@@ -3992,9 +4177,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
 pub enum SccpConstantEvalRule {
     None,
     Add,
-    BuildDict,
-    BuildList,
-    BuildTupleAsList,
+    BuildTuple,
     Div,
     Eq,
     FloorDiv,
@@ -4074,9 +4257,9 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::IncRef => SccpConstantEvalRule::None,
         OpCode::DecRef => SccpConstantEvalRule::None,
         OpCode::DelBoundary => SccpConstantEvalRule::None,
-        OpCode::BuildList => SccpConstantEvalRule::BuildList,
-        OpCode::BuildDict => SccpConstantEvalRule::BuildDict,
-        OpCode::BuildTuple => SccpConstantEvalRule::BuildTupleAsList,
+        OpCode::BuildList => SccpConstantEvalRule::None,
+        OpCode::BuildDict => SccpConstantEvalRule::None,
+        OpCode::BuildTuple => SccpConstantEvalRule::BuildTuple,
         OpCode::BuildSet => SccpConstantEvalRule::None,
         OpCode::BuildSlice => SccpConstantEvalRule::None,
         OpCode::GetIter => SccpConstantEvalRule::None,
@@ -6635,6 +6818,127 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
     }
 }
 
+/// Whether every operand remains local to this opcode: it cannot be
+/// retained by a heap object or opaque external callee. This positive
+/// non-capture fact is independent from purity, effects, and ABI borrow
+/// mode. Absence fails closed. EXHAUSTIVE over OpCode.
+#[inline]
+pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
+    match opcode {
+        OpCode::Add => false,
+        OpCode::Sub => false,
+        OpCode::Mul => false,
+        OpCode::CheckedAdd => true,
+        OpCode::CheckedMul => true,
+        OpCode::InplaceAdd => false,
+        OpCode::InplaceSub => false,
+        OpCode::InplaceMul => false,
+        OpCode::Div => false,
+        OpCode::FloorDiv => false,
+        OpCode::Mod => false,
+        OpCode::Pow => false,
+        OpCode::Neg => false,
+        OpCode::Pos => false,
+        OpCode::Eq => false,
+        OpCode::Ne => false,
+        OpCode::Lt => false,
+        OpCode::Le => false,
+        OpCode::Gt => false,
+        OpCode::Ge => false,
+        OpCode::Is => true,
+        OpCode::IsNot => true,
+        OpCode::In => false,
+        OpCode::NotIn => false,
+        OpCode::BitAnd => false,
+        OpCode::BitOr => false,
+        OpCode::BitXor => false,
+        OpCode::BitNot => false,
+        OpCode::Shl => false,
+        OpCode::Shr => false,
+        OpCode::And => false,
+        OpCode::Or => false,
+        OpCode::Not => false,
+        OpCode::Bool => false,
+        OpCode::Alloc => false,
+        OpCode::StackAlloc => false,
+        OpCode::ObjectNewBound => false,
+        OpCode::ObjectNewBoundStack => false,
+        OpCode::Free => true,
+        OpCode::LoadAttr => false,
+        OpCode::StoreAttr => false,
+        OpCode::DelAttr => false,
+        OpCode::Index => false,
+        OpCode::StoreIndex => false,
+        OpCode::DelIndex => false,
+        OpCode::DeleteVar => true,
+        OpCode::Call => false,
+        OpCode::CallMethod => false,
+        OpCode::CallMethodIc => false,
+        OpCode::CallSuperMethodIc => false,
+        OpCode::CallBuiltin => false,
+        OpCode::OrdAt => false,
+        OpCode::BoxVal => false,
+        OpCode::UnboxVal => false,
+        OpCode::TypeGuard => false,
+        OpCode::IncRef => true,
+        OpCode::DecRef => true,
+        OpCode::DelBoundary => true,
+        OpCode::BuildList => false,
+        OpCode::BuildDict => false,
+        OpCode::BuildTuple => false,
+        OpCode::BuildSet => false,
+        OpCode::BuildSlice => false,
+        OpCode::GetIter => false,
+        OpCode::IterNext => false,
+        OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
+        OpCode::ForIter => false,
+        OpCode::AllocTask => false,
+        OpCode::StateSwitch => false,
+        OpCode::StateTransition => false,
+        OpCode::StateYield => false,
+        OpCode::ChanSendYield => false,
+        OpCode::ChanRecvYield => false,
+        OpCode::ClosureLoad => false,
+        OpCode::ClosureStore => false,
+        OpCode::Yield => false,
+        OpCode::YieldFrom => false,
+        OpCode::Raise => false,
+        OpCode::CheckException => true,
+        OpCode::ExceptionPending => true,
+        OpCode::FunctionDefaultsVersion => true,
+        OpCode::TryStart => true,
+        OpCode::TryEnd => true,
+        OpCode::StateBlockStart => true,
+        OpCode::StateBlockEnd => true,
+        OpCode::ConstInt => false,
+        OpCode::ConstBigInt => false,
+        OpCode::ConstFloat => false,
+        OpCode::ConstStr => false,
+        OpCode::ConstBool => false,
+        OpCode::ConstNone => false,
+        OpCode::ConstBytes => false,
+        OpCode::Copy => false,
+        OpCode::Import => false,
+        OpCode::ImportFrom => false,
+        OpCode::ModuleCacheGet => false,
+        OpCode::ModuleCacheSet => false,
+        OpCode::ModuleCacheDel => false,
+        OpCode::ModuleGetAttr => false,
+        OpCode::ModuleImportFrom => false,
+        OpCode::ModuleGetGlobal => false,
+        OpCode::ModuleGetName => false,
+        OpCode::ModuleSetAttr => false,
+        OpCode::ModuleDelGlobal => false,
+        OpCode::ModuleDelGlobalIfPresent => false,
+        OpCode::WarnStderr => false,
+        OpCode::ScfIf => false,
+        OpCode::ScfFor => false,
+        OpCode::ScfWhile => false,
+        OpCode::ScfYield => false,
+    }
+}
+
 /// Whether an opcode is an alias-analysis refcount barrier. EXHAUSTIVE
 /// over OpCode; the conservative barrier set lives in op_kinds.toml.
 #[inline]
@@ -6795,9 +7099,9 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::Not => false,
         OpCode::Bool => false,
         OpCode::Alloc => true,
-        OpCode::StackAlloc => false,
+        OpCode::StackAlloc => true,
         OpCode::ObjectNewBound => true,
-        OpCode::ObjectNewBoundStack => false,
+        OpCode::ObjectNewBoundStack => true,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7111,126 +7415,6 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => true,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => true,
-    }
-}
-
-/// Whether this opcode makes its operands heap/external roots for
-/// deferred reference-count elimination. DISTINCT from alias heap
-/// barriers: this answers ownership exposure, not memory-def effects.
-#[inline]
-pub fn opcode_is_refcount_heap_exposure_table(opcode: OpCode) -> bool {
-    match opcode {
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => false,
-        OpCode::InplaceSub => false,
-        OpCode::InplaceMul => false,
-        OpCode::Div => false,
-        OpCode::FloorDiv => false,
-        OpCode::Mod => false,
-        OpCode::Pow => false,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
-        OpCode::Eq => false,
-        OpCode::Ne => false,
-        OpCode::Lt => false,
-        OpCode::Le => false,
-        OpCode::Gt => false,
-        OpCode::Ge => false,
-        OpCode::Is => false,
-        OpCode::IsNot => false,
-        OpCode::In => false,
-        OpCode::NotIn => false,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
-        OpCode::Shl => false,
-        OpCode::Shr => false,
-        OpCode::And => false,
-        OpCode::Or => false,
-        OpCode::Not => false,
-        OpCode::Bool => false,
-        OpCode::Alloc => false,
-        OpCode::StackAlloc => false,
-        OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
-        OpCode::Free => false,
-        OpCode::LoadAttr => false,
-        OpCode::StoreAttr => true,
-        OpCode::DelAttr => false,
-        OpCode::Index => false,
-        OpCode::StoreIndex => true,
-        OpCode::DelIndex => false,
-        OpCode::DeleteVar => false,
-        OpCode::Call => true,
-        OpCode::CallMethod => true,
-        OpCode::CallMethodIc => true,
-        OpCode::CallSuperMethodIc => true,
-        OpCode::CallBuiltin => true,
-        OpCode::OrdAt => false,
-        OpCode::BoxVal => false,
-        OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
-        OpCode::IncRef => false,
-        OpCode::DecRef => false,
-        OpCode::DelBoundary => false,
-        OpCode::BuildList => true,
-        OpCode::BuildDict => true,
-        OpCode::BuildTuple => true,
-        OpCode::BuildSet => true,
-        OpCode::BuildSlice => true,
-        OpCode::GetIter => false,
-        OpCode::IterNext => false,
-        OpCode::IterNextUnboxed => false,
-        OpCode::UnpackSequence => false,
-        OpCode::ForIter => false,
-        OpCode::AllocTask => true,
-        OpCode::StateSwitch => false,
-        OpCode::StateTransition => false,
-        OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
-        OpCode::ClosureLoad => false,
-        OpCode::ClosureStore => true,
-        OpCode::Yield => true,
-        OpCode::YieldFrom => true,
-        OpCode::Raise => true,
-        OpCode::CheckException => false,
-        OpCode::ExceptionPending => false,
-        OpCode::FunctionDefaultsVersion => false,
-        OpCode::TryStart => false,
-        OpCode::TryEnd => false,
-        OpCode::StateBlockStart => false,
-        OpCode::StateBlockEnd => false,
-        OpCode::ConstInt => false,
-        OpCode::ConstBigInt => false,
-        OpCode::ConstFloat => false,
-        OpCode::ConstStr => false,
-        OpCode::ConstBool => false,
-        OpCode::ConstNone => false,
-        OpCode::ConstBytes => false,
-        OpCode::Copy => false,
-        OpCode::Import => true,
-        OpCode::ImportFrom => true,
-        OpCode::ModuleCacheGet => false,
-        OpCode::ModuleCacheSet => false,
-        OpCode::ModuleCacheDel => false,
-        OpCode::ModuleGetAttr => false,
-        OpCode::ModuleImportFrom => false,
-        OpCode::ModuleGetGlobal => false,
-        OpCode::ModuleGetName => false,
-        OpCode::ModuleSetAttr => false,
-        OpCode::ModuleDelGlobal => false,
-        OpCode::ModuleDelGlobalIfPresent => false,
-        OpCode::WarnStderr => false,
-        OpCode::ScfIf => false,
-        OpCode::ScfFor => false,
-        OpCode::ScfWhile => false,
-        OpCode::ScfYield => false,
     }
 }
 
@@ -8690,136 +8874,6 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
     }
 }
 
-/// SROA constant-immediate recognition role. Opcode membership
-/// lives in op_kinds.toml; sroa.rs owns range proof for
-/// inline integer immediates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SroaConstImmediateRule {
-    None,
-    AlwaysImmediate,
-    InlineIntIfRange,
-}
-
-/// SroaConstImmediateRule by opcode. EXHAUSTIVE over OpCode so a new opcode
-/// cannot silently enter or miss this consumer through pass-local
-/// wildcard/default logic.
-#[inline]
-pub fn opcode_sroa_const_immediate_rule_table(opcode: OpCode) -> SroaConstImmediateRule {
-    match opcode {
-        OpCode::Add => SroaConstImmediateRule::None,
-        OpCode::Sub => SroaConstImmediateRule::None,
-        OpCode::Mul => SroaConstImmediateRule::None,
-        OpCode::CheckedAdd => SroaConstImmediateRule::None,
-        OpCode::CheckedMul => SroaConstImmediateRule::None,
-        OpCode::InplaceAdd => SroaConstImmediateRule::None,
-        OpCode::InplaceSub => SroaConstImmediateRule::None,
-        OpCode::InplaceMul => SroaConstImmediateRule::None,
-        OpCode::Div => SroaConstImmediateRule::None,
-        OpCode::FloorDiv => SroaConstImmediateRule::None,
-        OpCode::Mod => SroaConstImmediateRule::None,
-        OpCode::Pow => SroaConstImmediateRule::None,
-        OpCode::Neg => SroaConstImmediateRule::None,
-        OpCode::Pos => SroaConstImmediateRule::None,
-        OpCode::Eq => SroaConstImmediateRule::None,
-        OpCode::Ne => SroaConstImmediateRule::None,
-        OpCode::Lt => SroaConstImmediateRule::None,
-        OpCode::Le => SroaConstImmediateRule::None,
-        OpCode::Gt => SroaConstImmediateRule::None,
-        OpCode::Ge => SroaConstImmediateRule::None,
-        OpCode::Is => SroaConstImmediateRule::None,
-        OpCode::IsNot => SroaConstImmediateRule::None,
-        OpCode::In => SroaConstImmediateRule::None,
-        OpCode::NotIn => SroaConstImmediateRule::None,
-        OpCode::BitAnd => SroaConstImmediateRule::None,
-        OpCode::BitOr => SroaConstImmediateRule::None,
-        OpCode::BitXor => SroaConstImmediateRule::None,
-        OpCode::BitNot => SroaConstImmediateRule::None,
-        OpCode::Shl => SroaConstImmediateRule::None,
-        OpCode::Shr => SroaConstImmediateRule::None,
-        OpCode::And => SroaConstImmediateRule::None,
-        OpCode::Or => SroaConstImmediateRule::None,
-        OpCode::Not => SroaConstImmediateRule::None,
-        OpCode::Bool => SroaConstImmediateRule::None,
-        OpCode::Alloc => SroaConstImmediateRule::None,
-        OpCode::StackAlloc => SroaConstImmediateRule::None,
-        OpCode::ObjectNewBound => SroaConstImmediateRule::None,
-        OpCode::ObjectNewBoundStack => SroaConstImmediateRule::None,
-        OpCode::Free => SroaConstImmediateRule::None,
-        OpCode::LoadAttr => SroaConstImmediateRule::None,
-        OpCode::StoreAttr => SroaConstImmediateRule::None,
-        OpCode::DelAttr => SroaConstImmediateRule::None,
-        OpCode::Index => SroaConstImmediateRule::None,
-        OpCode::StoreIndex => SroaConstImmediateRule::None,
-        OpCode::DelIndex => SroaConstImmediateRule::None,
-        OpCode::DeleteVar => SroaConstImmediateRule::None,
-        OpCode::Call => SroaConstImmediateRule::None,
-        OpCode::CallMethod => SroaConstImmediateRule::None,
-        OpCode::CallMethodIc => SroaConstImmediateRule::None,
-        OpCode::CallSuperMethodIc => SroaConstImmediateRule::None,
-        OpCode::CallBuiltin => SroaConstImmediateRule::None,
-        OpCode::OrdAt => SroaConstImmediateRule::None,
-        OpCode::BoxVal => SroaConstImmediateRule::None,
-        OpCode::UnboxVal => SroaConstImmediateRule::None,
-        OpCode::TypeGuard => SroaConstImmediateRule::None,
-        OpCode::IncRef => SroaConstImmediateRule::None,
-        OpCode::DecRef => SroaConstImmediateRule::None,
-        OpCode::DelBoundary => SroaConstImmediateRule::None,
-        OpCode::BuildList => SroaConstImmediateRule::None,
-        OpCode::BuildDict => SroaConstImmediateRule::None,
-        OpCode::BuildTuple => SroaConstImmediateRule::None,
-        OpCode::BuildSet => SroaConstImmediateRule::None,
-        OpCode::BuildSlice => SroaConstImmediateRule::None,
-        OpCode::GetIter => SroaConstImmediateRule::None,
-        OpCode::IterNext => SroaConstImmediateRule::None,
-        OpCode::IterNextUnboxed => SroaConstImmediateRule::None,
-        OpCode::UnpackSequence => SroaConstImmediateRule::None,
-        OpCode::ForIter => SroaConstImmediateRule::None,
-        OpCode::AllocTask => SroaConstImmediateRule::None,
-        OpCode::StateSwitch => SroaConstImmediateRule::None,
-        OpCode::StateTransition => SroaConstImmediateRule::None,
-        OpCode::StateYield => SroaConstImmediateRule::None,
-        OpCode::ChanSendYield => SroaConstImmediateRule::None,
-        OpCode::ChanRecvYield => SroaConstImmediateRule::None,
-        OpCode::ClosureLoad => SroaConstImmediateRule::None,
-        OpCode::ClosureStore => SroaConstImmediateRule::None,
-        OpCode::Yield => SroaConstImmediateRule::None,
-        OpCode::YieldFrom => SroaConstImmediateRule::None,
-        OpCode::Raise => SroaConstImmediateRule::None,
-        OpCode::CheckException => SroaConstImmediateRule::None,
-        OpCode::ExceptionPending => SroaConstImmediateRule::None,
-        OpCode::FunctionDefaultsVersion => SroaConstImmediateRule::None,
-        OpCode::TryStart => SroaConstImmediateRule::None,
-        OpCode::TryEnd => SroaConstImmediateRule::None,
-        OpCode::StateBlockStart => SroaConstImmediateRule::None,
-        OpCode::StateBlockEnd => SroaConstImmediateRule::None,
-        OpCode::ConstInt => SroaConstImmediateRule::InlineIntIfRange,
-        OpCode::ConstBigInt => SroaConstImmediateRule::None,
-        OpCode::ConstFloat => SroaConstImmediateRule::AlwaysImmediate,
-        OpCode::ConstStr => SroaConstImmediateRule::None,
-        OpCode::ConstBool => SroaConstImmediateRule::AlwaysImmediate,
-        OpCode::ConstNone => SroaConstImmediateRule::AlwaysImmediate,
-        OpCode::ConstBytes => SroaConstImmediateRule::None,
-        OpCode::Copy => SroaConstImmediateRule::None,
-        OpCode::Import => SroaConstImmediateRule::None,
-        OpCode::ImportFrom => SroaConstImmediateRule::None,
-        OpCode::ModuleCacheGet => SroaConstImmediateRule::None,
-        OpCode::ModuleCacheSet => SroaConstImmediateRule::None,
-        OpCode::ModuleCacheDel => SroaConstImmediateRule::None,
-        OpCode::ModuleGetAttr => SroaConstImmediateRule::None,
-        OpCode::ModuleImportFrom => SroaConstImmediateRule::None,
-        OpCode::ModuleGetGlobal => SroaConstImmediateRule::None,
-        OpCode::ModuleGetName => SroaConstImmediateRule::None,
-        OpCode::ModuleSetAttr => SroaConstImmediateRule::None,
-        OpCode::ModuleDelGlobal => SroaConstImmediateRule::None,
-        OpCode::ModuleDelGlobalIfPresent => SroaConstImmediateRule::None,
-        OpCode::WarnStderr => SroaConstImmediateRule::None,
-        OpCode::ScfIf => SroaConstImmediateRule::None,
-        OpCode::ScfFor => SroaConstImmediateRule::None,
-        OpCode::ScfWhile => SroaConstImmediateRule::None,
-        OpCode::ScfYield => SroaConstImmediateRule::None,
-    }
-}
-
 /// Strength-reduction rewrite role. Opcode membership lives in
 /// op_kinds.toml; strength_reduction.rs owns constant/type proof
 /// and replacement construction.
@@ -9832,7 +9886,7 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::FloorDiv => true,
         OpCode::Mod => true,
         OpCode::Pow => false,
-        OpCode::Neg => false,
+        OpCode::Neg => true,
         OpCode::Pos => false,
         OpCode::Eq => false,
         OpCode::Ne => false,

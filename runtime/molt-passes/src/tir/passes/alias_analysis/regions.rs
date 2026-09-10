@@ -153,45 +153,6 @@ pub(super) fn classify_load(op: &TirOp) -> LoadPurity {
     }
 }
 
-// ===========================================================================
-// Typed-slot store helpers (shared with dead_store_elim's contract)
-// ===========================================================================
-
-/// `Some(offset)` when this op is a `store` / `store_init` against a typed-class
-/// instance slot at a known integer offset. Mirrors `dead_store_elim::store_offset`.
-///
-/// Scoped to the PLAIN raw-offset store forms (operands `[obj, val]`); the
-/// `guarded_field_set` / `guarded_field_init` forms carry a different operand
-/// ABI and are handled by [`typed_slot_field`].
-fn store_offset(op: &TirOp) -> Option<i64> {
-    if op.opcode != OpCode::StoreAttr {
-        return None;
-    }
-    let original = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(s)) => s.as_str(),
-        _ => return None,
-    };
-    if !matches!(original, "store" | "store_init") {
-        return None;
-    }
-    match op.attrs.get("value") {
-        Some(AttrValue::Int(v)) => Some(*v),
-        _ => None,
-    }
-}
-
-/// `Some((target, offset))` for the narrow PLAIN typed-class slot store contract
-/// (`store` / `store_init`, operands `[obj, val]`). Mirrors
-/// `dead_store_elim::typed_slot_store`; that overwrite contract is restricted to
-/// the two-operand form, so this helper stays scoped to it. The wider
-/// region-classification set is [`typed_slot_field`].
-pub(super) fn typed_slot_store(op: &TirOp) -> Option<(ValueId, i64)> {
-    if op.operands.len() != 2 {
-        return None;
-    }
-    Some((op.operands[0], store_offset(op)?))
-}
-
 /// The `_original_kind` spellings of every offset-based typed-slot field op the
 /// frontend emits **exclusively** for a proven fixed-layout concrete-class field
 /// — partitioned by load vs store. Each is emitted only when the object's class

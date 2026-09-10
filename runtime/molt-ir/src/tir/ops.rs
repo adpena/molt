@@ -432,6 +432,24 @@ pub struct TirOp {
 pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 
 impl TirOp {
+    /// A direct fixed-offset field store: `[object, value]`, nonnegative byte
+    /// offset, and no Python attribute dispatch. Guarded/generic stores have
+    /// different operand contracts and are not admitted by this projection.
+    pub fn plain_typed_slot_store(&self) -> Option<(ValueId, i64)> {
+        if self.opcode != OpCode::StoreAttr || self.operands.len() != 2 {
+            return None;
+        }
+        if !matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+            if matches!(kind.as_str(), "store" | "store_init"))
+        {
+            return None;
+        }
+        match self.attrs.get("value") {
+            Some(AttrValue::Int(offset)) if *offset >= 0 => Some((self.operands[0], *offset)),
+            _ => None,
+        }
+    }
+
     pub fn source_site(&self) -> Option<SourceSite> {
         SourceSite::from_attrs(&self.attrs)
     }
@@ -629,5 +647,33 @@ mod tests {
         replacement.inherit_source_from(&source);
 
         assert_eq!(replacement.source_op_index(), Some(37));
+    }
+
+    #[test]
+    fn plain_slot_store_requires_complete_direct_offset_contract() {
+        let mut op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(2));
+        op.opcode = OpCode::StoreAttr;
+        op.operands = vec![ValueId(0), ValueId(1)];
+        op.results.clear();
+        for kind in ["store", "store_init"] {
+            op.attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            op.attrs.insert("value".into(), AttrValue::Int(8));
+            assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
+            op.attrs.remove("value");
+            assert_eq!(op.plain_typed_slot_store(), None);
+            op.attrs.insert("value".into(), AttrValue::Int(-1));
+            assert_eq!(op.plain_typed_slot_store(), None);
+        }
+        op.attrs.insert("value".into(), AttrValue::Int(0));
+        for kind in ["guarded_field_set", "set_attr_generic_ptr", "unknown"] {
+            op.attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            assert_eq!(op.plain_typed_slot_store(), None);
+        }
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        op.operands.push(ValueId(3));
+        assert_eq!(op.plain_typed_slot_store(), None);
     }
 }
