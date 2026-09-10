@@ -86,9 +86,7 @@ pub use super::escape_analysis::EscapeState;
 // `MemRegion` / `LoadPurity` are re-exported so external consumers keep using
 // the `alias_analysis::MemRegion` / `alias_analysis::LoadPurity` paths.
 pub use regions::{LoadPurity, MemRegion};
-use regions::{
-    classify_load, opcode_is_rc_barrier, typed_slot_class, typed_slot_obj_offset, typed_slot_store,
-};
+use regions::{classify_load, opcode_is_rc_barrier, typed_slot_class, typed_slot_obj_offset};
 
 // Copy-lowering ownership classifiers live in `copy_kind`; the crate-facing
 // classifiers are re-exported so external consumers keep using the
@@ -332,7 +330,7 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
 fn aliasing_op_may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> bool {
     match opcode_alias_slot_observation_table(op.opcode) {
         AliasSlotObservation::DirectObserver | AliasSlotObservation::ConservativeObserver => true,
-        AliasSlotObservation::TypedSlotStore => match typed_slot_store(op) {
+        AliasSlotObservation::TypedSlotStore => match op.plain_typed_slot_store() {
             Some((target, _)) => aliases.root(target) != root,
             None => true,
         },
@@ -348,6 +346,8 @@ fn aliasing_op_may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasUnionF
 /// The cached alias-analysis result for one function. See the module docs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AliasAnalysisResult {
+    /// Producer-derived scalar facts, never annotation/subclass hints.
+    exact_scalar_types: HashMap<ValueId, crate::tir::types::TirType>,
     /// Transparent-SSA-copy alias roots.
     pub aliases: AliasUnionFind,
     /// Points-to / escape lattice for every tracked allocation root.
@@ -369,26 +369,26 @@ impl AliasAnalysisResult {
 
         // Phase B: the escape / points-to map. This is the former
         // `escape_analysis::analyze`, anchored here as the points-to half of the
-        // unified alias analysis. Its borrowing logic (effect-free builtins /
-        // methods don't capture) lives in `escape_analysis` and is reused.
+        // unified alias analysis. Opaque call boundaries conservatively escape.
         let escape = super::escape_analysis::analyze(func);
         let alloc_roots: HashSet<ValueId> = escape.keys().copied().collect();
 
         Self {
+            exact_scalar_types: crate::tir::type_refine::extract_exact_scalar_map(func),
             aliases,
             escape,
             alloc_roots,
         }
     }
 
-    /// Escape state of `value` (defaults to `NoEscape` for untracked values —
-    /// they are not allocation roots and have nothing to escape).
+    /// Capture state of `value`. Missing allocation/alias facts are unknown,
+    /// never proof of frame-local storage or permission for a memory rewrite.
     #[inline]
     pub fn escape_state(&self, value: ValueId) -> EscapeState {
         self.escape
             .get(&value)
             .copied()
-            .unwrap_or(EscapeState::NoEscape)
+            .unwrap_or(EscapeState::GlobalEscape)
     }
 
     /// Read-only view of the full escape map.
@@ -412,7 +412,14 @@ impl AliasAnalysisResult {
     /// [`opcode_is_rc_barrier`].
     #[inline]
     pub fn is_rc_barrier(&self, op: &TirOp) -> bool {
+        let effects = super::effects::op_effects_with_types(op, &self.exact_scalar_types);
         opcode_is_rc_barrier(op.opcode)
+            || matches!(
+                op.opcode,
+                crate::tir::ops::OpCode::DecRef | crate::tir::ops::OpCode::Free
+            )
+            || !effects.effect_free
+            || !effects.nothrow
     }
 
     /// Replaces `dead_store_elim::may_observe_slot`. True if `op` may observe the
@@ -481,8 +488,8 @@ impl AliasAnalysisResult {
     /// True if `root` is a non-escaping stack object (rewritten or eligible to be
     /// rewritten to a stack allocation). A value is stack-resident iff it is a
     /// tracked allocation root that does not escape the function — i.e. its state
-    /// is `NoEscape` or `ArgEscape` (borrowed by a call but not captured), mirroring
-    /// `escape_analysis::apply`'s promotion set.
+    /// is `NoEscape`, or `ArgEscape` backed by an explicit non-capture proof,
+    /// mirroring `escape_analysis::apply`'s promotion set.
     fn is_stack_object(&self, root: ValueId) -> bool {
         matches!(
             self.escape.get(&root),

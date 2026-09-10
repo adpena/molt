@@ -318,7 +318,7 @@ fn old_dse_may_observe(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> b
         return true;
     }
     if op.opcode == OpCode::StoreAttr {
-        return match typed_slot_store(op) {
+        return match op.plain_typed_slot_store() {
             Some((target, _)) => aliases.root(target) != root,
             None => true,
         };
@@ -377,6 +377,7 @@ fn exception_control_transfer_ops_are_rc_barriers() {
 fn dse_observe_is_conservative_superset_of_old_may_observe() {
     let root = ValueId(3);
     let res = AliasAnalysisResult {
+        exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
@@ -409,6 +410,7 @@ fn dse_typed_slot_store_overwrite_matches_old() {
     let root = ValueId(3);
     let val = ValueId(4);
     let res = AliasAnalysisResult {
+        exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
@@ -814,7 +816,7 @@ fn escape_map_matches_escape_analysis_and_caches() {
     entry
         .ops
         .push(op(OpCode::ObjectNewBound, vec![class_ref], vec![inst]));
-    entry.ops.push(op(OpCode::LoadAttr, vec![inst], vec![load]));
+    entry.ops.push(op(OpCode::Is, vec![inst, inst], vec![load]));
     entry.ops.push(op(OpCode::ConstNone, vec![], vec![none]));
     entry.terminator = Terminator::Return { values: vec![none] };
 
@@ -836,6 +838,7 @@ fn escape_map_matches_escape_analysis_and_caches() {
 fn region_of_classifies_pure_compute_as_scalar() {
     let add = op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
     let res = AliasAnalysisResult {
+        exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
@@ -868,6 +871,7 @@ fn with_field_attrs(mut o: TirOp, offset: i64, class: Option<&str>) -> TirOp {
 
 fn empty_res() -> AliasAnalysisResult {
     AliasAnalysisResult {
+        exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
@@ -1131,6 +1135,7 @@ fn non_escaping_object_field_is_stack_object_even_without_class() {
     let mut escape = HashMap::new();
     escape.insert(root, EscapeState::NoEscape);
     let res = AliasAnalysisResult {
+        exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape,
         alloc_roots: [root].into_iter().collect(),
