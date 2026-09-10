@@ -236,7 +236,7 @@ def _scan_environment_tree(
         label="Python environment",
         pool=pool,
         excluded=excluded,
-        external_symlink_role=(base_executable, "base-executable"),
+        external_symlink_roles={"base-executable": base_executable},
     )
     return inventory, files, metadata, pool
 
@@ -1247,11 +1247,16 @@ def validate_python_environment_identity(payload: object) -> dict[str, object]:
     _tree_nodes, nodes_by_id = _validate_file_nodes(
         tree.get("file_nodes"), label="Python environment"
     )
+    runtime_base = runtime_explicit_file_content(runtime, "base-executable")
+    if runtime_base is None:
+        raise PythonEnvironmentIdentityError(
+            "Python environment runtime has no base executable content"
+        )
     tree_entries, _tree_paths, tree_node_ids = _validate_inventory_entries(
         tree.get("entries"),
         label="Python environment",
         nodes=nodes_by_id,
-        allow_base_runtime=True,
+        external_runtime_roles={"base-executable": runtime_base},
     )
     tree_by_path = {str(row["path"]): row for row in tree_entries}
     raw_selected = payload.get("selected_executable")

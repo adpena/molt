@@ -172,6 +172,35 @@ def _runtime_payload(
     return payload
 
 
+def _add_external_runtime_symlink(
+    payload: dict[str, Any], role: str, path: str
+) -> None:
+    root = payload["runtime_roots"][0]
+    access = {"readable": True, "writable": False, "executable": True}
+    existing_paths = {row["path"] for row in root["entries"]}
+    parts = path.split("/")
+    for index in range(1, len(parts)):
+        parent = "/".join(parts[:index])
+        if parent not in existing_paths:
+            root["entries"].append(
+                {"path": parent, "kind": "directory", "access": dict(access)}
+            )
+            existing_paths.add(parent)
+    root["entries"].append(
+        {
+            "path": path,
+            "kind": "symlink",
+            "target_owner": "base-runtime",
+            "target_role": role,
+            "access": access,
+        }
+    )
+    root["entries"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
+    root["file_count"] += 1
+    root["manifest_sha256"] = canonical_json_sha256(root["entries"])
+    _reseal(payload)
+
+
 @pytest.mark.parametrize("operating_system", ["windows", "macos", "linux"])
 @pytest.mark.parametrize("architecture", ["x86_64", "arm64"])
 @pytest.mark.parametrize(
@@ -215,6 +244,84 @@ def test_macos_runtime_receipt_accepts_distinct_python_basename_components() -> 
     _reseal(payload)
 
     assert runtime.validate_python_runtime_identity(payload) == payload
+
+
+def test_macos_framework_runtime_receipt_references_attested_runtime_library() -> None:
+    payload = _runtime_payload(operating_system="macos")
+    _add_external_runtime_symlink(
+        payload,
+        "runtime-library",
+        "lib/python3.12/config-3.12-darwin/libpython3.12.a",
+    )
+
+    validated = runtime.validate_python_runtime_identity(payload)
+    row = next(
+        entry
+        for entry in validated["runtime_roots"][0]["entries"]
+        if entry["path"] == "lib/python3.12/config-3.12-darwin/libpython3.12.a"
+    )
+    assert row["target_owner"] == "base-runtime"
+    assert row["target_role"] == "runtime-library"
+    assert runtime.runtime_explicit_file_content(validated, row["target_role"]) == {
+        "filename": "libpython.so",
+        "size": 2,
+        "sha256": "2" * 64,
+    }
+
+
+@pytest.mark.parametrize("role", ["base-executable", "runtime-library", "unicodedata"])
+def test_runtime_receipt_accepts_only_attested_external_component_roles(
+    role: str,
+) -> None:
+    payload = _runtime_payload()
+    _add_external_runtime_symlink(payload, role, f"links/{role}")
+
+    assert runtime.validate_python_runtime_identity(payload) == payload
+
+
+@pytest.mark.parametrize(
+    "role", ["framework/Python", "base-dlls", "runtime-library-alias"]
+)
+def test_runtime_receipt_rejects_unattested_external_component_role(role: str) -> None:
+    payload = _runtime_payload(operating_system="macos")
+    _add_external_runtime_symlink(payload, role, "lib/python3.12/config/link")
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink entry"):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_runtime_external_role_retains_explicit_file_attestation() -> None:
+    payload = _runtime_payload(operating_system="macos")
+    _add_external_runtime_symlink(
+        payload,
+        "runtime-library",
+        "lib/python3.12/config-3.12-darwin/libpython3.12.a",
+    )
+    # Use a distinct file object, not another explicit component: the latter
+    # is rejected earlier by the separate ambiguous-role ownership check.
+    payload["file_nodes"].append({"id": "file-node-3", "size": 4, "sha256": "4" * 64})
+    payload["explicit_files"][1]["node"] = "file-node-3"
+    _reseal(payload)
+
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="native dependency component"
+    ):
+        runtime.validate_python_runtime_identity(payload)
+
+
+def test_runtime_external_role_rejects_ambiguous_explicit_file_identity() -> None:
+    payload = _runtime_payload(operating_system="macos")
+    _add_external_runtime_symlink(
+        payload,
+        "runtime-library",
+        "lib/python3.12/config-3.12-darwin/libpython3.12.a",
+    )
+    payload["explicit_files"][1]["node"] = "file-node-0"
+    payload["native_dependency_closure"]["components"][0]["node"] = "file-node-0"
+    _reseal(payload)
+
+    with pytest.raises(PythonEnvironmentIdentityError, match="symlink entry"):
+        runtime.validate_python_runtime_identity(payload)
 
 
 @pytest.mark.parametrize("operating_system", ["windows", "linux"])
