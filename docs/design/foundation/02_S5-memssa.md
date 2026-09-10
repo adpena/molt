@@ -713,4 +713,15 @@ This is the standard Cooper/Harvey/Kennedy algorithm, O(n²) in the worst case b
 
 ### The `NoEscape ArgEscape` distinction for SROA
 
-SROA is legal on both `NoEscape` and `ArgEscape` objects (per `escape_analysis::apply` at line 686: both are promotable). However, for `ArgEscape` objects that are passed to borrowing builtins, the borrowing call is a `MemoryUse` in the MemorySSA graph (it reads but does not write). This means the store before the call and the load after the call still have a direct reaching-def relationship through the `ArgEscape` use, and SROA can still fire. The correctness argument: the borrowing callee provably only reads (classified `effect_free` in effects.rs), so it cannot change the field value between store and load.
+SROA is legal on both `NoEscape` and `ArgEscape` objects. `ArgEscape` requires an explicit non-capture fact for the relevant argument; an `effect_free` classification, builtin name, or frontend receiver hint is not such a fact. In the absence of that proof, builtin and dynamic-method calls produce `GlobalEscape`, preventing both SROA and RC stripping across the opaque boundary.
+
+The current intraprocedural authority admits local operand uses only through
+`op_kinds.toml`'s generated `opcode_has_local_only_operands_table`. Dynamic
+arithmetic, truth conversion, attribute/index access, iteration and generic
+stores remain capture boundaries, independently of result purity. Exact copies
+and every CFG edge carry escape obligations in both directions. A mixed block
+parameter cannot grant local-owner containment or RC-removal permission merely
+because one predecessor supplies a local allocation. Typed offset stores retain
+their value through a proven local owner; finalizer-bearing owners force their
+retained children to remain heap allocated. Promotion and RC removal share one
+rewrite-root projection, including positive layout-size admission.
