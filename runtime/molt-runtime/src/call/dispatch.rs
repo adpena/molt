@@ -1,5 +1,7 @@
 use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
-use crate::call::{CallAttrLookup, require_call_attr};
+use crate::call::{
+    CallAttrLookup, StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target,
+};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
     TYPE_ID_TYPE, bound_method_func_bits, call_builtin_type_if_needed, call_function_obj_vec,
@@ -71,6 +73,19 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
             let _ = molt_callargs_push_pos(builder_bits, arg);
         }
         molt_call_bind(call_bits, builder_bits)
+    }
+}
+
+#[inline]
+unsafe fn call_staticmethod_if_needed(
+    py: &PyToken<'_>,
+    call_bits: u64,
+    invoke: impl FnOnce(u64) -> u64,
+) -> Option<u64> {
+    match unsafe { resolve_staticmethod_call_target(py, call_bits) } {
+        StaticmethodCallTarget::NotStaticmethod => None,
+        StaticmethodCallTarget::Owned(target) => Some(invoke(target.bits())),
+        StaticmethodCallTarget::Raised => Some(MoltObject::none().bits()),
     }
 }
 
@@ -148,6 +163,11 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
         };
+        if let Some(bits) = call_staticmethod_if_needed(_py, call_bits, |target_bits| {
+            call_callable0(_py, target_bits)
+        }) {
+            return bits;
+        }
         if let Some(bits) = call_builtin_type_if_needed(_py, call_bits, call_ptr, &[]) {
             return bits;
         }
@@ -180,6 +200,11 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
         };
+        if let Some(bits) = call_staticmethod_if_needed(_py, call_bits, |target_bits| {
+            call_callable1(_py, target_bits, arg0_bits)
+        }) {
+            return bits;
+        }
         if let Some(bits) = call_builtin_type_if_needed(_py, call_bits, call_ptr, &[arg0_bits]) {
             return bits;
         }
@@ -211,6 +236,13 @@ pub(crate) unsafe fn callable_arity(_py: &PyToken<'_>, call_bits: u64) -> Option
     unsafe {
         let call_obj = obj_from_bits(call_bits);
         let call_ptr = call_obj.as_ptr()?;
+        match resolve_staticmethod_call_target(_py, call_bits) {
+            StaticmethodCallTarget::Owned(target) => {
+                return callable_arity(_py, target.bits());
+            }
+            StaticmethodCallTarget::Raised => return None,
+            StaticmethodCallTarget::NotStaticmethod => {}
+        }
         match object_type_id(call_ptr) {
             TYPE_ID_FUNCTION => function_arity_usize(call_ptr),
             TYPE_ID_BOUND_METHOD => {
@@ -248,6 +280,11 @@ pub(crate) unsafe fn call_callable2(
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
         };
+        if let Some(bits) = call_staticmethod_if_needed(_py, call_bits, |target_bits| {
+            call_callable2(_py, target_bits, arg0_bits, arg1_bits)
+        }) {
+            return bits;
+        }
         if let Some(bits) =
             call_builtin_type_if_needed(_py, call_bits, call_ptr, &[arg0_bits, arg1_bits])
         {
@@ -292,6 +329,11 @@ pub(crate) unsafe fn call_callable3(
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
         };
+        if let Some(bits) = call_staticmethod_if_needed(_py, call_bits, |target_bits| {
+            call_callable3(_py, target_bits, arg0_bits, arg1_bits, arg2_bits)
+        }) {
+            return bits;
+        }
         if let Some(bits) = call_builtin_type_if_needed(
             _py,
             call_bits,

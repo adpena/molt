@@ -56,7 +56,7 @@ pub(super) fn build_producing_op_map(func: &TirFunction) -> HashMap<ValueId, (Op
     let mut map = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if !op.has_valid_result_arity() {
+            if !op.has_valid_shape() {
                 continue;
             }
             for (index, &result) in op.results.iter().enumerate() {

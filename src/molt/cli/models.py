@@ -58,6 +58,104 @@ BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
 BuildEntrySelectorTarget = Literal["file", "module"]
 
 
+
+@dataclass(frozen=True)
+class _ModuleSourceScanAuthority:
+    """The source identity and depth of a closure scan, never source/AST storage."""
+
+    module_name: str
+    source_path: Path
+    mode: ImportScanMode
+    is_package: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"module_init", "module_init_static_helpers", "full"}:
+            raise ValueError(f"invalid module scan mode: {self.mode!r}")
+        object.__setattr__(self, "source_path", self.source_path.resolve())
+        if self.is_package is None:
+            object.__setattr__(self, "is_package", self.source_path.name == "__init__.py")
+
+    def validate(self, module_name: str, source_path: Path) -> None:
+        if self.module_name != module_name or self.source_path != source_path.resolve():
+            raise ValueError(f"module scan lost source authority: {module_name!r}")
+
+
+@dataclass(frozen=True)
+class _ModuleGraphScanAuthority:
+    sources: tuple[_ModuleSourceScanAuthority, ...] = ()
+    by_module: Mapping[str, _ModuleSourceScanAuthority] = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if len({source.module_name for source in self.sources}) != len(self.sources):
+            raise ValueError("module scan authority requires unique module identities")
+        object.__setattr__(self, "by_module", MappingProxyType({source.module_name: source for source in self.sources}))
+
+    def mode_for(self, module_name: str, source_path: Path) -> ImportScanMode:
+        source = self.by_module.get(module_name)
+        if source is None:
+            raise ValueError(f"module lacks source scan authority: {module_name!r}")
+        source.validate(module_name, source_path)
+        return source.mode
+
+    def merged(self, other: "_ModuleGraphScanAuthority") -> "_ModuleGraphScanAuthority":
+        sources = {source.module_name: source for source in self.sources}
+        ranks = {"module_init": 0, "module_init_static_helpers": 1, "full": 2}
+        for source in other.sources:
+            prior = sources.get(source.module_name)
+            if prior is not None:
+                prior.validate(source.module_name, source.source_path)
+                if prior.is_package != source.is_package:
+                    raise ValueError(f"module package scan authority changed: {source.module_name!r}")
+                if ranks[prior.mode] >= ranks[source.mode]:
+                    continue
+            sources[source.module_name] = source
+        return _ModuleGraphScanAuthority(tuple(sources[name] for name in sorted(sources)))
+
+    def restricted(self, graph: Mapping[str, Path]) -> "_ModuleGraphScanAuthority":
+        sources = tuple(source for source in self.sources if source.module_name in graph)
+        for source in sources:
+            source.validate(source.module_name, graph[source.module_name])
+        return _ModuleGraphScanAuthority(sources)
+
+    def validate_graph(self, graph: Mapping[str, Path]) -> None:
+        self.restricted(graph)
+        if {source.module_name for source in self.sources} != set(graph):
+            raise ValueError("source graph and scan authority differ")
+
+    def payload(self, logical_paths: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+        return [
+            {"module": source.module_name, "path": (logical_paths or {}).get(source.module_name, os.fspath(source.source_path)),
+             "mode": source.mode, "is_package": source.is_package}
+            for source in sorted(self.sources, key=lambda source: source.module_name)
+        ]
+
+
+class _CompleteImportScan(NamedTuple):
+    imports: tuple[str, ...]
+    source_executions: tuple[tuple[str | None, Path], ...]
+
+
+@dataclass(frozen=True)
+class _PrecomputedModuleImportScan:
+    """Both projections from one identified source and one scan mode."""
+
+    authority: _ModuleSourceScanAuthority
+    source_sha256: str
+    target_python_tag: str
+    capability_config_digest: str
+    scan: _CompleteImportScan
+
+
+@dataclass(frozen=True)
+class _DiscoveredModuleGraph:
+    graph: dict[str, Path]
+    explicit_imports: set[str]
+    scan_authority: _ModuleGraphScanAuthority
+
+    def __post_init__(self) -> None:
+        self.scan_authority.validate_graph(self.graph)
+
+
 @dataclass(frozen=True)
 class _BuildEntrySelector:
     origin: BuildEntrySelectorOrigin
@@ -820,6 +918,12 @@ class _RuntimeImportScanCustody:
             and self.owners_by_module.get(module_name) == source_path
         )
 
+    def validate_scan_mode(
+        self, module_name: str | None, source_path: Path | None, mode: ImportScanMode,
+    ) -> None:
+        if self.owns(module_name, source_path) and mode != "full":
+            raise ValueError("runtime import custody requires full-depth owner scans")
+
     def admits_scan(
         self, module_name: str | None, source_path: Path | None, ast_digest: str | None
     ) -> bool:
@@ -1572,6 +1676,8 @@ class _PreparedEntryModuleGraph:
     roots: list[Path]
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: dict[str, Path]
+    scan_authority: _ModuleGraphScanAuthority
+    target: str
     explicit_imports: set[str]
     runtime_import_dispatch_roots: frozenset[str]
     stub_parents: set[str]
@@ -1623,6 +1729,7 @@ class _ImportPlan:
     stdlib_root: Path
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: Mapping[str, Path]
+    scan_authority: _ModuleGraphScanAuthority
     module_graph_operation_counts: Mapping[str, int]
     explicit_imports: frozenset[str]
     runtime_import_dispatch_roots: frozenset[str]
@@ -1663,6 +1770,7 @@ class _ImportPlan:
             stdlib_root=self.stdlib_root,
             module_resolution_cache=self.module_resolution_cache,
             module_graph=self.module_graph,
+            scan_authority=self.scan_authority,
             module_graph_operation_counts=self.module_graph_operation_counts,
             explicit_imports=self.explicit_imports,
             runtime_import_dispatch_roots=self.runtime_import_dispatch_roots,
@@ -1703,6 +1811,7 @@ class _ImportPlan:
             "stdlib_support_modules": sorted(self.stdlib_support_modules),
             "package_parent_modules": sorted(self.package_parent_modules),
             "runtime_import_dispatch_roots": sorted(self.runtime_import_dispatch_roots),
+            "source_scan_authority": self.scan_authority.payload(self.module_graph_metadata.logical_source_path_by_module),
             "stub_parents": sorted(self.stub_parents),
             "namespace_module_names": sorted(self.namespace_module_names),
             "spawn_enabled": self.spawn_enabled,

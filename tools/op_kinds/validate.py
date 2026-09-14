@@ -13,7 +13,6 @@ from .schema import (
     _ALIAS_MEMORY_REGION_SETS,
     _ALIAS_SLOT_OBSERVATION_SETS,
     _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
-    _ALIAS_TYPED_SLOT_ROLE_SETS,
     _CALL_OPCODE_ROLES,
     _CANONICALIZE_BINARY_ACTIONS,
     _CANONICALIZE_BINARY_PREDICATES,
@@ -61,11 +60,13 @@ from .schema import (
     _TIR_VERIFY_ATTR_RULES,
     _TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
     _TYPE_REFINE_OPERAND_TYPE_RULES,
+    _TYPE_REFINE_OPERAND_RULE_ARITIES,
     _VALUE_RANGE_COND_NARROW_RULES,
     _VALUE_RANGE_CONST_FOLD_RULES,
     _VALUE_RANGE_CONTAINER_LENGTH_RULES,
     _VALUE_RANGE_TRANSFER_RULES,
     _VARIABLE_RESULT_ARITY_OPCODES,
+    _VARIABLE_OPERAND_ARITIES,
     _VECTORIZE_BODY_ACTIONS,
     _VECTOR_REDUCTION_RULES,
 )
@@ -143,6 +144,15 @@ def load_table(table_path: Path = TABLE) -> dict:
                 f"opcode {name}: 'purity' must be one of {sorted(_PURITY_VALUES)}, "
                 f"got {purity!r}"
             )
+        arbitrary_heap = row.get("may_access_arbitrary_heap", purity == "impure")
+        if not isinstance(arbitrary_heap, bool):
+            raise OpKindTableError(
+                f"opcode {name}: 'may_access_arbitrary_heap' must be a bool"
+            )
+        if purity != "impure" and arbitrary_heap:
+            raise OpKindTableError(
+                f"opcode {name}: exact pure effects cannot access arbitrary heap memory"
+            )
         result_arity = row.get("result_arity")
         if result_arity not in _RESULT_ARITY_VALUES:
             raise OpKindTableError(
@@ -158,6 +168,63 @@ def load_table(table_path: Path = TABLE) -> dict:
         if "operand_independent_result_type" in row:
             raise OpKindTableError(
                 f"opcode {name}: use result-indexed operand_independent_result_types"
+            )
+        operand_arity = row.get("operand_arity")
+        if "operand_arity" in row and not (
+            (type(operand_arity) is int and operand_arity >= 0)
+            or (
+                isinstance(operand_arity, str)
+                and operand_arity == _VARIABLE_OPERAND_ARITIES.get(name)
+            )
+        ):
+            raise OpKindTableError(
+                f"opcode {name}: operand_arity must be a nonnegative integer "
+                "or its audited variable shape"
+            )
+        if (
+            name in _VARIABLE_OPERAND_ARITIES
+            and operand_arity != _VARIABLE_OPERAND_ARITIES[name]
+        ):
+            raise OpKindTableError(
+                f"opcode {name}: operand_arity must retain its audited variable shape"
+            )
+        if (
+            any(
+                key in row
+                for key in (
+                    "operand_independent_result_types",
+                    "exact_scalar_result_type",
+                    "predicate_semantics",
+                )
+            )
+            or any(
+                item.get("opcode") == name
+                for item in data.get("type_refine_operand_type_rules", [])
+            )
+            or any(
+                item.get("opcode") == name and item.get("rule") == "type_guard"
+                for item in data.get("type_refine_attr_result_type_rules", [])
+            )
+        ) and "operand_arity" not in row:
+            raise OpKindTableError(
+                f"opcode {name}: result/operator semantics require operand_arity"
+            )
+        for item in data.get("type_refine_operand_type_rules", []):
+            if item.get("opcode") == name:
+                signature = _TYPE_REFINE_OPERAND_RULE_ARITIES.get(item.get("rule"))
+                if signature is not None and operand_arity != signature:
+                    raise OpKindTableError(
+                        f"opcode {name}: operand_arity does not match operation rule signature"
+                    )
+        if (
+            any(
+                item.get("opcode") == name and item.get("rule") == "type_guard"
+                for item in data.get("type_refine_attr_result_type_rules", [])
+            )
+            and operand_arity != 1
+        ):
+            raise OpKindTableError(
+                f"opcode {name}: type_guard requires unary operand_arity"
             )
         result_types = row.get("operand_independent_result_types")
         if result_types is not None:
@@ -199,6 +266,10 @@ def load_table(table_path: Path = TABLE) -> dict:
                 raise OpKindTableError(
                     f"opcode {name}: exact scalar requires frontend_intrinsic_scalar_arity"
                 )
+            # Frontend args and TIR SSA operands are distinct transport domains:
+            # lowering can move payload arguments into attrs. The opcode row owns
+            # both shapes; equal opcode identity alone does not prove an
+            # operand-preserving transport and cannot impose equal arities.
         if exact_scalar is not None and (
             exact_scalar not in seen_scalar_types["tir_types"]
             or result_arity != "one"
@@ -208,6 +279,10 @@ def load_table(table_path: Path = TABLE) -> dict:
         if comparison is not None:
             if comparison not in {"equality", "ordering", "truth", "containment"}:
                 raise OpKindTableError(f"opcode {name}: invalid predicate_semantics")
+            if operand_arity != (1 if comparison == "truth" else 2):
+                raise OpKindTableError(
+                    f"opcode {name}: predicate operand_arity does not match its category"
+                )
             if (
                 result_type
                 != ("bool" if comparison in {"truth", "containment"} else None)
@@ -734,9 +809,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
     _validate_disjoint_opcode_role_sets(
-        data, _ALIAS_TYPED_SLOT_ROLE_SETS, "alias typed-slot role"
-    )
-    _validate_disjoint_opcode_role_sets(
         data, _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS, "alias transparent-alias role"
     )
     _validate_disjoint_opcode_role_sets(
@@ -927,6 +999,13 @@ def _validate_fuzz_tir_opcode_shapes(data: dict, opcodes: dict[str, dict]) -> No
             raise OpKindTableError(
                 f"fuzz_tir_opcode_shapes {opcode}: fuzz generator supports only "
                 "fixed zero/one-result opcodes"
+            )
+        if (
+            type(opcode_row.get("operand_arity")) is not int
+            or operands != opcode_row["operand_arity"]
+        ):
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes {opcode}: operands must match canonical fixed operand_arity"
             )
         attr_payload = row.get("attr_payload", "none")
         if attr_payload not in _FUZZ_TIR_ATTR_PAYLOAD_RULES:

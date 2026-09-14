@@ -1,0 +1,42 @@
+{
+  "name": "molt_isolate_bootstrap",
+  "params": [],
+  "ops": [
+    {
+      "kind": "code_slots_init",
+      "value": 17
+    },
+    {
+      "kind": "check_exception",
+      "value": 1
+    },
+    {
+      "kind": "const_none",
+      "out": "v0"
+    },
+    {
+      "kind": "check_exception",
+      "value": 1
+    },
+    {
+      "kind": "ret",
+      "args": [
+        "v0"
+      ]
+    },
+    {
+      "kind": "label",
+      "value": 1
+    },
+    {
+      "kind": "const_none",
+      "out": "v1"
+    },
+    {
+      "kind": "ret",
+      "args": [
+        "v1"
+      ]
+    }
+  ]
+}

@@ -36,6 +36,10 @@ pub(crate) mod aux_header;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
+pub(crate) mod class_storage;
+pub(crate) mod field_storage;
+#[cfg(test)]
+mod finalizer_declaration_tests;
 pub(crate) mod foreign;
 pub(crate) mod gc;
 #[allow(dead_code)]
@@ -77,6 +81,8 @@ pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weak_container;
 pub(crate) mod weakref;
+#[cfg(test)]
+mod wrapper_representation_tests;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
@@ -369,7 +375,7 @@ impl MoltHeader {
         }
     }
 
-    /// Retain an externally owned runtime edge and update a canonical ABI-view
+    /// Retain a physical runtime owner and update a canonical ABI-view
     /// bias in the same bridge transaction. `flags` must be a synchronized
     /// snapshot taken while the caller's existing owner keeps the header live.
     #[inline(always)]
@@ -386,11 +392,11 @@ impl MoltHeader {
         if flags & HEADER_FLAG_HAS_ABI_VIEW == 0 {
             return self.retain_owned(count, label);
         }
-        let internal_pins = u32::from(flags & HEADER_FLAG_GC_PINNED != 0);
+        // Collector pins own physical lifetime just like ordinary references.
+        // Only GC reachability accounting subtracts them; subtracting a pin
+        // here would decouple the bridge bias from the live header owners.
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .transition_runtime_owner_add(bits, true, internal_pins, || {
-                Some(self.retain_owned(count, label))
-            })
+            .transition_runtime_owner_add(bits, true, 0, || Some(self.retain_owned(count, label)))
             .unwrap_or_else(|| {
                 eprintln!("molt fatal: canonical ABI view disappeared during owned retain");
                 std::process::abort();
@@ -457,14 +463,18 @@ impl MoltHeader {
         unsafe { self.ref_count.retire_stable_view_hold_exclusive() };
     }
 
-    /// Add the collector's temporary strong pin and publish its flag.
+    /// Add the collector's physical lifetime owner through the canonical
+    /// ABI-view transaction, then mark it as non-rooting for GC reachability.
+    /// The pin must keep RuntimeOwned bias until its matching ordinary release;
+    /// clearing cycle edges cannot finalize an object while this owner exists.
     #[inline(always)]
-    pub(crate) fn pin_for_gc(&self) {
-        if self.has_flag(HEADER_FLAG_GC_PINNED) {
+    pub(crate) fn pin_for_gc(&self, bits: u64) {
+        let flags = self.load_synchronized_flags();
+        if flags & HEADER_FLAG_GC_PINNED != 0 {
             eprintln!("molt fatal: object pinned twice by cycle collector");
             std::process::abort();
         }
-        self.retain_owned(1, "cycle collector pin");
+        self.retain_owned_mirrored(bits, 1, "cycle collector pin", flags);
         self.fetch_or_flags(HEADER_FLAG_GC_PINNED);
     }
 
@@ -837,6 +847,9 @@ unsafe impl Sync for PtrSlot {}
 pub(crate) struct DataclassDesc {
     pub(crate) name: String,
     pub(crate) field_names: Vec<String>,
+    // Immutable physical-layout projection, prepared before class publication.
+    pub(crate) field_keys: Vec<u64>,
+    pub(crate) declared_slots: Vec<bool>,
     pub(crate) field_name_to_index: HashMap<String, usize>,
     pub(crate) frozen: bool,
     pub(crate) eq: bool,
@@ -980,19 +993,21 @@ pub(crate) const HEADER_FLAG_FROZEN_LAYOUT_MAP: u32 = 1 << 18;
 /// iterating over elements because they are all primitives (int/float/bool/None).
 pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = molt_codegen_abi::HEADER_FLAG_CONTAINS_REFS;
 
-/// Object was allocated via `molt_alloc` (raw allocation) — deallocation must
-/// use the raw-alloc path rather than type-specific destructors.
+/// Compiler-owned boxed-word allocation (`molt_alloc` or its scalar arena
+/// form). A classless, otherwise unshaped payload owns every boxed field; this
+/// is not an arbitrary-byte malloc contract. Class-shaped instances retain
+/// their sealed physical layout and task payloads retain their task shape.
 pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
 
-/// Object was bump-allocated inside a `ScopeArena`. Deallocation must NOT call
-/// `std::alloc::dealloc`:
-/// the arena reclaims memory in bulk when `molt_arena_free` runs at scope
-/// exit. Set by `molt_arena_alloc_object`.
-pub(crate) const HEADER_FLAG_ARENA: u32 = 1 << 21;
+/// Storage belongs to a caller-managed scope (arena or native frame). Ordinary
+/// refcounts and terminal edge destruction still apply; only backing storage
+/// reclamation/accounting belongs to the scope. Every owner must be released
+/// before the scope ends. Scoped storage is not an immortal Python lifetime.
+pub(crate) const HEADER_FLAG_SCOPED: u32 = 1 << 21;
 
-/// `TYPE_ID_TYPE` metadata bit: instances of this class are finalizer-sensitive
-/// because the class MRO contains `__del__`.
-pub(crate) const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
+/// `TYPE_ID_TYPE` metadata bit: this class's own namespace declares `__del__`.
+/// Inherited eligibility is projected from current MRO declaration bits.
+pub(crate) const HEADER_FLAG_CLASS_DECLARES_FINALIZER: u32 = 1 << 22;
 
 /// `TYPE_ID_FUNCTION` metadata bit: raw positional calls must route through the
 /// argument binder before any fixed-arity ABI call. This is set for functions
@@ -1054,8 +1069,8 @@ const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_FROZEN_LAYOUT_MAP,
     HEADER_FLAG_CONTAINS_REFS,
     HEADER_FLAG_RAW_ALLOC,
-    HEADER_FLAG_ARENA,
-    HEADER_FLAG_CLASS_HAS_FINALIZER,
+    HEADER_FLAG_SCOPED,
+    HEADER_FLAG_CLASS_DECLARES_FINALIZER,
     HEADER_FLAG_FUNC_REQUIRES_BINDER,
     HEADER_FLAG_HAS_WEAKREF,
     HEADER_FLAG_GC_COLLECTING,
@@ -1086,6 +1101,8 @@ const CLASS_POLICY_INSTANCE_KIND_EXPLICIT: u64 = 1 << 2;
 const CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT: u64 = 1 << 3;
 const CLASS_POLICY_DEFINITION_FINISHED: u64 = 1 << 4;
 const CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT: u64 = 1 << 5;
+const CLASS_POLICY_DEFINITION_FINISHING: u64 = 1 << 6;
+const CLASS_POLICY_RUNTIME_RETIRING: u64 = 1 << 7;
 const CLASS_POLICY_INSTANCE_SHAPE_SHIFT: u32 = 8;
 const CLASS_POLICY_INSTANCE_SHAPE_MASK: u64 =
     (u16::MAX as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
@@ -1264,6 +1281,44 @@ unsafe fn class_has_policy(class_ptr: *mut u8, policy: u64) -> bool {
     unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) & policy != 0 }
 }
 
+struct ClassDefinitionFinishGuard<'a> {
+    policy: &'a MoltAuxWord,
+    active: bool,
+}
+
+impl<'a> ClassDefinitionFinishGuard<'a> {
+    fn begin(policy: &'a MoltAuxWord) -> Self {
+        policy.fetch_or(CLASS_POLICY_DEFINITION_FINISHING, AtomicOrdering::AcqRel);
+        Self {
+            policy,
+            active: true,
+        }
+    }
+
+    fn complete(mut self) {
+        // Publish success and retire in-progress state in one transition. The
+        // typed word preserves unrelated policy bits on both native and WASM.
+        let _ = self
+            .policy
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                Some((word | CLASS_POLICY_DEFINITION_FINISHED) & !CLASS_POLICY_DEFINITION_FINISHING)
+            });
+        self.active = false;
+    }
+}
+
+impl Drop for ClassDefinitionFinishGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ =
+                self.policy
+                    .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                        Some(word & !CLASS_POLICY_DEFINITION_FINISHING)
+                    });
+        }
+    }
+}
+
 #[inline]
 pub(crate) unsafe fn class_instance_type_id(class_ptr: *mut u8) -> u32 {
     let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
@@ -1388,6 +1443,18 @@ pub(crate) unsafe fn class_is_immutable(_py: &PyToken<'_>, class_ptr: *mut u8) -
         return false;
     }
     unsafe { class_has_policy(class_ptr, CLASS_POLICY_IMMUTABLE) }
+}
+
+/// Close new weak-reference admission for a runtime-owned canonical class.
+/// This is not object death: shutdown callbacks may still read and retain the
+/// pinned class until the shared retirement transaction detaches its identity.
+pub(crate) unsafe fn class_begin_runtime_retirement(class_ptr: *mut u8) {
+    crate::gil_assert();
+    unsafe { class_add_policy(class_ptr, CLASS_POLICY_RUNTIME_RETIRING) };
+}
+
+pub(crate) unsafe fn class_is_runtime_retiring(class_ptr: *mut u8) -> bool {
+    unsafe { class_has_policy(class_ptr, CLASS_POLICY_RUNTIME_RETIRING) }
 }
 
 pub(crate) unsafe fn class_definition_is_finished(class_ptr: *mut u8) -> bool {
@@ -1542,8 +1609,8 @@ fn total_size_from_header_fields(size_class: u16, aux_kind: u16, aux_word: u64) 
     } else if aux_kind == HEADER_AUX_KIND_SIDECAR && aux_word != 0 {
         unsafe { aux_sidecar_from_word(aux_word) }.extended_size
     } else {
-        // Immortal stack objects and arena allocations do not participate in
-        // allocator deallocation and intentionally carry no exact size.
+        // Class-shaped native frame storage derives its extent from the sealed
+        // class. It does not carry an allocator size class.
         0
     }
 }
@@ -1564,6 +1631,62 @@ struct ObjectAllocationPlan {
 #[inline]
 pub(crate) fn checked_object_total_size(payload_size: usize) -> Option<usize> {
     payload_size.checked_add(std::mem::size_of::<MoltHeader>())
+}
+
+/// Heap and scoped boxed-word allocation have the same stride/extent contract.
+pub(crate) fn boxed_object_total_size(py: &PyToken<'_>, payload_bits: u64) -> Option<usize> {
+    let payload = crate::usize_from_bits(payload_bits)?;
+    if payload % std::mem::size_of::<u64>() != 0 {
+        crate::raise_exception::<()>(
+            py,
+            "SystemError",
+            "boxed allocation size must use u64 field stride",
+        );
+        return None;
+    }
+    checked_object_total_size(payload)
+}
+
+/// Create owned boxed fields using caller-managed storage and the normal size
+/// authority. Small objects reuse size classes; oversized objects own the same
+/// exact-size sidecar as heap allocations. The allocator must return aligned,
+/// writable storage valid until every returned owner has been released.
+pub(crate) unsafe fn alloc_scoped_boxed_object(
+    py: &PyToken<'_>,
+    payload_bits: u64,
+    allocate: impl FnOnce(usize) -> *mut u8,
+) -> u64 {
+    let Some(plan) = boxed_object_total_size(py, payload_bits).and_then(object_allocation_plan)
+    else {
+        return MoltObject::none().bits();
+    };
+    let storage = allocate(plan.alloc_size);
+    if storage.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        std::ptr::write_bytes(storage, 0, plan.alloc_size);
+        let header = storage.cast::<MoltHeader>();
+        (*header).type_id = TYPE_ID_OBJECT;
+        MoltHeader::initialize_refcount_before_publication(header, 1);
+        MoltHeader::initialize_flags_gc_unpublished(
+            header,
+            HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC,
+        );
+        (*header).size_class = plan.size_class;
+        if !initialize_header_aux(
+            header,
+            TYPE_ID_OBJECT,
+            plan.size_class,
+            plan.alloc_size,
+            ObjectAuxPreselection::Default,
+        ) {
+            return MoltObject::none().bits();
+        }
+        let data = storage.add(std::mem::size_of::<MoltHeader>());
+        gc::gc_track_if_cyclic(py, data, TYPE_ID_OBJECT);
+        MoltObject::from_ptr(data).bits()
+    }
 }
 
 #[inline]
@@ -1621,6 +1744,11 @@ pub(crate) fn object_shape_id(data_ptr: *mut u8) -> ObjectShapeId {
         }
     }
     let class_bits = unsafe { object_class_bits(data_ptr) };
+    if class_bits == 0
+        && unsafe { (*header_from_obj_ptr(data_ptr)).has_flag(HEADER_FLAG_RAW_ALLOC) }
+    {
+        return ObjectShapeId::BoxedFields;
+    }
     obj_from_bits(class_bits)
         .as_ptr()
         .map(|class_ptr| unsafe { class_instance_shape_id(class_ptr) })
@@ -1855,79 +1983,80 @@ pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
     object_set_state(data_ptr, state);
 }
 
-/// Initialize a stack-allocated MoltObject in-place.  Used by the
-/// native backend's `object_new_bound_stack` lowering: Cranelift
-/// allocates a `StackSlot` of size `MoltHeader::SIZE +
-/// payload_size_bytes` and calls into this helper to:
-/// - zero the payload (StackSlot contents are undefined on entry,
-///   so this is mandatory for soundness — a stale pointer in a
-///   slot would corrupt subsequent `dec_ref` / `has_ptrs`
-///   traversal),
-/// - stamp the MoltHeader fields:
-///     - `type_id        = TYPE_ID_OBJECT`
-///     - `ref_count      = 1` (paired with IMMORTAL — never
-///       decrements)
-///     - `flags          = HEADER_FLAG_IMMORTAL` (so dec_ref_ptr
-///       short-circuits and the runtime never tries to free a
-///       stack pointer through the dealloc path; the class is
-///       borrowed from the module-owned class object)
-///     - `size_class     = 0`  (size lives nowhere — IMMORTAL
-///       objects bypass the size lookup paths)
-///     - `aux_kind       = CLASS_INLINE`
-///     - `aux            = class_bits | BORROWED`
-/// - return the tagged data pointer bits (header_ptr + 24).
+/// Realize an owned instance in caller-managed storage when its sealed physical
+/// layout and stable class lifetime permit it; otherwise use the normal
+/// heap constructor and its class admission/diagnostics before touching storage.
+/// The class edge is owned and ordinary RC performs terminal edge destruction;
+/// SCOPED keeps the storage out of the global allocator's free/accounting path.
+/// Heap and frame instances share empty-field and sealed-layout authorities.
 ///
-/// Returns `MoltObject::none().bits()` if `cls_bits` does not point
-/// to a valid type object.  The frontend gates the fold on
-/// known-class identity, so this branch is the defense-in-depth
-/// fallback rather than an expected runtime path.
+/// This unsafe runtime API is independent of compiler IR. Class admission cannot
+/// prove the lifetime of caller storage or of references stored by the caller.
 ///
-/// **No class inc-ref**: we deliberately skip `inc_ref_bits(class)`
-/// because (a) the class is module-resident and outlives the
-/// function frame containing the StackSlot, (b) the symmetric
-/// dec-ref on instance death would never run (IMMORTAL skips
-/// dec_ref_ptr), so a balanced inc/dec would be lossy bookkeeping.
-///
-/// Safety: `header_ptr` must point to writable memory of at least
-/// `MoltHeader::SIZE + payload_size_bytes` bytes, 8-byte aligned.
-/// The Cranelift StackSlot allocation guarantees this.
+/// # Safety
+/// `header_ptr` must identify 8-byte-aligned exclusively writable storage of at
+/// least `MoltHeader::SIZE + payload_size_bytes` bytes. The caller must keep it
+/// valid until every owner, including cyclic/internal owners, has been released
+/// and terminal cleanup has completed. Neither returning a boxed reference nor
+/// dropping only the caller's initial reference establishes that condition.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_object_init_stack(
+pub unsafe extern "C" fn molt_object_init_stack(
     header_ptr: *mut u8,
     cls_bits: u64,
     payload_size_bytes: u64,
 ) -> u64 {
-    if header_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
-        Some(p) => p,
-        None => return MoltObject::none().bits(),
-    };
-    unsafe {
-        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+    crate::with_gil_entry_nopanic!(_py, {
+        if header_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let Some(payload) = crate::usize_from_bits(payload_size_bytes) else {
-            return MoltObject::none().bits();
+        let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
+            Some(p) => p,
+            None => return crate::molt_object_new_bound(cls_bits),
         };
-        let Some(total) = std::mem::size_of::<MoltHeader>().checked_add(payload) else {
-            return MoltObject::none().bits();
-        };
-        std::ptr::write_bytes(header_ptr, 0, total);
-        let header = header_ptr as *mut MoltHeader;
-        (*header).type_id = class_instance_type_id(cls_ptr);
-        MoltHeader::initialize_refcount_before_publication(header, 1);
-        MoltHeader::initialize_flags_before_publication(header, HEADER_FLAG_IMMORTAL);
-        (*header).size_class = 0;
-        (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*header).aux),
-            MoltAuxWord::new(cls_bits | HEADER_CLASS_WORD_BORROWED),
-        );
-        let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
-        MoltObject::from_ptr(data_ptr).bits()
-    }
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return crate::molt_object_new_bound(cls_bits);
+            }
+            let Some(payload) = crate::usize_from_bits(payload_size_bytes) else {
+                return MoltObject::none().bits();
+            };
+            if class_finish_definition(_py, cls_ptr).is_err() {
+                return MoltObject::none().bits();
+            }
+            if class_instance_type_id(cls_ptr) != TYPE_ID_OBJECT
+                || class_instance_shape_id(cls_ptr) != ObjectShapeId::Plain
+                || layout::class_cached_layout_size(cls_ptr) != Some(payload)
+                || !class_has_stable_nonfinalizing_mro(_py, cls_ptr)
+            {
+                return crate::molt_object_new_bound(cls_bits);
+            }
+            let Some(total) = std::mem::size_of::<MoltHeader>().checked_add(payload) else {
+                return MoltObject::none().bits();
+            };
+            std::ptr::write_bytes(header_ptr, 0, total);
+            let header = header_ptr as *mut MoltHeader;
+            (*header).type_id = class_instance_type_id(cls_ptr);
+            MoltHeader::initialize_refcount_before_publication(header, 1);
+            MoltHeader::initialize_flags_gc_unpublished(header, HEADER_FLAG_SCOPED);
+            (*header).size_class = 0;
+            (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
+            std::ptr::write(std::ptr::addr_of_mut!((*header).aux), MoltAuxWord::new(0));
+            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+            assert!(object_init_class_edge_unpublished(
+                _py,
+                data_ptr,
+                cls_bits,
+                ClassEdgeOwnership::Owned
+            ));
+            gc::gc_track_if_cyclic(_py, data_ptr, (*header).type_id);
+            if field_storage::initialize_fields(_py, data_ptr, cls_ptr, payload).is_err() {
+                dec_ref_ptr(_py, data_ptr);
+                return MoltObject::none().bits();
+            }
+            gc::gc_publish_initialized(_py, data_ptr);
+            MoltObject::from_ptr(data_ptr).bits()
+        }
+    })
 }
 
 #[inline(always)]
@@ -2238,17 +2367,34 @@ pub(crate) unsafe fn object_type_id(ptr: *mut u8) -> u32 {
 pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
     unsafe {
         let header = &*header_from_obj_ptr(ptr);
-        total_size_from_header(header, ptr).saturating_sub(std::mem::size_of::<MoltHeader>())
+        let total = total_size_from_header(header, ptr);
+        if total == 0 && header.has_flag(HEADER_FLAG_SCOPED) {
+            let snapshot = header_aux_snapshot(header);
+            if snapshot.kind == HEADER_AUX_KIND_CLASS_INLINE
+                && let Some(class) =
+                    obj_from_bits(object_class_bits_from_word(snapshot.word)).as_ptr()
+                && object_type_id(class) == TYPE_ID_TYPE
+            {
+                // Stack construction admits exactly the sealed class extent.
+                // No allocator size-class exists for these scoped payloads.
+                return layout::class_cached_layout_size(class)
+                    .expect("stack instance requires sealed layout extent");
+            }
+        }
+        total.saturating_sub(std::mem::size_of::<MoltHeader>())
     }
 }
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
+        if object_type_id(ptr) == TYPE_ID_DATACLASS {
+            return dataclass_dict_bits_ptr(ptr);
+        }
         // Every generated class-shaped heap kind reserves the trailing managed
         // `__dict__` word in its instance payload. Physical heap IDs must not
         // reclassify that shared shape: doing so strands subtype dictionaries
         // outside attribute lookup, GC traversal, and cycle clearing.
-        if !heap_kind_has_class_shape(object_type_id(ptr)) {
+        if !heap_kind_has_class_shape(object_type_id(ptr)) || object_class_bits(ptr) == 0 {
             return std::ptr::null_mut();
         }
         let payload = object_payload_size(ptr);
@@ -2277,13 +2423,9 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
             return;
         }
         *slot = bits;
-        // Materializing a non-zero __dict__ stores a pointer in the
-        // trailing dict slot; mark `HEADER_FLAG_HAS_PTRS` so the
-        // codegen-side store fast path (which uses HAS_PTRS as a
-        // proxy for "no live pointer slot needs sync") falls back to
-        // the runtime helper that performs the dict sync.  Clearing
-        // (`bits == 0`) does not need the flag set since clearing
-        // does not introduce a pointer slot.
+        // A dictionary owns inferred attributes after materialization. This
+        // sticky flag excludes all direct field fast paths; runtime accessors
+        // resolve dictionary backing versus genuine declared slots.
         if bits != 0 {
             object_mark_has_ptrs(_py, ptr);
         }
@@ -2394,14 +2536,20 @@ unsafe fn replace_published_class_edge(
     ownership: ClassEdgeOwnership,
 ) -> bool {
     crate::gil_assert();
-    if (unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() } & HEADER_FLAG_DEALLOCATING)
-        != 0
-    {
+    let flags = unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() };
+    if flags & HEADER_FLAG_DEALLOCATING != 0 {
         return false;
     }
     let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
         return false;
     };
+    if flags & HEADER_FLAG_SCOPED != 0
+        && !obj_from_bits(new_bits)
+            .as_ptr()
+            .is_some_and(|class| unsafe { class_has_stable_nonfinalizing_mro(_py, class) })
+    {
+        return false;
+    }
     let snapshot = unsafe { object_aux_snapshot(ptr) };
     let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
         return false;
@@ -2524,21 +2672,77 @@ pub(crate) unsafe fn object_replace_class_edge(
 }
 
 #[inline]
-unsafe fn class_header_has_finalizer(class_ptr: *mut u8) -> bool {
+unsafe fn class_header_declares_finalizer(class_ptr: *mut u8) -> bool {
     unsafe {
         object_type_id(class_ptr) == TYPE_ID_TYPE
             && ((*header_from_obj_ptr(class_ptr)).load_metadata_flags()
-                & HEADER_FLAG_CLASS_HAS_FINALIZER)
+                & HEADER_FLAG_CLASS_DECLARES_FINALIZER)
                 != 0
     }
 }
 
-pub(crate) unsafe fn object_class_has_finalizer(ptr: *mut u8) -> bool {
+/// Physical layout sealing does not freeze Python behavior. Scoped instances
+/// require the absence of a finalizer to survive later calls and class mutation:
+/// every MRO member must be immutable and nonfinalizing. Constructor admission
+/// and published class replacement share this lifetime requirement.
+unsafe fn class_has_stable_nonfinalizing_mro(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
     unsafe {
-        object_type_id(ptr) != TYPE_ID_TYPE
-            && obj_from_bits(object_class_bits(ptr))
-                .as_ptr()
-                .is_some_and(|class_ptr| class_header_has_finalizer(class_ptr))
+        if object_type_id(class_ptr) != TYPE_ID_TYPE || !class_definition_is_finished(class_ptr) {
+            return false;
+        }
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let mro = crate::class_mro_view(_py, class_ptr);
+        mro.first() == Some(&class_bits)
+            && mro.iter().copied().all(|bits| {
+                obj_from_bits(bits).as_ptr().is_some_and(|member| {
+                    object_type_id(member) == TYPE_ID_TYPE
+                        && (crate::is_builtin_class_bits(_py, bits)
+                            || class_is_immutable(_py, member))
+                        && !class_header_declares_finalizer(member)
+                })
+            })
+    }
+}
+
+/// Finalizer eligibility is a projection of current MRO declaration facts,
+/// not a cached inherited bit. A mutable base can add or remove __del__ after
+/// descendants were sealed; no descendant invalidation registry is required.
+/// This scan pins the already published MRO and never allocates or runs Python.
+pub(crate) unsafe fn object_class_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    unsafe {
+        let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
+            return false;
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return false;
+        }
+        if class_header_declares_finalizer(class_ptr) {
+            return true;
+        }
+        crate::class_mro_pinned(_py, class_ptr).is_some_and(|mro| {
+            mro.iter().copied().skip(1).any(|bits| {
+                obj_from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|base| class_header_declares_finalizer(base))
+            })
+        })
+    }
+}
+
+unsafe fn class_lookup_raw_dict_attr(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let dict_ptr = obj_from_bits(layout::class_dict_bits(class_ptr)).as_ptr()?;
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        crate::dict_get_in_place(_py, dict_ptr, attr_bits)
     }
 }
 
@@ -2548,53 +2752,146 @@ unsafe fn class_lookup_raw_mro_dict_attr(
     attr_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        let visit = |candidate_bits: u64| -> Option<u64> {
-            let candidate_ptr = obj_from_bits(candidate_bits).as_ptr()?;
-            if object_type_id(candidate_ptr) != TYPE_ID_TYPE {
-                return None;
-            }
-            let dict_bits = layout::class_dict_bits(candidate_ptr);
-            let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return None;
-            }
-            crate::dict_get_in_place(_py, dict_ptr, attr_bits)
-        };
-
-        let mro_bits = layout::class_mro_bits(class_ptr);
-        if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
-            && object_type_id(mro_ptr) == TYPE_ID_TUPLE
-        {
-            let mro = crate::object::seq_access::pin_tuple(_py, mro_ptr)?;
+        if let Some(mro) = crate::class_mro_pinned(_py, class_ptr) {
             for class_bits in mro.iter().copied() {
-                if let Some(bits) = visit(class_bits) {
+                let Some(candidate) = obj_from_bits(class_bits).as_ptr() else {
+                    continue;
+                };
+                if let Some(bits) = class_lookup_raw_dict_attr(_py, candidate, attr_bits) {
                     return Some(bits);
                 }
             }
             return None;
         }
-        visit(MoltObject::from_ptr(class_ptr).bits())
+        class_lookup_raw_dict_attr(_py, class_ptr, attr_bits)
     }
 }
 
-pub(crate) unsafe fn class_refresh_finalizer_flag(_py: &PyToken<'_>, class_ptr: *mut u8) {
+pub(crate) unsafe fn class_refresh_declared_finalizer_flag(_py: &PyToken<'_>, class_ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
             return;
         }
-        let Some(del_name_bits) = crate::attr_name_bits_from_bytes(_py, b"__del__") else {
-            return;
-        };
-        let has_finalizer = class_lookup_raw_mro_dict_attr(_py, class_ptr, del_name_bits).is_some();
-        dec_ref_bits(_py, del_name_bits);
+        // Exact namespace lookup allocates no key and cannot invoke equality
+        // or descriptor callbacks between dictionary and metadata publication.
+        let has_finalizer = obj_from_bits(layout::class_dict_bits(class_ptr))
+            .as_ptr()
+            .is_some_and(|dict| {
+                crate::object::ops::dict_get_str_bytes_borrowed(_py, dict, b"__del__").is_some()
+            });
 
         let header = header_from_obj_ptr(class_ptr);
         if has_finalizer {
-            (*header).fetch_or_flags(HEADER_FLAG_CLASS_HAS_FINALIZER);
+            (*header).fetch_or_flags(HEADER_FLAG_CLASS_DECLARES_FINALIZER);
         } else {
-            (*header).fetch_and_flags(!HEADER_FLAG_CLASS_HAS_FINALIZER);
+            (*header).fetch_and_flags(!HEADER_FLAG_CLASS_DECLARES_FINALIZER);
         }
+    }
+}
+
+/// Bytes at the end of every instance payload that are owned by runtime
+/// backing, never by user-visible physical fields.
+pub(crate) unsafe fn class_reserved_layout_tail(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    if crate::issubclass_bits(class_bits, crate::builtin_classes(_py).dict) {
+        2 * std::mem::size_of::<u64>()
+    } else {
+        std::mem::size_of::<u64>()
+    }
+}
+
+/// Bytes at the start of every instance payload owned by its inherited native
+/// representation. Declared fields begin at or after this boundary.
+#[inline]
+pub(crate) unsafe fn class_reserved_layout_prefix(class_ptr: *mut u8) -> usize {
+    layout::wrapper_prefix_size_for_type_id(unsafe { class_instance_type_id(class_ptr) })
+}
+
+unsafe fn validate_class_field_offsets(
+    _py: &PyToken<'_>,
+    offsets_ptr: *mut u8,
+    field_start: usize,
+    field_extent: usize,
+) -> Result<(), ()> {
+    unsafe {
+        let entries = crate::dict_order(offsets_ptr);
+        if entries.len() % 2 != 0 {
+            crate::raise_exception::<()>(
+                _py,
+                "SystemError",
+                "class field-offset map has an incomplete entry",
+            );
+            return Err(());
+        }
+        for (index, pair) in entries.chunks_exact(2).enumerate() {
+            let key_is_exact_string = obj_from_bits(pair[0])
+                .as_ptr()
+                .is_some_and(|key| object_type_id(key) == TYPE_ID_STRING);
+            if !key_is_exact_string {
+                crate::raise_exception::<()>(
+                    _py,
+                    "TypeError",
+                    "class field-offset keys must be exact strings",
+                );
+                return Err(());
+            }
+            let Some(offset) = obj_from_bits(pair[1]).as_int() else {
+                crate::raise_exception::<()>(
+                    _py,
+                    "TypeError",
+                    "class field offsets must be exact integers",
+                );
+                return Err(());
+            };
+            let Ok(offset) = usize::try_from(offset) else {
+                crate::raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "class field offsets must be nonnegative",
+                );
+                return Err(());
+            };
+            if offset % std::mem::size_of::<u64>() != 0 {
+                crate::raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "class field offsets must be u64-aligned",
+                );
+                return Err(());
+            }
+            if offset < field_start {
+                crate::raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "class field offset overlaps the native instance prefix",
+                );
+                return Err(());
+            }
+            if entries[..index * 2]
+                .chunks_exact(2)
+                .any(|prior| obj_from_bits(prior[1]).as_int() == Some(offset as i64))
+            {
+                crate::raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "distinct class fields cannot share a physical offset",
+                );
+                return Err(());
+            }
+            if offset
+                .checked_add(std::mem::size_of::<u64>())
+                .is_none_or(|end| end > field_extent)
+            {
+                crate::raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "class field offset overlaps reserved layout storage",
+                );
+                return Err(());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2605,26 +2902,142 @@ pub(crate) unsafe fn class_refresh_finalizer_flag(_py: &PyToken<'_>, class_ptr: 
 /// mutation point. Bulk class construction can bypass those setters with raw
 /// namespace copies, so every creation path routes through this single seal
 /// before instances may be allocated from the class.
-pub(crate) unsafe fn class_finish_definition(_py: &PyToken<'_>, class_ptr: *mut u8) {
+#[must_use]
+pub(crate) unsafe fn class_finish_definition(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+) -> Result<(), ()> {
     unsafe {
-        class_refresh_finalizer_flag(_py, class_ptr);
+        if crate::exception_pending(_py) {
+            return Err(());
+        }
+        if class_definition_is_finished(class_ptr) {
+            assert!(
+                layout::class_cached_layout_size(class_ptr).is_some(),
+                "finished class requires validated cached layout"
+            );
+            assert_ne!(
+                layout::class_field_offsets_bits(class_ptr),
+                0,
+                "finished class requires captured field-offset provenance"
+            );
+            return Ok(());
+        }
+        if class_has_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHING) {
+            crate::raise_exception::<()>(_py, "RuntimeError", "recursive class layout sealing");
+            return Err(());
+        }
+        let finish_guard = ClassDefinitionFinishGuard::begin(class_policy_word(class_ptr));
+        // A finished class may be consumed by callback-free GC traversal, so
+        // every physical-layout ancestor must already own its private map. Seal
+        // bases in root-to-leaf order before reading them during this class's
+        // construction transaction.
+        let ancestors = crate::class_mro_view(_py, class_ptr);
+        for ancestor_bits in ancestors.iter().copied().skip(1).rev() {
+            let Some(ancestor) = obj_from_bits(ancestor_bits).as_ptr() else {
+                continue;
+            };
+            if ancestor == class_ptr || object_type_id(ancestor) != TYPE_ID_TYPE {
+                continue;
+            }
+            if !class_definition_is_finished(ancestor)
+                && class_finish_definition(_py, ancestor).is_err()
+            {
+                return Err(());
+            }
+        }
+        if !crate::builtins::attr::apply_class_slots_layout(_py, class_ptr)
+            || crate::exception_pending(_py)
+        {
+            return Err(());
+        }
+        assert!(
+            !matches!(
+                layout::class_slot_declaration(class_ptr),
+                layout::ClassSlotDeclaration::Uninitialized
+            ),
+            "finished class requires captured slot provenance"
+        );
+        class_refresh_declared_finalizer_flag(_py, class_ptr);
+        if crate::exception_pending(_py) {
+            return Err(());
+        }
+
+        // All allocating/validating work precedes the seal. Unfinished classes
+        // never publish a size cache, so failure leaves the metadata retryable.
+        let Some(size) = crate::call::class_init::class_layout_size_cached(_py, class_ptr) else {
+            if !crate::exception_pending(_py) {
+                crate::raise_exception::<()>(
+                    _py,
+                    "OverflowError",
+                    "class instance layout is too large",
+                );
+            }
+            return Err(());
+        };
         let fields_name = crate::intern_static_name(
             _py,
             &runtime_state(_py).interned.field_offsets_name,
             b"__molt_field_offsets__",
         );
-        if let Some(dict_ptr) = obj_from_bits(crate::class_dict_bits(class_ptr)).as_ptr()
-            && let Some(offsets_bits) = crate::dict_get_in_place(_py, dict_ptr, fields_name)
-            && let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr()
-            && object_type_id(offsets_ptr) == TYPE_ID_DICT
+        if crate::exception_pending(_py) {
+            return Err(());
+        }
+        let Some(dict_ptr) = obj_from_bits(crate::class_dict_bits(class_ptr)).as_ptr() else {
+            crate::raise_exception::<()>(
+                _py,
+                "SystemError",
+                "class namespace is absent during sealing",
+            );
+            return Err(());
+        };
+        let offsets = crate::dict_get_in_place(_py, dict_ptr, fields_name);
+        if crate::exception_pending(_py) {
+            return Err(());
+        }
+        let (offsets_bits, offsets_ptr) = match offsets {
+            None => (MoltObject::none().bits(), None),
+            Some(bits) if obj_from_bits(bits).is_none() => (MoltObject::none().bits(), None),
+            Some(bits) => match obj_from_bits(bits).as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => (bits, Some(ptr)),
+                _ => {
+                    crate::raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "__molt_field_offsets__ must be dict",
+                    );
+                    return Err(());
+                }
+            },
+        };
+        let prefix = class_reserved_layout_prefix(class_ptr);
+        let Some(field_extent) = size.checked_sub(class_reserved_layout_tail(_py, class_ptr))
+        else {
+            crate::raise_exception::<()>(
+                _py,
+                "ValueError",
+                "class layout is smaller than reserved storage",
+            );
+            return Err(());
+        };
+        if let Some(offsets_ptr) = offsets_ptr
+            && validate_class_field_offsets(_py, offsets_ptr, prefix, field_extent).is_err()
         {
+            return Err(());
+        }
+
+        // Acquire the private TYPE payload edge while every failure path is
+        // still open. The class and its namespace then own the same exact map.
+        inc_ref_bits(_py, offsets_bits);
+        // No callbacks or fallible work after this point. Publish the frozen
+        // input, validated size and finished policy as one GIL-held transition.
+        if let Some(offsets_ptr) = offsets_ptr {
             (*header_from_obj_ptr(offsets_ptr)).fetch_or_flags(HEADER_FLAG_FROZEN_LAYOUT_MAP);
         }
-        class_add_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHED);
-        // Publish the validated immutable size only after both metadata inputs
-        // have been sealed. Competing future free-threaded readers may publish
-        // the same value; a mismatch is an invariant failure.
-        let _ = crate::call::class_init::class_layout_size_cached(_py, class_ptr);
+        layout::class_set_field_offsets_owned(class_ptr, offsets_bits);
+        layout::class_set_cached_layout_size(class_ptr, size);
+        finish_guard.complete();
+        Ok(())
     }
 }
 
@@ -2766,32 +3179,10 @@ pub(crate) unsafe fn dataclass_fields_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *const *mut Vec<u64>) }
 }
 
-pub(crate) unsafe fn dataclass_fields_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*dataclass_fields_ptr(ptr) }
-}
-
-pub(crate) unsafe fn dataclass_fields_mut(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe { &mut *dataclass_fields_ptr(ptr) }
-}
-
 pub(crate) unsafe fn dataclass_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
         ptr.add(std::mem::size_of::<*mut DataclassDesc>() + std::mem::size_of::<*mut Vec<u64>>())
             as *mut u64
-    }
-}
-
-pub(crate) unsafe fn dataclass_dict_bits(ptr: *mut u8) -> u64 {
-    unsafe { *dataclass_dict_bits_ptr(ptr) }
-}
-
-pub(crate) unsafe fn dataclass_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    unsafe {
-        crate::gil_assert();
-        *dataclass_dict_bits_ptr(ptr) = bits;
-        if bits != 0 {
-            object_mark_has_ptrs(_py, ptr);
-        }
     }
 }
 
@@ -3001,6 +3392,36 @@ thread_local! {
     static FINALIZER_WINDOW_TEST_HOOK: std::cell::Cell<Option<fn(u64)>> = const {
         std::cell::Cell::new(None)
     };
+    static FINALIZER_RESOURCE_TEST_HOOK: std::cell::Cell<Option<(FinalizerResourceStage, FinalizerResourceTestHook)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinalizerResourceStage {
+    RawRetained,
+    BoundOwned,
+}
+
+#[cfg(test)]
+type FinalizerResourceTestHook = for<'py> fn(&PyToken<'py>, FinalizerResourceStage, u64, u64);
+
+#[cfg(test)]
+fn run_finalizer_resource_test_hook(
+    py: &PyToken<'_>,
+    stage: FinalizerResourceStage,
+    raw_bits: u64,
+    bound_bits: u64,
+) {
+    FINALIZER_RESOURCE_TEST_HOOK.with(|slot| {
+        if let Some((target, hook)) = slot.get()
+            && target == stage
+        {
+            slot.set(None);
+            hook(py, stage, raw_bits, bound_bits);
+        }
+    });
 }
 
 /// Run the object's `__del__` finalizer INSIDE an already-open revival window.
@@ -3017,7 +3438,8 @@ thread_local! {
 /// can resurrect through the SAME window even for a `__del__`-free object.
 unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
-    if !unsafe { object_class_has_finalizer(ptr) } {
+    let obj_bits = MoltObject::from_ptr(ptr).bits();
+    if !unsafe { object_class_has_finalizer(py, ptr) } {
         return;
     }
     if (unsafe { (*header_ptr).load_synchronized_flags() } & HEADER_FLAG_FINALIZER_RAN) != 0 {
@@ -3033,40 +3455,20 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return;
     }
-    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-        let class_name = unsafe {
-            crate::string_obj_to_owned(obj_from_bits(layout::class_name_bits(class_ptr)))
-        };
-        if class_bits == crate::builtin_classes(py).traceback
-            || class_name.as_deref() == Some("traceback")
-            || class_bits == crate::builtin_classes(py).frame
-            || class_name.as_deref() == Some("frame")
-        {
-            return;
-        }
-    }
-    let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+    // Runtime builtin exclusions are identities, never user-controlled names.
+    // An ordinary class or metaclass named frame/traceback remains eligible.
+    let builtins = crate::builtin_classes(py);
+    if class_bits == builtins.traceback || class_bits == builtins.frame {
         return;
-    };
-    let raw_del_bits = obj_from_bits(class_bits)
-        .as_ptr()
-        .and_then(|class_ptr| unsafe {
-            class_lookup_raw_mro_dict_attr(py, class_ptr, del_name_bits)
-        });
-    dec_ref_bits(py, del_name_bits);
-    let Some(raw_del_bits) = raw_del_bits else {
-        return;
-    };
-    // The finalizer may replace/delete its own class attribute. Keep the raw
-    // callable alive through post-failure policy repr/context reporting.
-    inc_ref_bits(py, raw_del_bits);
-    unsafe {
-        (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
     }
-    // CPython `PyObject_CallFinalizer` runs the finalizer with a CLEAN exception
-    // state: `_PyErr_GetRaisedException` FETCHES (saves AND clears) any in-flight
-    // exception before `tp_finalize`, then `_PyErr_SetRaisedException` restores it
-    // afterward. The fetch-and-clear is load-bearing: when an exception is
+    // CPython `PyObject_CallFinalizer` runs the complete finalizer operation with
+    // a CLEAN exception state: `_PyErr_GetRaisedException` FETCHES (saves AND
+    // clears) any in-flight exception before `tp_finalize`, then
+    // `_PyErr_SetRaisedException` restores it afterward. The detach must precede
+    // even `__del__` key acquisition and MRO lookup: dictionary hashing treats an
+    // already-pending exception as a failed probe, which otherwise suppresses
+    // finalization during failed type construction before the callable is found.
+    // The fetch-and-clear is load-bearing: when an exception is
     // unwinding the frame (a frame-local whose last reference dies on a `raise`
     // with no local handler), CPython still runs `__del__` during that unwind — it
     // does NOT skip the finalizer because an exception is pending. molt previously
@@ -3079,8 +3481,8 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // CPython exactly: capture the in-flight exception, keep it alive across the
     // clear, then CLEAR so the binding + call run clean. It is restored after the
     // finalizer (the unraisable-write + restore block below).
-    // Run `__del__` lookup/binding/call under a SYNTHETIC exception-handler frame
-    // so an uncaught raise inside it is recorded VALUE-BASED and swallowed below,
+    // Run `__del__` binding/call under a SYNTHETIC exception-handler frame so an
+    // uncaught raise inside it is recorded VALUE-BASED and swallowed below,
     // instead of killing the process. ROOT CAUSE of #65 (definitively measured):
     // when a raise reaches `molt_raise` with `exception_handler_active()` false
     // (the `EXCEPTION_STACK` empty), molt's uncaught-exception terminator runs
@@ -3097,9 +3499,14 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // try-frame (`molt_exception_push`/`molt_exception_pop`); no `catch_unwind`, no
     // backend landing pad, no deferral, and `__del__` still runs INLINE at the
     // rc→0 point so finalization stays CPython-prompt.
+    // The finalizer may replace/delete its own class attribute. Retain the raw
+    // callable across the call and post-failure policy repr/context reporting.
+    let raw_del_context_bits = std::cell::Cell::new(0_u64);
+    let raw_del_owner = std::cell::RefCell::new(None::<crate::PtrDropGuard>);
     crate::builtins::exceptions::run_unraisable_with_policy(
         py,
         || {
+            let raw_del_bits = raw_del_context_bits.get();
             if crate::object::ops_sys::runtime_target_minor(py) >= 14 {
                 let rendered =
                     crate::builtins::exceptions::unraisable_context_repr(py, raw_del_bits);
@@ -3114,26 +3521,71 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
             }
         },
         || {
-            crate::builtins::exceptions::exception_stack_push();
+            let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+                return;
+            };
+            let _del_name_owner = obj_from_bits(del_name_bits)
+                .as_ptr()
+                .map(crate::PtrDropGuard::new);
+            let raw_del_bits = obj_from_bits(class_bits)
+                .as_ptr()
+                .and_then(|class_ptr| unsafe {
+                    class_lookup_raw_mro_dict_attr(py, class_ptr, del_name_bits)
+                });
+            let Some(raw_del_bits) = raw_del_bits else {
+                return;
+            };
+            inc_ref_bits(py, raw_del_bits);
+            drop(
+                raw_del_owner.replace(
+                    obj_from_bits(raw_del_bits)
+                        .as_ptr()
+                        .map(crate::PtrDropGuard::new),
+                ),
+            );
+            raw_del_context_bits.set(raw_del_bits);
+            unsafe {
+                (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+            }
+            #[cfg(test)]
+            run_finalizer_resource_test_hook(
+                py,
+                FinalizerResourceStage::RawRetained,
+                raw_del_bits,
+                0,
+            );
+            let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
             let del_bits = obj_from_bits(class_bits)
                 .as_ptr()
                 .and_then(|class_ptr| unsafe {
-                    crate::builtins::attr::descriptor_bind(py, raw_del_bits, class_ptr, Some(ptr))
+                    crate::builtins::attr::descriptor_bind(
+                        py,
+                        raw_del_bits,
+                        Some(MoltObject::from_ptr(class_ptr).bits()),
+                        Some(obj_bits),
+                    )
                 })
                 .unwrap_or(0);
+            let _del_owner = (del_bits != 0)
+                .then(|| obj_from_bits(del_bits).as_ptr())
+                .flatten()
+                .map(crate::PtrDropGuard::new);
+            #[cfg(test)]
+            run_finalizer_resource_test_hook(
+                py,
+                FinalizerResourceStage::BoundOwned,
+                raw_del_bits,
+                del_bits,
+            );
             if del_bits != 0 && !crate::exception_pending(py) {
                 let result_bits = unsafe { crate::call_callable0(py, del_bits) };
-                if !obj_from_bits(result_bits).is_none() {
-                    dec_ref_bits(py, result_bits);
-                }
-            }
-            crate::builtins::exceptions::exception_stack_pop(py);
-            if !obj_from_bits(del_bits).is_none() {
-                dec_ref_bits(py, del_bits);
+                let _result_owner = (!obj_from_bits(result_bits).is_none())
+                    .then(|| obj_from_bits(result_bits).as_ptr())
+                    .flatten()
+                    .map(crate::PtrDropGuard::new);
             }
         },
     );
-    dec_ref_bits(py, raw_del_bits);
     // CPython `PyObject_CallFinalizer` tail: an exception raised DURING the
     // finalizer (`__del__` itself, or the `descriptor_bind` above) is ignored —
     // `PyErr_WriteUnraisable` writes it to stderr and clears it — and only THEN is
@@ -3194,6 +3646,13 @@ fn record_terminal_deallocation(py: &PyToken<'_>, type_id: u32, bytes: u64) {
     profile_dealloc_type(py, type_id, bytes);
 }
 
+/// The boxed allocation shape owns all words, including the payload tail. No
+/// named field table or trailing instance-dictionary word exists in this shape.
+unsafe fn boxed_payload_field_slots(ptr: *mut u8) -> impl Iterator<Item = *mut u64> {
+    let words = unsafe { object_payload_size(ptr) } / std::mem::size_of::<u64>();
+    (0..words).map(move |index| unsafe { ptr.cast::<u64>().add(index) })
+}
+
 /// Typed projection of the payload edges layered under OBJECT/WEAKREF.
 /// Common class, inline-field, and instance-dict edges are owned by the heap
 /// lifecycle dispatcher; this function enumerates only the selected subshape.
@@ -3218,6 +3677,11 @@ pub(crate) unsafe fn object_shape_visit_owned_edges(
     unsafe {
         match object_shape_lifecycle_family(shape) {
             ObjectShapeLifecycleFamily::Plain => {}
+            ObjectShapeLifecycleFamily::BoxedFields => {
+                for slot in boxed_payload_field_slots(ptr) {
+                    visit(*slot);
+                }
+            }
             ObjectShapeLifecycleFamily::DictSubclass => {
                 if let Some(&bits) = runtime_state(py)
                     .dict_subclass_storage
@@ -3295,6 +3759,11 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
     unsafe {
         match object_shape_lifecycle_family(shape) {
             ObjectShapeLifecycleFamily::Plain => {}
+            ObjectShapeLifecycleFamily::BoxedFields => {
+                for slot in boxed_payload_field_slots(ptr) {
+                    detached_sink.detach_if_heap(slot.replace(MoltObject::none().bits()));
+                }
+            }
             ObjectShapeLifecycleFamily::DictSubclass => {
                 let side = runtime_state(py)
                     .dict_subclass_storage
@@ -3432,11 +3901,12 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
         // corrupt unrelated runtime state.
         let (prev, should_finalize) = if header_flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
             let bits = MoltObject::from_ptr(ptr).bits();
-            let internal_pins = u32::from(header_flags & HEADER_FLAG_GC_PINNED != 0);
+            // A collector pin prevents terminal destruction. It is discounted
+            // only by effective_gc_refcount, never by physical owner release.
             let transition = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .transition_runtime_owner_release(
                     bits,
-                    internal_pins,
+                    0,
                     || (*header_ptr).release_owned("dec_ref_ptr").previous(),
                     || (*header_ptr).restore_stable_view_hold(),
                 )
@@ -3608,8 +4078,8 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
             // path: ints, strings, tuples, plain instances) skip the revival
             // inc/dec AND the global weakref lock entirely and fall straight
             // through to the free tail with zero added cost.
-            let needs_revival_window =
-                (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0 || object_class_has_finalizer(ptr);
+            let needs_revival_window = (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0
+                || object_class_has_finalizer(py, ptr);
             if needs_revival_window {
                 let mut has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
                 let view_bits = MoltObject::from_ptr(ptr).bits();
@@ -3875,6 +4345,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                         | HeapDropPolicy::Super
                         | HeapDropPolicy::Classmethod
                         | HeapDropPolicy::Staticmethod
+                        | HeapDropPolicy::NativeDescriptor
                         | HeapDropPolicy::GenericAlias
                         | HeapDropPolicy::Union
                         | HeapDropPolicy::DictView
@@ -3897,18 +4368,23 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                     }
                 }
                 release_ptr(ptr);
-                // Notify the resource tracker only after typed backing state is gone.
-                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+                // Arena chunks account their own bytes; frame storage is not a
+                // heap allocation. Both still retire all typed owned edges.
+                if (header_flags & HEADER_FLAG_SCOPED) == 0 {
+                    let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+                }
                 if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
                     free_aux_sidecar(header_aux.word);
                 }
-                if total_size != 0 && (header_flags & HEADER_FLAG_ARENA) == 0 {
+                if total_size != 0 && (header_flags & HEADER_FLAG_SCOPED) == 0 {
                     let layout = std::alloc::Layout::from_size_align(total_size, 8)
                         .unwrap_or_else(|_| std::process::abort());
                     std::alloc::dealloc(header_ptr as *mut u8, layout);
                 }
             });
-            record_terminal_deallocation(py, type_id, dealloc_bytes);
+            if (header_flags & HEADER_FLAG_SCOPED) == 0 {
+                record_terminal_deallocation(py, type_id, dealloc_bytes);
+            }
         }
     }
 }
@@ -3929,6 +4405,53 @@ mod tests {
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 
     static FINALIZER_VIEW_PTR: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn class_definition_success_preserves_policy_and_retires_attempt_state() {
+        use super::{
+            CLASS_POLICY_DEFINITION_FINISHED, CLASS_POLICY_DEFINITION_FINISHING,
+            ClassDefinitionFinishGuard, MoltAuxWord,
+        };
+
+        let retained = !(CLASS_POLICY_DEFINITION_FINISHED | CLASS_POLICY_DEFINITION_FINISHING);
+        let policy = MoltAuxWord::new(retained);
+        let guard = ClassDefinitionFinishGuard::begin(&policy);
+        assert_eq!(
+            policy.load(Ordering::Acquire),
+            retained | CLASS_POLICY_DEFINITION_FINISHING
+        );
+        guard.complete();
+        assert_eq!(
+            policy.load(Ordering::Acquire),
+            retained | CLASS_POLICY_DEFINITION_FINISHED
+        );
+    }
+
+    #[test]
+    fn class_definition_failure_preserves_new_policy_and_allows_retry() {
+        use super::{
+            CLASS_POLICY_DEFINITION_FINISHED, CLASS_POLICY_DEFINITION_FINISHING,
+            CLASS_POLICY_IMMUTABLE, CLASS_POLICY_NOT_BASE, ClassDefinitionFinishGuard, MoltAuxWord,
+        };
+
+        let policy = MoltAuxWord::new(CLASS_POLICY_NOT_BASE);
+        {
+            let _guard = ClassDefinitionFinishGuard::begin(&policy);
+            policy.fetch_or(CLASS_POLICY_IMMUTABLE, Ordering::AcqRel);
+        }
+        let retained = CLASS_POLICY_NOT_BASE | CLASS_POLICY_IMMUTABLE;
+        assert_eq!(policy.load(Ordering::Acquire), retained);
+        let retry = ClassDefinitionFinishGuard::begin(&policy);
+        assert_eq!(
+            policy.load(Ordering::Acquire),
+            retained | CLASS_POLICY_DEFINITION_FINISHING
+        );
+        retry.complete();
+        assert_eq!(
+            policy.load(Ordering::Acquire),
+            retained | CLASS_POLICY_DEFINITION_FINISHED
+        );
+    }
 
     fn publish_borrowed_abi_view(bits: u64) {
         let ptr = unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
@@ -3953,7 +4476,7 @@ mod tests {
             let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
             let old_flags = unsafe { (*class_header).load_metadata_flags() };
             unsafe {
-                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_HAS_FINALIZER);
+                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
             }
             let result = run(object_bits);
             unsafe { (*class_header).store_flags(old_flags) };
@@ -4382,7 +4905,7 @@ mod tests {
             }
             let _restore = RestoreClassFlags(class_header, old_flags);
             unsafe {
-                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_HAS_FINALIZER);
+                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
             }
 
             let ptr = alloc_object_with_aux(
@@ -4400,7 +4923,7 @@ mod tests {
                     ClassEdgeOwnership::Borrowed,
                 )
             });
-            assert!(unsafe { object_class_has_finalizer(ptr) });
+            assert!(unsafe { object_class_has_finalizer(_py, ptr) });
 
             unsafe {
                 (*class_header).store_flags(old_flags);
@@ -4550,7 +5073,7 @@ mod tests {
         assert!(!refcount_header(1, super::HEADER_FLAG_DEALLOCATING).try_retain_live());
 
         let gc = refcount_header(1, 0);
-        gc.pin_for_gc();
+        gc.pin_for_gc(0); // No ABI view: this synthetic header needs no identity.
         assert_eq!(gc.ref_count_snapshot(), 2);
         assert!(gc.has_flag(super::HEADER_FLAG_GC_PINNED));
 

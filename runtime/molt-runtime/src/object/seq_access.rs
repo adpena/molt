@@ -39,6 +39,16 @@ impl Drop for PinnedSequenceItem<'_, '_> {
     }
 }
 
+impl<'a, 'py> PinnedSequenceSnapshot<'a, 'py> {
+    /// Adopt already-retained values from another object representation.
+    pub(crate) fn from_owned_values(
+        py: &'a PyToken<'py>,
+        values: crate::object::backing::TrackedVecOwner<u64>,
+    ) -> Self {
+        Self { py, values }
+    }
+}
+
 impl std::ops::Deref for PinnedSequenceSnapshot<'_, '_> {
     type Target = [u64];
 

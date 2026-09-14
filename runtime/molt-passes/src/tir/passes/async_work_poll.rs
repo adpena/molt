@@ -1102,6 +1102,7 @@ mod tests {
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             start,
             call,
+            original_check,
             TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
@@ -1110,7 +1111,6 @@ mod tests {
                 attrs: AttrDict::new(),
                 source_span: None,
             },
-            original_check,
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(stats.ops_added, 0, "must reuse the SSA-authored edge");
         assert_eq!(stats.attrs_changed, 1);
         assert_eq!(func.blocks[&entry].ops.len(), 4);
-        let poll = &func.blocks[&entry].ops[3];
+        let poll = &func.blocks[&entry].ops[2];
         assert!(poll.is_async_work_poll());
         assert_eq!(poll.operands, [ValueId(0)]);
         crate::tir::verify::verify_function(&func)
@@ -1262,16 +1262,21 @@ mod tests {
 
     #[test]
     fn latch_lookup_reuses_payload_check_before_nonraising_transport_suffix() {
-        let mut func = TirFunction::new("latch_suffix".into(), vec![], TirType::None);
+        let mut func =
+            TirFunction::new("latch_suffix".into(), vec![TirType::DynBox], TirType::None);
         let latch = func.entry_block;
         let mut transport = op(OpCode::Copy);
         transport
             .attrs
             .insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+        let source = ValueId(0);
+        let copied = func.fresh_value();
+        transport.operands = vec![source];
+        transport.results = vec![copied];
         func.blocks.get_mut(&latch).unwrap().ops = vec![check(70), transport];
         func.blocks.get_mut(&latch).unwrap().terminator = Terminator::Branch {
             target: latch,
-            args: vec![],
+            args: vec![source],
         };
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         let value_types = func.value_types.clone();

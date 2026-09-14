@@ -1,85 +1,55 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::RefcountBalanceRole;
 use crate::tir::passes::alias_analysis::AliasAnalysisResult;
 use crate::tir::values::ValueId;
 
 use super::super::PassStats;
-use super::balance::{complementary_refcount_opcode, is_refcount_balance_op};
+use super::balance::refcount_balance_role;
 
 pub(super) fn eliminate_local_pairs(
     func: &mut TirFunction,
     alias: &AliasAnalysisResult,
-    stack_alloc_vals: &HashSet<ValueId>,
+    inert_values: &HashSet<ValueId>,
     stats: &mut PassStats,
 ) {
-    let block_ids: Vec<_> = func.blocks.keys().copied().collect();
-
-    for bid in block_ids {
-        let block = match func.blocks.get_mut(&bid) {
-            Some(b) => b,
-            None => continue,
-        };
-
-        let n = block.ops.len();
-        if n == 0 {
-            continue;
-        }
-
-        let mut remove = vec![false; n];
-
-        for i in 0..n {
-            let op = &block.ops[i];
-            if is_refcount_balance_op(op.opcode)
-                && op
-                    .operands
-                    .first()
-                    .is_some_and(|v| stack_alloc_vals.contains(v))
-            {
-                remove[i] = true;
-            }
-        }
-
-        for i in 0..n {
-            if remove[i] {
-                continue;
-            }
-            let Some(target_opcode) = complementary_refcount_opcode(block.ops[i].opcode) else {
-                continue;
-            };
-            let Some(val_i) = block.ops[i].operands.first().copied() else {
-                continue;
-            };
-
-            let partner = {
-                let mut result = None;
-                for j in (i + 1)..n {
-                    if remove[j] {
-                        continue;
-                    }
-                    let op_j = &block.ops[j];
-                    if alias.is_rc_barrier(op_j) {
-                        break;
-                    }
-                    if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val_i)
-                    {
-                        result = Some(j);
-                        break;
-                    }
+    for block in func.blocks.values_mut() {
+        let mut pending: HashMap<ValueId, Vec<usize>> = HashMap::new();
+        let mut remove = vec![false; block.ops.len()];
+        for (index, op) in block.ops.iter().enumerate() {
+            let role = refcount_balance_role(op.opcode);
+            if role.is_refcount_balance() && op.has_valid_shape() && op.operands.len() == 1 {
+                let root = alias.root(op.operands[0]);
+                if inert_values.contains(&root) {
+                    remove[index] = true;
+                    continue;
                 }
-                result
-            };
-            if let Some(j) = partner {
-                remove[i] = true;
-                remove[j] = true;
+                if role == RefcountBalanceRole::Increment {
+                    pending.entry(root).or_default().push(index);
+                    continue;
+                }
+                if role == RefcountBalanceRole::Decrement
+                    && let Some(retain) = pending.get_mut(&root).and_then(Vec::pop)
+                {
+                    // This explicit retain proves the matched release cannot
+                    // reach zero. Unmatched releases still form a barrier.
+                    remove[retain] = true;
+                    remove[index] = true;
+                    continue;
+                }
+            }
+            if role.is_refcount_balance() || alias.is_rc_barrier(op) {
+                pending.clear();
             }
         }
-
-        let before_len = block.ops.len();
-        let mut remove_iter = remove.iter();
-        block
-            .ops
-            .retain(|_| !remove_iter.next().copied().unwrap_or(false));
-        stats.ops_removed += before_len - block.ops.len();
+        let before = block.ops.len();
+        let mut decisions = remove.into_iter();
+        block.ops.retain(|_| {
+            !decisions
+                .next()
+                .expect("one RC decision per source operation")
+        });
+        stats.ops_removed += before - block.ops.len();
     }
 }

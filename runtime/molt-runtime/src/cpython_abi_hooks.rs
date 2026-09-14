@@ -3,7 +3,7 @@
 //! Each hook acquires the GIL internally via `with_gil` — re-entrant and safe
 //! whether called from within Molt's execution frame or from a bare C extension.
 
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, Once};
 
 use std::ffi::CStr;
 use std::os::raw::c_int;
@@ -40,8 +40,7 @@ use crate::object::builders::{
     alloc_list_with_capacity, alloc_module_obj, alloc_string, alloc_tuple_uninitialized,
 };
 use crate::object::layout::{
-    function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
-    module_dict_bits,
+    function_set_call_target_ptr, function_set_trampoline_ptr, module_dict_bits,
 };
 use crate::object::ops::{
     dict_del_in_place, dict_get_in_place, dict_get_str_bytes_borrowed, dict_set_in_place,
@@ -2631,6 +2630,9 @@ unsafe extern "C" fn hook_module_set_attr(
     }
     let name_bytes = unsafe { std::slice::from_raw_parts(name_data, name_len) };
     with_gil(|_py| {
+        if crate::exception_pending(&_py) {
+            return -1;
+        }
         let dict_bits = unsafe { module_dict_bits(module_ptr) };
         let dict_obj = MoltObject::from_bits(dict_bits);
         let Some(dict_ptr) = dict_obj.as_ptr() else {
@@ -2754,7 +2756,6 @@ impl CExtDispatchKind {
 struct CExtCallable {
     meth_target: *const (),
     flags: i32,
-    self_bits: u64,
     dispatch_kind: CExtDispatchKind,
 }
 
@@ -2764,16 +2765,25 @@ struct CExtCallable {
 unsafe impl Send for CExtCallable {}
 unsafe impl Sync for CExtCallable {}
 
-fn cext_callable_registry() -> &'static Mutex<Vec<CExtCallable>> {
-    use std::sync::OnceLock;
-    static REGISTRY: OnceLock<Mutex<Vec<CExtCallable>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+fn with_cext_callable_registry<R>(read: impl FnOnce(&[CExtCallable]) -> R) -> R {
+    // Never return a 'static borrow into a reclaimable runtime. Executable
+    // records contain no object edges; the function's traced closure owns self.
+    with_gil(|py| {
+        let records = crate::runtime_state(&py)
+            .cpython
+            .callables
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        read(&records)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_prepare_static_extension() -> u64 {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
-    register_cpython_hooks();
+    if !register_cpython_hooks() {
+        return MoltObject::none().bits();
+    }
     MoltObject::from_bool(true).bits()
 }
 
@@ -3010,7 +3020,9 @@ pub unsafe extern "C" fn molt_py_cfunction_create_bytes(
     doc_len: u64,
 ) -> u64 {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
-    register_cpython_hooks();
+    if !register_cpython_hooks() {
+        return MoltObject::none().bits();
+    }
     with_gil(|_py| {
         let name_bytes = match unsafe { cext_bytes_from_raw(name_ptr, name_len) } {
             Ok(bytes) => bytes,
@@ -3051,7 +3063,9 @@ pub unsafe extern "C" fn molt_module_add_py_cfunction_bytes(
     doc_len: u64,
 ) -> i32 {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
-    register_cpython_hooks();
+    if !register_cpython_hooks() {
+        return -1;
+    }
     with_gil(|_py| {
         let name_bytes = match unsafe { cext_bytes_from_raw(name_ptr, name_len) } {
             Ok(bytes) => bytes,
@@ -3623,8 +3637,21 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
     args_ptr: u64,
     args_len: u64,
 ) -> i64 {
-    // The closure encodes the registry id as a NaN-boxed int.
-    let id_obj = MoltObject::from_bits(closure_bits);
+    // The existing traced tuple representation owns the bound receiver for
+    // exactly the callable lifetime, including GC and shutdown callbacks.
+    let Some((id_bits, self_bits)) = with_gil(|_py| {
+        let closure = MoltObject::from_bits(closure_bits).as_ptr()?;
+        unsafe { crate::object::seq_access::tuple_pair(closure) }
+    }) else {
+        return with_gil(|py| {
+            crate::raise_exception::<i64>(
+                &py,
+                "SystemError",
+                "C extension trampoline requires a callable/receiver closure pair",
+            )
+        });
+    };
+    let id_obj = MoltObject::from_bits(id_bits);
     let id = match id_obj.as_int() {
         Some(value) if value >= 0 => match usize::try_from(value) {
             Ok(value) => value,
@@ -3648,10 +3675,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
             });
         }
     };
-    let entry = match cext_callable_registry().lock() {
-        Ok(guard) => guard.get(id).copied(),
-        Err(poisoned) => poisoned.into_inner().get(id).copied(),
-    };
+    let entry = with_cext_callable_registry(|records| records.get(id).copied());
     let Some(entry) = entry else {
         return with_gil(|_py| {
             crate::raise_exception::<i64>(
@@ -3682,7 +3706,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
     };
 
     let mut ingress = CExtIngress::new();
-    let Some(self_obj) = (unsafe { ingress.push_borrowed_bits(entry.self_bits) }) else {
+    let Some(self_obj) = (unsafe { ingress.push_borrowed_bits(self_bits) }) else {
         return cext_ingress_failure("failed to materialize C extension self view");
     };
 
@@ -3902,21 +3926,9 @@ unsafe extern "C" fn hook_register_c_function(
     }
     let name_bytes = unsafe { std::slice::from_raw_parts(name_data, name_len) };
     with_gil(|_py| {
-        // Reserve a registry slot for this C function.
-        let id = {
-            let mut guard = cext_callable_registry()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let id = guard.len();
-            guard.push(CExtCallable {
-                meth_target,
-                flags,
-                self_bits,
-                dispatch_kind,
-            });
-            id
-        };
-        let closure_bits = MoltObject::from_int(id as i64).bits();
+        if crate::exception_pending(&_py) || !admit_process_cpython_state(&_py) {
+            return 0;
+        }
         let raw_trampoline = molt_cpython_abi_cext_call_trampoline_admitted as *const ();
         let fn_ptr_value = crate::builtins::functions::runtime_fn_addr(
             "crate::molt_cpython_abi_cext_call_trampoline_admitted",
@@ -3924,6 +3936,13 @@ unsafe extern "C" fn hook_register_c_function(
         );
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
         if func_ptr.is_null() {
+            if !crate::exception_pending(&_py) {
+                crate::raise_exception::<u64>(
+                    &_py,
+                    "MemoryError",
+                    "extension callable allocation failed",
+                );
+            }
             return 0;
         }
         unsafe {
@@ -3938,28 +3957,96 @@ unsafe extern "C" fn hook_register_c_function(
             // Stash __name__ on the function dict so repr() and tracebacks
             // report the C extension's actual function name.
             let name_str = alloc_string(&_py, name_bytes);
-            if !name_str.is_null() {
-                let name_bits = MoltObject::from_ptr(name_str).bits();
-                let dict_ptr = alloc_dict_with_pairs(&_py, &[]);
-                if !dict_ptr.is_null() {
-                    let key_ptr = alloc_string(&_py, b"__name__");
-                    if !key_ptr.is_null() {
-                        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                        dict_set_in_place(&_py, dict_ptr, key_bits, name_bits);
-                        dec_ref_bits(&_py, key_bits);
-                    }
-                    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-                    function_set_dict_bits(func_ptr, dict_bits);
-                    inc_ref_bits(&_py, dict_bits);
-                    dec_ref_bits(&_py, dict_bits);
+            if name_str.is_null() {
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                if !crate::exception_pending(&_py) {
+                    crate::raise_exception::<u64>(
+                        &_py,
+                        "MemoryError",
+                        "extension callable name allocation failed",
+                    );
                 }
-                dec_ref_bits(&_py, name_bits);
+                return 0;
             }
-            // Encode the registry id into the closure slot so the
-            // trampoline can recover it on every call.  Inline-int closure
-            // bits are not refcounted; no inc_ref needed.
-            let closure_slot = func_ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
-            *closure_slot = closure_bits;
+            let name_bits = MoltObject::from_ptr(name_str).bits();
+            let named = crate::call::class_init::function_set_attr_name(
+                &_py,
+                func_ptr,
+                b"__name__",
+                name_bits,
+            );
+            dec_ref_bits(&_py, name_bits);
+            if !named {
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                return 0;
+            }
+            // Preallocate every traced edge before claiming an executable
+            // record. Filling the reserved integer slot cannot allocate or
+            // call Python while holding the registry lock.
+            let closure_ptr =
+                crate::object::builders::alloc_tuple(&_py, &[MoltObject::none().bits(), self_bits]);
+            if closure_ptr.is_null() {
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                if !crate::exception_pending(&_py) {
+                    crate::raise_exception::<u64>(
+                        &_py,
+                        "MemoryError",
+                        "extension closure allocation failed",
+                    );
+                }
+                return 0;
+            }
+            let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
+            // Only a fully initialized callable may claim a registry entry.
+            // No Python allocation or callback occurs while the registry lock
+            // is held; failed construction leaves no orphan callable entry.
+            let mut registry = crate::runtime_state(&_py)
+                .cpython
+                .callables
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if registry.try_reserve(1).is_err() {
+                drop(registry);
+                dec_ref_bits(&_py, closure_bits);
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                crate::raise_exception::<u64>(
+                    &_py,
+                    "MemoryError",
+                    "extension callable registry allocation failed",
+                );
+                return 0;
+            }
+            let Some(closure) = u64::try_from(registry.len())
+                .ok()
+                .and_then(MoltObject::try_from_uint)
+            else {
+                drop(registry);
+                dec_ref_bits(&_py, closure_bits);
+                dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
+                crate::raise_exception::<u64>(
+                    &_py,
+                    "OverflowError",
+                    "extension callable registry exhausted",
+                );
+                return 0;
+            };
+            assert_eq!(
+                crate::object::seq_access::replace_unique_item_owned(
+                    closure_ptr,
+                    0,
+                    closure.bits()
+                ),
+                Some(MoltObject::none().bits()),
+                "unpublished C extension closure lost exclusive ownership",
+            );
+            registry.push(CExtCallable {
+                meth_target,
+                flags,
+                dispatch_kind,
+            });
+            drop(registry);
+            crate::object::layout::function_set_closure_bits(&_py, func_ptr, closure_bits);
+            dec_ref_bits(&_py, closure_bits);
         }
         MoltObject::from_ptr(func_ptr).bits()
     })
@@ -3972,39 +4059,167 @@ enum HookRegistrationState {
     Uninitialized,
     Initializing { owner: std::thread::ThreadId },
     Ready,
+    Retiring,
+    Retired,
+    Failed,
 }
 
-static HOOK_REGISTRATION_STATE: Mutex<HookRegistrationState> =
-    Mutex::new(HookRegistrationState::Uninitialized);
-static HOOK_REGISTRATION_READY: Condvar = Condvar::new();
+#[derive(Clone, Copy)]
+struct StaticRuntimeBinding {
+    pointer: *mut PyObject,
+    bits: u64,
+}
 
-struct HookRegistrationGuard {
+// SAFETY: the C shell has process lifetime. Runtime handle access/retirement
+// requires the GIL and this runtime's lifecycle ownership.
+unsafe impl Send for StaticRuntimeBinding {}
+
+/// Runtime-instance CPython state. Only the immutable function-pointer vtable
+/// and static C shell addresses are process-owned.
+pub(crate) struct CpythonRuntimeState {
+    registration: Mutex<HookRegistrationState>,
+    ready: Condvar,
+    static_bindings: Mutex<Vec<StaticRuntimeBinding>>,
+    callables: Mutex<Vec<CExtCallable>>,
+}
+
+impl CpythonRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            registration: Mutex::new(HookRegistrationState::Uninitialized),
+            ready: Condvar::new(),
+            static_bindings: Mutex::new(Vec::new()),
+            callables: Mutex::new(Vec::new()),
+        }
+    }
+
+    unsafe fn bind_static(
+        &self,
+        py: &crate::PyToken<'_>,
+        pointer: *mut PyObject,
+        bits: u64,
+        canonical_view: bool,
+    ) {
+        let mut bindings = self.static_bindings.lock().unwrap();
+        assert!(
+            bindings.iter().all(|binding| binding.pointer != pointer),
+            "static C shell has duplicate runtime binding ownership"
+        );
+        bindings
+            .try_reserve(1)
+            .expect("runtime static binding ownership allocation failed");
+        inc_ref_bits(py, bits);
+        let bound = unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                pointer,
+                bits,
+                canonical_view,
+            )
+        };
+        if !bound {
+            drop(bindings);
+            dec_ref_bits(py, bits);
+            panic!("static C shell could not bind its canonical runtime class");
+        }
+        bindings.push(StaticRuntimeBinding { pointer, bits });
+    }
+
+    /// Detach the runtime-backed fields of this runtime's process-static shells.
+    /// Keep the exact bridge bindings and callable dispatch available while
+    /// dropping those fields: C deallocators can reenter the old runtime.
+    pub(crate) fn retire_static_roots(&self) {
+        crate::gil_assert();
+        let mut registration = self.registration.lock().unwrap();
+        match *registration {
+            HookRegistrationState::Uninitialized | HookRegistrationState::Retired => return,
+            HookRegistrationState::Retiring => return,
+            HookRegistrationState::Ready | HookRegistrationState::Initializing { .. } => {
+                *registration = HookRegistrationState::Retiring;
+            }
+            HookRegistrationState::Failed => panic!("retiring failed CPython bootstrap twice"),
+        }
+        drop(registration);
+        unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
+    }
+
+    pub(crate) fn static_class_roots(&self) -> Vec<u64> {
+        crate::gil_assert();
+        self.static_bindings
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|binding| {
+                crate::obj_from_bits(binding.bits)
+                    .as_ptr()
+                    .filter(|ptr| unsafe { object_type_id(*ptr) } == crate::TYPE_ID_TYPE)
+                    .map(|_| binding.bits)
+            })
+            .collect()
+    }
+
+    /// Release exact static-class anchors only after the last permitted C
+    /// callback drain. An isolate that never published these shells owns none.
+    pub(crate) fn retire_static_bindings(&self, py: &crate::PyToken<'_>) {
+        crate::gil_assert();
+        let bindings = {
+            let mut owned = self.static_bindings.lock().unwrap();
+            std::mem::take(&mut *owned)
+        };
+        // Remove every ingress/reverse identity before releasing any anchor.
+        // Reference destruction runs outside both the ownership and bridge locks.
+        for binding in &bindings {
+            assert!(
+                unsafe {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .unbind_static_pyobj_from_runtime_handle(binding.pointer, binding.bits)
+                },
+                "static C shell lost its owning runtime binding before retirement"
+            );
+        }
+        for binding in bindings {
+            dec_ref_bits(py, binding.bits);
+        }
+        self.callables.lock().unwrap().clear();
+        *self.registration.lock().unwrap() = HookRegistrationState::Retired;
+        self.ready.notify_all();
+    }
+}
+
+struct HookRegistrationGuard<'a> {
+    runtime: &'a CpythonRuntimeState,
     owner: std::thread::ThreadId,
     committed: bool,
 }
 
-impl HookRegistrationGuard {
-    fn begin() -> Option<Self> {
+impl<'a> HookRegistrationGuard<'a> {
+    fn begin(runtime: &'a CpythonRuntimeState) -> Option<Self> {
         let owner = std::thread::current().id();
-        let mut state = HOOK_REGISTRATION_STATE
+        let mut state = runtime
+            .registration
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             match *state {
-                HookRegistrationState::Ready => return None,
+                HookRegistrationState::Ready | HookRegistrationState::Retiring => return None,
+                HookRegistrationState::Retired => {
+                    panic!("CPython bootstrap entered a retired runtime")
+                }
+                HookRegistrationState::Failed => panic!("CPython bootstrap previously failed"),
                 HookRegistrationState::Initializing {
                     owner: active_owner,
                 } if active_owner == owner => {
                     return None;
                 }
                 HookRegistrationState::Initializing { .. } => {
-                    state = HOOK_REGISTRATION_READY
+                    state = runtime
+                        .ready
                         .wait(state)
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                 }
                 HookRegistrationState::Uninitialized => {
                     *state = HookRegistrationState::Initializing { owner };
                     return Some(Self {
+                        runtime,
                         owner,
                         committed: false,
                     });
@@ -4014,7 +4229,9 @@ impl HookRegistrationGuard {
     }
 
     fn commit(mut self) {
-        let mut state = HOOK_REGISTRATION_STATE
+        let mut state = self
+            .runtime
+            .registration
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(
@@ -4024,32 +4241,54 @@ impl HookRegistrationGuard {
         );
         *state = HookRegistrationState::Ready;
         self.committed = true;
-        HOOK_REGISTRATION_READY.notify_all();
+        self.runtime.ready.notify_all();
     }
 }
 
-impl Drop for HookRegistrationGuard {
+impl Drop for HookRegistrationGuard<'_> {
     fn drop(&mut self) {
         if self.committed {
             return;
         }
-        let mut state = HOOK_REGISTRATION_STATE
+        // A partial bootstrap must not leave any old shell fields or bridge
+        // identities available to a future runtime. Roll back under the same
+        // runtime's GIL custody before marking the transaction failed.
+        self.runtime.retire_static_roots();
+        with_gil(|py| self.runtime.retire_static_bindings(&py));
+        let mut state = self
+            .runtime
+            .registration
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *state == (HookRegistrationState::Initializing { owner: self.owner }) {
-            *state = HookRegistrationState::Uninitialized;
-            HOOK_REGISTRATION_READY.notify_all();
-        }
+        *state = HookRegistrationState::Failed;
+        self.runtime.ready.notify_all();
     }
 }
 
+fn admit_process_cpython_state(py: &crate::PyToken<'_>) -> bool {
+    if crate::state::runtime_state::owns_process_cpython_state(crate::runtime_state(py)) {
+        return true;
+    }
+    crate::raise_exception::<u64>(
+        py,
+        "RuntimeError",
+        "process-static C extensions are not supported in an isolated runtime",
+    );
+    false
+}
+
 /// Register the runtime hooks into `molt-lang-cpython-abi`.
-/// Idempotent — safe to call multiple times (only registers once).
-pub fn register_cpython_hooks() {
+/// Install process-lived hooks once and publish class bindings once per runtime.
+pub fn register_cpython_hooks() -> bool {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     with_gil(|_py| {
-        let Some(registration) = HookRegistrationGuard::begin() else {
-            return;
+        if !admit_process_cpython_state(&_py) {
+            return false;
+        }
+        let state = crate::runtime_state(&_py);
+        let runtime = &state.cpython;
+        let Some(registration) = HookRegistrationGuard::begin(runtime) else {
+            return true;
         };
         let builtins = crate::builtin_classes(&_py);
         for (class_bits, type_object) in [
@@ -4134,17 +4373,7 @@ pub fn register_cpython_hooks() {
                 (&raw mut molt_cpython_abi::abi_types::Py_GenericAliasType).cast::<PyObject>(),
             ),
         ] {
-            let bound = unsafe {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
-                    type_object,
-                    class_bits,
-                    true,
-                )
-            };
-            assert!(
-                bound,
-                "failed to bind runtime builtin class to canonical ABI type"
-            );
+            unsafe { runtime.bind_static(&_py, type_object, class_bits, true) };
         }
         for exception in molt_cpython_abi::abi_types::exc_singleton_ptrs() {
             let Some(c_name) = molt_cpython_abi::abi_types::exc_singleton_name(exception) else {
@@ -4161,158 +4390,144 @@ pub fn register_cpython_hooks() {
                 continue;
             }
             let canonical_view = crate::class_name_for_error(class_bits) == requested_name;
-            let bound = unsafe {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
-                    exception,
-                    class_bits,
-                    canonical_view,
-                )
-            };
-            assert!(
-                bound,
-                "failed to bind {c_name} to its runtime exception class"
-            );
+            unsafe { runtime.bind_static(&_py, exception, class_bits, canonical_view) };
         }
-        let traceback_class_bits = crate::builtin_classes(&_py).traceback;
-        let traceback_bound = unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
-                (&raw mut molt_cpython_abi::abi_types::PyTraceBack_Type).cast::<PyObject>(),
-                traceback_class_bits,
-                true,
-            )
-        };
-        assert!(traceback_bound, "failed to bind PyTraceBack_Type");
-        let hooks = RuntimeHooks {
-            abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
-            abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
-            struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
-            gil_ensure: hook_gil_ensure,
-            gil_leave: hook_gil_leave,
-            gil_release: hook_gil_release,
-            gil_restore: hook_gil_restore,
-            gil_check: hook_gil_check,
-            runtime_is_initialized: hook_runtime_is_initialized,
-            thread_state_drop_enter: hook_thread_state_drop_enter,
-            thread_state_drop_leave: hook_thread_state_drop_leave,
-            attached_runtime_context: hook_attached_runtime_context,
-            pending_call_error: hook_pending_call_error,
-            alloc_str: hook_alloc_str,
-            alloc_bytes: hook_alloc_bytes,
-            int_from_i64: hook_int_from_i64,
-            int_from_u64: hook_int_from_u64,
-            int_as_i64: hook_int_as_i64,
-            int_as_i64_checked: hook_int_as_i64_checked,
-            int_as_u64_checked: hook_int_as_u64_checked,
-            int_as_u64_mask: hook_int_as_u64_mask,
-            int_from_digits: hook_int_from_digits,
-            int_from_f64_trunc: hook_int_from_f64_trunc,
-            int_sign: hook_int_sign,
-            int_signed_byte_width: hook_int_signed_byte_width,
-            int_from_bytes: hook_int_from_bytes,
-            int_to_bytes: hook_int_to_bytes,
-            int_num_bits: hook_int_num_bits,
-            int_max_str_digits: hook_int_max_str_digits,
-            complex_parts: hook_complex_parts,
-            complex_from_doubles: hook_complex_from_doubles,
-            alloc_list: hook_alloc_list,
-            alloc_list_presized: hook_alloc_list_presized,
-            list_append: hook_list_append,
-            list_len: hook_list_len,
-            list_item: hook_list_item,
-            list_set: hook_list_set,
-            list_insert: hook_list_insert,
-            list_sort: hook_list_sort,
-            list_reverse: hook_list_reverse,
-            list_set_slice: hook_list_set_slice,
-            alloc_tuple: hook_alloc_tuple,
-            tuple_set: hook_tuple_set,
-            tuple_len: hook_tuple_len,
-            tuple_item: hook_tuple_item,
-            alloc_dict: hook_alloc_dict,
-            dict_set: hook_dict_set,
-            dict_get: hook_dict_get,
-            dict_del: hook_dict_del,
-            dict_len: hook_dict_len,
-            dict_entry: hook_dict_entry,
-            str_data: hook_str_data,
-            bytes_data: hook_bytes_data,
-            buffer_acquire: hook_buffer_acquire,
-            buffer_release: hook_buffer_release,
-            object_get_attr: hook_object_get_attr,
-            object_set_attr: hook_object_set_attr,
-            object_format: hook_object_format,
-            float_repr: hook_float_repr,
-            sys_get_object_borrowed: hook_sys_get_object_borrowed,
-            eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
-            classify_heap: hook_classify_heap,
-            object_hash: hook_object_hash,
-            inc_ref: hook_inc_ref,
-            dec_ref: hook_dec_ref,
-            ref_count: hook_ref_count,
-            try_mark_abi_view: hook_try_mark_abi_view,
-            alloc_module: hook_alloc_module,
-            module_get_dict_borrowed: hook_module_get_dict_borrowed,
-            import_add_module_borrowed: hook_import_add_module_borrowed,
-            module_set_attr: hook_module_set_attr,
-            module_capi_register: hook_module_capi_register,
-            module_capi_get_state: hook_module_capi_get_state,
-            module_state_add: hook_module_state_add,
-            module_state_find: hook_module_state_find,
-            module_state_remove: hook_module_state_remove,
-            register_c_function: hook_register_c_function,
-            import_module: hook_import_module,
-            exception_pending: hook_exception_pending,
-            number_binary_op: hook_number_binary_op,
-            number_unary_op: hook_number_unary_op,
-            number_power: hook_number_power,
-            dict_op: hook_dict_op,
-            set_op: hook_set_op,
-            set_new: hook_set_new,
-            set_size: hook_set_size,
-            set_contains: hook_set_contains,
-            set_add: hook_set_add,
-            set_discard: hook_set_discard,
-            object_dir: hook_object_dir,
-            object_call: hook_object_call,
-            foreign_new: hook_foreign_new,
-            report_unraisable: hook_report_unraisable,
-            normalize_exception: hook_normalize_exception,
-            exception_set_field: hook_exception_set_field,
-            exception_get_field: hook_exception_get_field,
-            exception_class_borrowed: hook_exception_class_borrowed,
-            exception_layout_kind: hook_exception_layout_kind,
-            exception_snapshot: hook_exception_snapshot,
-            exception_commit_snapshot: hook_exception_commit_snapshot,
-            type_is_subtype: hook_type_is_subtype,
-            take_pending_exception: hook_take_pending_exception,
-            clear_pending_exception: hook_clear_pending_exception,
-            handled_exception_get: hook_handled_exception_get,
-            handled_exception_set: hook_handled_exception_set,
-            native_gc_allocate: hook_native_gc_allocate,
-            native_gc_track: hook_native_gc_track,
-            native_gc_untrack: hook_native_gc_untrack,
-            native_gc_deallocate: hook_native_gc_deallocate,
-            native_gc_is_tracked: hook_native_gc_is_tracked,
-            native_gc_is_finalized: hook_native_gc_is_finalized,
-            native_gc_claim_finalizer: hook_native_gc_claim_finalizer,
-            gc_collect: hook_gc_collect,
-            gc_enable: hook_gc_enable,
-            gc_disable: hook_gc_disable,
-            gc_is_enabled: hook_gc_is_enabled,
-        };
-        // SAFETY: all fn pointers are valid for the process lifetime.
-        let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
-        assert!(
-            installed,
-            "CPython runtime hooks were registered by a second authority"
-        );
+        static INSTALL_PROCESS_HOOKS: Once = Once::new();
+        INSTALL_PROCESS_HOOKS.call_once(|| {
+            let hooks = RuntimeHooks {
+                abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
+                abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
+                struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
+                gil_ensure: hook_gil_ensure,
+                gil_leave: hook_gil_leave,
+                gil_release: hook_gil_release,
+                gil_restore: hook_gil_restore,
+                gil_check: hook_gil_check,
+                runtime_is_initialized: hook_runtime_is_initialized,
+                thread_state_drop_enter: hook_thread_state_drop_enter,
+                thread_state_drop_leave: hook_thread_state_drop_leave,
+                attached_runtime_context: hook_attached_runtime_context,
+                pending_call_error: hook_pending_call_error,
+                alloc_str: hook_alloc_str,
+                alloc_bytes: hook_alloc_bytes,
+                int_from_i64: hook_int_from_i64,
+                int_from_u64: hook_int_from_u64,
+                int_as_i64: hook_int_as_i64,
+                int_as_i64_checked: hook_int_as_i64_checked,
+                int_as_u64_checked: hook_int_as_u64_checked,
+                int_as_u64_mask: hook_int_as_u64_mask,
+                int_from_digits: hook_int_from_digits,
+                int_from_f64_trunc: hook_int_from_f64_trunc,
+                int_sign: hook_int_sign,
+                int_signed_byte_width: hook_int_signed_byte_width,
+                int_from_bytes: hook_int_from_bytes,
+                int_to_bytes: hook_int_to_bytes,
+                int_num_bits: hook_int_num_bits,
+                int_max_str_digits: hook_int_max_str_digits,
+                complex_parts: hook_complex_parts,
+                complex_from_doubles: hook_complex_from_doubles,
+                alloc_list: hook_alloc_list,
+                alloc_list_presized: hook_alloc_list_presized,
+                list_append: hook_list_append,
+                list_len: hook_list_len,
+                list_item: hook_list_item,
+                list_set: hook_list_set,
+                list_insert: hook_list_insert,
+                list_sort: hook_list_sort,
+                list_reverse: hook_list_reverse,
+                list_set_slice: hook_list_set_slice,
+                alloc_tuple: hook_alloc_tuple,
+                tuple_set: hook_tuple_set,
+                tuple_len: hook_tuple_len,
+                tuple_item: hook_tuple_item,
+                alloc_dict: hook_alloc_dict,
+                dict_set: hook_dict_set,
+                dict_get: hook_dict_get,
+                dict_del: hook_dict_del,
+                dict_len: hook_dict_len,
+                dict_entry: hook_dict_entry,
+                str_data: hook_str_data,
+                bytes_data: hook_bytes_data,
+                buffer_acquire: hook_buffer_acquire,
+                buffer_release: hook_buffer_release,
+                object_get_attr: hook_object_get_attr,
+                object_set_attr: hook_object_set_attr,
+                object_format: hook_object_format,
+                float_repr: hook_float_repr,
+                sys_get_object_borrowed: hook_sys_get_object_borrowed,
+                eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
+                classify_heap: hook_classify_heap,
+                object_hash: hook_object_hash,
+                inc_ref: hook_inc_ref,
+                dec_ref: hook_dec_ref,
+                ref_count: hook_ref_count,
+                try_mark_abi_view: hook_try_mark_abi_view,
+                alloc_module: hook_alloc_module,
+                module_get_dict_borrowed: hook_module_get_dict_borrowed,
+                import_add_module_borrowed: hook_import_add_module_borrowed,
+                module_set_attr: hook_module_set_attr,
+                module_capi_register: hook_module_capi_register,
+                module_capi_get_state: hook_module_capi_get_state,
+                module_state_add: hook_module_state_add,
+                module_state_find: hook_module_state_find,
+                module_state_remove: hook_module_state_remove,
+                register_c_function: hook_register_c_function,
+                import_module: hook_import_module,
+                exception_pending: hook_exception_pending,
+                number_binary_op: hook_number_binary_op,
+                number_unary_op: hook_number_unary_op,
+                number_power: hook_number_power,
+                dict_op: hook_dict_op,
+                set_op: hook_set_op,
+                set_new: hook_set_new,
+                set_size: hook_set_size,
+                set_contains: hook_set_contains,
+                set_add: hook_set_add,
+                set_discard: hook_set_discard,
+                object_dir: hook_object_dir,
+                object_call: hook_object_call,
+                foreign_new: hook_foreign_new,
+                report_unraisable: hook_report_unraisable,
+                normalize_exception: hook_normalize_exception,
+                exception_set_field: hook_exception_set_field,
+                exception_get_field: hook_exception_get_field,
+                exception_class_borrowed: hook_exception_class_borrowed,
+                exception_layout_kind: hook_exception_layout_kind,
+                exception_snapshot: hook_exception_snapshot,
+                exception_commit_snapshot: hook_exception_commit_snapshot,
+                type_is_subtype: hook_type_is_subtype,
+                take_pending_exception: hook_take_pending_exception,
+                clear_pending_exception: hook_clear_pending_exception,
+                handled_exception_get: hook_handled_exception_get,
+                handled_exception_set: hook_handled_exception_set,
+                native_gc_allocate: hook_native_gc_allocate,
+                native_gc_track: hook_native_gc_track,
+                native_gc_untrack: hook_native_gc_untrack,
+                native_gc_deallocate: hook_native_gc_deallocate,
+                native_gc_is_tracked: hook_native_gc_is_tracked,
+                native_gc_is_finalized: hook_native_gc_is_finalized,
+                native_gc_claim_finalizer: hook_native_gc_claim_finalizer,
+                gc_collect: hook_gc_collect,
+                gc_enable: hook_gc_enable,
+                gc_disable: hook_gc_disable,
+                gc_is_enabled: hook_gc_is_enabled,
+            };
+            // SAFETY: all fn pointers are valid for the process lifetime.
+            let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
+            assert!(
+                installed,
+                "CPython runtime hooks were registered by a second authority"
+            );
+        });
+        unsafe { molt_cpython_abi::abi_types::prepare_builtin_static_type_runtime_state() };
         assert_eq!(
             unsafe { molt_cpython_abi::abi_types::ready_exception_singleton_types() },
             0,
             "CPython exception singleton types failed readiness after production hook publication"
         );
         registration.commit();
-    });
+        true
+    })
 }
 
 #[cfg(test)]
@@ -4321,7 +4536,8 @@ mod tests {
     use molt_cpython_abi::abi_types::{
         PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_MemoryError,
         PyExc_RuntimeError, PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError,
-        PyExc_ValueError, PyListObject, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
+        PyExc_ValueError, PyListObject, PyMethodDef, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
+        PyTypeObject,
     };
     use std::cell::UnsafeCell;
     use std::ffi::c_void;
@@ -4341,9 +4557,10 @@ mod tests {
             crate::concurrency::execution::current_thread_has_c_extension_execution_context(),
             "shutdown finalizer callback lost destruction execution custody"
         );
-        let closure_bits = SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.load(AtomicOrdering::Acquire);
+        let closure_bits = SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.swap(0, AtomicOrdering::AcqRel);
         let result = molt_cpython_abi_cext_call_trampoline_admitted(closure_bits, 0, 0);
         assert!(MoltObject::from_bits(result as u64).is_none());
+        with_gil(|py| dec_ref_bits(&py, closure_bits));
         SHUTDOWN_DRAIN_CEXT_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
     }
 
@@ -6041,25 +6258,195 @@ mod tests {
         start.elapsed().as_nanos() as f64 / iterations as f64
     }
 
+    fn owned_noargs_test_closure() -> u64 {
+        let name = b"closure_lifetime_test";
+        let function = unsafe {
+            hook_register_c_function(
+                gil_bench_noargs as *const () as usize as u64,
+                METH_NOARGS,
+                MoltObject::none().bits(),
+                name.as_ptr(),
+                name.len(),
+            )
+        };
+        assert_ne!(function, 0);
+        with_gil(|py| unsafe {
+            let closure = crate::object::layout::function_closure_bits(
+                MoltObject::from_bits(function).as_ptr().unwrap(),
+            );
+            inc_ref_bits(&py, closure);
+            dec_ref_bits(&py, function);
+            closure
+        })
+    }
+
+    #[test]
+    fn cext_receiver_is_owned_by_the_traced_function_closure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        with_gil(|py| unsafe {
+            let receiver = alloc_dict_with_pairs(&py, &[]);
+            assert!(!receiver.is_null());
+            let receiver_bits = MoltObject::from_ptr(receiver).bits();
+            let baseline = (*header_from_obj_ptr(receiver)).ref_count_snapshot();
+            let function = hook_register_c_function(
+                gil_bench_noargs as *const () as usize as u64,
+                METH_NOARGS,
+                receiver_bits,
+                b"receiver_owner".as_ptr(),
+                b"receiver_owner".len(),
+            );
+            assert_ne!(function, 0);
+            let function_ptr = MoltObject::from_bits(function).as_ptr().unwrap();
+            let closure = crate::object::layout::function_closure_bits(function_ptr);
+            let closure_ptr = MoltObject::from_bits(closure).as_ptr().unwrap();
+            let (_, captured) = crate::object::seq_access::tuple_pair(closure_ptr).unwrap();
+            assert_eq!(captured, receiver_bits);
+            assert_eq!(
+                (*header_from_obj_ptr(receiver)).ref_count_snapshot(),
+                baseline + 1
+            );
+            let mut receiver_edges = 0;
+            crate::object::heap_lifecycle::visit_owned_edges(&py, closure_ptr, &mut |child| {
+                receiver_edges += usize::from(child == receiver);
+            });
+            assert_eq!(
+                receiver_edges, 1,
+                "cycle GC must see the receiver ownership edge"
+            );
+            dec_ref_bits(&py, function);
+            assert_eq!(
+                (*header_from_obj_ptr(receiver)).ref_count_snapshot(),
+                baseline
+            );
+            dec_ref_bits(&py, receiver_bits);
+        });
+    }
+
+    #[test]
+    fn cext_runtime_restart_rebinds_static_types_and_rebuilds_fields() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            for cycle in 0..3 {
+                let _execution = RuntimeExecutionGuard::enter();
+                let py = _execution.token();
+                let runtime = crate::runtime_state(&py);
+                assert_eq!(
+                    *runtime.cpython.registration.lock().unwrap(),
+                    HookRegistrationState::Ready
+                );
+                let bindings = runtime.cpython.static_bindings.lock().unwrap().clone();
+                for binding in bindings {
+                    let observed = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(binding.pointer)
+                        .expect("every owned static shell must remain bound")
+                        .bits();
+                    assert_eq!(observed, binding.bits);
+                }
+                let type_error = (&raw mut PyExc_TypeError).cast::<PyObject>();
+                // A non-static canonical type has a generic managed ABI view,
+                // not a process-shell binding. Even direct C references to
+                // that view have interpreter lifetime and must not survive
+                // retirement as identities in the next runtime.
+                let descriptor_class = crate::builtins::types::member_descriptor_class(&py);
+                let descriptor_view = unsafe {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .handle_to_borrowed_pyobj(descriptor_class)
+                };
+                assert!(!descriptor_view.is_null());
+                assert_eq!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .managed_handle_for_pyobj(descriptor_view),
+                    Some(descriptor_class)
+                );
+                unsafe { molt_cpython_abi::api::refcount::Py_INCREF(descriptor_view) };
+                assert!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(descriptor_class)
+                );
+                assert_eq!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(type_error)
+                        .unwrap()
+                        .bits(),
+                    crate::exception_type_bits_from_name(&py, "TypeError"),
+                );
+                unsafe {
+                    let shell = type_error.cast::<PyTypeObject>();
+                    assert_ne!(
+                        (*shell).tp_flags & molt_cpython_abi::abi_types::Py_TPFLAGS_READY,
+                        0
+                    );
+                    assert!(!(*shell).tp_dict.is_null());
+                    assert!(!(*shell).tp_mro.is_null());
+                    assert!(
+                        molt_cpython_abi::api::mapping::PyDict_GetItemString(
+                            (*shell).tp_dict,
+                            c"__restart_sentinel__".as_ptr(),
+                        )
+                        .is_null(),
+                        "retired type dictionary survived into cycle {cycle}"
+                    );
+                    assert_eq!(
+                        molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                            (*shell).tp_dict,
+                            c"__restart_sentinel__".as_ptr(),
+                            (&raw mut molt_cpython_abi::abi_types::Py_None).cast(),
+                        ),
+                        0
+                    );
+                    molt_cpython_abi::api::errors::PyErr_SetString(
+                        type_error,
+                        c"restart exception identity".as_ptr(),
+                    );
+                    let (mut error_type, mut value, mut traceback) =
+                        (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                    molt_cpython_abi::api::errors::PyErr_Fetch(
+                        &mut error_type,
+                        &mut value,
+                        &mut traceback,
+                    );
+                    molt_cpython_abi::api::errors::PyErr_NormalizeException(
+                        &mut error_type,
+                        &mut value,
+                        &mut traceback,
+                    );
+                    assert_eq!(error_type, type_error);
+                    assert!(!value.is_null());
+                    molt_cpython_abi::api::refcount::Py_XDECREF(error_type);
+                    molt_cpython_abi::api::refcount::Py_XDECREF(value);
+                    molt_cpython_abi::api::refcount::Py_XDECREF(traceback);
+                }
+                assert!(!crate::exception_pending(&py));
+                drop(_execution);
+                assert_eq!(crate::state::runtime_state::molt_runtime_shutdown(), 1);
+                // Query the opaque address map only: dereferencing/decrefing
+                // an interpreter-owned pointer after finalization is invalid.
+                assert!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .managed_handle_for_pyobj(descriptor_view)
+                        .is_none()
+                );
+                assert_eq!(
+                    molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                    0
+                );
+                assert!(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(type_error)
+                        .is_none()
+                );
+                if cycle != 2 {
+                    crate::state::runtime_state::molt_runtime_reset_for_testing();
+                    assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+                }
+            }
+        });
+    }
+
     #[test]
     fn checked_extension_trampoline_owns_cold_external_ingress() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
         let lease_baseline = crate::state::runtime_state::active_runtime_execution_lease_count();
-        let id = {
-            let mut registry = cext_callable_registry()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let id = registry.len();
-            registry.push(CExtCallable {
-                meth_target: gil_bench_noargs as *const (),
-                flags: METH_NOARGS,
-                self_bits: MoltObject::none().bits(),
-                dispatch_kind: CExtDispatchKind::NoArgs,
-            });
-            id
-        };
-        let closure_bits = MoltObject::from_int(id as i64).bits();
+        let closure_bits = owned_noargs_test_closure();
 
         let result = std::thread::spawn(move || {
             assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
@@ -6073,6 +6460,7 @@ mod tests {
         .unwrap();
 
         assert!(MoltObject::from_bits(result as u64).is_none());
+        with_gil(|py| dec_ref_bits(&py, closure_bits));
         assert_eq!(
             crate::state::runtime_state::active_runtime_execution_lease_count(),
             lease_baseline,
@@ -6081,27 +6469,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "mutates terminal runtime lifecycle; run as one timeout-bounded exact test"]
     fn shutdown_owned_drain_reenters_c_extension_with_pending_dict_and_context_edges() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             register_cpython_hooks();
-            let id = {
-                let mut registry = cext_callable_registry()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let id = registry.len();
-                registry.push(CExtCallable {
-                    meth_target: gil_bench_noargs as *const (),
-                    flags: METH_NOARGS,
-                    self_bits: MoltObject::none().bits(),
-                    dispatch_kind: CExtDispatchKind::NoArgs,
-                });
-                id
-            };
-            SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.store(
-                MoltObject::from_int(id as i64).bits(),
-                AtomicOrdering::Release,
-            );
+            SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS
+                .store(owned_noargs_test_closure(), AtomicOrdering::Release);
             SHUTDOWN_DRAIN_CEXT_CALLBACKS.store(0, AtomicOrdering::Release);
 
             {
@@ -6160,20 +6532,7 @@ mod tests {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
 
-        let id = {
-            let mut registry = cext_callable_registry()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let id = registry.len();
-            registry.push(CExtCallable {
-                meth_target: gil_bench_noargs as *const (),
-                flags: METH_NOARGS,
-                self_bits: MoltObject::none().bits(),
-                dispatch_kind: CExtDispatchKind::NoArgs,
-            });
-            id
-        };
-        let closure_bits = MoltObject::from_int(id as i64).bits();
+        let closure_bits = owned_noargs_test_closure();
         let baseline_call: CExtBenchmarkCall =
             std::hint::black_box(molt_cpython_abi_cext_call_trampoline_baseline);
         let checked_call: CExtBenchmarkCall =
@@ -6302,6 +6661,7 @@ mod tests {
             "allocation_probe_enabled": cfg!(feature = "l7-attestation-probe"),
             "process_execution_contract": process_execution_contract,
         });
+        with_gil(|py| dec_ref_bits(&py, closure_bits));
         println!("MOLT_CEXT_BENCH_SAMPLE {sample}");
     }
 
@@ -7000,11 +7360,111 @@ mod tests {
     }
 
     #[test]
+    fn cext_callable_allocation_failure_never_publishes_an_abi_fallback() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+        with_gil(|py| {
+            let _ = crate::builtin_classes(&py);
+        });
+        let before = with_cext_callable_registry(<[CExtCallable]>::len);
+        let mut method = PyMethodDef {
+            ml_name: c"allocation_failure".as_ptr(),
+            ml_meth: Some(gil_bench_noargs),
+            ml_flags: METH_NOARGS,
+            ml_doc: std::ptr::null(),
+        };
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(0),
+            ..Default::default()
+        })));
+        let restore = RestoreTracker;
+        let result = unsafe {
+            molt_cpython_abi::api::object::PyCFunction_NewEx(
+                &mut method,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        drop(restore);
+        assert!(
+            result.is_null(),
+            "allocation failure must not return an ABI-only callable"
+        );
+        assert_eq!(with_cext_callable_registry(<[CExtCallable]>::len), before);
+        // The zero-allocation resource limit uses the runtime's emergency
+        // MemoryError channel, not a fabricated heap exception/C indicator.
+        // The failure boundary must preserve that channel without allocating
+        // an ABI-only fallback callable or claiming a registry entry.
+        assert_eq!(unsafe { hook_exception_pending() }, 1);
+        assert!(cpython_error_is_pending());
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+
+        // Once an actual exception instance exists, construction must preserve
+        // that exact instance as well as the allocation-free emergency case.
+        with_gil(|py| {
+            crate::raise_exception::<u64>(&py, "MemoryError", "preserved callable failure");
+        });
+        let expected = crate::builtins::exceptions::molt_exception_last_pending();
+        assert!(MoltObject::from_bits(expected).as_ptr().is_some());
+        let result = unsafe {
+            molt_cpython_abi::api::object::PyCFunction_NewEx(
+                &mut method,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(result.is_null());
+        assert_eq!(with_cext_callable_registry(<[CExtCallable]>::len), before);
+        let observed = crate::builtins::exceptions::molt_exception_last_pending();
+        assert_eq!(observed, expected);
+        let _ = crate::molt_exception_clear();
+        with_gil(|py| {
+            dec_ref_bits(&py, observed);
+            dec_ref_bits(&py, expected);
+        });
+    }
+
+    #[test]
     fn cext_null_result_propagates_pending_exception() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         let _ = crate::molt_exception_clear();
+        let mapped_type_error = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj((&raw mut PyExc_TypeError).cast::<PyObject>())
+            .expect("TypeError singleton must retain its runtime binding")
+            .bits();
+        with_gil(|py| {
+            assert_eq!(
+                mapped_type_error,
+                crate::exception_type_bits_from_name(&py, "TypeError"),
+                "C exception singleton must resolve to the canonical runtime class"
+            );
+            let class_ptr = crate::obj_from_bits(mapped_type_error)
+                .as_ptr()
+                .expect("TypeError binding must be a heap class");
+            assert_eq!(
+                unsafe { crate::object_type_id(class_ptr) },
+                crate::TYPE_ID_TYPE
+            );
+            assert!(
+                crate::issubclass_bits(
+                    mapped_type_error,
+                    crate::builtin_classes(&py).base_exception
+                ),
+                "canonical TypeError must retain its BaseException ancestry"
+            );
+        });
         let method_bits = unsafe {
             hook_register_c_function(
                 crate::provenance::abi::expose_function_address(

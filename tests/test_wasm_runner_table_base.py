@@ -98,6 +98,7 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
       (func (export "molt_runtime_execution_enter") (result i64)
         i64.const 1)
       (func (export "molt_runtime_execution_leave") (param i64))
+      (func (export "molt_exception_pending") (result i64) i64.const 0)
     """
     return _wasm_from_wat(
         tmp_path,
@@ -259,26 +260,17 @@ def test_linked_runner_uses_env_table_base_without_calling_setter(
     assert result.returncode == 0, result.stderr
 
 
-def test_linked_runner_calls_host_init_before_isolate_bootstrap(
+def test_linked_runner_uses_only_main_startup_authority(
     tmp_path: Path,
 ) -> None:
     wasm_path = _execution_wasm_from_wat(
         tmp_path,
-        "linked_host_init_before_bootstrap",
+        "linked_main_owns_startup",
         """
         (module
           (memory (export "molt_memory") 1)
-          (global $ready (mut i32) (i32.const 0))
-          (func (export "molt_host_init")
-            i32.const 1
-            global.set $ready)
-          (func (export "molt_isolate_bootstrap") (result i64)
-            global.get $ready
-            i32.eqz
-            if
-              unreachable
-            end
-            i64.const 0)
+          (func (export "molt_host_init") unreachable)
+          (func (export "molt_isolate_bootstrap") (result i64) unreachable)
           (func (export "molt_main"))
         )
         """,

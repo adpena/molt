@@ -42,7 +42,10 @@ pub struct ContainerStorageFact {
 /// second axis: an `int`-typed value may be physically a heap `BigInt`, and that
 /// distinction is invisible to the semantic type alone.
 ///
-/// `Never` is the bottom element and `DynBox` is the top element. Integer
+/// `Never` is the join-only bottom element and `DynBox` is the top element.
+/// A defined value whose semantic type is `TirType::Never` still floors to
+/// `DynBox`: bottom is absence of a fact, not proof that a reachable physical
+/// value has no heap obligation. Integer
 /// carriers have two distinct raw tiers: `RawI64Safe` is the inline-47 proof,
 /// while `RawI64FullDeopt` is the full-i64 overflow-peel proof. Keeping them
 /// separate prevents a full-range checked accumulator from being mistaken for a
@@ -69,14 +72,12 @@ pub enum Repr {
 }
 
 impl Repr {
-    /// Conservative representation floor for a semantic type. Integer-like
-    /// values start BigInt-safe and can only be raised to raw carriers by proof.
+    /// Conservative representation floor for a semantic type, including Python
+    /// annotations that admit subclasses. No semantic type alone authorizes a
+    /// raw scalar carrier; value-keyed producer/range proofs raise this floor.
     pub fn default_for(ty: &TirType) -> Repr {
         match ty {
             TirType::I64 | TirType::BigInt => Repr::MaybeBigInt,
-            TirType::Bool => Repr::Bool,
-            TirType::F64 => Repr::FloatUnboxed,
-            TirType::Never => Repr::Never,
             _ => Repr::DynBox,
         }
     }
@@ -135,9 +136,9 @@ mod tests {
     fn default_for_floors_int_to_maybe_bigint() {
         assert_eq!(Repr::default_for(&TirType::I64), Repr::MaybeBigInt);
         assert_eq!(Repr::default_for(&TirType::BigInt), Repr::MaybeBigInt);
-        assert_eq!(Repr::default_for(&TirType::Bool), Repr::Bool);
-        assert_eq!(Repr::default_for(&TirType::F64), Repr::FloatUnboxed);
-        assert_eq!(Repr::default_for(&TirType::Never), Repr::Never);
+        assert_eq!(Repr::default_for(&TirType::Bool), Repr::DynBox);
+        assert_eq!(Repr::default_for(&TirType::F64), Repr::DynBox);
+        assert_eq!(Repr::default_for(&TirType::Never), Repr::DynBox);
         assert_eq!(Repr::default_for(&TirType::Str), Repr::DynBox);
         assert_eq!(Repr::default_for(&TirType::None), Repr::DynBox);
         assert_eq!(

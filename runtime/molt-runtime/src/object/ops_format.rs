@@ -272,7 +272,6 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             return "<dataclass>".to_string();
         }
         let desc = &*desc_ptr;
-        let fields = dataclass_fields_ref(ptr);
         let mut out = String::new();
         out.push_str(&desc.name);
         out.push('(');
@@ -288,20 +287,32 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             first = false;
             out.push_str(name);
             out.push('=');
-            let val = fields
-                .get(idx)
-                .copied()
-                .unwrap_or(MoltObject::none().bits());
+            // Generated dataclass repr reads each field immediately before
+            // its repr callback; a callback may replace a later field.
+            let val = crate::object::accessors::object_field_get_ptr_raw(
+                _py,
+                ptr,
+                idx * std::mem::size_of::<u64>(),
+            );
+            if exception_pending(_py) {
+                dec_ref_bits(_py, val);
+                return "<dataclass>".to_string();
+            }
             if is_missing_bits(_py, val) {
                 let type_label = if desc.name.is_empty() {
                     "dataclass"
                 } else {
                     desc.name.as_str()
                 };
+                dec_ref_bits(_py, val);
                 let _ = attr_error(_py, type_label, name);
                 return "<dataclass>".to_string();
             }
             out.push_str(&format_obj(_py, obj_from_bits(val)));
+            dec_ref_bits(_py, val);
+            if exception_pending(_py) {
+                return "<dataclass>".to_string();
+            }
         }
         out.push(')');
         out
@@ -946,6 +957,15 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                     return format!("<class '{module}.{qualname}'>");
                 }
                 return format!("<class '{qualname}'>");
+            }
+            if type_id == crate::TYPE_ID_NATIVE_DESCRIPTOR {
+                let result = crate::builtins::types::native_descriptor_repr(
+                    _py,
+                    MoltObject::from_ptr(ptr).bits(),
+                );
+                let text = string_obj_to_owned(obj_from_bits(result)).unwrap_or_default();
+                dec_ref_bits(_py, result);
+                return text;
             }
             if type_id == TYPE_ID_CLASSMETHOD {
                 return "<classmethod>".to_string();

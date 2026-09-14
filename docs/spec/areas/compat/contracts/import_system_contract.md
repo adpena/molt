@@ -90,9 +90,14 @@ Modules may be:
 
 ### 3.3 Dynamic Imports
 - Build-time graph discovery separates module-init closure from future runtime
-  behavior. Entry modules and explicit nested-scan exceptions use full import
-  discovery; transitive dependencies use module-init scanning so function-body
-  lazy imports do not bloat binaries or startup.
+  behavior. Graph seeding does not grant full-depth scan authority: application,
+  declared static, spawn, and native-support roots are full-scanned; profile core
+  modules, package parents, and transitive dependencies contribute module-init
+  edges plus the canonical named static helpers. The graph cache keys and
+  validates this distinction. Runtime import protocol owners are full-scanned
+  only under their exact source/AST/catalog custody, established after ordinary
+  closure admission. Neither graph presence nor a profile grants dynamic import
+  permission. One scan-mode projection serves discovery and protocol detection.
 - Build-time resolution and build-time admission are separate. Explicit
   external roots (`MOLT_MODULE_ROOTS`, `--lib-path`, respected `PYTHONPATH`, and
   auto site-packages) make modules resolvable, but only direct entry imports
@@ -182,6 +187,19 @@ Modules may be:
   carry and fingerprint the same closure plan, including dead-module-elimination
   mode, rather than exposing a selector-only payload or rediscovering a parallel
   graph.
+- A persisted strict source scan is one complete, content-validated record of
+  imports and static loader/runpy execution roots. Imports-only consumers project
+  that record; they must not publish an uncomputed execution projection as empty.
+  Discovery reads and validates a record once, computes missing records once,
+  and does not rewrite a validated hit. Runtime import custody and native-owned
+  source closures retain their distinct admission rules and cannot borrow strict
+  scan certainty from this cache.
+  Compiler tooling identity belongs to the existing reentrant source-fingerprint
+  transaction, including independently invoked graph, analysis, and cache
+  operations. Snapshot lookup precedes tooling closure discovery and path
+  resolution. The next operation recaptures bytes, import topology, and resolved
+  ownership; application payloads retain byte validation within an operation.
+  No process-wide path/stat cache may substitute for these checks.
 - Build diagnostics carry a versioned `binary_image_analysis` envelope beside
   the closure plan. It bridges source/AST metrics, module schedule hashes,
   lowering policy, backend IR/TIR-input shape, and final artifact/link evidence
@@ -195,8 +213,8 @@ Modules may be:
   TIR facts. Backend IR diagnostics now carry the matching `source_sites`
   projection from the lowered op stream: attributed-op coverage, per-line
   operation counts, and a stable digest over `source_line`/column coordinates.
-  `allocation_ownership` joins that same carrier to heap/stack allocation roots,
-  retain/release ops, heap-exposure ops, arena eligibility, and
+  `allocation_ownership` joins that same carrier to possible heap allocation roots,
+  owned frame candidates, retain/release ops, heap-exposure ops, and
   finalizer-sensitive results, so memory-pressure diagnostics share the binary
   image identity without becoming another allocation authority. Those
   allocation/refcount categories are generated from `op_kinds.toml`; frontend

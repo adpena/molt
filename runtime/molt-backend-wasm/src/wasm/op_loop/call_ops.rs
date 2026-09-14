@@ -39,7 +39,6 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) table_relocations: &'m mut WasmTableRelocations,
     pub(super) tail_call_enabled: bool,
     pub(super) tail_call_eligible: bool,
-    pub(super) arena_local: Option<u32>,
     pub(super) tail_call_count: &'a Cell<usize>,
     pub(super) ops: &'a [OpIR],
     pub(super) call_liveness: &'m CallRetentionLiveness,

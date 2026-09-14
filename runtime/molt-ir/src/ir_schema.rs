@@ -107,7 +107,6 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
-const ARENA_ELIGIBLE_KINDS: &[&str] = &["alloc", "alloc_class", "object_new_bound"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpFieldSchema {
     pub family: &'static str,
@@ -142,6 +141,24 @@ fn schema_for_kind(kind: &str) -> Option<&'static OpFieldSchema> {
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
+    match op.kind.as_str() {
+        "store_init" => {
+            return Err(
+                "retired compiler operation `store_init`: emit `store`; fresh-slot initialization is derived from typed-slot ownership facts"
+                    .into(),
+            );
+        }
+        "guarded_field_init" => {
+            return Err(
+                "retired compiler operation `guarded_field_init`: emit `guarded_field_set`; initialization cannot be asserted by wire spelling"
+                    .into(),
+            );
+        }
+        _ => {}
+    }
+    if op.kind == "object_new_bound_stack" {
+        return Err("retired compiler operation `object_new_bound_stack`: frame placement requires an owner-lifetime proof; use owned `object_new_bound` allocation".into());
+    }
     validate_representation_fields(op)?;
     let Some(schema) = schema_for_kind(op.kind.as_str()) else {
         return Ok(());
@@ -258,8 +275,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }
-    if op.arena_eligible == Some(true) && !ARENA_ELIGIBLE_KINDS.contains(&op.kind.as_str()) {
-        return Err(format!("op `{}` cannot carry arena_eligible", op.kind));
+    if op.arena_eligible.is_some() {
+        return Err(format!(
+            "op `{}` cannot carry arena_eligible: {}",
+            op.kind,
+            crate::tir::target_info::COMPILER_ARENA_PLACEMENT_UNSUPPORTED
+        ));
     }
     if let Some(type_hint) = op.type_hint.as_deref() {
         validate_clean_symbol(type_hint, &format!("op `{}` type_hint", op.kind))?;

@@ -76,11 +76,11 @@ fn extract_type_map_with_exact(
             if op.results.is_empty() {
                 continue;
             }
-            if let Some(comparison) =
-                crate::tir::predicate_semantics::predicate_facts_for_op(op, exact)
+            if let Some(result_type) = crate::tir::op_semantics::op_instance_facts_for_op(op, exact)
+                .and_then(|facts| facts.result_type)
             {
                 for &result in &op.results {
-                    env.insert(result, comparison.result_type.clone());
+                    env.insert(result, result_type.clone());
                 }
                 continue;
             }
@@ -259,10 +259,15 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //         unboxed fadd path).
                         //     Everything else (transparent aliases) propagates
                         //     operand 0's type.
-                        let result_type_override =
-                            crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
-                                .map(|facts| facts.result_type)
-                                .or_else(|| attr_result_type_override(op.opcode, &op.attrs));
+                        let result_type_override = if op.has_valid_shape() {
+                            crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
+                                .and_then(|facts| facts.result_type)
+                                .or_else(|| {
+                                    attr_result_type_override(op.opcode, &op.attrs, &op.operands)
+                                })
+                        } else {
+                            None
+                        };
                         (
                             op.opcode,
                             op.operands.clone(),

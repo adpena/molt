@@ -107,15 +107,22 @@ impl SignalRuntimeState {
         }
     }
 
-    fn clear_for_teardown(&self, _py: &PyToken<'_>) {
-        self.wakeup_fd.store(-1, Ordering::SeqCst);
-        for idx in 0..MAX_SIGNAL {
-            let old_bits = self.handlers[idx].swap(HANDLER_SIG_DFL, Ordering::SeqCst);
+    fn clear_for_teardown(&self, _py: &PyToken<'_>) -> bool {
+        let mut changed = self.wakeup_fd.swap(-1, Ordering::SeqCst) != -1;
+        let handlers: [u64; MAX_SIGNAL] = std::array::from_fn(|idx| {
+            let bits = self.handlers[idx].swap(HANDLER_SIG_DFL, Ordering::SeqCst);
+            changed |= bits != HANDLER_SIG_DFL;
+            changed |= self.pending[idx].swap(0, Ordering::SeqCst) != 0;
+            bits
+        });
+        // All handlers and pending delivery state are detached before a handler
+        // finalizer can rearm any sibling signal slot.
+        for old_bits in handlers {
             if is_callable_handler_bits(old_bits) {
                 dec_ref_bits(_py, old_bits);
             }
-            self.pending[idx].store(0, Ordering::SeqCst);
         }
+        changed
     }
 
     #[cfg(test)]
@@ -131,14 +138,16 @@ pub(crate) fn signal_runtime_state_publish(state: &crate::state::runtime_state::
     );
 }
 
-fn signal_runtime_state_deactivate(signal: &SignalRuntimeState) {
+fn signal_runtime_state_deactivate(signal: &SignalRuntimeState) -> bool {
     let ptr = (signal as *const SignalRuntimeState).cast_mut();
-    let _ = ACTIVE_SIGNAL_STATE.compare_exchange(
-        ptr,
-        std::ptr::null_mut(),
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    );
+    ACTIVE_SIGNAL_STATE
+        .compare_exchange(
+            ptr,
+            std::ptr::null_mut(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
 }
 
 fn active_signal_state() -> Option<&'static SignalRuntimeState> {
@@ -153,10 +162,10 @@ fn active_signal_state() -> Option<&'static SignalRuntimeState> {
 pub(crate) fn signal_clear_state(
     _py: &PyToken<'_>,
     state: &crate::state::runtime_state::RuntimeState,
-) {
-    signal_runtime_state_deactivate(&state.signal);
+) -> bool {
+    let deactivated = signal_runtime_state_deactivate(&state.signal);
     reset_os_handlers_for_teardown(&state.signal);
-    state.signal.clear_for_teardown(_py);
+    state.signal.clear_for_teardown(_py) | deactivated
 }
 
 fn is_callable_handler_bits(bits: u64) -> bool {

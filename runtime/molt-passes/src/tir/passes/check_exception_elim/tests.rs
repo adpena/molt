@@ -178,7 +178,7 @@ fn redundant_check_after_pure_ops_dropped() {
 }
 
 #[test]
-fn marked_finally_observer_can_create_pending_exception() {
+fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
     let unmarked = make_original_kind("exception_finally_pending_observer");
     let mut observer = make_original_kind("exception_finally_pending_observer");
     observer.mark_async_work_poll();
@@ -186,10 +186,7 @@ fn marked_finally_observer_can_create_pending_exception() {
     let probe = make_func_with_block(vec![unmarked.clone(), observer.clone()]);
     let const_ints = const_int_values(&probe);
 
-    assert!(
-        !op_may_raise(&value_types, &const_ints, &unmarked),
-        "the ordinary observer remains a non-raising read"
-    );
+    assert!(op_may_raise(&value_types, &const_ints, &unmarked));
     assert!(
         op_may_raise(&value_types, &const_ints, &observer),
         "polling can introduce a pending exception"
@@ -197,7 +194,7 @@ fn marked_finally_observer_can_create_pending_exception() {
 }
 
 #[test]
-fn ssa_local_transport_is_proven_nonraising() {
+fn preserved_copy_transport_does_not_bypass_shared_effects() {
     let mut func = make_func_with_block(vec![
         make_check_exception(),
         make_original_kind("store_var"),
@@ -205,8 +202,8 @@ fn ssa_local_transport_is_proven_nonraising() {
         make_check_exception(),
     ]);
     let stats = run(&mut func);
-    assert_eq!(stats.ops_removed, 1);
-    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 3);
+    assert_eq!(stats.ops_removed, 0);
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
 }
 
 #[test]
@@ -341,6 +338,64 @@ fn check_after_i64_mod_by_nonzero_const_is_dropped() {
 }
 
 #[test]
+fn check_after_i64_floor_div_by_nonzero_const_is_dropped() {
+    let lhs = ValueId(0);
+    let rhs = ValueId(1);
+    let out = ValueId(2);
+    let mut func = make_func_with_block(vec![
+        make_const_int(9, lhs),
+        make_const_int(3, rhs),
+        make_check_exception(),
+        make_binary(OpCode::FloorDiv, lhs, rhs, out),
+        make_check_exception(),
+    ]);
+
+    let stats = run(&mut func);
+
+    assert_eq!(stats.ops_removed, 1);
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
+}
+
+#[test]
+fn check_after_true_div_by_nonzero_integer_const_is_kept() {
+    let lhs = ValueId(0);
+    let rhs = ValueId(1);
+    let out = ValueId(2);
+    let mut func = make_func_with_block(vec![
+        make_const_int(9, lhs),
+        make_const_int(3, rhs),
+        make_check_exception(),
+        make_binary(OpCode::Div, lhs, rhs, out),
+        make_check_exception(),
+    ]);
+
+    let stats = run(&mut func);
+
+    assert_eq!(stats.ops_removed, 0);
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 5);
+}
+
+#[test]
+fn malformed_floor_div_result_arity_fails_closed() {
+    let lhs = ValueId(0);
+    let rhs = ValueId(1);
+    let mut malformed = make_binary(OpCode::FloorDiv, lhs, rhs, ValueId(2));
+    malformed.results.clear();
+    let mut func = make_func_with_block(vec![
+        make_const_int(9, lhs),
+        make_const_int(3, rhs),
+        make_check_exception(),
+        malformed,
+        make_check_exception(),
+    ]);
+
+    let stats = run(&mut func);
+
+    assert_eq!(stats.ops_removed, 0);
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 5);
+}
+
+#[test]
 fn check_after_i64_mod_by_zero_const_is_kept() {
     let lhs = ValueId(0);
     let rhs = ValueId(1);
@@ -381,4 +436,39 @@ fn check_after_i64_mod_by_dynamic_rhs_is_kept() {
 
     assert_eq!(stats.ops_removed, 0);
     assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
+}
+
+#[test]
+fn class_allocation_preserves_pending_exception_checks_across_blocks() {
+    let class_alloc = |opcode| {
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(16));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0)],
+            results: vec![ValueId(1)],
+            attrs,
+            source_span: None,
+        }
+    };
+    let mut generic = make_original_kind("alloc_class");
+    generic.operands = vec![ValueId(0)];
+    generic.results = vec![ValueId(1)];
+    generic.attrs.insert("value".into(), AttrValue::Int(16));
+    for allocation in [class_alloc(OpCode::ObjectNewBound), generic] {
+        assert!(op_may_raise(&HashMap::new(), &HashMap::new(), &allocation));
+        let mut same_block = make_func_with_block(vec![
+            make_check_exception(),
+            allocation.clone(),
+            make_check_exception(),
+        ]);
+        assert_eq!(run(&mut same_block).ops_removed, 0);
+        let mut across_blocks = make_two_block_func(
+            vec![make_check_exception(), allocation],
+            vec![make_check_exception()],
+        );
+        assert_eq!(run(&mut across_blocks).ops_removed, 0);
+        assert_eq!(across_blocks.blocks[&BlockId(1)].ops.len(), 1);
+    }
 }

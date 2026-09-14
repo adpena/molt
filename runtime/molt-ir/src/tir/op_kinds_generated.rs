@@ -460,14 +460,12 @@ pub fn simpleir_out_field_is_metadata(kind: &str) -> bool {
             | "set_attr_generic_ptr"
             | "set_attr_generic_obj"
             | "guarded_field_set"
-            | "guarded_field_init"
             | "module_cache_set"
             | "module_cache_del"
             | "module_set_attr"
             | "module_del_global"
             | "module_del_global_if_present"
             | "store"
-            | "store_init"
             | "store_index"
             | "index_set"
             | "del_attr"
@@ -799,7 +797,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "GETATTR_SPECIAL_OBJ"
         | "GUARDED_GETATTR"
         | "GUARDED_SETATTR"
-        | "GUARDED_SETATTR_INIT"
         | "GUARD_DICT_SHAPE"
         | "GUARD_LAYOUT"
         | "GUARD_TAG"
@@ -835,7 +832,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "SETATTR"
         | "SETATTR_GENERIC_OBJ"
         | "SETATTR_GENERIC_PTR"
-        | "SETATTR_INIT"
         | "SETATTR_NAME"
         | "SET_INDEX"
         | "STORE_VAR"
@@ -911,7 +907,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "neg"
         | "nop"
         | "object_new_bound"
-        | "object_new_bound_stack"
         | "phi"
         | "pos"
         | "pow"
@@ -925,7 +920,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "state_block_end"
         | "state_block_start"
         | "store"
-        | "store_init"
         | "store_var"
         | "string_eq"
         | "sub"
@@ -1036,7 +1030,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "get_attr_name_default"
         | "get_item"
         | "guarded_field_get"
-        | "guarded_field_init"
         | "guarded_field_set"
         | "index"
         | "init_instance"
@@ -1248,7 +1241,6 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "alloc" => Some(OpCode::Alloc),
         "stack_alloc" => Some(OpCode::StackAlloc),
         "object_new_bound" => Some(OpCode::ObjectNewBound),
-        "object_new_bound_stack" => Some(OpCode::ObjectNewBoundStack),
         "free" => Some(OpCode::Free),
         "get_attr"
         | "get_attr_generic_ptr"
@@ -1263,9 +1255,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         | "set_attr_generic_ptr"
         | "set_attr_generic_obj"
         | "guarded_field_set"
-        | "guarded_field_init"
-        | "store"
-        | "store_init" => Some(OpCode::StoreAttr),
+        | "store" => Some(OpCode::StoreAttr),
         "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
             Some(OpCode::DelAttr)
         }
@@ -1391,7 +1381,6 @@ pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {
         OpCode::Alloc => "alloc",
         OpCode::StackAlloc => "stack_alloc",
         OpCode::ObjectNewBound => "object_new_bound",
-        OpCode::ObjectNewBoundStack => "object_new_bound_stack",
         OpCode::Free => "free",
         OpCode::LoadAttr => "get_attr",
         OpCode::StoreAttr => "set_attr",
@@ -1511,7 +1500,6 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => Some("name"),
         OpCode::StoreAttr => Some("name"),
@@ -1622,9 +1610,7 @@ pub fn simpleir_kind_preserves_original_kind_for_ssa(kind: &str) -> bool {
             | "set_attr_generic_ptr"
             | "set_attr_generic_obj"
             | "guarded_field_set"
-            | "guarded_field_init"
             | "store"
-            | "store_init"
             | "del_attr_name"
             | "del_attr_generic_ptr"
             | "del_attr_generic_obj"
@@ -1743,7 +1729,6 @@ pub fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
             | "guard_float"
             | "guard_int"
             | "guard_layout"
-            | "guard_layout_ptr"
             | "guard_none"
             | "guard_str"
             | "line"
@@ -2029,7 +2014,6 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::Alloc,
     OpCode::StackAlloc,
     OpCode::ObjectNewBound,
-    OpCode::ObjectNewBoundStack,
     OpCode::Free,
     OpCode::LoadAttr,
     OpCode::StoreAttr,
@@ -2147,8 +2131,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Bool => true,
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
-        OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
+        OpCode::ObjectNewBound => true,
         OpCode::Free => false,
         OpCode::LoadAttr => true,
         OpCode::StoreAttr => true,
@@ -2267,7 +2250,6 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Alloc => true,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => true,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => true,
         OpCode::LoadAttr => true,
         OpCode::StoreAttr => true,
@@ -2344,42 +2326,52 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
     }
 }
 
-/// Effect triple for the LICM/GVN purity core. This is generated from
-/// each opcode row's `purity` class so effects.rs never carries a second
-/// opcode-classification table.
+/// Effect facts for the LICM/GVN/alias/MemorySSA core. Generated from
+/// each opcode row's `purity`, `may_throw`, and heap-access facts so
+/// consumers never carry a second callback-effect classification table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpcodeEffects {
     pub consistent: bool,
     pub effect_free: bool,
     pub nothrow: bool,
+    pub may_access_arbitrary_heap: bool,
 }
 
 pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {
     consistent: true,
     effect_free: true,
     nothrow: true,
+    may_access_arbitrary_heap: false,
 };
 pub const OPCODE_EFFECTS_PURE_MAY_THROW: OpcodeEffects = OpcodeEffects {
     consistent: true,
     effect_free: true,
     nothrow: false,
+    may_access_arbitrary_heap: false,
 };
 pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {
     consistent: false,
     effect_free: false,
     nothrow: false,
+    may_access_arbitrary_heap: true,
+};
+pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
+    consistent: false,
+    effect_free: false,
+    nothrow: false,
+    may_access_arbitrary_heap: false,
 };
 
-/// Per-OpCode effect triple. EXHAUSTIVE over the enum — a new variant fails
+/// Per-OpCode effect facts. EXHAUSTIVE over the enum — a new variant fails
 /// to compile until classified in op_kinds.toml.
 #[inline]
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
-    match opcode {
+    let mut effects = match opcode {
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
-        OpCode::CheckedAdd => OPCODE_EFFECTS_IMPURE,
-        OpCode::CheckedMul => OPCODE_EFFECTS_IMPURE,
+        OpCode::CheckedAdd => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::CheckedMul => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::InplaceAdd => OPCODE_EFFECTS_IMPURE,
         OpCode::InplaceSub => OPCODE_EFFECTS_IMPURE,
         OpCode::InplaceMul => OPCODE_EFFECTS_IMPURE,
@@ -2409,10 +2401,9 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Or => OPCODE_EFFECTS_IMPURE,
         OpCode::Not => OPCODE_EFFECTS_IMPURE,
         OpCode::Bool => OPCODE_EFFECTS_IMPURE,
-        OpCode::Alloc => OPCODE_EFFECTS_IMPURE,
-        OpCode::StackAlloc => OPCODE_EFFECTS_IMPURE,
+        OpCode::Alloc => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::StackAlloc => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::ObjectNewBound => OPCODE_EFFECTS_IMPURE,
-        OpCode::ObjectNewBoundStack => OPCODE_EFFECTS_IMPURE,
         OpCode::Free => OPCODE_EFFECTS_IMPURE,
         OpCode::LoadAttr => OPCODE_EFFECTS_IMPURE,
         OpCode::StoreAttr => OPCODE_EFFECTS_IMPURE,
@@ -2433,9 +2424,9 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::IncRef => OPCODE_EFFECTS_IMPURE,
         OpCode::DecRef => OPCODE_EFFECTS_IMPURE,
         OpCode::DelBoundary => OPCODE_EFFECTS_IMPURE,
-        OpCode::BuildList => OPCODE_EFFECTS_IMPURE,
+        OpCode::BuildList => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::BuildDict => OPCODE_EFFECTS_IMPURE,
-        OpCode::BuildTuple => OPCODE_EFFECTS_IMPURE,
+        OpCode::BuildTuple => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::BuildSet => OPCODE_EFFECTS_IMPURE,
         OpCode::BuildSlice => OPCODE_EFFECTS_PURE,
         OpCode::GetIter => OPCODE_EFFECTS_IMPURE,
@@ -2454,9 +2445,9 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Yield => OPCODE_EFFECTS_IMPURE,
         OpCode::YieldFrom => OPCODE_EFFECTS_IMPURE,
         OpCode::Raise => OPCODE_EFFECTS_IMPURE,
-        OpCode::CheckException => OPCODE_EFFECTS_IMPURE,
-        OpCode::ExceptionPending => OPCODE_EFFECTS_IMPURE,
-        OpCode::FunctionDefaultsVersion => OPCODE_EFFECTS_IMPURE,
+        OpCode::CheckException => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::ExceptionPending => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::FunctionDefaultsVersion => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::TryStart => OPCODE_EFFECTS_IMPURE,
         OpCode::TryEnd => OPCODE_EFFECTS_IMPURE,
         OpCode::StateBlockStart => OPCODE_EFFECTS_IMPURE,
@@ -2471,7 +2462,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Copy => OPCODE_EFFECTS_IMPURE,
         OpCode::Import => OPCODE_EFFECTS_IMPURE,
         OpCode::ImportFrom => OPCODE_EFFECTS_IMPURE,
-        OpCode::ModuleCacheGet => OPCODE_EFFECTS_IMPURE,
+        OpCode::ModuleCacheGet => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::ModuleCacheSet => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleCacheDel => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleGetAttr => OPCODE_EFFECTS_IMPURE,
@@ -2486,7 +2477,11 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::ScfFor => OPCODE_EFFECTS_IMPURE,
         OpCode::ScfWhile => OPCODE_EFFECTS_IMPURE,
         OpCode::ScfYield => OPCODE_EFFECTS_IMPURE,
-    }
+    };
+    // Impurity does not imply throwing. Project the same authority
+    // used by exception consumers instead of inheriting a preset floor.
+    effects.nothrow = !opcode_may_throw_table(opcode);
+    effects
 }
 
 /// Call graph / CallFacts role for first-class opcodes.
@@ -2540,7 +2535,6 @@ pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {
         OpCode::Alloc => CallOpcodeRole::NotCall,
         OpCode::StackAlloc => CallOpcodeRole::NotCall,
         OpCode::ObjectNewBound => CallOpcodeRole::NotCall,
-        OpCode::ObjectNewBoundStack => CallOpcodeRole::NotCall,
         OpCode::Free => CallOpcodeRole::NotCall,
         OpCode::LoadAttr => CallOpcodeRole::NotCall,
         OpCode::StoreAttr => CallOpcodeRole::NotCall,
@@ -2700,7 +2694,6 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -2821,7 +2814,6 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Alloc => Some(1),
         OpCode::StackAlloc => Some(1),
         OpCode::ObjectNewBound => Some(1),
-        OpCode::ObjectNewBoundStack => Some(1),
         OpCode::Free => Some(0),
         OpCode::LoadAttr => Some(1),
         OpCode::StoreAttr => Some(0),
@@ -3052,7 +3044,6 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -3171,7 +3162,6 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::Alloc => FuzzTirAttrPayloadRule::None,
         OpCode::StackAlloc => FuzzTirAttrPayloadRule::None,
         OpCode::ObjectNewBound => FuzzTirAttrPayloadRule::None,
-        OpCode::ObjectNewBoundStack => FuzzTirAttrPayloadRule::None,
         OpCode::Free => FuzzTirAttrPayloadRule::None,
         OpCode::LoadAttr => FuzzTirAttrPayloadRule::None,
         OpCode::StoreAttr => FuzzTirAttrPayloadRule::None,
@@ -3297,7 +3287,6 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -3377,12 +3366,11 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
 /// Exact scalar domain, never an annotation/subclass assertion.
 pub fn comparison_scalar_domain(ty: &crate::tir::types::TirType) -> Option<(u8, bool)> {
     use crate::tir::types::TirType;
-    match ty {
+    match ty.semantic_type() {
         TirType::I64 | TirType::F64 | TirType::Bool | TirType::BigInt => Some((0, true)),
         TirType::Str => Some((1, true)),
         TirType::Bytes => Some((2, true)),
         TirType::None => Some((3, false)),
-        TirType::Box(inner) => comparison_scalar_domain(inner),
         _ => None,
     }
 }
@@ -3393,12 +3381,7 @@ pub fn comparison_scalar_pair_effects(
     right: &crate::tir::types::TirType,
 ) -> OpcodeEffects {
     use crate::tir::types::TirType;
-    if let TirType::Box(inner) = left {
-        return comparison_scalar_pair_effects(category, inner, right);
-    }
-    if let TirType::Box(inner) = right {
-        return comparison_scalar_pair_effects(category, left, inner);
-    }
+    let (left, right) = (left.semantic_type(), right.semantic_type());
     if category == PredicateSemantics::Equality
         && matches!(
             (left, right),
@@ -3445,19 +3428,13 @@ pub fn opcode_primitive_effects_table(
     opcode: OpCode,
     operands: &[&TirType],
 ) -> Option<OpcodeEffects> {
-    fn scalar_type(mut ty: &TirType) -> &TirType {
-        while let TirType::Box(inner) = ty {
-            ty = inner;
-        }
-        ty
-    }
     let left = operands
         .first()
-        .map(|ty| scalar_type(ty))
+        .map(|ty| ty.semantic_type())
         .unwrap_or(&TirType::DynBox);
     let right = operands
         .get(1)
-        .map(|ty| scalar_type(ty))
+        .map(|ty| ty.semantic_type())
         .unwrap_or(&TirType::DynBox);
     match (opcode, operands.len(), left, right) {
         (
@@ -3516,10 +3493,10 @@ pub fn opcode_primitive_effects_table(
             TirType::I64 | TirType::BigInt,
         ) => Some(OPCODE_EFFECTS_PURE_MAY_THROW),
         (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Str, TirType::Str) => {
-            Some(OPCODE_EFFECTS_PURE)
+            Some(OPCODE_EFFECTS_PURE_MAY_THROW)
         }
         (OpCode::Add | OpCode::InplaceAdd, 2, TirType::Bytes, TirType::Bytes) => {
-            Some(OPCODE_EFFECTS_PURE)
+            Some(OPCODE_EFFECTS_PURE_MAY_THROW)
         }
         (
             OpCode::Mul | OpCode::InplaceMul,
@@ -3583,6 +3560,131 @@ pub fn opcode_primitive_effects_table(
         ) => Some(OPCODE_EFFECTS_IMPURE),
         _ => None,
     }
+}
+
+/// Canonical semantic operand admission; ungoverned opcodes remain permissive.
+/// Variable builders are explicit; dictionary operands are key/value pairs.
+#[inline]
+pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
+    match opcode {
+        OpCode::Add => count == 2,
+        OpCode::Sub => count == 2,
+        OpCode::Mul => count == 2,
+        OpCode::CheckedAdd => count == 2,
+        OpCode::CheckedMul => count == 2,
+        OpCode::InplaceAdd => count == 2,
+        OpCode::InplaceSub => count == 2,
+        OpCode::InplaceMul => count == 2,
+        OpCode::Div => count == 2,
+        OpCode::FloorDiv => count == 2,
+        OpCode::Mod => count == 2,
+        OpCode::Pow => count == 2,
+        OpCode::Neg => count == 1,
+        OpCode::Pos => count == 1,
+        OpCode::Eq => count == 2,
+        OpCode::Ne => count == 2,
+        OpCode::Lt => count == 2,
+        OpCode::Le => count == 2,
+        OpCode::Gt => count == 2,
+        OpCode::Ge => count == 2,
+        OpCode::Is => count == 2,
+        OpCode::IsNot => count == 2,
+        OpCode::In => count == 2,
+        OpCode::NotIn => count == 2,
+        OpCode::BitAnd => count == 2,
+        OpCode::BitOr => count == 2,
+        OpCode::BitXor => count == 2,
+        OpCode::BitNot => count == 1,
+        OpCode::Shl => count == 2,
+        OpCode::Shr => count == 2,
+        OpCode::And => count == 2,
+        OpCode::Or => count == 2,
+        OpCode::Not => count == 1,
+        OpCode::Bool => count == 1,
+        OpCode::Alloc => true,
+        OpCode::StackAlloc => true,
+        OpCode::ObjectNewBound => true,
+        OpCode::Free => true,
+        OpCode::LoadAttr => true,
+        OpCode::StoreAttr => true,
+        OpCode::DelAttr => true,
+        OpCode::Index => count == 2,
+        OpCode::StoreIndex => true,
+        OpCode::DelIndex => true,
+        OpCode::DeleteVar => true,
+        OpCode::Call => true,
+        OpCode::CallMethod => true,
+        OpCode::CallMethodIc => true,
+        OpCode::CallSuperMethodIc => true,
+        OpCode::CallBuiltin => true,
+        OpCode::OrdAt => count == 2,
+        OpCode::BoxVal => count == 1,
+        OpCode::UnboxVal => count == 1,
+        OpCode::TypeGuard => count == 1,
+        OpCode::IncRef => count == 1,
+        OpCode::DecRef => count == 1,
+        OpCode::DelBoundary => true,
+        OpCode::BuildList => true,
+        OpCode::BuildDict => count % 2 == 0,
+        OpCode::BuildTuple => true,
+        OpCode::BuildSet => true,
+        OpCode::BuildSlice => true,
+        OpCode::GetIter => count == 1,
+        OpCode::IterNext => count == 1,
+        OpCode::IterNextUnboxed => count == 1,
+        OpCode::UnpackSequence => true,
+        OpCode::ForIter => count == 1,
+        OpCode::AllocTask => true,
+        OpCode::StateSwitch => true,
+        OpCode::StateTransition => true,
+        OpCode::StateYield => true,
+        OpCode::ChanSendYield => true,
+        OpCode::ChanRecvYield => true,
+        OpCode::ClosureLoad => true,
+        OpCode::ClosureStore => true,
+        OpCode::Yield => true,
+        OpCode::YieldFrom => true,
+        OpCode::Raise => true,
+        OpCode::CheckException => true,
+        OpCode::ExceptionPending => count == 0,
+        OpCode::FunctionDefaultsVersion => true,
+        OpCode::TryStart => true,
+        OpCode::TryEnd => true,
+        OpCode::StateBlockStart => true,
+        OpCode::StateBlockEnd => true,
+        OpCode::ConstInt => count == 0,
+        OpCode::ConstBigInt => count == 0,
+        OpCode::ConstFloat => count == 0,
+        OpCode::ConstStr => count == 0,
+        OpCode::ConstBool => count == 0,
+        OpCode::ConstNone => count == 0,
+        OpCode::ConstBytes => count == 0,
+        OpCode::Copy => true,
+        OpCode::Import => true,
+        OpCode::ImportFrom => true,
+        OpCode::ModuleCacheGet => count == 1,
+        OpCode::ModuleCacheSet => true,
+        OpCode::ModuleCacheDel => true,
+        OpCode::ModuleGetAttr => count == 2,
+        OpCode::ModuleImportFrom => count == 2,
+        OpCode::ModuleGetGlobal => count == 2,
+        OpCode::ModuleGetName => count == 2,
+        OpCode::ModuleSetAttr => true,
+        OpCode::ModuleDelGlobal => true,
+        OpCode::ModuleDelGlobalIfPresent => true,
+        OpCode::WarnStderr => true,
+        OpCode::ScfIf => true,
+        OpCode::ScfFor => true,
+        OpCode::ScfWhile => true,
+        OpCode::ScfYield => true,
+    }
+}
+
+/// One instance-shape gate for result inference and every TIR consumer.
+#[inline]
+pub fn opcode_accepts_shape(opcode: OpCode, operands: usize, results: usize) -> bool {
+    opcode_accepts_operand_count(opcode, operands)
+        && opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)
 }
 
 /// Result-indexed intrinsic types, independent of effect/scheduling purity.
@@ -3673,7 +3775,6 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::Alloc => &[],
         OpCode::StackAlloc => &[],
         OpCode::ObjectNewBound => &[],
-        OpCode::ObjectNewBoundStack => &[],
         OpCode::Free => &[],
         OpCode::LoadAttr => &[],
         OpCode::StoreAttr => &[],
@@ -3817,7 +3918,6 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::Alloc => TypeRefineAttrResultTypeRule::None,
         OpCode::StackAlloc => TypeRefineAttrResultTypeRule::None,
         OpCode::ObjectNewBound => TypeRefineAttrResultTypeRule::ObjectTypeHint,
-        OpCode::ObjectNewBoundStack => TypeRefineAttrResultTypeRule::ObjectTypeHint,
         OpCode::Free => TypeRefineAttrResultTypeRule::None,
         OpCode::LoadAttr => TypeRefineAttrResultTypeRule::None,
         OpCode::StoreAttr => TypeRefineAttrResultTypeRule::None,
@@ -3896,7 +3996,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
 
 /// Type-refine operand-dependent result-type rule by opcode. This table
 /// owns opcode membership for inference that depends on operand types;
-/// type_refine.rs owns the semantics of each rule.
+/// op_semantics owns scalar operator facts; type_refine owns container transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeRefineOperandTypeRule {
     None,
@@ -3961,7 +4061,6 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::Alloc => TypeRefineOperandTypeRule::None,
         OpCode::StackAlloc => TypeRefineOperandTypeRule::None,
         OpCode::ObjectNewBound => TypeRefineOperandTypeRule::None,
-        OpCode::ObjectNewBoundStack => TypeRefineOperandTypeRule::None,
         OpCode::Free => TypeRefineOperandTypeRule::None,
         OpCode::LoadAttr => TypeRefineOperandTypeRule::None,
         OpCode::StoreAttr => TypeRefineOperandTypeRule::None,
@@ -4093,7 +4192,6 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::Alloc => SccpConstantSeedRule::None,
         OpCode::StackAlloc => SccpConstantSeedRule::None,
         OpCode::ObjectNewBound => SccpConstantSeedRule::None,
-        OpCode::ObjectNewBoundStack => SccpConstantSeedRule::None,
         OpCode::Free => SccpConstantSeedRule::None,
         OpCode::LoadAttr => SccpConstantSeedRule::None,
         OpCode::StoreAttr => SccpConstantSeedRule::None,
@@ -4177,6 +4275,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
 pub enum SccpConstantEvalRule {
     None,
     Add,
+    Bool,
     BuildTuple,
     Div,
     Eq,
@@ -4232,11 +4331,10 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::And => SccpConstantEvalRule::None,
         OpCode::Or => SccpConstantEvalRule::None,
         OpCode::Not => SccpConstantEvalRule::Not,
-        OpCode::Bool => SccpConstantEvalRule::None,
+        OpCode::Bool => SccpConstantEvalRule::Bool,
         OpCode::Alloc => SccpConstantEvalRule::None,
         OpCode::StackAlloc => SccpConstantEvalRule::None,
         OpCode::ObjectNewBound => SccpConstantEvalRule::None,
-        OpCode::ObjectNewBoundStack => SccpConstantEvalRule::None,
         OpCode::Free => SccpConstantEvalRule::None,
         OpCode::LoadAttr => SccpConstantEvalRule::None,
         OpCode::StoreAttr => SccpConstantEvalRule::None,
@@ -4374,7 +4472,6 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::Alloc => ValueRangeTransferRule::None,
         OpCode::StackAlloc => ValueRangeTransferRule::None,
         OpCode::ObjectNewBound => ValueRangeTransferRule::None,
-        OpCode::ObjectNewBoundStack => ValueRangeTransferRule::None,
         OpCode::Free => ValueRangeTransferRule::None,
         OpCode::LoadAttr => ValueRangeTransferRule::None,
         OpCode::StoreAttr => ValueRangeTransferRule::None,
@@ -4509,7 +4606,6 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::Alloc => ValueRangeConstFoldRule::None,
         OpCode::StackAlloc => ValueRangeConstFoldRule::None,
         OpCode::ObjectNewBound => ValueRangeConstFoldRule::None,
-        OpCode::ObjectNewBoundStack => ValueRangeConstFoldRule::None,
         OpCode::Free => ValueRangeConstFoldRule::None,
         OpCode::LoadAttr => ValueRangeConstFoldRule::None,
         OpCode::StoreAttr => ValueRangeConstFoldRule::None,
@@ -4638,7 +4734,6 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::Alloc => ValueRangeCondNarrowRule::None,
         OpCode::StackAlloc => ValueRangeCondNarrowRule::None,
         OpCode::ObjectNewBound => ValueRangeCondNarrowRule::None,
-        OpCode::ObjectNewBoundStack => ValueRangeCondNarrowRule::None,
         OpCode::Free => ValueRangeCondNarrowRule::None,
         OpCode::LoadAttr => ValueRangeCondNarrowRule::None,
         OpCode::StoreAttr => ValueRangeCondNarrowRule::None,
@@ -4771,7 +4866,6 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::Alloc => ValueRangeContainerLengthRule::None,
         OpCode::StackAlloc => ValueRangeContainerLengthRule::None,
         OpCode::ObjectNewBound => ValueRangeContainerLengthRule::None,
-        OpCode::ObjectNewBoundStack => ValueRangeContainerLengthRule::None,
         OpCode::Free => ValueRangeContainerLengthRule::None,
         OpCode::LoadAttr => ValueRangeContainerLengthRule::None,
         OpCode::StoreAttr => ValueRangeContainerLengthRule::None,
@@ -4827,7 +4921,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::ConstBool => ValueRangeContainerLengthRule::None,
         OpCode::ConstNone => ValueRangeContainerLengthRule::None,
         OpCode::ConstBytes => ValueRangeContainerLengthRule::None,
-        OpCode::Copy => ValueRangeContainerLengthRule::None,
+        OpCode::Copy => ValueRangeContainerLengthRule::LenCall,
         OpCode::Import => ValueRangeContainerLengthRule::None,
         OpCode::ImportFrom => ValueRangeContainerLengthRule::None,
         OpCode::ModuleCacheGet => ValueRangeContainerLengthRule::None,
@@ -4901,7 +4995,6 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::Alloc => RangeDevirtRole::None,
         OpCode::StackAlloc => RangeDevirtRole::None,
         OpCode::ObjectNewBound => RangeDevirtRole::None,
-        OpCode::ObjectNewBoundStack => RangeDevirtRole::None,
         OpCode::Free => RangeDevirtRole::None,
         OpCode::LoadAttr => RangeDevirtRole::None,
         OpCode::StoreAttr => RangeDevirtRole::None,
@@ -5199,11 +5292,6 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             annotation_target: false,
         },
         OpCode::ObjectNewBound => VectorizeOpcodeFacts {
-            body_action: VectorizeBodyAction::Reject,
-            reduction_rule: VectorReductionRule::None,
-            annotation_target: false,
-        },
-        OpCode::ObjectNewBoundStack => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -5626,11 +5714,10 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::And => LirVerifyRule::None,
         OpCode::Or => LirVerifyRule::None,
         OpCode::Not => LirVerifyRule::None,
-        OpCode::Bool => LirVerifyRule::None,
+        OpCode::Bool => LirVerifyRule::TruthyMaterialization,
         OpCode::Alloc => LirVerifyRule::None,
         OpCode::StackAlloc => LirVerifyRule::None,
         OpCode::ObjectNewBound => LirVerifyRule::None,
-        OpCode::ObjectNewBoundStack => LirVerifyRule::None,
         OpCode::Free => LirVerifyRule::None,
         OpCode::LoadAttr => LirVerifyRule::None,
         OpCode::StoreAttr => LirVerifyRule::None,
@@ -5643,7 +5730,7 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::CallMethod => LirVerifyRule::None,
         OpCode::CallMethodIc => LirVerifyRule::None,
         OpCode::CallSuperMethodIc => LirVerifyRule::None,
-        OpCode::CallBuiltin => LirVerifyRule::TruthyMaterialization,
+        OpCode::CallBuiltin => LirVerifyRule::None,
         OpCode::OrdAt => LirVerifyRule::None,
         OpCode::BoxVal => LirVerifyRule::BoxValue,
         OpCode::UnboxVal => LirVerifyRule::UnboxValue,
@@ -5762,7 +5849,6 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::Alloc => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StackAlloc => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ObjectNewBound => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::ObjectNewBoundStack => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Free => ReprRawI64FullDeoptSeedRule::None,
         OpCode::LoadAttr => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StoreAttr => ReprRawI64FullDeoptSeedRule::None,
@@ -5898,7 +5984,6 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::Alloc => ReprProjectableBoolResultRule::None,
         OpCode::StackAlloc => ReprProjectableBoolResultRule::None,
         OpCode::ObjectNewBound => ReprProjectableBoolResultRule::None,
-        OpCode::ObjectNewBoundStack => ReprProjectableBoolResultRule::None,
         OpCode::Free => ReprProjectableBoolResultRule::None,
         OpCode::LoadAttr => ReprProjectableBoolResultRule::None,
         OpCode::StoreAttr => ReprProjectableBoolResultRule::None,
@@ -6032,7 +6117,6 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::Alloc => ReprProjectableFloatResultRule::None,
         OpCode::StackAlloc => ReprProjectableFloatResultRule::None,
         OpCode::ObjectNewBound => ReprProjectableFloatResultRule::None,
-        OpCode::ObjectNewBoundStack => ReprProjectableFloatResultRule::None,
         OpCode::Free => ReprProjectableFloatResultRule::None,
         OpCode::LoadAttr => ReprProjectableFloatResultRule::None,
         OpCode::StoreAttr => ReprProjectableFloatResultRule::None,
@@ -6189,7 +6273,6 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::Alloc => CountedLoopComparisonRole::None,
         OpCode::StackAlloc => CountedLoopComparisonRole::None,
         OpCode::ObjectNewBound => CountedLoopComparisonRole::None,
-        OpCode::ObjectNewBoundStack => CountedLoopComparisonRole::None,
         OpCode::Free => CountedLoopComparisonRole::None,
         OpCode::LoadAttr => CountedLoopComparisonRole::None,
         OpCode::StoreAttr => CountedLoopComparisonRole::None,
@@ -6308,7 +6391,6 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -6447,7 +6529,6 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::Alloc => GvnNumberingRole::Never,
         OpCode::StackAlloc => GvnNumberingRole::Never,
         OpCode::ObjectNewBound => GvnNumberingRole::Never,
-        OpCode::ObjectNewBoundStack => GvnNumberingRole::Never,
         OpCode::Free => GvnNumberingRole::Never,
         OpCode::LoadAttr => GvnNumberingRole::Never,
         OpCode::StoreAttr => GvnNumberingRole::Never,
@@ -6596,7 +6677,6 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -6741,7 +6821,6 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -6862,7 +6941,6 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => true,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -6981,7 +7059,6 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => true,
@@ -7101,7 +7178,6 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::Alloc => true,
         OpCode::StackAlloc => true,
         OpCode::ObjectNewBound => true,
-        OpCode::ObjectNewBoundStack => true,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7221,7 +7297,6 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7341,7 +7416,6 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7495,7 +7569,6 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::Alloc => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StackAlloc => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ObjectNewBound => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::ObjectNewBoundStack => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Free => RefcountBalanceRole::NotRefcountBalance,
         OpCode::LoadAttr => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StoreAttr => RefcountBalanceRole::NotRefcountBalance,
@@ -7616,7 +7689,6 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7736,7 +7808,6 @@ pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7856,7 +7927,6 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => true,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -7915,131 +7985,6 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::Copy => false,
         OpCode::Import => false,
         OpCode::ImportFrom => false,
-        OpCode::ModuleCacheGet => false,
-        OpCode::ModuleCacheSet => false,
-        OpCode::ModuleCacheDel => false,
-        OpCode::ModuleGetAttr => false,
-        OpCode::ModuleImportFrom => false,
-        OpCode::ModuleGetGlobal => false,
-        OpCode::ModuleGetName => false,
-        OpCode::ModuleSetAttr => false,
-        OpCode::ModuleDelGlobal => false,
-        OpCode::ModuleDelGlobalIfPresent => false,
-        OpCode::WarnStderr => false,
-        OpCode::ScfIf => false,
-        OpCode::ScfFor => false,
-        OpCode::ScfWhile => false,
-        OpCode::ScfYield => false,
-    }
-}
-
-/// Whether an opcode makes a comprehension/generator body ineligible for
-/// deforestation iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/
-/// `all`/`min`/`max` over a `for` loop). This is a DISTINCT fact from
-/// `opcode_is_side_effecting`: fusion preserves per-element evaluation order
-/// and count, so allocation/attribute-read/may-throw ops are deliberately
-/// NOT barriers. The barrier set lives in op_kinds.toml. EXHAUSTIVE over
-/// OpCode — a new variant fails to compile until it is classified, closing
-/// the prior default-false drift trap in deforestation's hand-written set.
-#[inline]
-pub fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {
-    match opcode {
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => false,
-        OpCode::InplaceSub => false,
-        OpCode::InplaceMul => false,
-        OpCode::Div => false,
-        OpCode::FloorDiv => false,
-        OpCode::Mod => false,
-        OpCode::Pow => false,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
-        OpCode::Eq => false,
-        OpCode::Ne => false,
-        OpCode::Lt => false,
-        OpCode::Le => false,
-        OpCode::Gt => false,
-        OpCode::Ge => false,
-        OpCode::Is => false,
-        OpCode::IsNot => false,
-        OpCode::In => false,
-        OpCode::NotIn => false,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
-        OpCode::Shl => false,
-        OpCode::Shr => false,
-        OpCode::And => false,
-        OpCode::Or => false,
-        OpCode::Not => false,
-        OpCode::Bool => false,
-        OpCode::Alloc => false,
-        OpCode::StackAlloc => false,
-        OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
-        OpCode::Free => false,
-        OpCode::LoadAttr => false,
-        OpCode::StoreAttr => true,
-        OpCode::DelAttr => true,
-        OpCode::Index => false,
-        OpCode::StoreIndex => true,
-        OpCode::DelIndex => true,
-        OpCode::DeleteVar => false,
-        OpCode::Call => true,
-        OpCode::CallMethod => true,
-        OpCode::CallMethodIc => true,
-        OpCode::CallSuperMethodIc => true,
-        OpCode::CallBuiltin => true,
-        OpCode::OrdAt => false,
-        OpCode::BoxVal => false,
-        OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
-        OpCode::IncRef => false,
-        OpCode::DecRef => false,
-        OpCode::DelBoundary => false,
-        OpCode::BuildList => false,
-        OpCode::BuildDict => false,
-        OpCode::BuildTuple => false,
-        OpCode::BuildSet => false,
-        OpCode::BuildSlice => false,
-        OpCode::GetIter => false,
-        OpCode::IterNext => false,
-        OpCode::IterNextUnboxed => false,
-        OpCode::UnpackSequence => false,
-        OpCode::ForIter => false,
-        OpCode::AllocTask => false,
-        OpCode::StateSwitch => true,
-        OpCode::StateTransition => true,
-        OpCode::StateYield => true,
-        OpCode::ChanSendYield => true,
-        OpCode::ChanRecvYield => true,
-        OpCode::ClosureLoad => true,
-        OpCode::ClosureStore => true,
-        OpCode::Yield => true,
-        OpCode::YieldFrom => true,
-        OpCode::Raise => true,
-        OpCode::CheckException => false,
-        OpCode::ExceptionPending => false,
-        OpCode::FunctionDefaultsVersion => false,
-        OpCode::TryStart => false,
-        OpCode::TryEnd => false,
-        OpCode::StateBlockStart => false,
-        OpCode::StateBlockEnd => false,
-        OpCode::ConstInt => false,
-        OpCode::ConstBigInt => false,
-        OpCode::ConstFloat => false,
-        OpCode::ConstStr => false,
-        OpCode::ConstBool => false,
-        OpCode::ConstNone => false,
-        OpCode::ConstBytes => false,
-        OpCode::Copy => false,
-        OpCode::Import => true,
-        OpCode::ImportFrom => true,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
         OpCode::ModuleCacheDel => false,
@@ -8123,7 +8068,6 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::Alloc => GeneratorFusionPollRole::Neutral,
         OpCode::StackAlloc => GeneratorFusionPollRole::Neutral,
         OpCode::ObjectNewBound => GeneratorFusionPollRole::Neutral,
-        OpCode::ObjectNewBoundStack => GeneratorFusionPollRole::Neutral,
         OpCode::Free => GeneratorFusionPollRole::Neutral,
         OpCode::LoadAttr => GeneratorFusionPollRole::Neutral,
         OpCode::StoreAttr => GeneratorFusionPollRole::Neutral,
@@ -8253,7 +8197,6 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::Alloc => GeneratorFusionIterUseRole::None,
         OpCode::StackAlloc => GeneratorFusionIterUseRole::None,
         OpCode::ObjectNewBound => GeneratorFusionIterUseRole::None,
-        OpCode::ObjectNewBoundStack => GeneratorFusionIterUseRole::None,
         OpCode::Free => GeneratorFusionIterUseRole::None,
         OpCode::LoadAttr => GeneratorFusionIterUseRole::None,
         OpCode::StoreAttr => GeneratorFusionIterUseRole::None,
@@ -8375,7 +8318,6 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -8523,7 +8465,6 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::Alloc => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StackAlloc => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ObjectNewBound => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::ObjectNewBoundStack => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Free => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::LoadAttr => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StoreAttr => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -8665,7 +8606,6 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::Alloc => ModuleSlotAccessRole::None,
         OpCode::StackAlloc => ModuleSlotAccessRole::None,
         OpCode::ObjectNewBound => ModuleSlotAccessRole::None,
-        OpCode::ObjectNewBoundStack => ModuleSlotAccessRole::None,
         OpCode::Free => ModuleSlotAccessRole::None,
         OpCode::LoadAttr => ModuleSlotAccessRole::None,
         OpCode::StoreAttr => ModuleSlotAccessRole::None,
@@ -8750,7 +8690,6 @@ pub enum TirVerifyAttrRule {
     None,
     CallCallee,
     CallMethod,
-    PositivePayloadBytes,
     UnpackSequenceShape,
 }
 
@@ -8797,7 +8736,6 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::Alloc => TirVerifyAttrRule::None,
         OpCode::StackAlloc => TirVerifyAttrRule::None,
         OpCode::ObjectNewBound => TirVerifyAttrRule::None,
-        OpCode::ObjectNewBoundStack => TirVerifyAttrRule::PositivePayloadBytes,
         OpCode::Free => TirVerifyAttrRule::None,
         OpCode::LoadAttr => TirVerifyAttrRule::None,
         OpCode::StoreAttr => TirVerifyAttrRule::None,
@@ -8929,7 +8867,6 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::Alloc => StrengthReductionRule::None,
         OpCode::StackAlloc => StrengthReductionRule::None,
         OpCode::ObjectNewBound => StrengthReductionRule::None,
-        OpCode::ObjectNewBoundStack => StrengthReductionRule::None,
         OpCode::Free => StrengthReductionRule::None,
         OpCode::LoadAttr => StrengthReductionRule::None,
         OpCode::StoreAttr => StrengthReductionRule::None,
@@ -9060,7 +8997,6 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::Alloc => ScevExprRule::None,
         OpCode::StackAlloc => ScevExprRule::None,
         OpCode::ObjectNewBound => ScevExprRule::None,
-        OpCode::ObjectNewBoundStack => ScevExprRule::None,
         OpCode::Free => ScevExprRule::None,
         OpCode::LoadAttr => ScevExprRule::None,
         OpCode::StoreAttr => ScevExprRule::None,
@@ -9183,7 +9119,6 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9305,7 +9240,6 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9428,7 +9362,6 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9549,7 +9482,6 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9669,7 +9601,6 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9789,7 +9720,6 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -9911,7 +9841,6 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10031,7 +9960,6 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10154,7 +10082,6 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10276,7 +10203,6 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10396,7 +10322,6 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10516,7 +10441,6 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10636,7 +10560,6 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -10763,7 +10686,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::Alloc => ExceptionRegionNestingRole::None,
         OpCode::StackAlloc => ExceptionRegionNestingRole::None,
         OpCode::ObjectNewBound => ExceptionRegionNestingRole::None,
-        OpCode::ObjectNewBoundStack => ExceptionRegionNestingRole::None,
         OpCode::Free => ExceptionRegionNestingRole::None,
         OpCode::LoadAttr => ExceptionRegionNestingRole::None,
         OpCode::StoreAttr => ExceptionRegionNestingRole::None,
@@ -10840,133 +10762,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
     }
 }
 
-/// Opcode role for offset-based typed-slot field helpers. Omitted
-/// opcodes are not typed-slot field candidates.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum AliasTypedSlotRole {
-    Load,
-    Store,
-    NotTypedSlot,
-}
-
-/// Typed-slot opcode role for alias_analysis.rs. EXHAUSTIVE over OpCode.
-#[inline]
-pub fn opcode_alias_typed_slot_role_table(opcode: OpCode) -> AliasTypedSlotRole {
-    match opcode {
-        OpCode::Add => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Sub => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Mul => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CheckedAdd => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CheckedMul => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::InplaceAdd => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::InplaceSub => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::InplaceMul => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Div => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::FloorDiv => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Mod => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Pow => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Neg => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Pos => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Eq => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Ne => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Lt => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Le => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Gt => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Ge => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Is => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::IsNot => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::In => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::NotIn => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BitAnd => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BitOr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BitXor => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BitNot => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Shl => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Shr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::And => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Or => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Not => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Bool => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Alloc => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StackAlloc => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ObjectNewBound => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ObjectNewBoundStack => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Free => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::LoadAttr => AliasTypedSlotRole::Load,
-        OpCode::StoreAttr => AliasTypedSlotRole::Store,
-        OpCode::DelAttr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Index => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StoreIndex => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::DelIndex => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::DeleteVar => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Call => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CallMethod => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CallMethodIc => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CallSuperMethodIc => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CallBuiltin => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::OrdAt => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BoxVal => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::UnboxVal => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::TypeGuard => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::IncRef => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::DecRef => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::DelBoundary => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BuildList => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BuildDict => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BuildTuple => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BuildSet => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::BuildSlice => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::GetIter => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::IterNext => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::IterNextUnboxed => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::UnpackSequence => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ForIter => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::AllocTask => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StateSwitch => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StateTransition => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StateYield => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ChanSendYield => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ChanRecvYield => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ClosureLoad => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ClosureStore => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Yield => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::YieldFrom => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Raise => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::CheckException => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ExceptionPending => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::FunctionDefaultsVersion => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::TryStart => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::TryEnd => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StateBlockStart => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::StateBlockEnd => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstInt => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstBigInt => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstFloat => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstStr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstBool => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstNone => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ConstBytes => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Copy => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Import => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ImportFrom => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleCacheGet => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleCacheSet => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleCacheDel => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleGetAttr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleImportFrom => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleGetGlobal => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleGetName => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleSetAttr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleDelGlobal => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ModuleDelGlobalIfPresent => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::WarnStderr => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ScfIf => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ScfFor => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ScfWhile => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::ScfYield => AliasTypedSlotRole::NotTypedSlot,
-    }
-}
-
 /// Opcode role for transparent alias-root propagation. Omitted opcodes
 /// do not forward object identity through their result.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -11017,7 +10812,6 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::Alloc => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StackAlloc => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ObjectNewBound => AliasTransparentAliasRole::NotTransparentAlias,
-        OpCode::ObjectNewBoundStack => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Free => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::LoadAttr => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StoreAttr => AliasTransparentAliasRole::NotTransparentAlias,
@@ -11149,7 +10943,6 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::Alloc => AliasMemoryRegionClass::GenericHeap,
         OpCode::StackAlloc => AliasMemoryRegionClass::GenericHeap,
         OpCode::ObjectNewBound => AliasMemoryRegionClass::GenericHeap,
-        OpCode::ObjectNewBoundStack => AliasMemoryRegionClass::GenericHeap,
         OpCode::Free => AliasMemoryRegionClass::GenericHeap,
         OpCode::LoadAttr => AliasMemoryRegionClass::TypedSlotAttr,
         OpCode::StoreAttr => AliasMemoryRegionClass::TypedSlotAttr,
@@ -11280,7 +11073,6 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::Alloc => AliasSlotObservation::ConservativeObserver,
         OpCode::StackAlloc => AliasSlotObservation::ConservativeObserver,
         OpCode::ObjectNewBound => AliasSlotObservation::ConservativeObserver,
-        OpCode::ObjectNewBoundStack => AliasSlotObservation::ConservativeObserver,
         OpCode::Free => AliasSlotObservation::ConservativeObserver,
         OpCode::LoadAttr => AliasSlotObservation::DirectObserver,
         OpCode::StoreAttr => AliasSlotObservation::TypedSlotStore,
@@ -11438,10 +11230,6 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         },
         OpCode::StackAlloc => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ObjectNewBound => PassDeltaOpcodeFacts {
-            heap_alloc: true,
-            ..PASS_DELTA_OPCODE_FACTS_NONE
-        },
-        OpCode::ObjectNewBoundStack => PassDeltaOpcodeFacts {
             heap_alloc: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
@@ -11632,7 +11420,6 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -11763,7 +11550,6 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -11882,7 +11668,6 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::Alloc => None,
         OpCode::StackAlloc => None,
         OpCode::ObjectNewBound => None,
-        OpCode::ObjectNewBoundStack => None,
         OpCode::Free => None,
         OpCode::LoadAttr => None,
         OpCode::StoreAttr => None,
@@ -12293,7 +12078,6 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::Alloc => &[],
         OpCode::StackAlloc => &[],
         OpCode::ObjectNewBound => &[],
-        OpCode::ObjectNewBoundStack => &[],
         OpCode::Free => &[],
         OpCode::LoadAttr => &[],
         OpCode::StoreAttr => &[],
@@ -12530,7 +12314,6 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::Alloc => OperandOwnership::Borrowed,
         OpCode::StackAlloc => OperandOwnership::Borrowed,
         OpCode::ObjectNewBound => OperandOwnership::Borrowed,
-        OpCode::ObjectNewBoundStack => OperandOwnership::Borrowed,
         OpCode::Free => OperandOwnership::Borrowed,
         OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,
         OpCode::StoreAttr => OperandOwnership::Borrowed,
@@ -12730,7 +12513,6 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::Alloc => false,
         OpCode::StackAlloc => false,
         OpCode::ObjectNewBound => false,
-        OpCode::ObjectNewBoundStack => false,
         OpCode::Free => false,
         OpCode::LoadAttr => false,
         OpCode::StoreAttr => false,
@@ -12901,7 +12683,6 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::Alloc => ResultValidity::AlwaysValid,
         OpCode::StackAlloc => ResultValidity::AlwaysValid,
         OpCode::ObjectNewBound => ResultValidity::AlwaysValid,
-        OpCode::ObjectNewBoundStack => ResultValidity::AlwaysValid,
         OpCode::Free => ResultValidity::AlwaysValid,
         OpCode::LoadAttr => ResultValidity::AlwaysValid,
         OpCode::StoreAttr => ResultValidity::AlwaysValid,
@@ -13048,7 +12829,6 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::Alloc => ExplicitReleaseOperands::None,
         OpCode::StackAlloc => ExplicitReleaseOperands::None,
         OpCode::ObjectNewBound => ExplicitReleaseOperands::None,
-        OpCode::ObjectNewBoundStack => ExplicitReleaseOperands::None,
         OpCode::Free => ExplicitReleaseOperands::None,
         OpCode::LoadAttr => ExplicitReleaseOperands::None,
         OpCode::StoreAttr => ExplicitReleaseOperands::None,

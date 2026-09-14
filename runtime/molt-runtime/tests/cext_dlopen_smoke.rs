@@ -28,12 +28,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Once;
 
-// The runtime expects these symbols from the compiled Python module.
-// Provide stubs so integration tests can link.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/cext_dlopen_smoke"
+));
 
 unsafe extern "C" {
     fn molt_exception_clear() -> u64;

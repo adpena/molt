@@ -672,7 +672,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
-                let out_ptr = alloc_bytes_like_with_len(_py, total, TYPE_ID_STRING);
+                let out_ptr = alloc_inline_bytes_with_len(_py, total, InlineBytesKind::String);
                 if out_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
@@ -688,7 +688,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
-                let out_ptr = alloc_bytes_like_with_len(_py, total, TYPE_ID_BYTES);
+                let out_ptr = alloc_inline_bytes_with_len(_py, total, InlineBytesKind::Bytes);
                 if out_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }

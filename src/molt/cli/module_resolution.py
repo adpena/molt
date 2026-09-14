@@ -321,7 +321,7 @@ class _ModuleResolutionCache:
         default_factory=dict
     )
     runtime_import_protocol_cache: dict[
-        tuple[Path, str | None, bool, ImportScanMode], bool
+        tuple[Path, str | None, bool, ImportScanMode, str, str], bool
     ] = field(default_factory=dict)
     module_name_cache: dict[
         tuple[Path, tuple[Path, ...], Path, Path | None, _ModuleRootAliases], str
@@ -332,7 +332,14 @@ class _ModuleResolutionCache:
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
     import_scan_cache: dict[
-        tuple[Path, str | None, bool, ImportScanMode, _RuntimeImportScanCustody | None],
+        tuple[
+            Path,
+            str | None,
+            bool,
+            ImportScanMode,
+            str,
+            _RuntimeImportScanCustody | None,
+        ],
         tuple[str, ...],
     ] = field(default_factory=dict)
     path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
@@ -567,11 +574,15 @@ class _ModuleResolutionCache:
         module_name: str | None = None,
         is_package: bool = False,
         import_scan_mode: ImportScanMode = "full",
+        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
     ) -> tuple[str, ...]:
         source_path = path.resolve() if runtime_import_custody is not None else path
         if runtime_import_custody is not None:
             if runtime_import_custody.owns(module_name, source_path):
+                runtime_import_custody.validate_scan_mode(
+                    module_name, source_path, import_scan_mode
+                )
                 from molt.compiler_analysis.python_binding_flow import python_ast_digest
 
                 runtime_import_custody.admits_scan(
@@ -584,6 +595,7 @@ class _ModuleResolutionCache:
             module_name,
             is_package,
             import_scan_mode,
+            target_python.tag,
             runtime_import_custody,
         )
         cached = self.import_scan_cache.get(cache_key)
@@ -602,6 +614,7 @@ class _ModuleResolutionCache:
             module_name,
             is_package,
             import_scan_mode=import_scan_mode,
+            target_python=target_python,
             **custody_kwargs,
         )
         cached_imports = tuple(imports)
@@ -611,30 +624,35 @@ class _ModuleResolutionCache:
     def uses_runtime_import_protocol(
         self,
         path: Path,
-        tree: ast.AST,
         *,
-        detector: Callable[..., bool],
-        module_name: str | None = None,
-        is_package: bool = False,
-        import_scan_mode: ImportScanMode = "full",
+        producer: Callable[[], bool],
+        module_name: str | None,
+        is_package: bool,
+        import_scan_mode: ImportScanMode,
+        target_python_tag: str,
     ) -> bool:
-        cache_key = (
+        # Cache the complete protocol decision, not just its call-expression
+        # projection. Keys bind generated-source replacement and scan promotion.
+        try:
+            digest = _module_source._source_content_sha256(path, path.stat())
+        except OSError:
+            digest = None
+        if digest is None:
+            return producer()
+        key = (
             self.resolved_path(path),
             module_name,
             is_package,
             import_scan_mode,
+            target_python_tag,
+            digest,
         )
-        cached = self.runtime_import_protocol_cache.get(cache_key)
+        cached = self.runtime_import_protocol_cache.get(key)
         if cached is not None:
             return cached
-        cached = detector(
-            tree,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-        )
-        self.runtime_import_protocol_cache[cache_key] = cached
-        return cached
+        result = producer()
+        self.runtime_import_protocol_cache[key] = result
+        return result
 
 
 def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:

@@ -258,27 +258,6 @@ fn parameter_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<Valu
         .collect()
 }
 
-fn produces_stack_value(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::StackAlloc | OpCode::ObjectNewBoundStack)
-}
-
-fn stack_value_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
-    let mut roots = HashSet::new();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if produces_stack_value(op.opcode) {
-                roots.extend(
-                    op.results
-                        .iter()
-                        .copied()
-                        .map(|result| aliases.root(result)),
-                );
-            }
-        }
-    }
-    roots
-}
-
 fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
     let mut roots = HashSet::new();
     for block in func.blocks.values() {
@@ -309,7 +288,6 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OwnershipRootFacts {
     borrowed_parameter_roots: HashSet<ValueId>,
-    stack_value_roots: HashSet<ValueId>,
     conditionally_valid_result_roots: HashSet<ValueId>,
     non_owning_copy_result_roots: HashSet<ValueId>,
 }
@@ -318,7 +296,6 @@ impl OwnershipRootFacts {
     pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind) -> Self {
         Self {
             borrowed_parameter_roots: parameter_roots(func, aliases),
-            stack_value_roots: stack_value_roots(func, aliases),
             conditionally_valid_result_roots: conditionally_valid_result_roots(func, aliases),
             non_owning_copy_result_roots: non_owning_copy_result_roots(func, aliases),
         }
@@ -326,10 +303,6 @@ impl OwnershipRootFacts {
 
     pub(crate) fn is_borrowed_parameter_root(&self, root: ValueId) -> bool {
         self.borrowed_parameter_roots.contains(&root)
-    }
-
-    pub(crate) fn is_stack_value_root(&self, root: ValueId) -> bool {
-        self.stack_value_roots.contains(&root)
     }
 
     /// Alias roots whose result bits are valid only on a specific outgoing edge
@@ -357,9 +330,7 @@ impl OwnershipRootFacts {
     }
 
     pub(crate) fn is_drop_owned_root_candidate(&self, root: ValueId) -> bool {
-        !self.is_borrowed_parameter_root(root)
-            && !self.is_stack_value_root(root)
-            && !self.is_non_owning_copy_result_root(root)
+        !self.is_borrowed_parameter_root(root) && !self.is_non_owning_copy_result_root(root)
     }
 }
 
@@ -410,12 +381,11 @@ impl<'a> DropEligibility<'a> {
     /// contract, and transparent/non-owning copies preserve that borrow. A
     /// Return transfers one owned result to the caller, so those roots require
     /// one retain at the callee boundary. Fresh/function-owned roots already
-    /// carry the transferable `+1`; raw, stack, and conditionally-valid carriers
+    /// carry the transferable `+1`; raw and conditionally-valid carriers
     /// must never be retained here.
     pub(crate) fn return_requires_owned_publication(&self, value: ValueId) -> bool {
         let root = self.root(value);
         !self.is_raw_scalar_root(root)
-            && !self.root_facts.is_stack_value_root(root)
             && !self.root_facts.is_conditionally_valid_result_root(root)
             && (self.root_facts.is_borrowed_parameter_root(root)
                 || self.root_facts.is_non_owning_copy_result_root(root))
@@ -505,10 +475,11 @@ impl PythonLifetimeFacts {
 
     /// Python-bound local-store roots whose release should be placed at the
     /// function boundary by DropInsertion. The lifetime fact is local-slot
-    /// ownership minus explicit release boundaries, intersected with the
-    /// finalizer-sensitive lattice: ordinary non-finalizer locals can release at
-    /// SSA last use, while finalizer-sensitive locals preserve CPython-observable
-    /// scope-exit ordering. DropInsertion owns only the eventual placement.
+    /// ownership minus explicit release boundaries. Positive `bound_local`
+    /// provenance requires the Python owner lifetime even without a known
+    /// finalizer: opaque results and mutable classes do not prove destruction
+    /// unobservable. The existing finalizer closure also retains transported
+    /// legacy slot owners. Unmarked, nonsensitive compiler temporaries stay out.
     pub(crate) fn boundary_release_roots(
         &self,
         drop_eligibility: &DropEligibility<'_>,
@@ -519,7 +490,8 @@ impl PythonLifetimeFacts {
             .copied()
             .filter(|root| {
                 drop_eligibility.is_droppable(*root)
-                    && ownership_lattice.is_finalizer_sensitive_root(*root)
+                    && (self.bound_local_roots.contains(root)
+                        || ownership_lattice.is_finalizer_sensitive_root(*root))
                     && !self.has_explicit_release_boundary(*root)
                     && !drop_eligibility.is_conditionally_valid_result_root(*root)
             })
@@ -540,8 +512,8 @@ impl PythonLifetimeFacts {
             && !self.has_explicit_release_boundary(root)
     }
 
-    /// Python-bound roots that must be held until the dominated return boundary
-    /// when finalizer-sensitive. Slot-backed locals keep their own
+    /// Python-bound roots that must be held until the dominated return boundary.
+    /// Slot-backed locals keep their own
     /// rebinding/delete boundary and are not return-boundary deferrals.
     pub(crate) fn is_return_boundary_deferred_root(
         &self,
@@ -550,7 +522,25 @@ impl PythonLifetimeFacts {
     ) -> bool {
         self.bound_local_roots.contains(&root)
             && !self.named_slot_roots.contains(&root)
+            && !self.has_explicit_release_boundary(root)
             && !drop_eligibility.is_conditionally_valid_result_root(root)
+    }
+
+    /// Owned named values eligible for the existing pure-SSA return planner.
+    /// This is positive lexical ownership, never an inference from absent
+    /// finalizer metadata. Placement still validates transfers and control flow.
+    pub(crate) fn return_boundary_candidate_roots(
+        &self,
+        drop_eligibility: &DropEligibility<'_>,
+    ) -> HashSet<ValueId> {
+        self.bound_local_roots
+            .iter()
+            .copied()
+            .filter(|root| {
+                drop_eligibility.is_droppable(*root)
+                    && self.is_return_boundary_deferred_root(*root, drop_eligibility)
+            })
+            .collect()
     }
 
     pub(crate) fn has_explicit_release_boundary(&self, root: ValueId) -> bool {
@@ -697,6 +687,7 @@ impl OwnershipLattice {
     }
 
     /// The full FinalizerSensitive set (the gate the ordering fix consumes).
+    #[cfg(test)]
     pub(crate) fn finalizer_sensitive_roots(&self) -> &HashSet<ValueId> {
         &self.finalizer_sensitive_roots
     }

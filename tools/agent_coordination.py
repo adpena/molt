@@ -444,31 +444,8 @@ def repo_relative(path: Path, repo_root: Path) -> str:
 
 
 def read_git_identity(repo_root: Path) -> tuple[str, str]:
-    git_dir = repo_root / ".git"
-    head_path = git_dir / "HEAD"
-    if not head_path.is_file():
-        return ("unknown", "unknown")
-    head = head_path.read_text(encoding="utf-8", errors="replace").strip()
-    if head.startswith("ref: "):
-        ref = head.removeprefix("ref: ").strip()
-        commit_path = git_dir / ref
-        packed_refs = git_dir / "packed-refs"
-        commit = "unknown"
-        if commit_path.is_file():
-            commit = commit_path.read_text(encoding="utf-8", errors="replace").strip()
-        elif packed_refs.is_file():
-            for line in packed_refs.read_text(
-                encoding="utf-8", errors="replace"
-            ).splitlines():
-                if not line or line.startswith("#") or line.startswith("^"):
-                    continue
-                sha, _, name = line.partition(" ")
-                if name == ref:
-                    commit = sha
-                    break
-        branch = ref.removeprefix("refs/heads/")
-        return (branch, commit[:12] if commit != "unknown" else commit)
-    return ("detached", head[:12] if head else "unknown")
+    branch, head = _git_head_identity(repo_root, [])
+    return (branch, head[:12] if head else "unknown")
 
 
 def command_paths(name: str, environ: dict[str, str] | None = None) -> list[str]:
@@ -786,6 +763,25 @@ def _porcelain_status_entry_count(text: str) -> int:
     return count
 
 
+def _git_head_identity(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> tuple[str, str | None]:
+    # Git owns worktree indirection, ref storage, and detached/unborn HEADs.
+    # Both persisted coordination records and live context use this query.
+    head = _required_command_text(
+        _run_context_command("git.head", ("git", "rev-parse", "HEAD"), cwd=repo_root),
+        errors,
+    )
+    branch = _required_command_text(
+        _run_context_command(
+            "git.branch", ("git", "branch", "--show-current"), cwd=repo_root
+        ),
+        errors,
+    )
+    return ("unknown" if branch is None else branch or "detached", head)
+
+
 def _git_agent_context(
     repo_root: Path,
     errors: list[dict[str, Any]],
@@ -799,8 +795,7 @@ def _git_agent_context(
         return _required_command_text(result, errors)
 
     current_root = git("root", "rev-parse", "--show-toplevel")
-    head = git("head", "rev-parse", "HEAD")
-    branch = git("branch", "branch", "--show-current")
+    branch, head = _git_head_identity(repo_root, errors)
     origin_main = git("origin_main", "rev-parse", "origin/main")
     drift_text = git(
         "origin_drift",
@@ -892,7 +887,7 @@ def _git_agent_context(
             if normalized_current is not None and normalized_canonical is not None
             else None
         ),
-        "branch": branch or "detached",
+        "branch": branch,
         "head": head,
         "origin_main": origin_main,
         "ahead": ahead,

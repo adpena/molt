@@ -1252,7 +1252,11 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                             .unwrap_or_else(|| hash_pointer(ptr as u64));
                     }
                     1 => {
-                        let fields = dataclass_fields_ref(ptr);
+                        let Some(fields) =
+                            crate::object::field_storage::dataclass_snapshot(_py, ptr, 0x4)
+                        else {
+                            return 0;
+                        };
                         let type_label = if desc.name.is_empty() {
                             "dataclass"
                         } else {
@@ -1260,7 +1264,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                         };
                         return hash_dataclass_fields(
                             _py,
-                            fields,
+                            &fields,
                             &desc.field_flags,
                             &desc.field_names,
                             type_label,

@@ -629,21 +629,48 @@ fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+fn detach_exit_callbacks(registry: &mut ExitRegistry) -> Vec<AtexitCallbackEntry> {
+    let callbacks = std::mem::take(&mut registry.callbacks);
+    // Clearing an already-published finalize runner is a persistent opt-out.
+    // A clear before the first finalizer does not prevent its lazy publish.
+    if registry.weakref_runner_state == WeakrefRunnerState::Registered {
+        registry.weakref_runner_state = WeakrefRunnerState::Cleared;
+    }
+    callbacks
+}
+
 fn atexit_clear_impl(_py: &PyToken<'_>) -> u64 {
     let callbacks = {
         let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-        let callbacks = std::mem::take(&mut registry.callbacks);
-        // Clearing an already-published finalize runner is a persistent opt-out.
-        // A clear before the first finalizer does not prevent its lazy publish.
-        if registry.weakref_runner_state == WeakrefRunnerState::Registered {
-            registry.weakref_runner_state = WeakrefRunnerState::Cleared;
-        }
-        callbacks
+        detach_exit_callbacks(&mut registry)
     };
     for callback in callbacks {
         atexit_callback_release_refs(_py, callback);
     }
     MoltObject::none().bits()
+}
+
+/// Release late registrations without starting another exit-callback phase.
+/// Keep monotonic identities and runner policy while detaching both owner
+/// cohorts before any decref can register replacement callbacks/finalizers.
+pub(crate) fn atexit_clear_runtime_roots(_py: &PyToken<'_>) -> bool {
+    let (callbacks, finalizers) = {
+        let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+        let mut finalizers = Vec::with_capacity(registry.weakref_finalizers.len());
+        let callbacks = detach_exit_callbacks(&mut registry);
+        while let Some(bits) = registry.weakref_finalizers.pop_lifo() {
+            finalizers.push(bits);
+        }
+        (callbacks, finalizers)
+    };
+    let changed = !callbacks.is_empty() || !finalizers.is_empty();
+    for callback in callbacks {
+        atexit_callback_release_refs(_py, callback);
+    }
+    for bits in finalizers {
+        dec_ref_bits(_py, bits);
+    }
+    changed
 }
 
 fn atexit_run_exitfuncs_impl(_py: &PyToken<'_>) -> u64 {
@@ -744,6 +771,149 @@ pub extern "C" fn molt_atexit_ncallbacks() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    static LATE_CALLBACK: AtomicU64 = AtomicU64::new(0);
+    static LATE_FINALIZER: AtomicU64 = AtomicU64::new(0);
+    static EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE_SAW_DETACHED_ROOTS: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn count_exit_callback(_arg: u64) -> u64 {
+        EXIT_CALLS.fetch_add(1, Ordering::AcqRel);
+        MoltObject::none().bits()
+    }
+
+    extern "C" fn count_exit_finalizer() -> u64 {
+        EXIT_CALLS.fetch_add(1, Ordering::AcqRel);
+        MoltObject::none().bits()
+    }
+
+    extern "C" fn observe_exit_owner_release(_weak: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            RELEASE_CALLS.fetch_add(1, Ordering::AcqRel);
+            let detached = runtime_state(py)
+                .exit_registry
+                .try_lock()
+                .is_ok_and(|registry| {
+                    registry.callbacks.is_empty() && registry.weakref_finalizers.len() == 0
+                });
+            RELEASE_SAW_DETACHED_ROOTS.store(detached, Ordering::Release);
+            if detached {
+                // Real reentrant publication must survive the current detached
+                // snapshot and belong to the next root-drain pass.
+                let args = crate::alloc_tuple(py, &[MoltObject::none().bits()]);
+                if args.is_null() {
+                    return MoltObject::none().bits();
+                }
+                let args = MoltObject::from_ptr(args).bits();
+                molt_atexit_register(
+                    LATE_CALLBACK.load(Ordering::Acquire),
+                    args,
+                    MoltObject::none().bits(),
+                );
+                dec_ref_bits(py, args);
+                crate::molt_weakref_finalize_track(LATE_FINALIZER.load(Ordering::Acquire));
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    fn test_callable(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::provenance::abi::expose_function_address(address),
+            arity,
+        );
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn owner_count(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn late_exit_roots_detach_before_release_without_a_second_execution_phase() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            while atexit_clear_runtime_roots(py) {}
+            EXIT_CALLS.store(0, Ordering::Release);
+            RELEASE_CALLS.store(0, Ordering::Release);
+            RELEASE_SAW_DETACHED_ROOTS.store(false, Ordering::Release);
+            let callback = test_callable(py, count_exit_callback as *const (), 1);
+            let finalizer = test_callable(py, count_exit_finalizer as *const (), 0);
+            let observer = test_callable(py, observe_exit_owner_release as *const (), 1);
+            let callback_base = owner_count(callback);
+            let finalizer_base = owner_count(finalizer);
+            LATE_CALLBACK.store(callback, Ordering::Release);
+            LATE_FINALIZER.store(finalizer, Ordering::Release);
+
+            // Run the actual one-time phase before introducing late owners.
+            molt_atexit_register(
+                finalizer,
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+            );
+            atexit_run_exitfuncs_teardown(py);
+            assert_eq!(EXIT_CALLS.load(Ordering::Acquire), 1);
+            assert_eq!(owner_count(finalizer), finalizer_base);
+
+            let target_ptr = crate::object::builders::alloc_set_with_entries(py, &[]);
+            assert!(!target_ptr.is_null());
+            let target = MoltObject::from_ptr(target_ptr).bits();
+            let weak = crate::molt_weakref_new(
+                crate::builtin_classes(py).reference_type,
+                target,
+                observer,
+            );
+            assert!(obj_from_bits(weak).as_ptr().is_some());
+            let args_ptr = crate::alloc_tuple(py, &[target]);
+            assert!(!args_ptr.is_null());
+            let args = MoltObject::from_ptr(args_ptr).bits();
+            molt_atexit_register(callback, args, MoltObject::none().bits());
+            crate::molt_weakref_finalize_track(finalizer);
+            assert!(!exception_pending(py));
+            assert_eq!(owner_count(callback), callback_base + 1);
+            assert_eq!(owner_count(finalizer), finalizer_base + 1);
+            dec_ref_bits(py, args);
+            dec_ref_bits(py, target);
+            assert_eq!(RELEASE_CALLS.load(Ordering::Acquire), 0);
+
+            assert!(atexit_clear_runtime_roots(py));
+            assert_eq!(RELEASE_CALLS.load(Ordering::Acquire), 1);
+            assert!(RELEASE_SAW_DETACHED_ROOTS.load(Ordering::Acquire));
+            assert!(obj_from_bits(crate::molt_weakref_get(weak)).is_none());
+            assert_eq!(
+                owner_count(callback),
+                callback_base + 1,
+                "only reentrant registration remains"
+            );
+            assert_eq!(
+                owner_count(finalizer),
+                finalizer_base + 1,
+                "only reentrant finalizer remains"
+            );
+            assert_eq!(
+                EXIT_CALLS.load(Ordering::Acquire),
+                1,
+                "root release never executes exit functions"
+            );
+
+            assert!(atexit_clear_runtime_roots(py));
+            assert_eq!(owner_count(callback), callback_base);
+            assert_eq!(owner_count(finalizer), finalizer_base);
+            assert!(!atexit_clear_runtime_roots(py));
+            assert_eq!(EXIT_CALLS.load(Ordering::Acquire), 1);
+            assert!(!exception_pending(py));
+            LATE_CALLBACK.store(0, Ordering::Release);
+            LATE_FINALIZER.store(0, Ordering::Release);
+            for bits in [weak, observer, callback, finalizer] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
 
     #[test]
     fn callback_capacity_growth_is_geometric_and_checked() {

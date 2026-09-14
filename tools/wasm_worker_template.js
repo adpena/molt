@@ -350,10 +350,22 @@ export default {
             state.table = instance.exports.__indirect_function_table || null;
 
             // Run entry point; Molt's exported molt_main wrapper owns table init.
+            const pending = instance.exports.molt_exception_pending;
+            if (typeof pending !== 'function' || pending.length !== 0) {
+                throw new Error('missing or malformed molt_exception_pending startup status export');
+            }
+            if (pending() !== 0n) {
+                throw new Error('MOLT_APP_BOOTSTRAP_FAILED: startup requires an i64 zero pending-exception status');
+            }
             if (typeof instance.exports.molt_main === 'function') {
                 instance.exports.molt_main();
             } else if (typeof instance.exports._start === 'function') {
                 instance.exports._start();
+            } else {
+                throw new Error('missing application startup export');
+            }
+            if (pending() !== 0n) {
+                throw new Error('MOLT_APP_BOOTSTRAP_FAILED: application returned with a pending runtime exception');
             }
 
             // Return stdout as response body

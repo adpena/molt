@@ -42,7 +42,6 @@
       "load_const",
       "module_get_name",
       "not_in",
-      "object_new_bound_stack",
       "release",
       "set_attr",
       "shl",

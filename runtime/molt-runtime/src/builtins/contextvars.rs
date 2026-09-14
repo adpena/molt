@@ -35,12 +35,20 @@ fn current_thread_state_mut(state: &mut ContextVarsState) -> &mut ContextVarsThr
         .or_insert_with(ContextVarsThreadState::new)
 }
 
-pub(crate) fn contextvars_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn contextvars_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let old = {
         let mut guard = state.contextvars.lock().unwrap();
         std::mem::replace(&mut *guard, ContextVarsState::new())
     };
+    let changed = old.next_var_handle != 1
+        || old.next_token_handle != 1
+        || old.next_context_handle != 1
+        || !old.var_defaults.is_empty()
+        || !old.threads.is_empty();
+    // The complete runtime context authority is empty before any owned value
+    // is released. Finalizers may therefore publish only into the fresh state
+    // and will be observed by the next fixed-point pass.
     for bits in old.var_defaults.into_values() {
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
@@ -63,6 +71,7 @@ pub(crate) fn contextvars_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
             }
         }
     }
+    changed
 }
 
 // ─── Intrinsics ──────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 //! Value-keyed `RawI64Safe` promotion via the value-range analysis (S6).
 //!
-//! Moved verbatim from `representation_plan/tests.rs` during the move-only
-//! split of that god-file; no logic changes.
+//! Exact scalar provenance and range/overflow proofs jointly own carriers;
+//! native projection and value-keyed WASM/LLVM consumers share that authority.
 
 use std::collections::HashMap;
 
@@ -385,6 +385,231 @@ fn bool_select_range_proof_does_not_promote_to_raw_i64() {
     );
 }
 
+#[test]
+fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
+    for ty in [TirType::Bool, TirType::F64, TirType::I64] {
+        let mut func = TirFunction::new("annotation_floor".into(), vec![ty.clone()], ty.clone());
+        let parameter = func.blocks[&func.entry_block].args[0].id;
+        let copied = func.fresh_value();
+        let called = func.fresh_value();
+        let called_copy = func.fresh_value();
+        for value in [copied, called, called_copy] {
+            // Refined/annotated type is deliberately present at every hop.
+            // It cannot stand in for an exact producer at any of them.
+            func.value_types.insert(value, ty.clone());
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = vec![
+            tir_op(TirOpCode::Copy, vec![parameter], vec![copied]),
+            tir_op(TirOpCode::Call, vec![], vec![called]),
+            tir_op(TirOpCode::Copy, vec![called], vec![called_copy]),
+        ];
+        entry.terminator = Terminator::Return {
+            values: vec![called_copy],
+        };
+        let range = value_range_for(&func);
+        for range in [None, Some(&range)] {
+            let repr = repr_by_value_for(&func, range);
+            let native = native_projectable_scalar_reprs_for(&func, &repr);
+            let expected = if ty == TirType::I64 {
+                Repr::MaybeBigInt
+            } else {
+                Repr::DynBox
+            };
+            for value in [parameter, copied, called, called_copy] {
+                assert_eq!(
+                    repr.get(&value),
+                    Some(&expected),
+                    "{ty:?} refinement cannot prove the carrier of {value:?}"
+                );
+                assert!(
+                    !native.contains_key(&value),
+                    "native projection must not recreate an unproved {ty:?} carrier"
+                );
+            }
+        }
+        #[cfg(feature = "llvm")]
+        assert_eq!(
+            repr_by_value_for(&func, Some(&range)),
+            LlvmReprFacts::build(&func).repr_by_value
+        );
+    }
+}
+
+#[test]
+fn exact_scalar_phi_carriers_require_every_executable_incoming() {
+    for ty in [TirType::Bool, TirType::F64, TirType::I64] {
+        // Poison either predecessor, not just whichever the solver visits first.
+        for opaque_on_left in [None, Some(false), Some(true)] {
+            let mut func = TirFunction::new(
+                "scalar_phi".into(),
+                vec![TirType::Bool, ty.clone()],
+                ty.clone(),
+            );
+            let condition = func.blocks[&func.entry_block].args[0].id;
+            let opaque = func.blocks[&func.entry_block].args[1].id;
+            let left = func.fresh_value();
+            let right = func.fresh_value();
+            let phi = func.fresh_value();
+            let copied = func.fresh_value();
+            let left_block = func.fresh_block();
+            let right_block = func.fresh_block();
+            let join = func.fresh_block();
+            let constant = |value, second| match ty {
+                TirType::Bool => {
+                    let mut op = tir_op(TirOpCode::ConstBool, vec![], vec![value]);
+                    op.attrs.insert("value".into(), TirAttrValue::Bool(second));
+                    op
+                }
+                TirType::F64 => {
+                    let mut op = tir_op(TirOpCode::ConstFloat, vec![], vec![value]);
+                    op.attrs.insert(
+                        "f_value".into(),
+                        TirAttrValue::Float(if second { 2.5 } else { 1.25 }),
+                    );
+                    op
+                }
+                TirType::I64 => tir_cint(value, if second { 2 } else { 1 }),
+                _ => unreachable!(),
+            };
+            for value in [left, right] {
+                // Intrinsic producer facts must win even before a refinement
+                // pass has updated the provisional result annotations.
+                func.value_types.insert(value, TirType::DynBox);
+            }
+            for value in [phi, copied] {
+                func.value_types.insert(value, ty.clone());
+            }
+            func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+                cond: condition,
+                then_block: left_block,
+                then_args: vec![],
+                else_block: right_block,
+                else_args: vec![],
+            };
+            for (block, value, is_left) in [(left_block, left, true), (right_block, right, false)] {
+                func.blocks.insert(
+                    block,
+                    TirBlock {
+                        id: block,
+                        args: vec![],
+                        ops: vec![constant(value, !is_left)],
+                        terminator: Terminator::Branch {
+                            target: join,
+                            args: vec![if opaque_on_left == Some(is_left) {
+                                opaque
+                            } else {
+                                value
+                            }],
+                        },
+                    },
+                );
+            }
+            func.blocks.insert(
+                join,
+                TirBlock {
+                    id: join,
+                    args: vec![TirValue {
+                        id: phi,
+                        ty: ty.clone(),
+                    }],
+                    ops: vec![tir_op(TirOpCode::Copy, vec![phi], vec![copied])],
+                    terminator: Terminator::Return {
+                        values: vec![copied],
+                    },
+                },
+            );
+            let range = value_range_for(&func);
+            let repr = repr_by_value_for(&func, Some(&range));
+            let native = native_projectable_scalar_reprs_for(&func, &repr);
+            let exact = match ty {
+                TirType::Bool => Repr::Bool,
+                TirType::F64 => Repr::FloatUnboxed,
+                TirType::I64 => Repr::RawI64Safe,
+                _ => unreachable!(),
+            };
+            for value in [left, right] {
+                assert_eq!(repr.get(&value), Some(&exact));
+                assert_eq!(native.get(&value), Some(&exact));
+            }
+            for value in [phi, copied] {
+                if opaque_on_left.is_none() {
+                    assert_eq!(repr.get(&value), Some(&exact), "exact {ty:?} phi/copy");
+                    assert_eq!(native.get(&value), Some(&exact), "native {ty:?} phi/copy");
+                } else {
+                    let boxed = if ty == TirType::I64 {
+                        Repr::MaybeBigInt
+                    } else {
+                        Repr::DynBox
+                    };
+                    assert_eq!(repr.get(&value), Some(&boxed), "mixed {ty:?} phi/copy");
+                    assert!(!native.contains_key(&value), "mixed {ty:?} native phi/copy");
+                }
+            }
+            assert!(!native.contains_key(&opaque));
+            if ty != TirType::I64 {
+                assert_eq!(
+                    repr,
+                    repr_by_value_for(&func, None),
+                    "exact Bool/F64 provenance does not depend on integer range analysis"
+                );
+            }
+            #[cfg(feature = "llvm")]
+            assert_eq!(repr, LlvmReprFacts::build(&func).repr_by_value);
+        }
+    }
+}
+
+#[test]
+fn indexed_checked_status_and_exact_boolean_copies_keep_distinct_carriers() {
+    for opcode in [TirOpCode::CheckedAdd, TirOpCode::CheckedMul] {
+        let mut func = TirFunction::new("checked_status".into(), vec![], TirType::Bool);
+        let left = func.fresh_value();
+        let right = func.fresh_value();
+        let arithmetic = func.fresh_value();
+        let overflow = func.fresh_value();
+        let both = func.fresh_value();
+        let either = func.fresh_value();
+        let copied = func.fresh_value();
+        // No refined positive type facts: indexed intrinsic provenance must
+        // supply its own status type, and must not broadcast result slot zero.
+        for value in [left, right, arithmetic, overflow, both, either, copied] {
+            func.value_types.insert(value, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = vec![
+            tir_cint(left, i64::MAX),
+            tir_cint(right, 2),
+            tir_op(opcode, vec![left, right], vec![arithmetic, overflow]),
+            tir_op(TirOpCode::And, vec![overflow, overflow], vec![both]),
+            tir_op(TirOpCode::Or, vec![both, overflow], vec![either]),
+            tir_op(TirOpCode::Copy, vec![either], vec![copied]),
+        ];
+        entry.terminator = Terminator::Return {
+            values: vec![copied],
+        };
+        let range = value_range_for(&func);
+        let repr = repr_by_value_for(&func, Some(&range));
+        let native = native_projectable_scalar_reprs_for(&func, &repr);
+        assert_eq!(repr.get(&arithmetic), Some(&Repr::RawI64FullDeopt));
+        assert_eq!(native.get(&arithmetic), Some(&Repr::RawI64FullDeopt));
+        for value in [overflow, both, either, copied] {
+            assert_eq!(
+                repr.get(&value),
+                Some(&Repr::Bool),
+                "{opcode:?} status chain"
+            );
+            assert_eq!(
+                native.get(&value),
+                Some(&Repr::Bool),
+                "native {opcode:?} status chain"
+            );
+        }
+        #[cfg(feature = "llvm")]
+        assert_eq!(repr, LlvmReprFacts::build(&func).repr_by_value);
+    }
+}
+
 /// SOUNDNESS: an unbounded accumulator (`total = total + i`, a degree-2
 /// recurrence) is classified `Unknown` by SCEV → no value-range proof →
 /// stays `MaybeBigInt`. This is the loop-IV OOM hazard the strict-subset
@@ -508,6 +733,12 @@ fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
     call.attrs.insert(
         "s_value".into(),
         TirAttrValue::Str("molt_gpu_thread_id".into()),
+    );
+    // Only the lowered intrinsic carries exact source provenance; a callee
+    // spelling alone must not seed an ordinary call's scalar representation.
+    call.attrs.insert(
+        "_original_kind".into(),
+        TirAttrValue::Str("gpu_thread_id".into()),
     );
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

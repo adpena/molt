@@ -236,12 +236,11 @@ fn raw_i64_excluded_from_live_sets() {
     assert!(!res.live_in[&entry].contains(&c1));
 }
 
-/// A Bool value is filtered out of the live sets by the by-type floor.
+/// An exact Bool producer has no heap obligation without a type annotation.
 #[test]
 fn bool_excluded_from_live_sets() {
     let mut func = TirFunction::new("b".into(), vec![], TirType::Bool);
     let c = func.fresh_value();
-    func.value_types.insert(c, TirType::Bool);
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
@@ -253,13 +252,160 @@ fn bool_excluded_from_live_sets() {
     assert!(!res.live_in[&entry].contains(&c));
 }
 
+#[test]
+fn annotations_and_refined_calls_do_not_erase_heap_liveness() {
+    for ty in [TirType::Bool, TirType::F64, TirType::I64, TirType::None] {
+        let mut func = TirFunction::new("annotated".into(), vec![ty.clone()], ty.clone());
+        let arg = func.blocks[&func.entry_block].args[0].id;
+        let copied = func.fresh_value();
+        let called = func.fresh_value();
+        func.value_types.insert(copied, ty.clone());
+        func.value_types.insert(called, ty);
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops.push(op(OpCode::Copy, vec![arg], vec![copied]));
+        block.ops.push(op(OpCode::Call, vec![copied], vec![called]));
+        block.terminator = Terminator::Return {
+            values: vec![called],
+        };
+        let result = compute_liveness(&func);
+        for value in [arg, copied, called] {
+            assert!(
+                !result.is_raw_scalar(value),
+                "annotation laundered through {value:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stale_never_heap_result_floors_to_boxed_rc_liveness() {
+    let mut func = TirFunction::new("stale_never_result".into(), vec![], TirType::DynBox);
+    let heap = func.fresh_value();
+    let copied = func.fresh_value();
+    func.value_types.insert(heap, TirType::Never);
+    func.value_types.insert(copied, TirType::Never);
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(const_str(heap));
+        block.ops.push(op(OpCode::Copy, vec![heap], vec![copied]));
+        block.terminator = Terminator::Return {
+            values: vec![copied],
+        };
+    }
+
+    crate::tir::verify::verify_function(&func)
+        .expect("stale Never metadata does not make otherwise-valid SSA invalid");
+    let repr = crate::representation_facts::repr_by_value_for(&func, None);
+    assert_eq!(repr[&heap], crate::repr::Repr::DynBox);
+    assert_eq!(repr[&copied], crate::repr::Repr::DynBox);
+
+    let result = compute_liveness(&func);
+    assert!(!result.is_raw_scalar(heap));
+    assert!(!result.is_raw_scalar(copied));
+    assert_eq!(
+        result.last_use_in_block(&func.blocks[&entry], heap),
+        Some(1)
+    );
+}
+
+#[test]
+fn stale_never_block_arg_and_copy_retain_heap_liveness() {
+    let mut func = TirFunction::new("stale_never_phi".into(), vec![], TirType::DynBox);
+    let source = func.fresh_value();
+    let block_arg = func.fresh_value();
+    let copied = func.fresh_value();
+    func.value_types.insert(source, TirType::Str);
+    func.value_types.insert(block_arg, TirType::Never);
+    func.value_types.insert(copied, TirType::Never);
+    let entry = func.entry_block;
+    let body = func.fresh_block();
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(const_str(source));
+        block.terminator = Terminator::Branch {
+            target: body,
+            args: vec![source],
+        };
+    }
+    func.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![TirValue {
+                id: block_arg,
+                ty: TirType::Never,
+            }],
+            ops: vec![op(OpCode::Copy, vec![block_arg], vec![copied])],
+            terminator: Terminator::Return {
+                values: vec![copied],
+            },
+        },
+    );
+
+    crate::tir::verify::verify_function(&func)
+        .expect("the verifier permits stale Never on a reachable block-argument lane");
+    let repr = crate::representation_facts::repr_by_value_for(&func, None);
+    assert_eq!(repr[&block_arg], crate::repr::Repr::DynBox);
+    assert_eq!(repr[&copied], crate::repr::Repr::DynBox);
+
+    let result = compute_liveness(&func);
+    assert!(!result.is_raw_scalar(block_arg));
+    assert!(!result.is_raw_scalar(copied));
+    assert!(result.is_live_out(entry, source));
+    assert_eq!(
+        result.last_use_in_block(&func.blocks[&body], block_arg),
+        Some(0)
+    );
+}
+
+#[test]
+fn exact_float_copy_excludes_heap_obligation_without_refinement() {
+    for declared_type in [None, Some(TirType::Never)] {
+        let mut func = TirFunction::new("exact_float".into(), vec![], TirType::DynBox);
+        let constant = func.fresh_value();
+        let copied = func.fresh_value();
+        // Stale bottom metadata cannot suppress heap liveness by itself, but the
+        // exact producer/copy chain remains authoritative and may still prove the
+        // values use a non-heap float carrier.
+        if let Some(ty) = declared_type {
+            func.value_types.insert(constant, ty.clone());
+            func.value_types.insert(copied, ty);
+        }
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        let mut float_attrs = AttrDict::new();
+        float_attrs.insert("f_value".into(), AttrValue::Float(1.0));
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstFloat,
+            operands: vec![],
+            results: vec![constant],
+            attrs: float_attrs,
+            source_span: None,
+        });
+        block
+            .ops
+            .push(op(OpCode::Copy, vec![constant], vec![copied]));
+        block.terminator = Terminator::Return {
+            values: vec![copied],
+        };
+        crate::tir::verify::verify_function(&func)
+            .expect("stale Never metadata preserves valid SSA");
+        let repr = crate::representation_facts::repr_by_value_for(&func, None);
+        assert_eq!(repr[&constant], crate::repr::Repr::FloatUnboxed);
+        assert_eq!(repr[&copied], crate::repr::Repr::FloatUnboxed);
+        let result = compute_liveness(&func);
+        assert!(result.is_raw_scalar(constant));
+        assert!(result.is_raw_scalar(copied));
+    }
+}
+
 /// A None sentinel uses the generic i64 transport carrier but has no
 /// refcounted heap ownership obligation, so RC placement must ignore it.
 #[test]
 fn none_excluded_from_live_sets() {
     let mut func = TirFunction::new("none".into(), vec![], TirType::None);
     let n = func.fresh_value();
-    func.value_types.insert(n, TirType::None);
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();

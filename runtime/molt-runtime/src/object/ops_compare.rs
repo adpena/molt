@@ -800,21 +800,19 @@ pub(crate) fn rich_compare_method_value(
                 CompareValueOutcome::NotComparable
             };
         };
-        let result = if let Some(instance) = receiver.as_ptr() {
-            let Some(bound) = descriptor_bind(_py, raw, class, Some(instance)) else {
-                return if changed() {
-                    CompareValueOutcome::Error
-                } else {
-                    CompareValueOutcome::NotComparable
-                };
+        let Some(result) = crate::builtins::attr::descriptor_special_call1(
+            _py,
+            raw,
+            class,
+            Some(receiver.bits()),
+            other.bits(),
+            crate::builtins::attr::DescriptorCallPolicy::RichComparison,
+        ) else {
+            return if changed() {
+                CompareValueOutcome::Error
+            } else {
+                CompareValueOutcome::NotComparable
             };
-            let result = call_callable1(_py, bound, other.bits());
-            dec_ref_bits(_py, bound);
-            result
-        } else {
-            // Immediate builtins have no instance pointer to bind. Their type
-            // slots are immutable builtin callables with explicit self.
-            call_callable2(_py, raw, receiver.bits(), other.bits())
         };
         if changed() {
             dec_ref_bits(_py, result);

@@ -109,6 +109,13 @@ const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) => {
     throw new Error('runtime returned an empty execution-boundary token');
   }
   try {
+    // Validate canonical status ABI before invoking application startup/callbacks.
+    if (runtimeExceptionPending(runtimeInstance)) {
+      const memory = runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory;
+      const detail = memory ? pendingRuntimeExceptionMessage(runtimeInstance, memory) : null;
+      throw new Error(detail ||
+        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+    }
     return operation();
   } finally {
     leave(token);
@@ -166,6 +173,7 @@ const {
   reservedRuntimeCallablesFromManifest,
   resolveWasmTableBase,
   callableTableSignature,
+  runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
   verifyCallableTableEntries,
@@ -354,9 +362,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   const errPending =
     typeof runtime.exports?.molt_err_pending === 'function' &&
     Number(runtime.exports.molt_err_pending()) !== 0;
-  const exceptionPending =
-    typeof runtime.exports?.molt_exception_pending === 'function' &&
-    Number(runtime.exports.molt_exception_pending()) !== 0;
+  const exceptionPending = runtimeExceptionPending(runtime);
   const exceptionPendingFast =
     typeof runtime.exports?.molt_exception_pending_fast === 'function' &&
     Number(runtime.exports.molt_exception_pending_fast()) !== 0;
@@ -378,7 +384,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   }
   try {
     if (!excBits || excBits === 0n) {
-      return null;
+      return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
     }
     if (
       typeof runtime.exports.molt_object_repr === 'function' &&
@@ -390,7 +396,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
           const repr = readRuntimeStringBits(runtime, memory, reprBits);
           if (repr) {
             if (repr === 'None') {
-              return null;
+              return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
             }
             return `Unhandled Molt exception: ${repr}`;
           }
@@ -3562,43 +3568,24 @@ export const loadMoltWasm = async (options = {}) => {
   });
   const gpuHost = createBrowserGpuHost(state, options);
   let hostExportsInitialized = false;
-  let splitRunBootstrapInitialized = false;
   const ensureHostExportsInitialized = (appInstance) => {
     if (hostExportsInitialized) {
       return;
     }
     const hostInit = appInstance?.exports?.molt_host_init;
-    if (typeof hostInit === 'function') {
-      hostInit();
-      const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-      if (pending) {
-        throw new Error(pending);
-      }
-    } else {
-      const isolateBootstrap = appInstance?.exports?.molt_isolate_bootstrap;
-      if (typeof isolateBootstrap === 'function') {
-        isolateBootstrap();
-        const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-        if (pending) {
-          throw new Error(pending);
-        }
-      }
+    if (typeof hostInit !== 'function') {
+      throw new Error('molt_host_init export missing for host-export initialization');
+    }
+    if (runtimeExceptionPending(state.runtimeInstance)) {
+      throw new Error(pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory) ||
+        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+    }
+    hostInit();
+    const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+    if (pending) {
+      throw new Error(pending);
     }
     hostExportsInitialized = true;
-  };
-  const ensureSplitRunBootstrap = (appInstance) => {
-    if (splitRunBootstrapInitialized || hostExportsInitialized) {
-      return;
-    }
-    const isolateBootstrap = appInstance?.exports?.molt_isolate_bootstrap;
-    if (typeof isolateBootstrap === 'function') {
-      isolateBootstrap();
-      const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-      if (pending) {
-        throw new Error(pending);
-      }
-    }
-    splitRunBootstrapInitialized = true;
   };
   const makeExportInvoker = (appInstance) => async (exportName, args = []) => {
     if (!appInstance?.exports) {
@@ -3805,6 +3792,7 @@ export const loadMoltWasm = async (options = {}) => {
           if (pendingException) {
             throw new Error(pendingException);
           }
+          hostExportsInitialized = true;
         });
       },
     };
@@ -4006,7 +3994,6 @@ export const loadMoltWasm = async (options = {}) => {
     invokeExport: makeExportInvoker(outputModule.instance),
     run: () => {
       withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
-        ensureSplitRunBootstrap(outputModule.instance);
         if (typeof outputModule.instance.exports.molt_main !== 'function') {
           throw new Error('molt_main export missing');
         }
@@ -4016,6 +4003,7 @@ export const loadMoltWasm = async (options = {}) => {
         if (pendingException) {
           throw new Error(pendingException);
         }
+        hostExportsInitialized = true;
       });
     },
   };

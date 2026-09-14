@@ -11,13 +11,14 @@ use std::collections::HashMap;
 
 /// Lower a TIR function to WASM instructions.
 ///
-/// Type-specialized: `I64` -> `wasm i64`, `F64` -> `wasm f64`, `DynBox` -> runtime call.
+/// Uses canonical value-keyed carriers, not semantic type annotations, to
+/// select raw scalar instructions or boxed runtime dispatch.
 #[cfg(test)]
 pub(crate) fn lower_tir_to_wasm(func: &TirFunction) -> WasmBody {
     // The generic path derives carriers from the same pure-TIR `repr_by_value`
-    // authority as the boxed-i64 ABI path and LLVM. Semantic `I64` alone is not
-    // a raw machine carrier; unproven ints lower as DynBox/boxed runtime values,
-    // while Bool/F64 and range-proven ints keep their scalar lanes.
+    // authority as the boxed-i64 ABI path and LLVM. Semantic scalar types alone
+    // do not authorize raw machine carriers: exact producer facts raise Bool/F64,
+    // and integer carriers additionally require range/checked-overflow proof.
     let lir = lower_function_to_lir(func);
     lower_lir_to_wasm(&lir)
 }

@@ -9,6 +9,9 @@ tests, measurements, and explicit user direction over stale prose.
 
 - Carry an authorized task through implementation, integration, verification,
   and cleanup. When enough information exists to act, act.
+- Match the requested action: questions and reviews authorize inspection;
+  change requests authorize in-scope implementation and relevant local checks.
+  Define completion for the current outcome, including its integration owner.
 - Pause only for input the user alone can provide, a real scope change, or a
   destructive, irreversible, privileged, or externally consequential action
   that was not already authorized. Proceed with safe, reversible work that
@@ -104,6 +107,9 @@ tests, measurements, and explicit user direction over stale prose.
   that drifts, and integrate their evidence rather than forwarding raw output.
 - Avoid overlapping write ownership and redundant proof fanout. The parent owns
   the final architecture, integration, verification, and cleanup.
+- Record active worker ownership and handoff state in the existing coordination
+  records described in `docs/ops/MULTI_AGENT_COORDINATION.md`. Task messages and
+  worktree names do not substitute for those records or enforce a source lock.
 - Match model speed and reasoning effort to the task: strongest available
   reasoning for load-bearing architecture and correctness; faster workers for
   well-bounded scans and mechanical work.
@@ -116,6 +122,8 @@ tests, measurements, and explicit user direction over stale prose.
 - One green backend/profile/target cell does not prove a family-wide claim.
   Conversely, do not run broad expensive suites when a narrow check completely
   proves the owned invariant.
+- After relevant checks pass, repeat or broaden them only for changed inputs,
+  a new failure, or an unresolved claim; otherwise proceed to integration.
 - Treat a frozen or silent process as unknown until logs, artifacts, guard
   state, or live process evidence establishes its result.
 - Before completion, review the owned diff, generated synchronization, docs,

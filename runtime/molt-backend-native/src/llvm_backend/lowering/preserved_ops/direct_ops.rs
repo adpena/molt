@@ -94,7 +94,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "guard_tag",
     "guard_layout",
     "guard_dict_shape",
-    "guarded_field_init",
     "json_parse",
     "msgpack_parse",
     "cbor_parse",
@@ -2005,89 +2004,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            // Layout / dict-shape guard (polymorphic-inline-cache fast path):
-            // `molt_guard_layout_ptr(obj_ptr, class, expected_version)`. Both
-            // `guard_layout` and `guard_dict_shape` share this single runtime
-            // entry (the native handler groups them identically). Three points
-            // make the generic `molt_<kind>` fallback INCAPABLE of lowering these
-            // correctly — hence the dedicated arm:
-            //   1. The runtime symbol is `molt_guard_layout_ptr`, not
-            //      `molt_guard_layout` / `molt_guard_dict_shape`.
-            //   2. The first argument is the RAW UNBOXED heap pointer of the
-            //      object (`unbox_ptr_bits`), not the NaN-boxed value — mirroring
-            //      the native `unbox_ptr_value(*obj)` before the call.
-            //   3. The op carries a result on the IC fast path, but the guard
-            //      VALUE is conventionally discarded (it raises on mismatch).
-            // A `Copy` passthrough here would silently ELIDE the shape check, so
-            // a stale-layout object would skip the deopt/guard and the program
-            // would not raise / would read the wrong slot where CPython is
-            // type-safe. operands = [obj, class, expected_version].
+            // Both layout guards share runtime receiver admission. A class
+            // hint is not a pointer proof: keep the receiver tagged so scalar
+            // mismatches return false without dereferencing their payload.
+            // operands = [obj, class, expected_version].
             "guard_layout" | "guard_dict_shape" => {
                 if op.operands.len() != 3 {
                     return false;
                 }
                 let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let obj_ptr = self.unbox_ptr_bits(obj_bits);
                 let class_bits = self.materialize_dynbox_operand(op.operands[1]);
                 let version_bits = self.materialize_dynbox_operand(op.operands[2]);
-                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_layout_ptr", 3);
+                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_layout", 3);
                 let result = self
                     .backend
                     .builder
                     .build_call(
                         guard_fn,
-                        &[obj_ptr.into(), class_bits.into(), version_bits.into()],
+                        &[obj_bits.into(), class_bits.into(), version_bits.into()],
                         "guard_layout",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-                true
-            }
-            "guarded_field_init" => {
-                if op.operands.len() != 4 {
-                    return false;
-                }
-                let Some(attr_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.clone()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let offset = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-                let class_bits = self.materialize_dynbox_operand(op.operands[1]);
-                let expected_version = self.materialize_dynbox_operand(op.operands[2]);
-                let val_bits = self.materialize_dynbox_operand(op.operands[3]);
-                let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(&attr_name);
-                let init_fn = self.ensure_runtime_i64_fn("molt_guarded_field_init_ptr", 7);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        init_fn,
-                        &[
-                            obj_ptr_bits.into(),
-                            class_bits.into(),
-                            expected_version.into(),
-                            i64_ty.const_int(offset as u64, true).into(),
-                            val_bits.into(),
-                            attr_ptr_bits.into(),
-                            attr_len_bits.into(),
-                        ],
-                        "guarded_field_init",
                     )
                     .unwrap()
                     .try_as_basic_value()

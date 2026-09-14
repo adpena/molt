@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use molt_obj_model::MoltObject;
 
@@ -8,27 +8,25 @@ use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
     ClassEdgeOwnership, ClassInfoProtocol, PyToken, RuntimeClassInfo, TYPE_ID_BYTES,
     TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_PROPERTY, TYPE_ID_RANGE, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_classmethod_obj, alloc_dict_with_pairs,
-    alloc_generic_alias, alloc_instance_for_class, alloc_list, alloc_property_obj,
-    alloc_staticmethod_obj, alloc_string, alloc_super_obj, alloc_tuple, apply_class_slots_layout,
-    attr_name_bits_from_bytes, builtin_classes, builtin_type_bits, call_callable0, call_callable1,
-    call_callable2, class_bases_bits, class_bases_vec, class_bump_layout_version, class_dict_bits,
-    class_layout_version_bits, class_mro_bits, class_mro_vec, class_name_for_error,
-    class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits,
-    class_set_qualname_bits, clear_exception, collect_runtime_classinfo, dataclass_set_class_raw,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    dict_update_apply, dict_update_set_in_place, exception_pending, function_dict_bits,
-    generic_alias_origin_bits, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    intern_static_name, is_builtin_class_bits, is_truthy, isinstance_runtime, issubclass_bits,
-    issubclass_runtime, maybe_ptr_from_bits, missing_bits, molt_call_bind, molt_callargs_new,
-    molt_callargs_push_kw, molt_callargs_push_pos, molt_contains, molt_dict_from_obj,
-    molt_dict_get, molt_eq, molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter,
-    molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj, molt_setitem_method,
-    molt_str_from_obj, molt_string_isidentifier, obj_eq, obj_from_bits, object_class_bits,
-    object_type_id, property_del_bits, property_get_bits, property_set_bits, raise_exception,
-    raise_not_iterable, runtime_classinfo_protocol_match, runtime_state, string_obj_to_owned,
-    to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_generic_alias,
+    alloc_instance_for_class, alloc_list, alloc_property_obj, alloc_string, alloc_super_obj,
+    alloc_tuple, apply_class_slots_layout, attr_name_bits_from_bytes, builtin_classes,
+    builtin_type_bits, call_callable0, call_callable1, call_callable2, class_bases_bits,
+    class_bases_vec, class_bump_layout_version, class_dict_bits, class_layout_version_bits,
+    class_mro_vec, class_name_for_error, class_set_layout_version_bits, class_set_qualname_bits,
+    clear_exception, collect_runtime_classinfo, dec_ref_bits, dict_del_in_place, dict_get_in_place,
+    dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
+    function_dict_bits, generic_alias_origin_bits, inc_ref_bits, init_atomic_bits,
+    instance_dict_bits, intern_static_name, is_truthy, isinstance_runtime, issubclass_bits,
+    issubclass_runtime, missing_bits, molt_call_bind, molt_callargs_new, molt_callargs_push_kw,
+    molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
+    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
+    molt_object_setattr, molt_repr_from_obj, molt_setitem_method, molt_str_from_obj,
+    molt_string_isidentifier, obj_eq, obj_from_bits, object_class_bits, object_type_id,
+    property_del_bits, property_get_bits, property_set_bits, raise_exception, raise_not_iterable,
+    runtime_classinfo_protocol_match, runtime_state, string_obj_to_owned, to_i64,
+    tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -38,6 +36,8 @@ pub(crate) mod dataclasses;
 pub(crate) mod descriptor_objects;
 pub(crate) mod dynamic_class_attr;
 pub(crate) mod keyword_metadata;
+pub(crate) mod native_descriptors;
+pub(crate) mod wrappers;
 
 pub use class_construction::*;
 pub(crate) use class_construction::{call_vararg_args, call_vararg_kwargs, call_with_kwargs};
@@ -53,6 +53,8 @@ pub(crate) use dynamic_class_attr::dynamic_class_attribute_class;
 pub use dynamic_class_attr::*;
 pub use keyword_metadata::*;
 pub(crate) use keyword_metadata::{HARD_KEYWORDS, keyword_contains};
+pub use native_descriptors::*;
+pub use wrappers::*;
 
 macro_rules! define_types_runtime_state {
     (@unit $field:ident) => {
@@ -90,6 +92,14 @@ define_types_runtime_state! {
     cell_class,
     dynamic_class_attribute_class,
     method_class,
+    member_descriptor_class,
+    getset_descriptor_class,
+    native_descriptor_new_fn,
+    native_descriptor_get_fn,
+    native_descriptor_set_fn,
+    native_descriptor_delete_fn,
+    native_descriptor_repr_fn,
+    native_descriptor_reduce_fn,
     mappingproxy_new_fn,
     mappingproxy_init_fn,
     mappingproxy_getitem_fn,
@@ -134,184 +144,289 @@ pub(crate) fn types_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState)
     clear_atomic_slots(_py, &slots);
 }
 
-fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
-    init_atomic_bits(_py, slot, || {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            unsafe {
-                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                let old_bits = object_class_bits(ptr);
-                if old_bits != builtin_bits
-                    && !crate::object::object_init_class_edge_unpublished(
-                        _py,
-                        ptr,
-                        builtin_bits,
-                        ClassEdgeOwnership::Owned,
-                    )
-                {
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
+pub(crate) fn types_runtime_class_roots(py: &PyToken<'_>, state: &RuntimeState) -> Vec<u64> {
+    state
+        .types
+        .slots()
+        .into_iter()
+        .map(|slot| slot.load(AtomicOrdering::Acquire))
+        .filter(|bits| crate::object::class_storage::is_canonical_runtime_class(py, *bits))
+        .collect()
 }
+
+/// Clear callback-bearing cache owners, retaining canonical class identities
+/// until the shared runtime-class retirement transaction reaches its tail.
+pub(crate) fn types_clear_runtime_callbacks(py: &PyToken<'_>, state: &RuntimeState) -> bool {
+    let mut detached = Vec::new();
+    for slot in state.types.slots() {
+        let bits = slot.load(AtomicOrdering::Acquire);
+        if bits != 0 && !crate::object::class_storage::is_canonical_runtime_class(py, bits) {
+            detached.push(slot.swap(0, AtomicOrdering::AcqRel));
+        }
+    }
+    let changed = !detached.is_empty();
+    for bits in detached {
+        dec_ref_bits(py, bits);
+    }
+    changed
+}
+
+pub(crate) use crate::builtins::methods::builtin_func_bits;
 
 fn bootstrap_runtime_func_bits(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     fn_ptr: u64,
     arity: u64,
+    signature: Option<(&[&[u8]], bool, bool)>,
 ) -> u64 {
+    if exception_pending(_py) {
+        return 0;
+    }
     init_atomic_bits(_py, slot, || {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
-            0
-        } else {
-            MoltObject::from_ptr(ptr).bits()
+            if !exception_pending(_py) {
+                let _ = raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "types bootstrap callable allocation failed",
+                );
+            }
+            return 0;
         }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        if let Some((arg_names, has_vararg, has_varkw)) = signature
+            && !crate::builtins::methods::configure_builtin_signature(
+                _py, bits, arg_names, has_vararg, has_varkw,
+            )
+        {
+            dec_ref_bits(_py, bits);
+            return 0;
+        }
+        bits
     })
 }
 
-fn types_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size: i64) -> u64 {
+fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> u64 {
+    if class_bits != 0 {
+        dec_ref_bits(_py, class_bits);
+    }
+    if !exception_pending(_py) {
+        let _ = raise_exception::<u64>(
+            _py,
+            "SystemError",
+            &format!("{name} class initialization failed"),
+        );
+    }
+    0
+}
+
+/// Build a runtime-owned class completely before publishing its cache slot.
+///
+/// All runtime-created classes in the `types`, `functools`, and `operator`
+/// families use this authority so base, layout, namespace, callable, and
+/// definition-finalization failures cannot cache a partially initialized
+/// class.
+fn init_cached_runtime_class_configured(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    name: &str,
+    layout_size: i64,
+    instance_shape: Option<crate::object::ObjectShapeId>,
+    configure: impl FnOnce(*mut u8) -> bool,
+) -> u64 {
+    if exception_pending(_py) {
+        return 0;
+    }
     init_atomic_bits(_py, slot, || {
         let name_ptr = alloc_string(_py, name.as_bytes());
         if name_ptr.is_null() {
-            return MoltObject::none().bits();
+            if !exception_pending(_py) {
+                let _ = raise_exception::<u64>(_py, "MemoryError", "class name allocation failed");
+            }
+            return 0;
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let class_ptr = alloc_class_obj(_py, name_bits);
         dec_ref_bits(_py, name_bits);
         if class_ptr.is_null() {
-            return MoltObject::none().bits();
+            if !exception_pending(_py) {
+                let _ = raise_exception::<u64>(_py, "MemoryError", "class allocation failed");
+            }
+            return 0;
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let builtins = builtin_classes(_py);
-        unsafe {
-            if let Some(ptr) = obj_from_bits(class_bits).as_ptr()
-                && !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    ptr,
-                    builtins.type_obj,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, class_bits);
-                return MoltObject::none().bits();
-            }
-        }
-        let _ = molt_class_set_base(class_bits, builtins.object);
-        let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        if let Some(shape) = instance_shape
+            && !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) }
         {
-            let layout_name = intern_static_name(
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+        let builtins = builtin_classes(_py);
+        if !unsafe {
+            crate::object::object_init_class_edge_unpublished(
                 _py,
-                &runtime_state(_py).interned.molt_layout_size,
-                b"__molt_layout_size__",
-            );
-            let layout_bits = MoltObject::from_int(layout_size).bits();
-            unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
+                class_ptr,
+                builtins.type_obj,
+                ClassEdgeOwnership::Owned,
+            )
+        } {
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+
+        let base_result = molt_class_set_base(class_bits, builtins.object);
+        dec_ref_bits(_py, base_result);
+        let bases = class_bases_vec(unsafe { class_bases_bits(class_ptr) });
+        if exception_pending(_py) || bases.as_slice() != [builtins.object] {
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+
+        let dict_bits = unsafe { class_dict_bits(class_ptr) };
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return runtime_class_init_failed(_py, class_bits, name);
+        };
+        if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+        let layout_name = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.molt_layout_size,
+            b"__molt_layout_size__",
+        );
+        if layout_name == 0 || exception_pending(_py) {
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+        let layout_bits = MoltObject::from_int(layout_size).bits();
+        unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
+        if exception_pending(_py)
+            || unsafe { dict_get_in_place(_py, dict_ptr, layout_name) } != Some(layout_bits)
+            || !configure(dict_ptr)
+        {
+            return runtime_class_init_failed(_py, class_bits, name);
+        }
+        if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err() {
+            return runtime_class_init_failed(_py, class_bits, name);
         }
         class_bits
     })
 }
 
-fn set_class_method(_py: &PyToken<'_>, class_bits: u64, name: &str, fn_bits: u64) {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
-    };
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeMethodSignature<'a> {
+    arg_names: &'a [&'a [u8]],
+    has_vararg: bool,
+    has_varkw: bool,
+}
+
+pub(crate) const NO_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[];
+pub(crate) const SELF_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[b"self"];
+pub(crate) const SELF_NAME_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[b"self", b"name"];
+
+impl<'a> RuntimeMethodSignature<'a> {
+    pub(crate) const fn new(arg_names: &'a [&'a [u8]], has_vararg: bool, has_varkw: bool) -> Self {
+        Self {
+            arg_names,
+            has_vararg,
+            has_varkw,
         }
+    }
+}
+
+pub(crate) struct RuntimeClassMethodSpec<'a> {
+    name: &'static str,
+    slot: &'a AtomicU64,
+    fn_ptr: u64,
+    arity: u64,
+    signature: Option<RuntimeMethodSignature<'a>>,
+}
+
+impl<'a> RuntimeClassMethodSpec<'a> {
+    pub(crate) const fn fixed(
+        name: &'static str,
+        slot: &'a AtomicU64,
+        fn_ptr: u64,
+        arity: u64,
+    ) -> Self {
+        Self {
+            name,
+            slot,
+            fn_ptr,
+            arity,
+            signature: None,
+        }
+    }
+
+    pub(crate) const fn with_signature(
+        name: &'static str,
+        slot: &'a AtomicU64,
+        fn_ptr: u64,
+        arity: u64,
+        signature: RuntimeMethodSignature<'a>,
+    ) -> Self {
+        Self {
+            name,
+            slot,
+            fn_ptr,
+            arity,
+            signature: Some(signature),
+        }
+    }
+}
+
+pub(crate) fn init_cached_runtime_class(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    name: &str,
+    layout_size: i64,
+    instance_shape: Option<crate::object::ObjectShapeId>,
+    methods: &[RuntimeClassMethodSpec<'_>],
+) -> u64 {
+    init_cached_runtime_class_configured(_py, slot, name, layout_size, instance_shape, |dict_ptr| {
+        for method in methods {
+            let bits = if let Some(signature) = method.signature {
+                crate::builtins::methods::builtin_func_bits_with_signature(
+                    _py,
+                    method.slot,
+                    method.fn_ptr,
+                    method.arity,
+                    signature.arg_names,
+                    signature.has_vararg,
+                    signature.has_varkw,
+                )
+            } else {
+                crate::builtins::methods::builtin_func_bits(
+                    _py,
+                    method.slot,
+                    method.fn_ptr,
+                    method.arity,
+                )
+            };
+            if !set_class_method(_py, dict_ptr, method.name, bits) {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+#[must_use]
+fn set_class_method(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, fn_bits: u64) -> bool {
+    if fn_bits == 0 || exception_pending(_py) {
+        return false;
     }
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
-        return;
+        if !exception_pending(_py) {
+            let _ =
+                raise_exception::<u64>(_py, "MemoryError", "class method name allocation failed");
+        }
+        return false;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     unsafe { dict_set_in_place(_py, dict_ptr, name_bits, fn_bits) };
+    let published = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) } == Some(fn_bits);
     dec_ref_bits(_py, name_bits);
-}
-
-fn mark_vararg_method(_py: &PyToken<'_>, func_bits: u64, include_self: bool) {
-    let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-        return;
-    };
-    let dict_bits = unsafe { function_dict_bits(func_ptr) };
-    let dict_ptr = if dict_bits == 0 {
-        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-        if dict_ptr.is_null() {
-            return;
-        }
-        unsafe { crate::function_set_dict_bits(func_ptr, MoltObject::from_ptr(dict_ptr).bits()) };
-        dict_ptr
-    } else {
-        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-            return;
-        };
-        unsafe {
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return;
-            }
-        }
-        dict_ptr
-    };
-    let arg_names = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_arg_names,
-        b"__molt_arg_names__",
-    );
-    if unsafe { dict_get_in_place(_py, dict_ptr, arg_names) }.is_none() {
-        let mut names: Vec<u64> = Vec::new();
-        if include_self {
-            let name_ptr = alloc_string(_py, b"self");
-            if !name_ptr.is_null() {
-                names.push(MoltObject::from_ptr(name_ptr).bits());
-            }
-        }
-        let names_ptr = alloc_tuple(_py, names.as_slice());
-        for bits in names.iter() {
-            dec_ref_bits(_py, *bits);
-        }
-        if !names_ptr.is_null() {
-            let names_bits = MoltObject::from_ptr(names_ptr).bits();
-            unsafe { dict_set_in_place(_py, dict_ptr, arg_names, names_bits) };
-            dec_ref_bits(_py, names_bits);
-        }
-    }
-    let vararg_name = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_vararg,
-        b"__molt_vararg__",
-    );
-    let varkw_name = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_varkw,
-        b"__molt_varkw__",
-    );
-    unsafe {
-        dict_set_in_place(
-            _py,
-            dict_ptr,
-            vararg_name,
-            MoltObject::from_bool(true).bits(),
-        );
-        dict_set_in_place(
-            _py,
-            dict_ptr,
-            varkw_name,
-            MoltObject::from_bool(true).bits(),
-        );
-    }
+    published && !exception_pending(_py)
 }
 
 fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
@@ -372,24 +487,53 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     trace_stage("start");
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
+        if !exception_pending(_py) {
+            let _ = raise_exception::<u64>(_py, "MemoryError", "types module allocation failed");
+        }
         return 0;
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    let release_failed_payload = || {
+        dec_ref_bits(_py, dict_bits);
+        if !exception_pending(_py) {
+            let _ =
+                raise_exception::<u64>(_py, "MemoryError", "types module initialization failed");
+        }
+        0
+    };
     let builtins = builtin_classes(_py);
     trace_stage("builtins");
     let mappingproxy_bits = mappingproxy_class(_py);
     trace_stage("mappingproxy");
+    if mappingproxy_bits == 0 {
+        return release_failed_payload();
+    }
     let simplenamespace_bits = simplenamespace_class(_py);
     trace_stage("simplenamespace");
+    if simplenamespace_bits == 0 {
+        return release_failed_payload();
+    }
     let capsule_bits = capsule_class(_py);
     trace_stage("capsule");
+    if capsule_bits == 0 {
+        return release_failed_payload();
+    }
     let cell_bits = cell_class(_py);
     trace_stage("cell");
+    if cell_bits == 0 {
+        return release_failed_payload();
+    }
     let dynamic_class_attr_bits = dynamic_class_attribute_class(_py);
     trace_stage("dynamic_class_attribute");
+    if dynamic_class_attr_bits == 0 {
+        return release_failed_payload();
+    }
 
     let method_type_bits = method_class(_py);
     trace_stage("method_type_done");
+    if method_type_bits == 0 {
+        return release_failed_payload();
+    }
 
     // Bootstrap-critical descriptor exports must come from stable runtime
     // type objects, not reflective attribute probing that can recurse back
@@ -402,20 +546,26 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     trace_stage("method_descriptor");
     let classmethod_descriptor_bits = builtins.builtin_function_or_method;
     trace_stage("classmethod_descriptor");
-    let getset_descriptor_bits = builtins.property;
+    let getset_descriptor_bits = getset_descriptor_class(_py);
     trace_stage("getset_descriptor");
-    let member_descriptor_bits = builtins.property;
+    if getset_descriptor_bits == 0 {
+        return release_failed_payload();
+    }
+    let member_descriptor_bits = member_descriptor_class(_py);
     trace_stage("member_descriptor");
+    if member_descriptor_bits == 0 {
+        return release_failed_payload();
+    }
 
     let coroutine_bits = bootstrap_runtime_func_bits(
         _py,
         &types_state(_py).types_coroutine_fn,
         crate::molt_types_coroutine as *const () as usize as u64,
         1,
+        None,
     );
     if coroutine_bits == 0 {
-        dec_ref_bits(_py, dict_bits);
-        return 0;
+        return release_failed_payload();
     }
     trace_stage("coroutine_bits");
 
@@ -424,10 +574,10 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         &types_state(_py).types_get_original_bases_fn,
         crate::molt_types_get_original_bases as *const () as usize as u64,
         1,
+        None,
     );
     if get_original_bases_bits == 0 {
-        dec_ref_bits(_py, dict_bits);
-        return 0;
+        return release_failed_payload();
     }
     trace_stage("get_original_bases");
 
@@ -436,12 +586,11 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         &types_state(_py).types_prepare_class_fn,
         crate::molt_types_prepare_class as *const () as usize as u64,
         2,
+        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
     );
     if prepare_bits == 0 {
-        dec_ref_bits(_py, dict_bits);
-        return 0;
+        return release_failed_payload();
     }
-    mark_vararg_method(_py, prepare_bits, false);
     trace_stage("prepare_bits");
 
     let resolve_bits = bootstrap_runtime_func_bits(
@@ -449,12 +598,11 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         &types_state(_py).types_resolve_bases_fn,
         crate::molt_types_resolve_bases as *const () as usize as u64,
         2,
+        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
     );
     if resolve_bits == 0 {
-        dec_ref_bits(_py, dict_bits);
-        return 0;
+        return release_failed_payload();
     }
-    mark_vararg_method(_py, resolve_bits, false);
     trace_stage("resolve_bits");
 
     let new_bits = bootstrap_runtime_func_bits(
@@ -462,12 +610,11 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         &types_state(_py).types_new_class_fn,
         crate::molt_types_new_class as *const () as usize as u64,
         2,
+        Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
     );
     if new_bits == 0 {
-        dec_ref_bits(_py, dict_bits);
-        return 0;
+        return release_failed_payload();
     }
-    mark_vararg_method(_py, new_bits, false);
     trace_stage("new_bits");
 
     let names = [
@@ -505,10 +652,6 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         ("prepare_class", prepare_bits),
         ("resolve_bases", resolve_bits),
     ];
-    let release_failed_payload = || {
-        dec_ref_bits(_py, dict_bits);
-        0
-    };
     for (name, value_bits) in names.iter() {
         let key_ptr = alloc_string(_py, name.as_bytes());
         if key_ptr.is_null() {
@@ -541,7 +684,8 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MoltHeader, maybe_ptr_from_bits};
+    use crate::MoltHeader;
+    use crate::object::maybe_ptr_from_bits;
     use std::sync::Once;
     use std::sync::atomic::Ordering;
 
@@ -703,6 +847,27 @@ mod tests {
     }
 
     #[test]
+    fn cached_runtime_class_is_not_published_before_configuration_succeeds() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let slot = AtomicU64::new(0);
+            let class_bits = init_cached_runtime_class_configured(
+                _py,
+                &slot,
+                "FailureAtomicClass",
+                0,
+                None,
+                |_dict| false,
+            );
+            assert_eq!(class_bits, 0);
+            assert_eq!(slot.load(Ordering::Acquire), 0);
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+        });
+    }
+
+    #[test]
     fn vararg_marker_reuses_function_dict_and_preserves_empty_arg_names() {
         init_runtime();
 
@@ -713,18 +878,24 @@ mod tests {
                     &types_state(_py).types_prepare_class_fn,
                     crate::molt_types_prepare_class as *const () as usize as u64,
                     2,
+                    Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
                 );
                 assert_ne!(func_bits, 0);
                 let func_ptr = maybe_ptr_from_bits(func_bits).expect("prepare_class function");
 
-                mark_vararg_method(_py, func_bits, false);
                 let first_dict_bits = function_dict_bits(func_ptr);
                 assert_ne!(
                     first_dict_bits, 0,
                     "vararg marker must install a function dict"
                 );
 
-                mark_vararg_method(_py, func_bits, false);
+                assert!(crate::builtins::methods::configure_builtin_signature(
+                    _py,
+                    func_bits,
+                    &[],
+                    true,
+                    true,
+                ));
                 let second_dict_bits = function_dict_bits(func_ptr);
                 assert_eq!(
                     first_dict_bits, second_dict_bits,

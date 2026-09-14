@@ -175,9 +175,9 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="native",
-        description="guard_dict_shape uses molt_guard_layout_ptr runtime guard",
+        description="guard_dict_shape uses molt_guard_layout runtime guard",
         pattern=(
-            r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>[\s\S]*?"molt_guard_layout_ptr"'
+            r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>[\s\S]*?"molt_guard_layout"'
         ),
     ),
     SemanticAssertion(

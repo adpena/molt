@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    comparison_scalar_domain, opcode_effects_table, opcode_exact_scalar_result_tir_type,
+    comparison_scalar_domain, opcode_exact_scalar_result_tir_type,
 };
 use crate::tir::ops::OpCode;
 use crate::tir::types::TirType;
@@ -89,18 +89,26 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                     .iter()
                     .map(|value| facts.get(value).cloned().unwrap_or(TirType::DynBox))
                     .collect();
-                let effects = opcode_effects_table(op.opcode);
+                let instance =
+                    crate::tir::op_semantics::op_instance_facts(op.opcode, &operand_types);
+                let effects = instance.as_ref().map_or_else(
+                    || crate::tir::op_kinds_generated::opcode_effects_table(op.opcode),
+                    |facts| facts.effects,
+                );
                 let copied = crate::tir::passes::value_identity::copy_value_source(op);
                 let transfers_exact =
                     op.opcode != OpCode::Copy && effects.consistent && effects.effect_free;
-                let types = if !op.has_valid_result_arity() {
+                let valid_shape = op.has_valid_shape();
+                let types = if !valid_shape {
                     vec![TirType::DynBox; op.results.len()]
                 } else if let Some(source) = copied {
                     vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
-                } else if let Some(predicate) =
-                    crate::tir::predicate_semantics::predicate_facts(op.opcode, &operand_types)
+                } else if let Some(result_type) = instance.and_then(|facts| facts.result_type) {
+                    vec![result_type; op.results.len()]
+                } else if let Some(ty) =
+                    crate::tir::call_targets::gpu_runtime_result_type_for_op(op)
                 {
-                    vec![predicate.result_type; op.results.len()]
+                    vec![ty; op.results.len()]
                 } else if transfers_exact {
                     infer_result_facts_with_attrs(op.opcode, &operand_types, None, op.results.len())
                 } else {
@@ -110,7 +118,7 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                     // Output shape is independent of purity: a mutable runtime
                     // read or checked arithmetic may still produce an exact
                     // Boolean status. Never broadcast slot zero into siblings.
-                    let ty = if op.has_valid_result_arity() {
+                    let ty = if valid_shape {
                         opcode_exact_scalar_result_tir_type(op.opcode, index).unwrap_or(inferred)
                     } else {
                         inferred

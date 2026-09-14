@@ -310,7 +310,7 @@ impl<'a> SsaContext<'a> {
         }
 
         // The concrete class authoring a typed-slot field op's byte-offset
-        // (`store`/`store_init`/`load`/`guarded_field_*`). Carried through TIR so
+        // (`store`/`load`/`guarded_field_get`/`guarded_field_set`). Carried through TIR so
         // the alias oracle (`region_of`) can assign a class+offset `TypedField`
         // memory region. The frontend emits these offset-based forms only when
         // the object's class is proven at the op (runtime version-guard for the

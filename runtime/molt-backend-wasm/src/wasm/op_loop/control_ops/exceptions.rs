@@ -144,7 +144,6 @@ mod tests {
             label_depths: &mut label_depths,
             reloc_enabled: false,
             native_eh_enabled,
-            arena_local: None,
             op_idx: 0,
         };
         assert!(emit_exception_control_op(&mut context, &mut body, &op));

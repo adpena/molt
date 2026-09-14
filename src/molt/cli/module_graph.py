@@ -6,11 +6,12 @@ import json
 import os
 import re
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 
 from molt.cli.atomic_io import _write_text_if_changed
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import module_dependencies as _module_dependency_authority
 from molt.cli import module_graph_discovery as _graph_discovery
 from molt.cli import module_import_scanner as _module_import_scanner
@@ -23,6 +24,12 @@ from molt.cli.config_resolution import (
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     ModuleExecutionKind,
+    _CompleteImportScan,
+    _DiscoveredModuleGraph,
+    _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
+    _PrecomputedModuleImportScan,
+    _RuntimeImportSupportPolicy,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _BinaryImageScope,
     _ImportAdmissionPolicy,
@@ -66,8 +73,12 @@ _NATIVE_SUPPORT_ARTIFACT_SOURCE_SUFFIXES = (".pyx", ".c", ".cc", ".cpp", ".cxx")
 
 @dataclass(frozen=True)
 class _NativeSupportSourceSlice:
-    imports: tuple[str, ...]
+    scan: _PrecomputedModuleImportScan
     generated_path: Path | None
+
+    @property
+    def imports(self) -> tuple[str, ...]:
+        return self.scan.scan.imports
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,24 @@ class ModuleSyntaxErrorInfo:
     lineno: int | None
     offset: int | None
     text: str | None
+
+
+def _write_generated_module_source(
+    module_name: str,
+    source: str,
+    output_dir: Path,
+) -> Path:
+    """An emitted generation is immutable; its Python identity stays explicit."""
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_") or "module"
+    digest = hashlib.sha256(
+        json.dumps(
+            (module_name, source), ensure_ascii=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    path = output_dir / f"_molt_generated_{safe[:48]}.{digest}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_if_changed(path, source)
+    return path
 
 
 def _write_importer_module(output_dir: Path) -> Path:
@@ -98,9 +127,11 @@ def _write_importer_module(output_dir: Path) -> Path:
             "    return _IMPORT_TRANSACTION(name, globals, locals, fromlist, level)",
         ]
     )
-    path = output_dir / f"{_module_import_scanner.IMPORTER_MODULE_NAME}.py"
-    _write_text_if_changed(path, "\n".join(lines) + "\n")
-    return path
+    return _write_generated_module_source(
+        _module_import_scanner.IMPORTER_MODULE_NAME,
+        "\n".join(lines) + "\n",
+        output_dir,
+    )
 
 
 def _collect_namespace_parents(
@@ -153,10 +184,6 @@ def _namespace_paths(name: str, roots: list[Path]) -> list[str]:
 
 
 def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
-    safe = re.sub(r"[^0-9A-Za-z_]+", "_", name.replace(".", "_")).strip("_")
-    if not safe:
-        safe = "root"
-    stub_path = output_dir / f"namespace_{safe}.py"
     lines = [
         '"""Auto-generated namespace package stub for Molt."""',
         "",
@@ -173,9 +200,7 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
         "        pass",
         "",
     ]
-    stub_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_text_if_changed(stub_path, "\n".join(lines))
-    return stub_path
+    return _write_generated_module_source(name, "\n".join(lines), output_dir)
 
 
 def _logical_generated_module_path(module_name: str) -> str:
@@ -297,6 +322,7 @@ def _build_frontend_module_costs(
     return module_costs
 
 
+@_source_tree_fingerprint_transaction()
 def _build_module_graph_metadata(
     module_graph: Mapping[str, Path],
     *,
@@ -374,6 +400,7 @@ def _requires_spawn_entry_override(
 def _augment_support_modules(
     *,
     module_graph: MutableMapping[str, Path],
+    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
     module_reasons: MutableMapping[str, set[str]],
     roots: list[Path],
     stdlib_root: Path,
@@ -412,6 +439,14 @@ def _augment_support_modules(
             namespace_modules[name] = stub_path
         if namespace_modules:
             module_graph.update(namespace_modules)
+            for name, path in namespace_modules.items():
+                scan_authorities[name] = _ModuleSourceScanAuthority(
+                    name,
+                    path,
+                    _module_import_scanner._module_import_scan_mode(
+                        name, full_scan=False
+                    ),
+                )
             for name in namespace_modules:
                 _graph_discovery._record_module_reason(
                     module_reasons, name, "namespace_stub"
@@ -422,12 +457,20 @@ def _augment_support_modules(
     for stub in stub_parents:
         if stub != entry_module and stub in namespace_modules:
             module_graph.pop(stub, None)
+            scan_authorities.pop(stub, None)
     if (
         needs_generated_importer
         and _module_import_scanner.IMPORTER_MODULE_NAME not in module_graph
     ):
         importer_path = _write_importer_module(artifacts_root)
         module_graph[_module_import_scanner.IMPORTER_MODULE_NAME] = importer_path
+        scan_authorities[_module_import_scanner.IMPORTER_MODULE_NAME] = (
+            _ModuleSourceScanAuthority(
+                _module_import_scanner.IMPORTER_MODULE_NAME,
+                importer_path,
+                "module_init",
+            )
+        )
         _graph_discovery._record_module_reason(
             module_reasons,
             _module_import_scanner.IMPORTER_MODULE_NAME,
@@ -486,6 +529,7 @@ def _native_support_source_admission_policy(
 def _extend_native_support_source_closure(
     *,
     module_graph: MutableMapping[str, Path],
+    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
     module_reasons: MutableMapping[str, set[str]],
     native_artifact_plan,
     artifacts_root: Path,
@@ -500,56 +544,85 @@ def _extend_native_support_source_closure(
     ],
     operation_counts: MutableMapping[str, int],
 ) -> frozenset[str]:
-    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
-    if not support_paths_by_module:
-        return frozenset()
-    native_support_function_roots_by_module = _native_support_function_roots_by_module(
+    function_roots = _native_support_function_roots_by_module(
         native_artifact_plan,
         target_python=target_python,
     )
-    runtime_python_import_modules = (
-        native_artifact_plan.runtime_python_import_module_names()
-    )
-    entry_paths = tuple(
-        path
-        for module_name, path in support_paths_by_module.items()
-        if (
-            module_name not in module_graph
-            and (
-                module_name in native_support_function_roots_by_module
-                # Modules the extension imports dynamically at runtime are
-                # compile roots too: without this they stay support-file
-                # names only, materialize as empty static-native shells,
-                # and module init fails on missing attributes.
-                or module_name in runtime_python_import_modules
-            )
-        )
-    )
-    if not entry_paths:
-        return frozenset()
-    module_roots = [root for root in roots if root != stdlib_root]
-    support_slices = _native_support_source_slices(
+    runtime_modules = native_artifact_plan.runtime_python_import_module_names()
+    slices = _native_support_source_slices(
         native_artifact_plan=native_artifact_plan,
-        roots_by_module=native_support_function_roots_by_module,
+        roots_by_module=function_roots,
         artifacts_root=artifacts_root,
         slice_cache=slice_cache,
         operation_counts=operation_counts,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
-    closure_graph, explicit_imports = (
-        _graph_discovery._discover_module_graph_from_paths(
-            entry_paths,
+    explicit_imports: set[str] = set()
+    for (
+        module_name,
+        original_path,
+    ) in native_artifact_plan.support_source_paths_by_module().items():
+        if module_name not in function_roots and module_name not in runtime_modules:
+            continue
+        support_slice = slices.get(original_path)
+        if support_slice is None:
+            continue
+        record = support_slice.scan
+        source_path = record.authority.source_path
+        existing = module_graph.get(module_name)
+        source_replacements: dict[str, _ModuleSourceScanAuthority] = {}
+        if existing is not None and existing.resolve() != source_path:
+            if existing.resolve() == original_path.resolve():
+                # An admitted real source is never replaced by a narrower slice.
+                source_path = existing
+                record = None
+            else:
+                previous = next(
+                    (
+                        (retained_roots, candidate)
+                        for (origin, retained_roots), candidate in slice_cache.items()
+                        if origin == original_path.resolve()
+                        and candidate is not None
+                        and candidate.generated_path is not None
+                        and candidate.generated_path.resolve() == existing.resolve()
+                        and candidate.scan.authority.module_name == module_name
+                    ),
+                    None,
+                )
+                if previous is None or not set(previous[0]).issubset(
+                    function_roots.get(module_name, ())
+                ):
+                    raise ValueError(
+                        f"native support generation lost source/root custody: {module_name!r}"
+                    )
+                _graph_discovery._validate_precomputed_module_import_scan(
+                    previous[1].scan,
+                    path=existing,
+                    module_name=module_name,
+                    import_scan_mode="full",
+                    target_python=target_python,
+                    capability_config_digest=capability_config_digest,
+                )
+                source_replacements[module_name] = previous[1].scan.authority
+        requested_mode = support_slice.scan.authority.mode
+        closure = _graph_discovery._discover_module_graph_from_paths(
+            (source_path,),
             roots,
-            module_roots,
+            [root for root in roots if root != stdlib_root],
             stdlib_root,
             project_root=None,
             stdlib_allowlist=stdlib_allowlist,
+            full_scan_roots=requested_mode == "full",
             skip_modules=STUB_MODULES,
             stub_parents=STUB_PARENT_MODULES,
             resolver_cache=resolver_cache,
-            precomputed_imports_by_path={
-                path: support_slice.imports
-                for path, support_slice in support_slices.items()
-            },
+            enclosing_scan_authority=_ModuleGraphScanAuthority(
+                tuple(scan_authorities.values())
+            ),
+            precomputed_scans_by_path={source_path.resolve(): record}
+            if record is not None
+            else None,
             import_admission_policy=_native_support_source_admission_policy(
                 native_artifact_plan
             ),
@@ -557,22 +630,21 @@ def _extend_native_support_source_closure(
             target_python=target_python,
             capability_config_digest=capability_config_digest,
         )
-    )
-    for module_name, path in closure_graph.items():
-        resolved_path = path
-        support_slice = support_slices.get(path)
-        if support_slice is not None and support_slice.generated_path is not None:
-            resolved_path = support_slice.generated_path
-        module_graph.setdefault(module_name, resolved_path)
-        _graph_discovery._record_module_reason(
-            module_reasons,
-            module_name,
-            (
-                "native_support_source"
-                if module_name in support_paths_by_module
-                else "native_support_source_closure"
-            ),
+        _graph_discovery._merge_discovered_module_graph(
+            module_graph,
+            scan_authorities,
+            closure,
+            source_replacements=source_replacements,
         )
+        explicit_imports.update(closure.explicit_imports)
+        for name in closure.graph:
+            _graph_discovery._record_module_reason(
+                module_reasons,
+                name,
+                "native_support_source"
+                if name == module_name
+                else "native_support_source_closure",
+            )
     return frozenset(explicit_imports)
 
 
@@ -582,6 +654,7 @@ _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE = "_molt_native_runtime_python_imports"
 def _extend_native_runtime_python_import_closure(
     *,
     module_graph: MutableMapping[str, Path],
+    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
     module_reasons: MutableMapping[str, set[str]],
     native_artifact_plan,
     artifacts_root: Path,
@@ -610,45 +683,81 @@ def _extend_native_runtime_python_import_closure(
     )
     if not pending:
         return frozenset()
-    entry_path = artifacts_root / f"{_NATIVE_RUNTIME_IMPORT_ENTRY_MODULE}.py"
-    entry_path.parent.mkdir(parents=True, exist_ok=True)
-    entry_path.write_text(
-        "".join(f"import {name}\n" for name in pending),
-        encoding="utf-8",
+    source = "".join(f"import {name}\n" for name in pending)
+    entry_path = _write_generated_module_source(
+        _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE,
+        source,
+        artifacts_root,
     )
+    loaded_scan = _graph_discovery._load_module_import_scan(
+        entry_path,
+        module_name=_NATIVE_RUNTIME_IMPORT_ENTRY_MODULE,
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=resolver_cache,
+        project_root=None,
+        source=source,
+        retain_source=False,
+        retain_tree=False,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    entry_scan = _graph_discovery._bind_precomputed_module_import_scan(
+        entry_path,
+        module_name=_NATIVE_RUNTIME_IMPORT_ENTRY_MODULE,
+        import_scan_mode="full",
+        scan=loaded_scan.scan,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    del loaded_scan
     module_roots = [
         artifacts_root.resolve(),
         *(root for root in roots if root != stdlib_root),
     ]
-    closure_graph, explicit_imports = (
-        _graph_discovery._discover_module_graph_from_paths(
-            (entry_path,),
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root=None,
-            stdlib_allowlist=stdlib_allowlist,
-            skip_modules=STUB_MODULES,
-            stub_parents=STUB_PARENT_MODULES,
-            resolver_cache=resolver_cache,
-            import_admission_policy=_native_support_source_admission_policy(
-                native_artifact_plan
-            ),
-            allow_entry_external_imports=True,
-            target_python=target_python,
-            capability_config_digest=capability_config_digest,
-        )
+    closure = _graph_discovery._discover_module_graph_from_paths(
+        (entry_path,),
+        roots,
+        module_roots,
+        stdlib_root,
+        full_scan_roots=True,
+        project_root=None,
+        stdlib_allowlist=stdlib_allowlist,
+        skip_modules=STUB_MODULES,
+        stub_parents=STUB_PARENT_MODULES,
+        resolver_cache=resolver_cache,
+        enclosing_scan_authority=_ModuleGraphScanAuthority(
+            tuple(scan_authorities.values())
+        ),
+        precomputed_scans_by_path={entry_path.resolve(): entry_scan},
+        import_admission_policy=_native_support_source_admission_policy(
+            native_artifact_plan
+        ),
+        allow_entry_external_imports=True,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
-    for module_name, path in closure_graph.items():
-        if module_name == _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE:
-            continue
-        module_graph.setdefault(module_name, path)
+    retained_graph = {
+        name: path
+        for name, path in closure.graph.items()
+        if name != _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE
+    }
+    _graph_discovery._merge_discovered_module_graph(
+        module_graph,
+        scan_authorities,
+        _DiscoveredModuleGraph(
+            retained_graph,
+            closure.explicit_imports,
+            closure.scan_authority.restricted(retained_graph),
+        ),
+    )
+    for module_name in retained_graph:
         _graph_discovery._record_module_reason(
             module_reasons,
             module_name,
             "native_runtime_python_import",
         )
-    return frozenset(explicit_imports)
+    return frozenset(closure.explicit_imports)
 
 
 def _support_source_import_bindings(
@@ -835,6 +944,7 @@ def _native_support_function_roots_by_module(
     }
 
 
+@_source_tree_fingerprint_transaction()
 def _native_support_source_slices(
     *,
     native_artifact_plan,
@@ -844,9 +954,12 @@ def _native_support_source_slices(
         tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
     ],
     operation_counts: MutableMapping[str, int],
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> dict[Path, _NativeSupportSourceSlice]:
     support_slices: dict[Path, _NativeSupportSourceSlice] = {}
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    resolution_cache = _module_resolution._ModuleResolutionCache()
     for module, path in support_paths_by_module.items():
         roots = tuple(sorted(set(roots_by_module.get(module, ()))))
         cache_key = (path.resolve(), roots)
@@ -862,87 +975,108 @@ def _native_support_source_slices(
             continue
         operation_counts["native_support_slice_cache_misses"] += 1
         if not roots:
-            persisted_imports = (
-                _graph_discovery._module_graph_cache._read_persisted_import_scan(
-                    artifacts_root,
+            try:
+                loaded_scan = _graph_discovery._load_module_import_scan(
                     path,
                     module_name=module,
                     is_package=path.name == "__init__.py",
-                    import_scan_mode="module_init",
+                    import_scan_mode=_module_import_scanner._module_import_scan_mode(
+                        module, full_scan=False
+                    ),
+                    resolution_cache=resolution_cache,
+                    project_root=artifacts_root,
+                    target_python=target_python,
+                    capability_config_digest=capability_config_digest,
+                    retain_source=False,
+                    retain_tree=False,
                 )
-            )
-            if persisted_imports is not None:
-                operation_counts["native_support_persisted_import_scan_hits"] += 1
-                support_slice = _NativeSupportSourceSlice(
-                    imports=persisted_imports,
-                    generated_path=None,
-                )
-                slice_cache[cache_key] = support_slice
-                support_slices[path] = support_slice
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                operation_counts["native_support_persisted_import_scan_misses"] += 1
+                operation_counts["native_support_source_parses"] += 1
+                slice_cache[cache_key] = None
                 continue
-            operation_counts["native_support_persisted_import_scan_misses"] += 1
-        operation_counts["native_support_source_parses"] += 1
-        try:
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(path))
-        except (OSError, SyntaxError, UnicodeDecodeError):
-            slice_cache[cache_key] = None
-            continue
-        if not roots:
-            imports = tuple(
-                _module_import_scanner._collect_imports(
-                    tree,
-                    module_name=module,
-                    is_package=path.name == "__init__.py",
-                    import_scan_mode="module_init",
-                )
+            counter = (
+                "native_support_persisted_import_scan_hits"
+                if loaded_scan.cache_hit
+                else "native_support_persisted_import_scan_misses"
             )
-            _graph_discovery._module_graph_cache._write_persisted_import_scan(
-                artifacts_root,
-                path,
-                module_name=module,
-                is_package=path.name == "__init__.py",
-                import_scan_mode="module_init",
-                imports=imports,
+            operation_counts[counter] += 1
+            operation_counts["native_support_source_parses"] += int(
+                loaded_scan.source_parsed
             )
             support_slice = _NativeSupportSourceSlice(
-                imports=imports,
+                scan=_graph_discovery._bind_precomputed_module_import_scan(
+                    path,
+                    module_name=module,
+                    import_scan_mode=_module_import_scanner._module_import_scan_mode(
+                        module, full_scan=False
+                    ),
+                    scan=loaded_scan.scan,
+                    target_python=target_python,
+                    capability_config_digest=capability_config_digest,
+                ),
                 generated_path=None,
             )
             slice_cache[cache_key] = support_slice
             support_slices[path] = support_slice
+            del loaded_scan
+            continue
+        operation_counts["native_support_source_parses"] += 1
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = _parse_source_for_target(
+                source, filename=str(path), target_python=target_python
+            )
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            slice_cache[cache_key] = None
             continue
         operation_counts["native_support_source_prunes"] += 1
         pruned_tree, _reachable, missing = (
             _native_support_slice.prune_native_support_module(tree, frozenset(roots))
         )
-        imports = tuple(
-            _module_import_scanner._collect_imports(
-                pruned_tree,
-                module_name=module,
-                is_package=path.name == "__init__.py",
-                import_scan_mode="full",
+        if missing:
+            raise ValueError(
+                f"native support roots lack source custody in {module}: {sorted(missing)}"
             )
+        ast.fix_missing_locations(pruned_tree)
+        generated_source = ast.unparse(pruned_tree) + "\n"
+        generated_path = _write_generated_module_source(
+            module, generated_source, artifacts_root
         )
-        generated_path = None
-        if not missing:
-            ast.fix_missing_locations(pruned_tree)
-            generated_path = _native_support_generated_path(module, artifacts_root)
-            _write_text_if_changed(generated_path, ast.unparse(pruned_tree) + "\n")
+        # Parse and scan the exact generated source. Unparse changes spans and
+        # source-execution paths, so the original/pruned AST cannot certify it.
+        loaded_scan = _graph_discovery._load_module_import_scan(
+            generated_path,
+            module_name=module,
+            is_package=path.name == "__init__.py",
+            import_scan_mode="full",
+            resolution_cache=resolution_cache,
+            project_root=None,
+            source=generated_source,
+            retain_source=False,
+            retain_tree=False,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        )
+        operation_counts["native_support_source_parses"] += int(
+            loaded_scan.source_parsed
+        )
         support_slice = _NativeSupportSourceSlice(
-            imports=imports,
+            scan=_graph_discovery._bind_precomputed_module_import_scan(
+                generated_path,
+                module_name=module,
+                import_scan_mode="full",
+                is_package=path.name == "__init__.py",
+                scan=loaded_scan.scan,
+                target_python=target_python,
+                capability_config_digest=capability_config_digest,
+            ),
             generated_path=generated_path,
         )
         slice_cache[cache_key] = support_slice
         support_slices[path] = support_slice
+        del loaded_scan, tree, pruned_tree, source, generated_source
     return support_slices
-
-
-def _native_support_generated_path(module_name: str, artifacts_root: Path) -> Path:
-    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_")
-    if not safe:
-        safe = "module"
-    return artifacts_root / f"native_support_{safe}.py"
 
 
 def _longest_module_prefix(
@@ -1276,6 +1410,153 @@ def _runtime_import_parent_modules(
     return frozenset(parents)
 
 
+@dataclass(frozen=True)
+class _RuntimeImportClosure:
+    policy: _RuntimeImportSupportPolicy
+    custody: _RuntimeImportScanCustody | None
+    dispatch_roots: frozenset[str]
+
+
+@_source_tree_fingerprint_transaction()
+def _finalize_runtime_import_closure(
+    *,
+    module_graph: MutableMapping[str, Path],
+    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
+    module_reasons: MutableMapping[str, set[str]],
+    explicit_imports: Collection[str],
+    dispatch_roots: Collection[str],
+    module_resolution_cache: "_module_resolution._ModuleResolutionCache",
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    entry_module: str,
+    target: str,
+    target_python: TargetPythonVersion,
+    import_admission_policy: _ImportAdmissionPolicy | None,
+    entry_tree: ast.AST | None = None,
+    previous_custody: _RuntimeImportScanCustody | None = None,
+) -> _RuntimeImportClosure:
+    """Seal the current graph's protocol policy and finite owner catalog together."""
+    from molt.cli.backend_ir import _module_registry_target_enabled
+
+    authority = _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
+    authority.validate_graph(module_graph)
+    policy = _module_import_scanner._module_graph_needs_runtime_import_support(
+        module_graph=module_graph,
+        scan_authority=authority,
+        module_resolution_cache=module_resolution_cache,
+        explicit_imports=explicit_imports,
+        entry_module=entry_module,
+        entry_path=module_graph[entry_module],
+        entry_tree=entry_tree,
+        target_python=target_python,
+    )
+    runtime_roots = set(dispatch_roots) | set(explicit_imports)
+    if not policy.needs_runtime_import_support:
+        return _RuntimeImportClosure(policy, None, frozenset(runtime_roots))
+    owners: dict[str, Path] = {}
+    for name in _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
+        path = _module_resolution._resolve_module_path(name, [stdlib_root])
+        if path is None:
+            raise ValueError(f"Missing required stdlib support module: {name}")
+        path = path.resolve()
+        if name in module_graph and module_graph[name].resolve() != path:
+            raise ValueError(
+                f"Runtime import support has conflicting source authority: {name}"
+            )
+        owners[name] = path
+    owner_digests = tuple(
+        (
+            name,
+            _module_import_scanner.python_ast_digest(
+                module_resolution_cache.parse_module_ast(
+                    path,
+                    module_resolution_cache.read_module_source(path, retain=False),
+                    filename=str(path),
+                    retain=False,
+                    target_python=target_python,
+                )
+            ),
+        )
+        for name, path in sorted(owners.items())
+    )
+    prior = previous_custody
+    while True:
+        policy = _module_import_scanner._module_graph_needs_runtime_import_support(
+            module_graph=module_graph,
+            scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
+            module_resolution_cache=module_resolution_cache,
+            explicit_imports=runtime_roots,
+            entry_module=entry_module,
+            entry_path=module_graph[entry_module],
+            entry_tree=entry_tree,
+            target_python=target_python,
+        )
+        catalog_names = runtime_roots | _runtime_import_parent_modules(
+            runtime_roots,
+            known_modules=set(module_graph),
+        )
+        catalog = tuple(
+            sorted(
+                {
+                    **{
+                        name: path.resolve()
+                        for name, path in module_graph.items()
+                        if name in catalog_names
+                    },
+                    **owners,
+                }.items()
+            )
+        )
+        custody = (
+            _RuntimeImportScanCustody(
+                tuple(sorted(owners.items())), catalog, owner_digests
+            )
+            if _module_registry_target_enabled(target)
+            else None
+        )
+        if custody is not None and custody == prior:
+            custody.validate_graph(module_graph)
+            return _RuntimeImportClosure(
+                policy, custody, frozenset(runtime_roots | set(custody.modules))
+            )
+        before = (frozenset(module_graph.items()), frozenset(runtime_roots))
+        closure = _graph_discovery._extend_module_graph_with_closure(
+            module_graph,
+            scan_authorities=scan_authorities,
+            entry_paths=tuple(owners.values()),
+            full_scan_roots=True,
+            roots=[stdlib_root],
+            module_roots=[stdlib_root],
+            stdlib_root=stdlib_root,
+            project_root=None,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
+            diagnostics_enabled=True,
+            module_reasons=module_reasons,
+            reason="runtime_import_support",
+            import_admission_policy=import_admission_policy,
+            target_python=target_python,
+            runtime_import_custody=custody,
+        )
+        runtime_roots.update(closure.graph)
+        runtime_roots.update(closure.explicit_imports)
+        runtime_roots.update(
+            _runtime_import_parent_modules(
+                runtime_roots, known_modules=set(module_graph)
+            )
+        )
+        if custody is not None:
+            custody.validate_graph(module_graph)
+            runtime_roots.update(custody.modules)
+        if custody is None and before == (
+            frozenset(module_graph.items()),
+            frozenset(runtime_roots),
+        ):
+            return _RuntimeImportClosure(policy, None, frozenset(runtime_roots))
+        prior = custody
+
+
+@_source_tree_fingerprint_transaction()
 def _materialize_import_plan(
     *,
     prepared_module_graph: _PreparedEntryModuleGraph,
@@ -1286,9 +1567,17 @@ def _materialize_import_plan(
     diagnostics_enabled: bool,
 ) -> _ImportPlan:
     module_graph = dict(prepared_module_graph.module_graph)
+    scan_authorities = dict(prepared_module_graph.scan_authority.by_module)
+    runtime_closure = _RuntimeImportClosure(
+        prepared_module_graph.runtime_import_support_policy,
+        prepared_module_graph.runtime_import_scan_custody,
+        prepared_module_graph.runtime_import_dispatch_roots,
+    )
     stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
     stub_parents = set(prepared_module_graph.stub_parents)
     support_explicit_imports: set[str] = set()
+    namespace_module_names: set[str] = set()
+    generated_module_source_paths: dict[str, str] = {}
     module_graph_operation_counts = {
         "native_support_iterations": 0,
         "native_support_slice_requests": 0,
@@ -1304,14 +1593,12 @@ def _materialize_import_plan(
         tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
     ] = {}
     native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
-    for _iteration in range(
-        len(prepared_module_graph.native_artifact_plan.artifacts) + 2
-    ):
+    while True:
         module_graph_operation_counts["native_support_iterations"] += 1
         native_artifact_reachable_imports = (
             set(module_graph)
             | set(prepared_module_graph.explicit_imports)
-            | set(prepared_module_graph.runtime_import_dispatch_roots)
+            | set(runtime_closure.dispatch_roots)
             | support_explicit_imports
         )
         next_native_artifact_plan = (
@@ -1321,6 +1608,8 @@ def _materialize_import_plan(
         )
         before_modules = frozenset(module_graph)
         before_support_imports = frozenset(support_explicit_imports)
+        before_runtime = runtime_closure
+        before_authority = _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
         # Runtime-python-import closure runs FIRST: its entries carry the
         # real package source paths for modules the extension imports
         # dynamically, and module_graph merges are setdefault/first-wins.
@@ -1331,6 +1620,7 @@ def _materialize_import_plan(
         support_explicit_imports.update(
             _extend_native_runtime_python_import_closure(
                 module_graph=module_graph,
+                scan_authorities=scan_authorities,
                 module_reasons=module_reasons,
                 native_artifact_plan=next_native_artifact_plan,
                 artifacts_root=artifacts_root,
@@ -1345,6 +1635,7 @@ def _materialize_import_plan(
         support_explicit_imports.update(
             _extend_native_support_source_closure(
                 module_graph=module_graph,
+                scan_authorities=scan_authorities,
                 module_reasons=module_reasons,
                 native_artifact_plan=next_native_artifact_plan,
                 artifacts_root=artifacts_root,
@@ -1358,31 +1649,61 @@ def _materialize_import_plan(
                 operation_counts=module_graph_operation_counts,
             )
         )
+        runtime_closure = _finalize_runtime_import_closure(
+            module_graph=module_graph,
+            scan_authorities=scan_authorities,
+            module_reasons=module_reasons,
+            explicit_imports=set(prepared_module_graph.explicit_imports)
+            | support_explicit_imports,
+            dispatch_roots=runtime_closure.dispatch_roots | support_explicit_imports,
+            module_resolution_cache=prepared_module_graph.module_resolution_cache,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            entry_module=entry_module,
+            target=prepared_module_graph.target,
+            target_python=prepared_module_graph.target_python,
+            import_admission_policy=_native_support_source_admission_policy(
+                next_native_artifact_plan
+            ),
+            previous_custody=runtime_closure.custody,
+        )
+        iteration_support = _augment_support_modules(
+            module_graph=module_graph,
+            scan_authorities=scan_authorities,
+            module_reasons=module_reasons,
+            roots=list(prepared_module_graph.roots),
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            explicit_imports=set(prepared_module_graph.explicit_imports)
+            | support_explicit_imports,
+            resolver_cache=prepared_module_graph.module_resolution_cache,
+            artifacts_root=artifacts_root,
+            stub_parents=stub_parents,
+            entry_module=entry_module,
+            needs_generated_importer=(runtime_closure.policy.needs_generated_importer),
+            diagnostics_enabled=True,
+        )
+        namespace_module_names.update(iteration_support.namespace_module_names)
+        namespace_module_names.intersection_update(module_graph)
+        generated_module_source_paths.update(
+            iteration_support.generated_module_source_paths
+        )
         if (
             next_native_artifact_plan == native_artifact_plan
+            and runtime_closure == before_runtime
+            and _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
+            == before_authority
             and frozenset(module_graph) == before_modules
             and frozenset(support_explicit_imports) == before_support_imports
         ):
             break
         native_artifact_plan = next_native_artifact_plan
-    support_modules = _augment_support_modules(
-        module_graph=module_graph,
-        module_reasons=module_reasons,
-        roots=list(prepared_module_graph.roots),
-        stdlib_root=stdlib_root,
-        stdlib_allowlist=stdlib_allowlist,
-        explicit_imports=prepared_module_graph.explicit_imports,
-        resolver_cache=prepared_module_graph.module_resolution_cache,
-        artifacts_root=artifacts_root,
-        stub_parents=stub_parents,
-        entry_module=entry_module,
-        needs_generated_importer=(
-            prepared_module_graph.runtime_import_support_policy.needs_generated_importer
-        ),
-        diagnostics_enabled=True,
-    )
-    namespace_module_names = support_modules.namespace_module_names
-    generated_module_source_paths = dict(support_modules.generated_module_source_paths)
+    final_scan_authority = _ModuleGraphScanAuthority(
+        tuple(scan_authorities.values())
+    ).restricted(module_graph)
+    final_scan_authority.validate_graph(module_graph)
+    if runtime_closure.custody is not None:
+        runtime_closure.custody.validate_graph(module_graph)
     native_artifact_manifests = _custodied_native_artifact_manifests(
         native_artifact_plan
     )
@@ -1417,6 +1738,18 @@ def _materialize_import_plan(
         entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,
         namespace_module_names=set(namespace_module_names),
     )
+    # Generated native support retains the original package execution identity.
+    package_flags = dict(module_graph_metadata.module_is_package_by_module)
+    package_flags.update(
+        {
+            name: bool(source.is_package)
+            for name, source in final_scan_authority.by_module.items()
+        }
+    )
+    module_graph_metadata = replace(
+        module_graph_metadata,
+        module_is_package_by_module=MappingProxyType(package_flags),
+    )
     declared_root_modules = (
         frozenset({entry_module}) | prepared_module_graph.declared_root_modules
     )
@@ -1433,7 +1766,7 @@ def _materialize_import_plan(
         module_graph, module_reasons, _PACKAGE_PARENT_REASONS
     )
     explicit_runtime_import_dispatch_roots = (
-        prepared_module_graph.runtime_import_dispatch_roots | support_explicit_imports
+        runtime_closure.dispatch_roots | support_explicit_imports
     )
     runtime_import_dispatch_roots = frozenset(
         explicit_runtime_import_dispatch_roots
@@ -1449,16 +1782,19 @@ def _materialize_import_plan(
         stdlib_root=stdlib_root,
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         module_graph=MappingProxyType(dict(module_graph)),
+        scan_authority=final_scan_authority,
         module_graph_operation_counts=MappingProxyType(
             dict(module_graph_operation_counts)
         ),
-        explicit_imports=frozenset(prepared_module_graph.explicit_imports),
+        explicit_imports=frozenset(
+            set(prepared_module_graph.explicit_imports) | support_explicit_imports
+        ),
         runtime_import_dispatch_roots=runtime_import_dispatch_roots,
         stub_parents=frozenset(stub_parents),
         spawn_enabled=prepared_module_graph.spawn_enabled,
-        runtime_import_support_policy=prepared_module_graph.runtime_import_support_policy,
-        runtime_import_scan_custody=prepared_module_graph.runtime_import_scan_custody,
-        namespace_module_names=namespace_module_names,
+        runtime_import_support_policy=runtime_closure.policy,
+        runtime_import_scan_custody=runtime_closure.custody,
+        namespace_module_names=frozenset(namespace_module_names),
         generated_module_source_paths=MappingProxyType(generated_module_source_paths),
         known_modules=known_modules,
         direct_call_modules=source_modules,
@@ -1500,6 +1836,7 @@ def _augment_module_graph_for_entry_and_runtime(
     entry_imports: Collection[str],
     module_resolution_cache: "_module_resolution._ModuleResolutionCache",
     module_graph: MutableMapping[str, Path],
+    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
     module_reasons: MutableMapping[str, set[str]],
     diagnostics_enabled: bool,
     json_output: bool,
@@ -1524,7 +1861,9 @@ def _augment_module_graph_for_entry_and_runtime(
     ]
     _graph_discovery._extend_module_graph_with_closure(
         module_graph,
+        scan_authorities=scan_authorities,
         entry_paths=core_paths,
+        full_scan_roots=False,
         roots=roots,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
@@ -1567,7 +1906,9 @@ def _augment_module_graph_for_entry_and_runtime(
         spawn_enabled = True
         _graph_discovery._extend_module_graph_with_closure(
             module_graph,
+            scan_authorities=scan_authorities,
             entry_paths=[spawn_path],
+            full_scan_roots=True,
             roots=roots,
             module_roots=module_roots,
             stdlib_root=stdlib_root,
@@ -1590,6 +1931,7 @@ def _augment_module_graph_for_entry_and_runtime(
     ), None
 
 
+@_source_tree_fingerprint_transaction()
 def _prepare_entry_module_graph(
     *,
     source_path: Path,
@@ -1638,7 +1980,7 @@ def _prepare_entry_module_graph(
         import_scan_mode="full",
         module_name=entry_module,
     )
-    module_graph, explicit_imports = _graph_discovery._discover_module_graph(
+    discovery = _graph_discovery._discover_module_graph(
         source_path,
         roots,
         module_roots,
@@ -1648,12 +1990,27 @@ def _prepare_entry_module_graph(
         skip_modules=STUB_MODULES,
         stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
-        precomputed_imports=entry_imports,
-        precomputed_source_executions=entry_source_executions,
+        precomputed_scan=_graph_discovery._bind_precomputed_module_import_scan(
+            source_path,
+            module_name=entry_module,
+            import_scan_mode="full",
+            scan=_CompleteImportScan(
+                tuple(entry_imports),
+                tuple(
+                    (execution.module_name, execution.source_path)
+                    for execution in entry_source_executions
+                ),
+            ),
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        ),
         import_admission_policy=import_admission_policy,
         target_python=target_python,
         capability_config_digest=capability_config_digest,
     )
+    module_graph = discovery.graph
+    explicit_imports = discovery.explicit_imports
+    scan_authorities = dict(discovery.scan_authority.by_module)
     _graph_discovery._record_module_reason(module_reasons, entry_module, "entry_root")
     for name in module_graph:
         _graph_discovery._record_module_reason(module_reasons, name, "entry_closure")
@@ -1665,6 +2022,7 @@ def _prepare_entry_module_graph(
     static_import_errors = (
         _graph_discovery._extend_module_graph_with_static_import_modules(
             module_graph=module_graph,
+            scan_authorities=scan_authorities,
             explicit_imports=explicit_imports,
             module_names=static_import_modules,
             roots=roots,
@@ -1712,7 +2070,9 @@ def _prepare_entry_module_graph(
         before_parent_closure = set(module_graph)
         _graph_discovery._extend_module_graph_with_closure(
             module_graph,
+            scan_authorities=scan_authorities,
             entry_paths=package_parent_paths,
+            full_scan_roots=False,
             roots=roots,
             module_roots=module_roots,
             stdlib_root=stdlib_root,
@@ -1770,6 +2130,7 @@ def _prepare_entry_module_graph(
         entry_imports=explicit_imports,
         module_resolution_cache=module_resolution_cache,
         module_graph=module_graph,
+        scan_authorities=scan_authorities,
         module_reasons=module_reasons,
         diagnostics_enabled=True,
         json_output=json_output,
@@ -1780,115 +2141,24 @@ def _prepare_entry_module_graph(
     )
     if augmentation_error is not None:
         return None, augmentation_error
-    runtime_import_dispatch_roots: set[str] = set(augmentation.explicit_imports)
-    runtime_import_support_policy = (
-        _module_import_scanner._module_graph_needs_runtime_import_support(
+    try:
+        runtime_closure = _finalize_runtime_import_closure(
             module_graph=module_graph,
-            module_resolution_cache=module_resolution_cache,
-            explicit_imports=augmentation.explicit_imports,
-            entry_module=entry_module,
-            entry_path=source_path,
-            entry_tree=entry_tree,
-            target_python=target_python,
-        )
-    )
-    runtime_import_custody: _RuntimeImportScanCustody | None = None
-    if runtime_import_support_policy.needs_runtime_import_support:
-        # Use the same backend capability that publishes the compiled registry;
-        # textual emitters cannot promise this finite runtime dispatch surface.
-        from molt.cli.backend_ir import _module_registry_target_enabled
-
-        import_support_paths: list[Path] = []
-        import_support_sources: dict[str, Path] = {}
-        for module_name in _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
-            module_path = _module_resolution._resolve_module_path(
-                module_name,
-                [stdlib_root],
-            )
-            if module_path is None:
-                return None, _fail(
-                    f"Missing required stdlib support module: {module_name}",
-                    json_output,
-                    command="build",
-                )
-            import_support_paths.append(module_path)
-            import_support_sources[module_name] = module_path.resolve()
-            existing_path = module_graph.get(module_name)
-            if (
-                existing_path is not None
-                and existing_path.resolve() != module_path.resolve()
-            ):
-                return None, _fail(
-                    f"Runtime import support has conflicting source authority: {module_name}",
-                    json_output,
-                    command="build",
-                )
-        catalog_modules = (
-            runtime_import_dispatch_roots
-            | _runtime_import_parent_modules(
-                runtime_import_dispatch_roots, known_modules=set(module_graph)
-            )
-        )
-        runtime_import_custody = (
-            _RuntimeImportScanCustody(
-                owners=tuple(sorted(import_support_sources.items())),
-                owner_ast_digests=tuple(
-                    (
-                        name,
-                        _module_import_scanner.python_ast_digest(
-                            module_resolution_cache.parse_module_ast(
-                                path,
-                                module_resolution_cache.read_module_source(path),
-                                filename=str(path),
-                                target_python=target_python,
-                            )
-                        ),
-                    )
-                    for name, path in sorted(import_support_sources.items())
-                ),
-                catalog=tuple(
-                    sorted(
-                        {
-                            **{
-                                name: path.resolve()
-                                for name, path in module_graph.items()
-                                if name in catalog_modules
-                            },
-                            **import_support_sources,
-                        }.items()
-                    )
-                ),
-            )
-            if _module_registry_target_enabled(target)
-            else None
-        )
-        before_support = set(module_graph)
-        support_closure_modules = _graph_discovery._extend_module_graph_with_closure(
-            module_graph,
-            entry_paths=import_support_paths,
-            roots=[stdlib_root],
-            module_roots=[stdlib_root],
-            stdlib_root=stdlib_root,
-            project_root=None,
-            stdlib_allowlist=stdlib_allowlist,
-            resolver_cache=module_resolution_cache,
-            diagnostics_enabled=True,
+            scan_authorities=scan_authorities,
             module_reasons=module_reasons,
-            reason="runtime_import_support",
-            import_admission_policy=import_admission_policy,
+            explicit_imports=augmentation.explicit_imports,
+            dispatch_roots=augmentation.explicit_imports,
+            module_resolution_cache=module_resolution_cache,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            entry_module=entry_module,
+            entry_tree=entry_tree,
+            target=target,
             target_python=target_python,
-            runtime_import_custody=runtime_import_custody,
+            import_admission_policy=import_admission_policy,
         )
-        runtime_import_dispatch_roots.update(support_closure_modules)
-        if runtime_import_custody is not None:
-            runtime_import_custody.validate_graph(module_graph)
-            runtime_import_dispatch_roots.update(runtime_import_custody.modules)
-        _graph_discovery._record_new_module_reasons(
-            module_graph,
-            before_support,
-            module_reasons,
-            "runtime_import_support",
-        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
     if image_scope is None:
         image_scope = _BinaryImageScope.from_entry(
             kind="entry_script",
@@ -1913,12 +2183,14 @@ def _prepare_entry_module_graph(
         roots=roots,
         module_resolution_cache=module_resolution_cache,
         module_graph=dict(module_graph),
+        scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
+        target=target,
         explicit_imports=augmentation.explicit_imports,
-        runtime_import_dispatch_roots=frozenset(runtime_import_dispatch_roots),
+        runtime_import_dispatch_roots=runtime_closure.dispatch_roots,
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
-        runtime_import_support_policy=runtime_import_support_policy,
-        runtime_import_scan_custody=runtime_import_custody,
+        runtime_import_support_policy=runtime_closure.policy,
+        runtime_import_scan_custody=runtime_closure.custody,
         native_artifact_plan=(
             import_admission_policy.native_artifact_plan
             if import_admission_policy is not None

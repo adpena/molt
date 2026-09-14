@@ -57,7 +57,7 @@ impl RustBackend {
             "load" | "guarded_load" => self.emit_op_load(op),
             "closure_load" => self.emit_op_closure_load(op),
             "store_local" => self.emit_op_store_local(op),
-            "store" | "store_init" => self.emit_op_store(op),
+            "store" => self.emit_op_store(op),
             "closure_store" => self.emit_op_closure_store(op),
             "phi" => self.emit_op_phi(op),
             "add" | "inplace_add" | "binop_add" => self.emit_op_add(op),

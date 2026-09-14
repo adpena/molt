@@ -27,8 +27,8 @@ diff/
 dist/
 build/
 bin/
-!runtime/molt-ir/src/bin/
-!runtime/molt-ir/src/bin/*.rs
+# Cargo binary targets are source, not generated bin directories.
+!**/src/bin/
 var/
 Volumes/
 *.egg-info/

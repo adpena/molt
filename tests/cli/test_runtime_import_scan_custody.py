@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.models import _RuntimeImportScanCustody
+from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.cli.module_import_scanner import (
     _collect_import_star_modules,
     _collect_imports,
@@ -131,6 +131,23 @@ def test_custodied_scan_does_not_populate_strict_memory_cache(tmp_path: Path) ->
         )
 
 
+def test_runtime_owners_require_full_depth_closure(tmp_path: Path) -> None:
+    from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
+
+    owner, custody = _custody(tmp_path)
+    with pytest.raises(ValueError, match="full-depth owner scans"):
+        _discover_module_graph_from_paths(
+            (owner,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=False,
+            runtime_import_custody=custody,
+        )
+
+
 def test_runtime_catalog_requires_source_and_survives_graph_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -209,7 +226,7 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
 def test_full_module_analysis_keeps_custody_out_of_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import module_cache
+    from molt.cli import module_cache, module_graph_cache
 
     owner, custody = _custody(tmp_path)
 
@@ -218,10 +235,14 @@ def test_full_module_analysis_keeps_custody_out_of_persisted_cache(
 
     for name in (
         "_read_persisted_module_analysis",
-        "_read_persisted_import_scan",
         "_write_persisted_module_analysis",
     ):
         monkeypatch.setattr(module_cache, name, forbidden_persisted_access)
+    for name in (
+        "_read_persisted_import_scan_record",
+        "_write_persisted_import_scan",
+    ):
+        monkeypatch.setattr(module_graph_cache, name, forbidden_persisted_access)
     result = module_cache._load_module_analysis(
         owner,
         module_name="pkg.entry",
@@ -299,3 +320,32 @@ def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
         set(custody.modules) - {"importlib.machinery"}
         <= analysis.module_deps["importlib.machinery"]
     )
+
+
+@pytest.mark.parametrize("mode", ["module_init", "module_init_static_helpers"])
+@pytest.mark.parametrize("consumer", ["imports", "stars", "cache", "loader"])
+def test_every_owner_scan_entry_rejects_incomplete_depth(
+    tmp_path: Path, mode: ImportScanMode, consumer: str,
+) -> None:
+    from molt.cli.module_graph_discovery import _load_module_import_scan
+
+    owner, custody = _custody(tmp_path)
+    tree = ast.parse(owner.read_text(encoding="utf-8"))
+    with pytest.raises(ValueError, match="full-depth owner scans"):
+        if consumer == "imports":
+            _collect_imports(tree, "pkg.entry", import_scan_mode=mode,
+                             runtime_import_custody=custody, source_path=owner)
+        elif consumer == "stars":
+            _collect_import_star_modules(tree, "pkg.entry", import_scan_mode=mode,
+                                          runtime_import_custody=custody, source_path=owner)
+        elif consumer == "cache":
+            _ModuleResolutionCache().collect_imports(
+                owner, tree, collector=_collect_imports, module_name="pkg.entry",
+                import_scan_mode=mode, runtime_import_custody=custody,
+            )
+        else:
+            _load_module_import_scan(
+                owner, module_name="pkg.entry", is_package=False, import_scan_mode=mode,
+                resolution_cache=_ModuleResolutionCache(), project_root=None,
+                tree=tree, runtime_import_custody=custody,
+            )

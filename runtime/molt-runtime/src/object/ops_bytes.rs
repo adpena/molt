@@ -1414,15 +1414,15 @@ impl BytesCtorKind {
     }
 }
 
-fn bytes_from_count(_py: &PyToken<'_>, len: usize, type_id: u32) -> u64 {
-    if type_id == TYPE_ID_BYTEARRAY {
+fn bytes_from_count(_py: &PyToken<'_>, len: usize, kind: BytesCtorKind) -> u64 {
+    if matches!(kind, BytesCtorKind::Bytearray) {
         let ptr = alloc_bytearray_with_len(_py, len);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
         return MoltObject::from_ptr(ptr).bits();
     }
-    let ptr = alloc_bytes_like_with_len(_py, len, type_id);
+    let ptr = alloc_inline_bytes_with_len(_py, len, InlineBytesKind::Bytes);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -1493,11 +1493,7 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                 );
             }
         };
-        let type_id = match kind {
-            BytesCtorKind::Bytes => TYPE_ID_BYTES,
-            BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
-        };
-        return bytes_from_count(_py, len, type_id);
+        return bytes_from_count(_py, len, kind);
     }
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1604,11 +1600,7 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                         "cannot fit 'int' into an index-sized integer",
                     );
                 };
-                let type_id = match kind {
-                    BytesCtorKind::Bytes => TYPE_ID_BYTES,
-                    BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
-                };
-                return bytes_from_count(_py, len, type_id);
+                return bytes_from_count(_py, len, kind);
             }
             let index_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
@@ -1635,11 +1627,7 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                             );
                         }
                     };
-                    let type_id = match kind {
-                        BytesCtorKind::Bytes => TYPE_ID_BYTES,
-                        BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
-                    };
-                    return bytes_from_count(_py, len, type_id);
+                    return bytes_from_count(_py, len, kind);
                 }
                 if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
                     let big = bigint_ref(big_ptr);
@@ -1654,11 +1642,7 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                         );
                     };
                     dec_ref_bits(_py, res_bits);
-                    let type_id = match kind {
-                        BytesCtorKind::Bytes => TYPE_ID_BYTES,
-                        BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
-                    };
-                    return bytes_from_count(_py, len, type_id);
+                    return bytes_from_count(_py, len, kind);
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                 if res_obj.as_ptr().is_some() {

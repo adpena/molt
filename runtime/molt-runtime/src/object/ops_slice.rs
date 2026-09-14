@@ -2,13 +2,16 @@
 
 use crate::object::{
     ClassEdgeOwnership, ObjectAuxPreselection, object_init_class_edge_unpublished,
-    object_replace_class_edge,
 };
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
 use std::collections::HashMap;
+
+#[cfg(test)]
+#[path = "ops_slice_tests.rs"]
+mod tests;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
@@ -295,11 +298,18 @@ fn dataclass_new_from_value_slice(
     let allows_dict = !slots;
     let mut field_name_to_index = HashMap::with_capacity(field_names.len());
     for (idx, field_name) in field_names.iter().enumerate() {
-        field_name_to_index.insert(field_name.clone(), idx);
+        if field_name_to_index
+            .insert(field_name.clone(), idx)
+            .is_some()
+        {
+            return raise_exception::<_>(_py, "TypeError", "duplicate dataclass field name");
+        }
     }
     let desc = Box::new(DataclassDesc {
         name,
         field_names,
+        field_keys: Vec::new(),
+        declared_slots: Vec::new(),
         field_name_to_index,
         frozen,
         eq,
@@ -315,7 +325,7 @@ fn dataclass_new_from_value_slice(
         + std::mem::size_of::<*mut DataclassDesc>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object_with_aux(
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
         _py,
         total,
         TYPE_ID_DATACLASS,
@@ -338,7 +348,7 @@ fn dataclass_new_from_value_slice(
         }
         *(ptr as *mut *mut DataclassDesc) = desc_ptr;
         *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *mut *mut Vec<u64>) = vec_ptr;
-        dataclass_set_dict_bits(_py, ptr, 0);
+        instance_set_dict_bits(_py, ptr, 0);
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -358,15 +368,23 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                 if object_type_id(ptr) != TYPE_ID_DATACLASS {
                     return MoltObject::none().bits();
                 }
-                let fields = dataclass_fields_ref(ptr);
-                if idx < 0 || idx as usize >= fields.len() {
+                let fields = dataclass_fields_ptr(ptr);
+                if idx < 0 || fields.is_null() || idx as usize >= (*fields).len() {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
                         "dataclass field index out of range",
                     );
                 }
-                let val = fields[idx as usize];
+                let val = crate::object::accessors::object_field_get_ptr_raw(
+                    _py,
+                    ptr,
+                    idx as usize * std::mem::size_of::<u64>(),
+                );
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, val);
+                    return MoltObject::none().bits();
+                }
                 if is_missing_bits(_py, val) {
                     let desc_ptr = dataclass_desc_ptr(ptr);
                     let name = if !desc_ptr.is_null() {
@@ -378,9 +396,9 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                     } else {
                         "field"
                     };
+                    dec_ref_bits(_py, val);
                     return attr_error(_py, "dataclass", name) as u64;
                 }
-                inc_ref_bits(_py, val);
                 return val;
             }
         }
@@ -419,20 +437,20 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                         &format!("cannot assign to field '{field_name}'"),
                     );
                 }
-                let fields = dataclass_fields_mut(ptr);
-                if idx < 0 || idx as usize >= fields.len() {
+                let fields = dataclass_fields_ptr(ptr);
+                if idx < 0 || fields.is_null() || idx as usize >= (*fields).len() {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
                         "dataclass field index out of range",
                     );
                 }
-                let old_bits = fields[idx as usize];
-                if old_bits != val_bits {
-                    dec_ref_bits(_py, old_bits);
-                    inc_ref_bits(_py, val_bits);
-                    fields[idx as usize] = val_bits;
-                }
+                crate::object::accessors::object_field_set_ptr_raw(
+                    _py,
+                    ptr,
+                    idx as usize * std::mem::size_of::<u64>(),
+                    val_bits,
+                );
                 return obj_bits;
             }
         }
@@ -497,93 +515,152 @@ unsafe fn validate_dataclass_class_target(
                 "dataclass expects object",
             ));
         }
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                return Err(MoltObject::none().bits());
-            };
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return Err(MoltObject::none().bits());
-            }
+        if class_bits == 0 || obj_from_bits(class_bits).is_none() {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass class must be a type",
+            ));
+        }
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass class must be a type",
+            ));
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass class must be a type",
+            ));
+        }
+        if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+            return Err(MoltObject::none().bits());
         }
         Ok(())
     }
 }
 
-unsafe fn refresh_dataclass_class_metadata(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) {
+unsafe fn prepare_dataclass_class_metadata(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    class_bits: u64,
+) -> Result<(), ()> {
     unsafe {
-        let desc_ptr = dataclass_desc_ptr(ptr);
-        if !desc_ptr.is_null() && class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            if let Some(class_ptr) = class_obj.as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-            {
-                (*desc_ptr).allows_dict = if (*desc_ptr).slots {
-                    crate::builtins::attr::class_slots_info(_py, class_ptr)
-                        .is_some_and(|info| info.allows_dict)
-                } else {
-                    true
-                };
-                let flags_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
-                if let Some(flags_name) = flags_name {
-                    if let Some(flags_bits) = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                    {
-                        let flags_obj = obj_from_bits(flags_bits);
-                        let flags_ptr = flags_obj.as_ptr();
-                        if let Some(flags_ptr) = flags_ptr {
-                            let type_id = object_type_id(flags_ptr);
-                            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                                let out =
-                                    crate::object::seq_access::with_borrowed(flags_ptr, |elems| {
-                                        let mut out = Vec::with_capacity(elems.len());
-                                        for &elem_bits in elems {
-                                            let elem_obj = obj_from_bits(elem_bits);
-                                            let Some(val) = to_i64(elem_obj) else {
-                                                return Vec::new();
-                                            };
-                                            if val < 0 || val > u8::MAX as i64 {
-                                                return Vec::new();
-                                            }
-                                            out.push(val as u8);
-                                        }
-                                        out
-                                    });
-                                if !out.is_empty() {
-                                    (*desc_ptr).field_flags = out;
-                                }
-                            }
-                        }
-                    }
-                    dec_ref_bits(_py, flags_name);
-                }
-                let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
-                if let Some(hash_name) = hash_name {
-                    if let Some(hash_bits) = class_attr_lookup_raw_mro(_py, class_ptr, hash_name) {
-                        let hash_obj = obj_from_bits(hash_bits);
-                        if let Some(val) = to_i64(hash_obj)
-                            && val >= 0
-                            && val <= u8::MAX as i64
-                        {
-                            (*desc_ptr).hash_mode = val as u8;
-                        }
-                    }
-                    dec_ref_bits(_py, hash_name);
-                }
+        let desc = dataclass_desc_ptr(ptr);
+        if desc.is_null() {
+            raise_exception::<()>(py, "SystemError", "dataclass descriptor is missing");
+            return Err(());
+        }
+        let class = obj_from_bits(class_bits)
+            .as_ptr()
+            .expect("validated dataclass class");
+        // All fallible work precedes class attachment. A rejected private payload
+        // cannot dispatch __del__, resurrect, or escape without GC publication.
+        let empty = missing_bits(py);
+        if exception_pending(py) || obj_from_bits(empty).as_ptr().is_none() {
+            return Err(());
+        }
+        for index in 0..(*desc).field_names.len() {
+            let key = if let Some(&key) = (&(*desc).field_keys).get(index) {
+                key
+            } else {
+                let name = (&(*desc).field_names)[index].as_bytes();
+                let key = attr_name_bits_from_bytes(py, name).ok_or(())?;
+                (*desc).field_keys.push(key);
+                key
+            };
+            let declared = (*desc).slots
+                || class_mro_view(py, class).iter().copied().any(|base| {
+                    obj_from_bits(base).as_ptr().is_some_and(|base| {
+                        object_type_id(base) == TYPE_ID_TYPE
+                            && crate::builtins::attr::class_own_slot_field_offset(py, base, key)
+                                .is_some()
+                    })
+                });
+            if let Some(slot) = (&mut (*desc).declared_slots).get_mut(index) {
+                *slot = declared;
+            } else {
+                (*desc).declared_slots.push(declared);
             }
+        }
+        (*desc).allows_dict = !(*desc).slots
+            || crate::builtins::attr::class_slots_info(py, class)
+                .is_some_and(|info| info.allows_dict);
+        // Reset the private projection on retry with a different validated class.
+        (*desc).field_flags.clear();
+        (*desc).hash_mode = 0;
+        let flags_name =
+            attr_name_bits_from_bytes(py, b"__molt_dataclass_field_flags__").ok_or(())?;
+        if let Some(flags) = class_attr_lookup_raw_mro(py, class, flags_name)
+            && let Some(flags) = obj_from_bits(flags).as_ptr()
+            && matches!(object_type_id(flags), TYPE_ID_LIST | TYPE_ID_TUPLE)
+        {
+            let flags = crate::object::seq_access::with_borrowed(flags, |elements| {
+                elements
+                    .iter()
+                    .map(|&bits| {
+                        to_i64(obj_from_bits(bits)).and_then(|value| u8::try_from(value).ok())
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            if let Some(flags) = flags {
+                (*desc).field_flags = flags;
+            }
+        }
+        dec_ref_bits(py, flags_name);
+        if exception_pending(py) {
+            return Err(());
+        }
+        let hash_name = attr_name_bits_from_bytes(py, b"__molt_dataclass_hash__").ok_or(())?;
+        if let Some(hash) = class_attr_lookup_raw_mro(py, class, hash_name)
+            && let Some(hash) =
+                to_i64(obj_from_bits(hash)).and_then(|value| u8::try_from(value).ok())
+        {
+            (*desc).hash_mode = hash;
+        }
+        dec_ref_bits(py, hash_name);
+        if exception_pending(py) {
+            Err(())
+        } else {
+            Ok(())
         }
     }
 }
 
-/// Establish a dataclass class edge during construction, before the object is
-/// returned across its constructor boundary.
-pub(crate) unsafe fn dataclass_init_class_unpublished(
+/// Finish a dataclass's private payload and class edge, then publish the object
+/// exactly once across its constructor boundary.
+pub(crate) unsafe fn dataclass_finish_construction_unpublished(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     class_bits: u64,
 ) -> u64 {
     unsafe {
+        if ptr.is_null() || object_type_id(ptr) != TYPE_ID_DATACLASS {
+            return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
+        }
+        let header = &*crate::object::header_from_obj_ptr(ptr);
+        if header.gc_is_published() || object_class_bits(ptr) != 0 {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass construction is already finalized",
+            );
+        }
         if let Err(bits) = validate_dataclass_class_target(_py, ptr, class_bits) {
             return bits;
+        }
+        if prepare_dataclass_class_metadata(_py, ptr, class_bits).is_err() {
+            if !exception_pending(_py) {
+                return raise_exception::<_>(
+                    _py,
+                    "MemoryError",
+                    "dataclass metadata preparation failed",
+                );
+            }
+            return MoltObject::none().bits();
         }
         if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
             return raise_exception::<_>(
@@ -592,28 +669,7 @@ pub(crate) unsafe fn dataclass_init_class_unpublished(
                 "dataclass class metadata allocation failed",
             );
         }
-        refresh_dataclass_class_metadata(_py, ptr, class_bits);
-        MoltObject::none().bits()
-    }
-}
-
-pub(crate) unsafe fn dataclass_set_class_raw(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    class_bits: u64,
-) -> u64 {
-    unsafe {
-        if let Err(bits) = validate_dataclass_class_target(_py, ptr, class_bits) {
-            return bits;
-        }
-        if !object_replace_class_edge(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "dataclass class representation is immutable after publication",
-            );
-        }
-        refresh_dataclass_class_metadata(_py, ptr, class_bits);
+        crate::object::gc::gc_publish_initialized(_py, ptr);
         MoltObject::none().bits()
     }
 }
@@ -625,6 +681,6 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
         };
-        unsafe { dataclass_set_class_raw(_py, ptr, class_bits) }
+        unsafe { dataclass_finish_construction_unpublished(_py, ptr, class_bits) }
     })
 }

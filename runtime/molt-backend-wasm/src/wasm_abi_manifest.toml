@@ -1184,7 +1184,7 @@ name = "fast_str_strip"
 type = 2
 
 [[import]]
-name = "guard_layout_ptr"
+name = "guard_layout"
 type = 5
 
 [[import]]
@@ -1192,7 +1192,7 @@ name = "guard_type"
 type = 3
 
 [[import]]
-name = "guarded_field_get_ptr"
+name = "guarded_field_get"
 type = 9
 
 [[import]]
@@ -1200,7 +1200,7 @@ name = "guarded_field_init_ptr"
 type = 10
 
 [[import]]
-name = "guarded_field_set_ptr"
+name = "guarded_field_set"
 type = 10
 
 [[import]]
@@ -4812,9 +4812,9 @@ callable_arity = 1
 
 [[import]]
 name = "weakref_callback_get"
-type = 2
+type = 3
 runtime_name = "molt_weakref_callback_get"
-callable_arity = 1
+callable_arity = 2
 
 [[import]]
 name = "weakref_count"

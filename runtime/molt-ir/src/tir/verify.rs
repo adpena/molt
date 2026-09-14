@@ -12,7 +12,8 @@ use super::blocks::{BlockId, Terminator};
 use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
-    TirVerifyAttrRule, opcode_fixed_result_count_table, opcode_tir_verify_attr_rule_table,
+    TirVerifyAttrRule, opcode_accepts_operand_count, opcode_fixed_result_count_table,
+    opcode_tir_verify_attr_rule_table,
 };
 use super::ops::AttrValue;
 use super::values::ValueId;
@@ -165,6 +166,17 @@ fn verify_no_duplicate_values(func: &TirFunction, errors: &mut Vec<VerifyError>)
 fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     for (bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
+            if !opcode_accepts_operand_count(op.opcode, op.operands.len()) {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    format!(
+                        "{:?} has invalid operand count {}",
+                        op.opcode,
+                        op.operands.len()
+                    ),
+                ));
+            }
             // Check required attributes per opcode.
             // NOTE: Constant ops (ConstInt, ConstFloat, ConstStr, ConstBytes)
             // intentionally skip attribute checks because the lowering from
@@ -195,14 +207,6 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         "CallMethod op has no method (attr or operand)",
                     ));
                 }
-                TirVerifyAttrRule::PositivePayloadBytes => match op.attrs.get("value") {
-                    Some(AttrValue::Int(value)) if *value > 0 => {}
-                    _ => errors.push(VerifyError::op(
-                        *bid,
-                        op_idx,
-                        "ObjectNewBoundStack requires positive payload byte size",
-                    )),
-                },
                 TirVerifyAttrRule::UnpackSequenceShape => {
                     let expected = match op.attrs.get("value") {
                         Some(AttrValue::Int(value)) => usize::try_from(*value).ok(),
@@ -1081,36 +1085,6 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.message.contains("has no callee")),
             "expected missing callee error, got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn object_new_bound_stack_requires_payload_size() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
-        let result = func.fresh_value();
-
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::ObjectNewBoundStack,
-            operands: vec![ValueId(0)],
-            results: vec![result],
-            attrs: AttrDict::new(),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
-
-        let result = verify_function(&func);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("positive payload byte size")),
-            "expected ObjectNewBoundStack payload size error, got: {:?}",
             errors
         );
     }

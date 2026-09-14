@@ -638,8 +638,12 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                         && let Some(attr_bits) =
                             class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
                     {
-                        let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
-                        dec_ref_bits(_py, attr_bits);
+                        let bound_opt = descriptor_bind(
+                            _py,
+                            attr_bits,
+                            Some(MoltObject::from_ptr(class_ptr).bits()),
+                            Some(obj_bits),
+                        );
 
                         if exception_pending(_py) {
                             if let Some(bound_bits) = bound_opt

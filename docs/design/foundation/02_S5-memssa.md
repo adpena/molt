@@ -2,19 +2,30 @@
 
 # MemorySSA and Memory Optimization Blueprint
 
+Historical architecture blueprint, not a current implementation or performance
+scoreboard. MemorySSA and MemGVN now exist. Current field ownership and physical
+alias contracts are maintained in [49 — Object field ownership](49_object_field_ownership.md)
+and the source-bound tests; estimates below are not measured release evidence.
+
 ## 1. Precise Problem Statement
 
 ### Why this is load-bearing
 
 The current memory pipeline has five hard ceilings that block the 5-year perf goals:
 
-**LoadAttr is excluded from LICM (effects.rs `opcode_is_pure_movable`).** A `ProvenPure` typed-slot load (`guarded_field_get`/`load`) is referentially transparent: it reads a fixed byte offset from a concrete class with no dunder dispatch. But `pure_movable` requires `consistent ∧ effect_free ∧ nothrow`, and `LoadAttr` is not currently classified as any of those (it is excluded by the general opcode side-effect model). Without MemorySSA to prove "no intervening store to the same slot", it is unsound to hoist any load out of a loop.
+**LoadAttr is excluded from LICM (effects.rs `opcode_is_pure_movable`).** A shape-valid fixed-offset read can still run Python through dictionary or missing-field fallback. Only the exact-site access plan proves inline backing and a present value; guarded and unknown reads remain `GenericHeap`. Even a proven read is memory-dependent. Moving it requires invariant memory, valid receiver lifetime and execution/exception safety at the destination, not merely its original-site purity.
 
 **GVN cannot deduplicate loads.** Two `LoadAttr` ops with the same object and offset in dominator-ordered blocks should produce the same value when no store intervenes. Without a memory-versioning layer between them, GVN has no way to prove they are equal.
 
 **Dead-store elimination is single-block only** (`dead_store_elim.rs` line 50 documents this explicitly). The cross-block kill of a store in block A by a store in block B that dominates all reads is structurally impossible without memory phi placement.
 
-**SROA (object-field promotion) is impossible.** A `NoEscape ObjectNewBoundStack` with statically-known field offsets could have its fields promoted to SSA values—eliminating `LoadAttr`/`StoreAttr` entirely and replacing them with pure register operations. This is the `bench_struct` 0.04x memory cliff: every `Point(i, i+1)` allocation inside the hot loop materializes a stack frame, loads and stores typed slots through the LIR `Ref64` path, and the optimizer cannot see through it. SROA requires knowing which memory version of a field each load reads.
+**SROA requires complete allocation and effect proof.** The current pass can
+remove callback-free raw allocations with wholly unobserved boxed-neutral uses.
+Known field offsets and nonescape do not make Python class construction or
+destruction removable. The unproved class-frame opcode has been retired. Broader
+class scalar replacement must preserve its class, callback and owned-edge
+semantics as well as reaching-memory definitions; historical benchmark ratios
+are not current evidence.
 
 **LICM cannot hoist field reads out of loops.** `for i in range(n): x = obj.field * i` — `obj.field` never changes, but LICM today cannot hoist the load because it is not `pure_movable`.
 
@@ -22,7 +33,7 @@ Together these gaps cost at least 3-5x on struct-heavy workloads (`bench_struct`
 
 ### Quantified stakes
 
-- `bench_struct`: 1M iterations × (2 `store_init` eliminated by current DSE, 2 `store` remaining, 1 alloc, 2 typed-slot loads per iteration). After SROA these become register moves. The allocation disappears entirely. Estimated 10-30x improvement on this benchmark alone.
+- `bench_struct`: 1M iterations × (2 proven-neutral `store` writes eliminated by current DSE, 2 `store` remaining, 1 alloc, 2 typed-slot loads per iteration). After SROA these become register moves. The allocation disappears entirely. Estimated 10-30x improvement on this benchmark alone.
 - Every Python program that reads an object field inside a loop (nearly all non-trivial programs) benefits from MemGVN (load deduplication) and LICM-of-loads.
 - Cross-block DSE eliminates dead stores across basic block boundaries — the common case for any control flow that writes then overwrites a field.
 
@@ -165,13 +176,13 @@ impl MemorySsaResult {
 
 MemorySSA construction follows the standard SSA phi-placement algorithm, re-using the existing `dominators.rs` / `AnalysisManager` infrastructure:
 
-**Phase A — MemoryDef placement.** Walk every block in RPO. For each op, call `AliasAnalysisResult::region_of` (already implemented in `alias_analysis.rs`). Ops with `region != ScalarRegister` that are stores (`opcode_is_heap_barrier` or the load-purity-`MayDispatch` loads that may dispatch dunders) become MemoryDefs. Ops with `region != ScalarRegister` and `load_purity == ProvenPure` or `MayDispatch` become MemoryUses.
+**Phase A — MemoryDef placement.** Walk every block in RPO. For each op, call `AliasAnalysisResult::region_of` (already implemented in `alias_analysis.rs`). Callback-capable operations become `GenericHeap` MemoryDefs even when the affected object is absent from their operands. Ordinary `store` remains a `GenericHeap` def unless the shared typed-slot plan proves its exact site has a boxed-neutral old value; only that fact can discharge the destructor path. Ops with `region != ScalarRegister` and `load_purity == ProvenPure` become MemoryUses.
 
 **Phase B — Phi placement.** Using the existing `dominators::compute_dominance_frontiers` (computable from the `ImmediateDoms` analysis in `AnalysisManager`), place MemoryPhis at every block in the dominance frontier of any block containing a MemoryDef. Iterate to a fixpoint (standard IDF algorithm — same machinery `ssa.rs` uses for value phis).
 
 **Phase C — Renaming.** Walk the dominator tree (using `DomChildren` from `AnalysisManager`). Maintain a stack of the current "live" MemVersion. For each block arg at a MemoryPhi, push a fresh version. For each op: if it is a MemoryDef, record the version; if it is a MemoryUse, record the current live version as its reaching def. On dominator-tree exit from a block, restore the stack.
 
-**Region-aware reaching-def.** The critical precision improvement over a naive implementation: a `LoadAttr` of a `TypedField { class: "Point", offset: 0 }` is only killed by a MemoryDef whose region `may_alias(TypedField { class: "Point", offset: 0 })` — using `MemRegion::may_alias` which is already implemented and correct in `alias_analysis.rs`. A store to offset 8 does NOT kill a load from offset 0. This TBAA-style precision is what makes SROA possible: after field promotion the two fields are in completely disjoint regions.
+**Region-aware reaching-def.** A direct load has a physical `Field` extent with optional exact allocation identity. A proven release-neutral store to a disjoint extent does not kill the load. An ordinary replacing store without the shared exact-site fact remains a `GenericHeap` clobber, even at a different offset or under a different class view: its displaced owner can finalize and reenter. Class strings never establish physical disjointness.
 
 ### Soundness model
 
@@ -192,14 +203,14 @@ Responsibilities:
 - `MemorySsaResult::reaching_def_for_use`, `is_direct_def_of_use`, `def_version_of`
 - `MemorySsaResult::store_result_for_use` — given a load's (block, op_idx), return the result `ValueId` of the dominating store if it is the single direct def (nil if multi-def/phi). This is the forwarded value.
 - `MemorySsaResult::invalidate_op` — called by passes that insert/remove a Def or Use, returning a `PartialInvalidation` hint (which blocks need re-renaming vs. which are unaffected); used by MemGVN to update the result in-place after forwarding rather than triggering a full recompute.
-- Unit tests covering: single-block store-then-load forwarding, cross-block store-then-load with phi, aliasing-load blocked by intervening GenericHeap def, TypedField disambiguation (offset-0 store does not kill offset-8 load), StackObject isolation, nested loop with loop-invariant load.
+- Unit tests covering: single-block store-then-load forwarding, cross-block store-then-load with phi, aliasing-load blocked by intervening GenericHeap def, physical field disambiguation for release-neutral stores, allocation identity with opaque callback barriers, nested loop with loop-invariant load.
 
 Dependencies: `AliasAnalysis` (must be computed first), `ImmediateDoms`, `DomChildren`, `PredMap` (all available in `AnalysisManager`).
 
 **`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mem_gvn.rs`**
 
 Responsibilities:
-- Store-to-load forwarding: for each `LoadAttr` with `load_purity == ProvenPure`, consult MemorySSA for the single reaching def. If the reaching def is a `StoreAttr` at a statically-known offset that matches the load's region, and the stored `ValueId` is in scope (dominates the load), replace the load with a `Copy` of the stored value. This turns typed-slot loads into pure SSA register reads.
+- Store-to-load forwarding: for each `LoadAttr` with `load_purity == ProvenPure`, consult MemorySSA for the single reaching def. If the reaching def is a `store` with an exact-site callback-free proof from the shared typed-slot plan, at a statically-known offset that matches the load's region, and the stored `ValueId` is in scope (dominates the load), replace the load with a `Copy` of the stored value. An unproved replacing `store` is not a source: releasing the old value can reenter Python and change the slot before the store returns.
 - Redundant-load elimination: for each `LoadAttr`, if MemorySSA shows the same `(object_root, offset)` was already loaded under the same reaching def version in a dominating block, replace the load with a `Copy` of the earlier load's result.
 - Post-replacement: call `MemorySsaResult::invalidate_op` for removed loads (they are now Uses of nothing), then invalidate `AnalysisId::AliasAnalysis` and `AnalysisId::MemorySSA` (the copy prop and DCE passes that follow will clean up the `Copy` chains).
 - Mutation class: `Mutates::OpsOnly` (no new blocks or edges).
@@ -207,19 +218,15 @@ Responsibilities:
 **`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/sroa.rs`**
 
 Responsibilities:
-- Input: a `NoEscape ObjectNewBoundStack` result (from escape_analysis, already rewrites to `ObjectNewBoundStack` when escape state is `NoEscape | ArgEscape`).
-- For each such allocation root `obj` in function `func`:
-  1. Collect all `StoreAttr` and `LoadAttr` ops whose object operand aliases `obj` (via `AliasAnalysisResult::root`). Use MemorySSA to confirm every `LoadAttr` has a single dominating `StoreAttr` that is the only reaching def (no phi nodes in the memory chain for this field).
-  2. For each distinct field offset, allocate a fresh `ValueId` to hold the SSA register value for that field slot.
-  3. Replace every `StoreAttr(obj, val, offset)` with a `Copy(val) → field_ssa_value[offset]` (or a direct substitution into downstream uses). Replace every `LoadAttr(obj, offset)` with a `Copy(field_ssa_value[offset])`.
-  4. Remove the `ObjectNewBoundStack` op. Remove all `store_init` / `store` ops. DCE in the next pass removes the now-dead `Copy` chains.
-- **Precondition check (soundness gate):** SROA on `obj` is ONLY legal when ALL of the following hold:
-  - `escape_analysis.escape_state(obj) ∈ {NoEscape, ArgEscape}` — the object does not outlive the function frame
-  - Every `LoadAttr(obj, offset)` has a single reaching MemoryDef (no phi) in the MemorySSA graph — i.e., each load is dominated by exactly one store with no aliasing intervening defs
-  - No op takes the address of `obj` in a way that could alias it through a non-tracked pointer (alias analysis `alloc_roots` does NOT contain any `GenericHeap` use of `obj`)
-  - No `MemRegion::GenericHeap` MemoryDef between the store and the load (which would mean an opaque call could have written the field)
-- Mutation class: `Mutates::OpsOnly` (the allocation site and store/load ops are removed/rewritten within blocks; no new blocks).
-- Triggers `am.invalidate_cfg()` followed by DCE run.
+- Input: a fixed-size raw `Alloc` whose effects and complete surviving uses
+  prove callback-free whole-object removal. Automatic class frame promotion
+  is retired; nonescape alone is not immutable destruction.
+- MemGVN first forwards eligible typed-slot loads. SROA removes only a complete
+  allocation, its transparent aliases, boxed-neutral stores, and RC operations.
+  A surviving observation or arbitrary-heap callback preserves the entire root.
+- Class-bound allocation remains observable (class sealing and owned class
+  release); it is not scalar-replaced.
+- Mutation class: `Mutates::OpsOnly`; no later DCE is needed to repair ownership.
 
 ### Files to modify
 
@@ -265,7 +272,6 @@ Add `mem_gvn` and `sroa` passes to `build_default_pipeline`. The updated pipelin
 
 ```
 // ── Memory optimization ──────────────────────────────────────────
-"escape_analysis"    (OpsOnly)
 "refcount_elim"      (OpsOnly)
 "dead_store_elim"    (OpsOnly)   ← existing; already cross-block-safe within block
 "mem_gvn"            (OpsOnly)   ← NEW: store-to-load forwarding + redundant-load elim
@@ -289,7 +295,7 @@ fn is_hoistable_with_mem(op: &TirOp, alias: &AliasAnalysisResult, mem: &MemorySs
         return true;
     }
     // NEW: ProvenPure LoadAttr is hoistable when its reaching def is loop-invariant
-    if op.opcode == OpCode::LoadAttr && alias.load_purity(op) == LoadPurity::ProvenPure {
+    if mem.slot_access.load_purity_at((block, op_idx), op) == LoadPurity::ProvenPure {
         if let Some(def_ver) = mem.reaching_def_for_use(block, op_idx) {
             // The reaching def must be outside the loop (block containing that def
             // is not in loop_blocks).
@@ -340,11 +346,11 @@ This is `Mutates::OpsOnly` (no CFG change). The `dead_store_elim` pass stays `Op
 
 **MemorySSA construction is sound because:**
 
-1. Every `opcode_is_heap_barrier` op becomes a `MemoryDef` against `GenericHeap`, which `may_alias` every other heap region. No call, yield, raise, or store can be skipped.
+1. The generated `OpcodeEffects.may_access_arbitrary_heap` fact is checked before operand-root refinement. Callback-capable arithmetic/index/module reads, calls, yields, raises, and replacing stores therefore become `MemoryDef`s against `GenericHeap`, which may alias every heap region even when the captured object is absent from the operation's operands. A marked async-work `CheckException` poll is instance-refined to the same impure floor.
 
-2. Region classification (`AliasAnalysisResult::region_of`) is conservative: when the class id is unknown (`class_of` returns `None`), a typed-slot access degrades to `GenericHeap`. A `StackObject` never aliases `GenericHeap` only because escape analysis proves it non-escaping — the analysis is fail-closed on the escape state.
+2. Physical `Field` regions carry a boxed-word extent and optional exact allocation identity. Unknown receivers may alias any allocation at overlapping offsets; `_class` is never a disjointness proof because inherited class views can name the same slot. Exact allocation identities derive from definition sites and transparent aliases, not may-alias CFG parameters. Every field and whole-allocation region aliases `GenericHeap`: identity and placement do not prove destruction/callback stability.
 
-3. `ProvenPure` `LoadAttr` ops become MemoryUses (not barriers). A `MayDispatch` `LoadAttr` (e.g. `get_attr_name`) becomes a MemoryDef with `GenericHeap` region, because it may dispatch `__getattr__` which could store to any field. The `load_attr_is_typed_slot` predicate in `alias_analysis.rs` lines 181-189 gates this classification exactly.
+3. `ProvenPure` plain typed-slot `LoadAttr` ops become MemoryUses (not barriers). Guarded and generic `LoadAttr` forms become MemoryDefs with `GenericHeap` region because their fallback can dispatch `__getattr__` and mutate any field. `TirOp::plain_typed_slot_load` owns the exact direct-load shape. The shape-only store parser does not prove callback freedom. The shared typed-slot planner supplies exact-site pristine/boxed-neutral history; a surface initializer spelling cannot grant this fact.
 
 4. Memory Phi placement uses the same IDF algorithm as value phis — an established correct algorithm. Phi placement is conservative (over-places, never under-places).
 
@@ -399,9 +405,9 @@ Assert: `reaching_def_for_use(bb2, 0)` is the version of the Call (GenericHeap d
 Build: `StoreAttr(obj, v1, 0); StoreAttr(obj, v2, 8); r0 = LoadAttr(obj, 0); r8 = LoadAttr(obj, 8)`.
 Assert: load at offset 0 reaches only the offset-0 store; load at offset 8 reaches only the offset-8 store.
 
-**`stack_object_isolated_from_generic_heap_defs`**
-Build: `obj = ObjectNewBoundStack; StoreAttr(obj, v, 0); Call(some_other_obj); r = LoadAttr(obj, 0)`.
-Assert: `reaching_def_for_use` for the LoadAttr returns the StoreAttr's version, not the Call's GenericHeap version (StackObject does not alias GenericHeap per `MemRegion::may_alias`).
+**`local_allocation_preserves_generic_heap_barriers`**
+Build: `obj = ObjectNewBound(cls); StoreAttr(obj, v, 0); Call(some_other_obj); r = LoadAttr(obj, 0)`.
+Assert: `reaching_def_for_use` for the LoadAttr returns the Call's GenericHeap version, not the StoreAttr's version. Callback mutation and late destruction remain observable for local allocations.
 
 **`loop_invariant_load_has_preheader_reaching_def`**
 Build: preheader has `StoreAttr(obj, v, 0)`; loop body has `r = LoadAttr(obj, 0)` with no stores in the loop.
@@ -410,8 +416,8 @@ Assert: load's reaching def is in the preheader; `!loop_blocks.contains(def_bloc
 ### Rust unit tests in `sroa.rs`
 
 **`bench_struct_pattern_sroa_eliminates_all_alloc_and_stores`**
-Build: `obj = ObjectNewBoundStack(size=16); StoreAttr(obj, i, 0); StoreAttr(obj, i_plus_1, 8); r = LoadAttr(obj, 0); ...`.
-After SROA: no `ObjectNewBoundStack`, no `StoreAttr`, `LoadAttr` replaced by `Copy(i)`.
+Build: a raw fixed-size `Alloc(size=16)` with only boxed-neutral typed stores, whose loads MemGVN already forwarded.
+After SROA: the complete allocation, aliases, stores, and RC disappear together. Class-bound allocation is not eligible: sealing and owned class release remain observable.
 
 **`sroa_blocked_when_mem_phi_exists`**
 Build: diamond where both arms store different values into offset 0, followed by a load in the join block.
@@ -582,11 +588,14 @@ Every benchmark is run on all 3 backends (native Cranelift, WASM, LLVM) in relea
 
 1. **MemorySSA construction correctness.** The IDF algorithm and renaming walk have subtle corner cases (unreachable blocks, self-loops, critical edges). Mitigation: the existing `verify::verify_function` catch structural SSA violations; additionally, add a `MOLT_VERIFY_MEMORY_SSA=1` debug mode (analogous to `MOLT_VERIFY_ANALYSIS`) that recomputes from scratch and asserts equality after each pass.
 
-2. **ObjectNewBoundStack with phi in memory chain.** The SROA precondition gate (single reaching def, no phi) correctly blocks SROA on objects written in both branches of a diamond. Risk: a frontend pattern that artificially introduces a phi where one is not needed (e.g., `__init__` default + override in the same block) could unnecessarily block SROA. Mitigation: ensure `dead_store_elim.rs` (single-block) runs before SROA; it will kill the redundant `store_init` before SROA sees the function.
+2. **Raw allocation with a phi in its memory chain.** Whole-allocation removal
+   must prove every reaching store and owner across the join. The shared typed
+   slot planner may remove neutral overwrites before SROA; it cannot erase a
+   terminal store or a callback-capable class allocation to force eligibility.
 
 3. **Cross-backend parity on forwarded values.** Store-to-load forwarding introduces `Copy` ops that must round-trip through `lower_to_simple` and back. The `Copy` with no `_original_kind` is the pure SSA-move case, which all backends already handle correctly (confirmed by `copy_is_known_local_alias` in `alias_analysis.rs`). Risk: WASM `emit_get_boxed_for_repr` or LIR repr inference may assign a different repr to the forwarded value than to the original load. Mitigation: the forwarded `Copy` inherits the `ValueId` type from the store's value operand, which carries the correct repr from `representation_plan.rs`; this is the same path that `unboxing.rs` already exercises.
 
-4. **LICM-of-loads changes observable timing.** A `ProvenPure` load hoisted out of a loop computes its value in the preheader, even on zero-iteration loops. This is acceptable: a zero-iteration loop body's side effects are never observed, and the hoisted load's result is unused if the loop never runs (DCE will clean it). However, if the class has a `__getattr__` that was NOT classified `ProvenPure` (because `load_attr_is_typed_slot` returned false), it must NOT be hoisted. The `LoadPurity::ProvenPure` gate in `is_hoistable_with_mem` closes this.
+4. **LICM-of-loads needs destination admission.** Original-site purity is necessary but insufficient for hoisting, especially across zero-iteration or exception paths. The receiver must be alive, its backing and present slot established at the destination, and memory invariant. The illustrative hook above is not this complete proof; current LICM excludes field loads. Missing/dictionary fallback cannot be suppressed by an opcode or offset classifier.
 
 ### Rollback
 
@@ -632,9 +641,9 @@ Each phase is a COMPLETE structural piece, verifiable in isolation.
 - [ ] Write Rust unit tests in `dead_store_elim.rs`: cross-block kill, phi-guarded preservation, GenericHeap def blocks DSE
 - [ ] Add differential test `struct_cross_block_dse.py`
 - [ ] `cargo test` — all tests pass
-- [ ] Verify `bench_struct.py` partial improvement (store_init elimination now extends cross-block)
+- [ ] Verify `bench_struct.py` partial improvement (proven-neutral store elimination extends cross-block)
 
-**Acceptance:** Cross-block DSE fires on the bench_struct pattern's store_init chain. No regressions.
+**Acceptance:** Cross-block DSE fires on the bench_struct pattern's proven-neutral store chain. No regressions.
 
 ### Phase 2d: SROA (object-field promotion — the bench_struct proving ground)
 

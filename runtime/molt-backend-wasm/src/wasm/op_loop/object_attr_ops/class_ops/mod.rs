@@ -47,9 +47,6 @@ pub(super) fn emit_class_object_op(
         "object_new_bound" => {
             allocation::emit_object_new_bound(func, op, import_ids, locals, reloc_enabled)
         }
-        "object_new_bound_stack" => {
-            allocation::emit_object_new_bound_stack(func, op, import_ids, locals, reloc_enabled)
-        }
         "object_set_class" => {
             allocation::emit_object_set_class(func, op, import_ids, locals, reloc_enabled)
         }

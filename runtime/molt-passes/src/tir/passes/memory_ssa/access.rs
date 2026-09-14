@@ -87,6 +87,9 @@ impl MemAccess {
 // (pass_manager's cached-vs-fresh recompute comparison).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemorySsaResult {
+    /// Exact-site release-neutral facts used to build this memory graph.
+    /// Forwarding consumes the same plan instead of recomputing its authority.
+    pub slot_access: crate::tir::passes::typed_slot_access::TypedSlotAccessPlan,
     /// Every Def and Phi, keyed by the version it defines. (Uses define no
     /// version and are recorded only in `block_op_to_use_def`.)
     pub defs: HashMap<MemVersion, MemAccess>,

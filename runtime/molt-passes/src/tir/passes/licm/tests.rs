@@ -38,9 +38,9 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
 /// with a+b computed inside the loop body.
 #[test]
 fn invariant_add_hoisted_to_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
-    let a = ValueId(0); // param
-    let b = ValueId(1); // param
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let a = func.fresh_value();
+    let b = func.fresh_value();
 
     let preheader = func.fresh_block();
     let loop_header = func.fresh_block();
@@ -56,6 +56,8 @@ fn invariant_add_hoisted_to_preheader() {
     {
         let init = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(4, a));
+        entry.ops.push(make_const_int(5, b));
         entry.ops.push(make_const_int(0, init));
         entry.terminator = Terminator::Branch {
             target: preheader,
@@ -492,7 +494,8 @@ fn build_nested_loop(func: &mut TirFunction) -> NestedLoop {
     }
 }
 
-/// `for i: for j: y = a + b` where `a`, `b` are function params.
+/// `for i: for j: y = a + b` where `a`, `b` are exact values defined outside
+/// both loops.
 /// Both operands are free w.r.t. the inner loop, so the Add is hoisted
 /// to the inner preheader on the inner pass; on the outer pass both
 /// operands are still free w.r.t. the outer loop, so the Add is
@@ -501,11 +504,14 @@ fn build_nested_loop(func: &mut TirFunction) -> NestedLoop {
 /// longer contain it.
 #[test]
 fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
-    let a = ValueId(0);
-    let b = ValueId(1);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let a = func.fresh_value();
+    let b = func.fresh_value();
 
     let nl = build_nested_loop(&mut func);
+    let entry_ops = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops;
+    entry_ops.insert(0, make_const_int(5, b));
+    entry_ops.insert(0, make_const_int(4, a));
 
     // Place y = a + b inside the inner body.
     let y = func.fresh_value();
@@ -576,11 +582,14 @@ fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
 /// invariant transitively across both preheaders.
 #[test]
 fn nested_loop_outer_invariant_hoisted_via_inner() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
-    let a = ValueId(0);
-    let b = ValueId(1);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let a = func.fresh_value();
+    let b = func.fresh_value();
 
     let nl = build_nested_loop(&mut func);
+    let entry_ops = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops;
+    entry_ops.insert(0, make_const_int(5, b));
+    entry_ops.insert(0, make_const_int(4, a));
 
     let t = func.fresh_value();
     let y = func.fresh_value();
@@ -642,16 +651,21 @@ fn nested_loop_outer_invariant_hoisted_via_inner() {
     );
 }
 
-/// Partially invariant: `for i: for j: y = i + a`. `a` is a function
-/// param (free everywhere). `i` is the outer-loop induction variable, invariant
+/// Partially invariant: `for i: for j: y = i + a`. `a` is an exact value
+/// defined before both loops. `i` is the outer-loop induction variable, invariant
 /// w.r.t. the inner loop only. The Add must therefore land in the *inner*
 /// preheader (not the outer preheader, since `i` changes per outer iteration).
 #[test]
 fn nested_loop_partially_invariant_hoists_to_inner_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-    let a = ValueId(0);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let a = func.fresh_value();
 
     let nl = build_nested_loop(&mut func);
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .insert(0, make_const_int(4, a));
     let i = nl.outer_var; // outer-loop induction variable
 
     let y = func.fresh_value();
@@ -809,46 +823,121 @@ fn throw_condition_disproven_per_opcode() {
     vr.record_global_range(divisor_nz, IntRange::new(1, 9));
     vr.record_global_range(divisor_zero, IntRange::new(-2, 5));
     // count_unknown deliberately left absent (FULL).
+    let exact_integers = std::collections::HashMap::from([
+        (x, TirType::I64),
+        (count_ok, TirType::I64),
+        (count_neg, TirType::I64),
+        (count_big, TirType::I64),
+        (count_unknown, TirType::I64),
+        (divisor_nz, TirType::I64),
+        (divisor_zero, TirType::I64),
+    ]);
 
     // Shl / Shr: disproven iff count in [0, 63].
     assert!(throw_condition_disproven(
         &make_binop(OpCode::Shl, x, count_ok, ValueId(20)),
-        &vr
+        &vr,
+        &exact_integers,
     ));
     assert!(throw_condition_disproven(
         &make_binop(OpCode::Shr, x, count_ok, ValueId(21)),
-        &vr
+        &vr,
+        &exact_integers,
     ));
     assert!(
-        !throw_condition_disproven(&make_binop(OpCode::Shl, x, count_neg, ValueId(22)), &vr),
+        !throw_condition_disproven(
+            &make_binop(OpCode::Shl, x, count_neg, ValueId(22)),
+            &vr,
+            &exact_integers,
+        ),
         "a possibly-negative count can raise ValueError - must NOT be disproven"
     );
     assert!(
-        !throw_condition_disproven(&make_binop(OpCode::Shl, x, count_big, ValueId(23)), &vr),
+        !throw_condition_disproven(
+            &make_binop(OpCode::Shl, x, count_big, ValueId(23)),
+            &vr,
+            &exact_integers,
+        ),
         "a count > 63 is a wrong-value machine shift - must NOT be disproven"
     );
     assert!(
-        !throw_condition_disproven(&make_binop(OpCode::Shl, x, count_unknown, ValueId(24)), &vr),
+        !throw_condition_disproven(
+            &make_binop(OpCode::Shl, x, count_unknown, ValueId(24)),
+            &vr,
+            &exact_integers,
+        ),
         "an unknown count must NOT be disproven (fail-closed)"
     );
 
-    // Div / FloorDiv / Mod: disproven iff divisor proven non-zero.
-    for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod] {
+    // Exact-integer FloorDiv / Mod are discharged by a non-zero divisor.
+    for opcode in [OpCode::FloorDiv, OpCode::Mod] {
         assert!(
-            throw_condition_disproven(&make_binop(opcode, x, divisor_nz, ValueId(30)), &vr),
+            throw_condition_disproven(
+                &make_binop(opcode, x, divisor_nz, ValueId(30)),
+                &vr,
+                &exact_integers,
+            ),
             "{opcode:?} with a non-zero divisor must be disproven"
         );
         assert!(
-            !throw_condition_disproven(&make_binop(opcode, x, divisor_zero, ValueId(31)), &vr),
+            !throw_condition_disproven(
+                &make_binop(opcode, x, divisor_zero, ValueId(31)),
+                &vr,
+                &exact_integers,
+            ),
             "{opcode:?} with a possibly-zero divisor must NOT be disproven"
         );
     }
 
+    // True division still converts the semantic integer result to float, which
+    // may overflow even when the divisor is non-zero.
+    assert!(!throw_condition_disproven(
+        &make_binop(OpCode::Div, x, divisor_nz, ValueId(32)),
+        &vr,
+        &exact_integers,
+    ));
+
     // Pow: REFUSED unconditionally (gnarly base/exponent coupling).
     assert!(
-        !throw_condition_disproven(&make_binop(OpCode::Pow, x, divisor_nz, ValueId(40)), &vr),
+        !throw_condition_disproven(
+            &make_binop(OpCode::Pow, x, divisor_nz, ValueId(40)),
+            &vr,
+            &exact_integers,
+        ),
         "Pow's throw condition is not a single-operand range fact - always refused"
     );
+
+    for non_integral in [
+        std::collections::HashMap::from([(x, TirType::F64), (divisor_nz, TirType::F64)]),
+        std::collections::HashMap::from([(x, TirType::I64), (divisor_nz, TirType::F64)]),
+        std::collections::HashMap::from([
+            (x, TirType::UserClass("Left".into())),
+            (divisor_nz, TirType::I64),
+        ]),
+        // Annotation-only types are absent from the exact-scalar map.
+        std::collections::HashMap::new(),
+    ] {
+        assert!(!throw_condition_disproven(
+            &make_binop(OpCode::FloorDiv, x, divisor_nz, ValueId(41)),
+            &vr,
+            &non_integral,
+        ));
+    }
+
+    let mut malformed_operands = make_binop(OpCode::FloorDiv, x, divisor_nz, ValueId(42));
+    malformed_operands.operands.push(count_ok);
+    assert!(!throw_condition_disproven(
+        &malformed_operands,
+        &vr,
+        &exact_integers,
+    ));
+    let mut malformed_results = make_binop(OpCode::FloorDiv, x, divisor_nz, ValueId(43));
+    malformed_results.results.clear();
+    assert!(!throw_condition_disproven(
+        &malformed_results,
+        &vr,
+        &exact_integers,
+    ));
 }
 
 /// Build a loop whose body contains a loop-invariant `y = x << k` (both `x`
@@ -856,8 +945,8 @@ fn throw_condition_disproven_per_opcode() {
 /// determines whether the shift's `ValueError` throw is range-disproven.
 /// Returns the function plus the loop-body block id and the shift result id.
 fn invariant_shift_loop(shift_count: i64) -> (TirFunction, BlockId, ValueId) {
-    let mut func = TirFunction::new("sh".into(), vec![TirType::I64], TirType::I64);
-    let x = ValueId(0); // param - loop-invariant
+    let mut func = TirFunction::new("sh".into(), vec![], TirType::I64);
+    let x = func.fresh_value();
     let preheader = func.fresh_block();
     let loop_header = func.fresh_block();
     let loop_body = func.fresh_block();
@@ -872,6 +961,7 @@ fn invariant_shift_loop(shift_count: i64) -> (TirFunction, BlockId, ValueId) {
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(7, x));
         entry.terminator = Terminator::Branch {
             target: preheader,
             args: vec![],

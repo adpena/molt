@@ -50,6 +50,18 @@ pub(super) fn verify_ops(
 }
 
 fn verify_op_surface(bid: BlockId, op_index: usize, op: &LirOp, errors: &mut Vec<LirVerifyError>) {
+    if matches!(
+        op.tir_op.attrs.get("lir.truthy_cond"),
+        Some(AttrValue::Bool(true))
+    ) && op.tir_op.opcode != super::super::ops::OpCode::Bool
+    {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: "truthiness materialization requires the Bool operation, not a call hint"
+                .into(),
+        });
+    }
     if op.tir_op.results.len() != op.result_values.len() {
         errors.push(LirVerifyError {
             block: Some(bid),
@@ -155,7 +167,11 @@ fn verify_truthy_materialization(
     if !truthy {
         return;
     }
-    if op.tir_op.operands.len() != 1 || op.result_values.len() != 1 {
+    if op.tir_op.opcode != super::super::ops::OpCode::Bool
+        || !op.tir_op.has_valid_shape()
+        || op.tir_op.operands.len() != 1
+        || op.result_values.len() != 1
+    {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),

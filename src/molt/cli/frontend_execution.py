@@ -14,6 +14,7 @@ from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
 from molt.type_facts import TypeFacts
 
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import frontend_integration as _frontend_integration
 from molt.cli import frontend_worker as _frontend_worker
@@ -188,6 +189,7 @@ def _lower_entry_module_as_main(
     return None
 
 
+@_source_tree_fingerprint_transaction()
 def _prepare_frontend_execution(
     *,
     syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"],
@@ -436,6 +438,7 @@ def _run_frontend_parallel_enabled_layers(
     return None
 
 
+@_source_tree_fingerprint_transaction()
 def _run_frontend_pipeline(
     *,
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket,
@@ -893,6 +896,7 @@ def _run_frontend_serial_layer_modules(
     return None
 
 
+@_source_tree_fingerprint_transaction()
 def _run_frontend_layer(
     layer: Sequence[str],
     *,

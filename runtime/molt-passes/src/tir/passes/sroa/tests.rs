@@ -21,10 +21,9 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     }
 }
 
-/// `obj = ObjectNewBoundStack(cls)` with payload size on the `value` attr (the
-/// escape-pass / verifier contract for a stack object).
-fn stack_alloc(cls: ValueId, result: ValueId, payload: i64) -> TirOp {
-    let mut o = op(OpCode::ObjectNewBoundStack, vec![cls], vec![result]);
+/// Owned raw boxed allocation with a statically known complete payload extent.
+fn raw_alloc(result: ValueId, payload: i64) -> TirOp {
+    let mut o = op(OpCode::Alloc, vec![], vec![result]);
     o.attrs.insert("value".into(), AttrValue::Int(payload));
     o
 }
@@ -35,15 +34,6 @@ fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
     o.attrs.insert("value".into(), AttrValue::Int(offset));
     o.attrs
         .insert("_original_kind".into(), AttrValue::Str("store".into()));
-    o
-}
-
-/// `obj.<offset> = val` typed-slot init store (`_original_kind = store_init`).
-fn store_init(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
-    let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
-    o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("store_init".into()));
     o
 }
 
@@ -80,7 +70,7 @@ fn n_allocs(func: &TirFunction) -> usize {
     func.blocks
         .values()
         .flat_map(|b| &b.ops)
-        .filter(|o| o.opcode == OpCode::ObjectNewBoundStack)
+        .filter(|o| o.opcode == OpCode::Alloc)
         .count()
 }
 
@@ -88,14 +78,14 @@ fn n_allocs(func: &TirFunction) -> usize {
 // 1. The bench_struct pattern: construct-and-mutate, never observed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `obj = ObjectNewBoundStack; store_init(obj,c0,0); store_init(obj,c0,8);
+/// `obj = Alloc; store(obj,c0,0); store(obj,c0,8);
 ///  store(obj,c0,0); store(obj,c1,8); return` — the object is never loaded or
 /// escaped, every stored value is a fits-inline constant. SROA removes ALL
-/// stores; the alloc is then dead (DCE removes it, not SROA).
+/// stores and the complete allocation in the same rewrite.
 #[test]
 fn bench_struct_pattern_removes_all_stores() {
     let mut func = TirFunction::new("main".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0); // class ref param
+
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
     let obj = func.fresh_value();
@@ -103,67 +93,137 @@ fn bench_struct_pattern_removes_all_stores() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(0, c0));
         entry.ops.push(const_int(1, c1));
-        entry.ops.push(stack_alloc(cls, obj, 40));
-        entry.ops.push(store_init(obj, c0, 0));
-        entry.ops.push(store_init(obj, c0, 8));
+        entry.ops.push(raw_alloc(obj, 40));
+        entry.ops.push(store(obj, c0, 0));
+        entry.ops.push(store(obj, c0, 8));
         entry.ops.push(store(obj, c0, 0));
         entry.ops.push(store(obj, c1, 8));
         entry.terminator = Terminator::Return { values: vec![] };
     }
     assert_eq!(n_stores(&func), 4, "four stores before SROA");
     let stats = run_fresh(&mut func);
-    assert_eq!(stats.ops_removed, 4, "all four stores removed");
-    assert_eq!(n_stores(&func), 0, "no StoreAttr survives");
-    // The alloc itself is left for DCE (it is now unreferenced and
-    // ObjectNewBoundStack is not side-effecting).
     assert_eq!(
-        n_allocs(&func),
-        1,
-        "SROA removes stores, DCE removes the alloc"
+        stats.ops_removed, 5,
+        "all four stores and allocation removed"
     );
+    assert_eq!(n_stores(&func), 0, "no StoreAttr survives");
+    assert_eq!(n_allocs(&func), 0, "SROA removes the complete allocation");
 }
 
-/// Same pattern but the stored value is a function parameter typed `Bool` — an
-/// always-immediate type. SROA fires (refcount-neutral by type, no range proof
-/// needed).
 #[test]
-fn bool_typed_store_value_is_neutral() {
+fn scalar_replacement_erases_owned_candidate_as_one_lifetime_unit() {
+    for observed in [false, true] {
+        let mut func = TirFunction::new(
+            "owned_candidate".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let object = func.fresh_value();
+        let copied = func.fresh_value();
+        let scalar = func.fresh_value();
+        let loaded = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.extend([
+            const_int(1, scalar),
+            raw_alloc(object, 16),
+            op(OpCode::Copy, vec![object], vec![copied]),
+            op(OpCode::IncRef, vec![copied], vec![]),
+            store(copied, scalar, 0),
+        ]);
+        if observed {
+            entry.ops.push(load(copied, 0, loaded));
+        }
+        entry.ops.push(op(OpCode::DecRef, vec![copied], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+        let stats = run_fresh(&mut func);
+        assert_eq!(stats.ops_removed, if observed { 0 } else { 5 });
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops.iter().any(|op| op.opcode == OpCode::Alloc), observed);
+        assert_eq!(ops.iter().any(|op| op.opcode == OpCode::DecRef), observed);
+        assert_eq!(ops.iter().any(|op| op.opcode == OpCode::IncRef), observed);
+    }
+}
+
+#[test]
+fn class_allocation_sealing_and_class_release_timing_are_observable() {
     let mut func = TirFunction::new(
-        "f".into(),
-        vec![TirType::DynBox, TirType::Bool],
+        "class_lifetime".into(),
+        vec![TirType::DynBox],
         TirType::None,
     );
-    let cls = ValueId(0);
-    let b = ValueId(1); // Bool-typed param
+    let class = func.fresh_value();
+    let object = func.fresh_value();
+    let value = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    // The class's defining owner is dropped before the observable call.
+    // Its instance hold must keep class-dictionary finalizers alive until
+    // the instance's drop. Construction itself may also seal class metadata.
+    entry
+        .ops
+        .push(op(OpCode::Call, vec![ValueId(0)], vec![class]));
+    let mut allocation = op(OpCode::ObjectNewBound, vec![class], vec![object]);
+    allocation.attrs.insert("value".into(), AttrValue::Int(16));
+    entry.ops.extend([
+        const_int(1, value),
+        allocation,
+        store(object, value, 0),
+        op(OpCode::DecRef, vec![class], vec![]),
+        op(OpCode::Call, vec![ValueId(0)], vec![]),
+        op(OpCode::DecRef, vec![object], vec![]),
+    ]);
+    entry.terminator = Terminator::Return { values: vec![] };
+    let before = entry.ops.clone();
+    assert_eq!(run_fresh(&mut func).ops_removed, 0);
+    let after = &func.blocks[&func.entry_block].ops;
+    assert_eq!(after.len(), before.len());
+    for (after, before) in after.iter().zip(&before) {
+        assert_eq!(after.opcode, before.opcode);
+        assert_eq!(after.operands, before.operands);
+        assert_eq!(after.results, before.results);
+        assert_eq!(after.attrs, before.attrs);
+    }
+}
+
+/// Same pattern but the stored value is an exact `ConstBool` producer. A Bool
+/// annotation alone admits subclasses and is not a refcount-neutral proof.
+#[test]
+fn exact_bool_store_value_is_neutral() {
+    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+
+    let b = func.fresh_value();
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(op(OpCode::ConstBool, vec![], vec![b]));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, b, 0));
         entry.terminator = Terminator::Return { values: vec![] };
     }
     let stats = run_fresh(&mut func);
-    assert_eq!(stats.ops_removed, 1, "Bool-typed store is removed");
+    assert_eq!(
+        stats.ops_removed, 2,
+        "Bool-typed store and allocation are removed"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Blocked when the object is observed (a surviving load).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `obj = ObjectNewBoundStack; store(obj,c,0); r = load(obj,0); return r` — the
+/// `obj = Alloc; store(obj,c,0); r = load(obj,0); return r` — the
 /// surviving load observes the object, so SROA refuses (the residue is not
 /// store-only; in production MemGVN would have forwarded this load first).
 #[test]
 fn blocked_when_object_has_surviving_load() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
-    let cls = ValueId(0);
+
     let c = func.fresh_value();
     let obj = func.fresh_value();
     let r = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(7, c));
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, c, 0));
         entry.ops.push(load(obj, 0, r));
         entry.terminator = Terminator::Return { values: vec![r] };
@@ -177,18 +237,18 @@ fn blocked_when_object_has_surviving_load() {
 // 3. Blocked when the object escapes (returned).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `obj = ObjectNewBoundStack; store(obj,c,0); return obj` — the object escapes
+/// `obj = Alloc; store(obj,c,0); return obj` — the object escapes
 /// via the return terminator. SROA refuses.
 #[test]
 fn blocked_when_object_escapes_via_return() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
-    let cls = ValueId(0);
+
     let c = func.fresh_value();
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(7, c));
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, c, 0));
         entry.terminator = Terminator::Return { values: vec![obj] };
     }
@@ -197,19 +257,19 @@ fn blocked_when_object_escapes_via_return() {
     assert_eq!(n_stores(&func), 1, "the store is preserved");
 }
 
-/// `obj = ObjectNewBoundStack; store(obj,c,0); call(obj); return` — passing the
+/// `obj = Alloc; store(obj,c,0); call(obj); return` — passing the
 /// object to an opaque call escapes/observes it. SROA refuses.
 #[test]
 fn blocked_when_object_passed_to_call() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0);
+
     let c = func.fresh_value();
     let obj = func.fresh_value();
     let call_r = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(7, c));
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, c, 0));
         entry.ops.push(op(OpCode::Call, vec![obj], vec![call_r]));
         entry.terminator = Terminator::Return { values: vec![] };
@@ -225,7 +285,7 @@ fn blocked_when_object_passed_to_call() {
 // 4. Blocked when a stored value is not provably refcount-neutral (BigInt/heap).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `obj = ObjectNewBoundStack; store(obj, x, 0); return` where `x` is an
+/// `obj = Alloc; store(obj, x, 0); return` where `x` is an
 /// `I64`-typed parameter with NO value-range proof — it may be a heap BigInt, so
 /// removing the store could unbalance the slot's incref. SROA refuses.
 #[test]
@@ -235,12 +295,12 @@ fn blocked_when_store_value_is_unproven_int() {
         vec![TirType::DynBox, TirType::I64],
         TirType::None,
     );
-    let cls = ValueId(0);
+
     let x = ValueId(1); // I64 param, unbounded → MaybeBigInt
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, x, 0));
         entry.terminator = Terminator::Return { values: vec![] };
     }
@@ -257,13 +317,13 @@ fn blocked_when_store_value_is_unproven_int() {
 #[test]
 fn blocked_when_store_value_is_bigint_const() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0);
+
     let big = func.fresh_value();
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(1 << 60, big));
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, big, 0));
         entry.terminator = Terminator::Return { values: vec![] };
     }
@@ -271,23 +331,55 @@ fn blocked_when_store_value_is_bigint_const() {
     assert_eq!(stats.ops_removed, 0, "a BigInt const store blocks SROA");
 }
 
+#[test]
+fn range_only_impostor_does_not_prove_refcount_neutrality() {
+    let mut func = TirFunction::new(
+        "range_only".into(),
+        vec![TirType::DynBox, TirType::I64],
+        TirType::None,
+    );
+    let mask = func.fresh_value();
+    let narrowed = func.fresh_value();
+    let object = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_int(1, mask));
+    entry
+        .ops
+        .push(op(OpCode::BitAnd, vec![ValueId(1), mask], vec![narrowed]));
+    entry.ops.push(raw_alloc(object, 32));
+    entry.ops.push(store(object, narrowed, 0));
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let ranges = crate::representation_facts::value_range_for(&func);
+    assert!(ranges.fits_inline_int47(narrowed));
+    assert!(
+        !crate::tir::type_refine::extract_exact_scalar_map(&func).contains_key(&narrowed),
+        "a range derived from an annotation-admitting operand is not exact provenance"
+    );
+    assert!(
+        !crate::representation_facts::non_heap_boxed_values_for(&func, &ranges).contains(&narrowed)
+    );
+    assert_eq!(run_fresh(&mut func).ops_removed, 0);
+    assert_eq!(n_stores(&func), 1);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Blocked when one promotable object is stored into another (capture/escape).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `a = ObjectNewBoundStack; b = ObjectNewBoundStack; store(a, b, 0); return` —
+/// `a = Alloc; b = Alloc; store(a, b, 0); return` —
 /// `b` is captured into `a`'s slot. Neither is promotable: `a`'s store value is
 /// a candidate root (escape), and `b` is referenced as a store value (blocker).
 #[test]
 fn blocked_when_object_stored_into_another() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0);
+
     let a = func.fresh_value();
     let b = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(stack_alloc(cls, a, 32));
-        entry.ops.push(stack_alloc(cls, b, 32));
+        entry.ops.push(raw_alloc(a, 32));
+        entry.ops.push(raw_alloc(b, 32));
         entry.ops.push(store(a, b, 0));
         entry.terminator = Terminator::Return { values: vec![] };
     }
@@ -303,23 +395,23 @@ fn blocked_when_object_stored_into_another() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn run_removes_stack_stores_without_ambient_disable_path() {
+fn run_removes_raw_boxed_stores_without_ambient_disable_path() {
     let mut func = TirFunction::new("main".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0);
+
     let c0 = func.fresh_value();
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(0, c0));
-        entry.ops.push(stack_alloc(cls, obj, 32));
+        entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, c0, 0));
         entry.terminator = Terminator::Return { values: vec![] };
     }
     let mut am = AnalysisManager::new();
     let stats = run(&mut func, &mut am);
     assert_eq!(
-        stats.ops_removed, 1,
-        "production SROA removes the dead store"
+        stats.ops_removed, 2,
+        "production SROA removes the dead object"
     );
     assert_eq!(n_stores(&func), 0);
 }
@@ -332,7 +424,7 @@ fn run_removes_stack_stores_without_ambient_disable_path() {
 #[test]
 fn removes_stores_across_blocks() {
     let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
-    let cls = ValueId(0);
+
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
     let obj = func.fresh_value();
@@ -341,7 +433,7 @@ fn removes_stores_across_blocks() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int(0, c0));
         entry.ops.push(const_int(1, c1));
-        entry.ops.push(stack_alloc(cls, obj, 40));
+        entry.ops.push(raw_alloc(obj, 40));
         entry.ops.push(store(obj, c0, 0));
         entry.terminator = Terminator::Branch {
             target: b1,
@@ -358,6 +450,148 @@ fn removes_stores_across_blocks() {
         },
     );
     let stats = run_fresh(&mut func);
-    assert_eq!(stats.ops_removed, 2, "both cross-block stores removed");
+    assert_eq!(
+        stats.ops_removed, 3,
+        "both cross-block stores and allocation removed"
+    );
     assert_eq!(n_stores(&func), 0);
+}
+
+#[test]
+fn annotated_scalar_field_value_does_not_prove_refcount_neutrality() {
+    for hint in [TirType::F64, TirType::I64] {
+        let mut func = TirFunction::new(
+            "annotated".into(),
+            vec![TirType::DynBox, hint.clone()],
+            TirType::None,
+        );
+        let object = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(raw_alloc(object, 16));
+        entry.ops.push(store(object, ValueId(1), 0));
+        entry.terminator = Terminator::Return { values: vec![] };
+        assert_eq!(run_fresh(&mut func).ops_removed, 0, "{hint:?}");
+        assert_eq!(n_stores(&func), 1);
+    }
+}
+
+#[test]
+fn field_removal_requires_shared_fixed_layout_extent() {
+    // Raw storage has no dictionary tail; every aligned word inside its
+    // requested extent is a field. Out-of-bounds accesses must not disappear.
+    for (payload, offset, removable) in [
+        (16, 0, true),
+        (24, 8, true),
+        (16, -1, false),
+        (24, 1, false),
+        (16, 8, true),
+        (24, 16, true),
+        (16, i64::MAX, false),
+        (8, 0, true),
+        (0, 0, false),
+        (-8, 0, false),
+    ] {
+        let mut func = TirFunction::new("offset".into(), vec![TirType::DynBox], TirType::None);
+        let constant = func.fresh_value();
+        let object = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.extend([
+            const_int(0, constant),
+            raw_alloc(object, payload),
+            store(object, constant, offset),
+        ]);
+        entry.terminator = Terminator::Return { values: vec![] };
+        assert_eq!(
+            run_fresh(&mut func).ops_removed,
+            2 * usize::from(removable),
+            "payload={payload}, offset={offset}"
+        );
+        assert_eq!(n_stores(&func), usize::from(!removable));
+    }
+}
+
+#[test]
+fn nonheap_overwrite_cannot_erase_prior_heap_slot_ownership() {
+    for heap_first in [true, false] {
+        let mut func =
+            TirFunction::new("slot_lifetime".into(), vec![TirType::DynBox], TirType::None);
+
+        let object = func.fresh_value();
+        let heap_value = func.fresh_value();
+        let scalar = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(raw_alloc(object, 24));
+        let mut heap = op(OpCode::ConstBigInt, vec![], vec![heap_value]);
+        heap.attrs.insert(
+            "s_value".into(),
+            AttrValue::Str("123456789012345678901234567890".into()),
+        );
+        entry.ops.push(heap);
+        entry.ops.push(const_int(7, scalar));
+        let values = if heap_first {
+            [heap_value, scalar]
+        } else {
+            [scalar, heap_value]
+        };
+        for value in values {
+            entry.ops.push(store(object, value, 0));
+        }
+        entry.terminator = Terminator::Return { values: vec![] };
+        let stats = run_fresh(&mut func);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(
+            n_stores(&func),
+            2,
+            "the whole root must be refcount-neutral"
+        );
+    }
+}
+
+#[test]
+fn raw_i64_carriers_that_box_to_bigint_retain_slot_ownership() {
+    for value in [i64::MIN, -(1_i64 << 46) - 1, 1_i64 << 46, i64::MAX] {
+        let mut func = TirFunction::new("boxed_slot".into(), vec![TirType::DynBox], TirType::None);
+        let raw = func.fresh_value();
+        let copied = func.fresh_value();
+        let zero = func.fresh_value();
+        let object = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.extend([
+            const_int(value, raw),
+            op(OpCode::Copy, vec![raw], vec![copied]),
+            const_int(0, zero),
+            raw_alloc(object, 24),
+            store(object, copied, 0),
+            store(object, zero, 0),
+        ]);
+        entry.terminator = Terminator::Return { values: vec![] };
+        let ranges = crate::representation_facts::value_range_for(&func);
+        let carrier = crate::representation_facts::non_heap_values_for(&func, &ranges);
+        let boxed = crate::representation_facts::non_heap_boxed_values_for(&func, &ranges);
+        for value in [raw, copied] {
+            assert!(carrier.contains(&value), "the SSA carrier is non-owning");
+            assert!(!boxed.contains(&value), "field boxing can allocate BigInt");
+        }
+        assert!(boxed.contains(&zero));
+        assert_eq!(run_fresh(&mut func).ops_removed, 0);
+        assert_eq!(n_stores(&func), 2);
+    }
+}
+
+#[test]
+fn finalizer_bearing_allocation_artifact_cannot_erase_fields() {
+    let mut func = TirFunction::new("finalizer".into(), vec![TirType::DynBox], TirType::None);
+    let value = func.fresh_value();
+    let object = func.fresh_value();
+    let mut allocation = raw_alloc(object, 24);
+    allocation
+        .attrs
+        .insert("defines_del".into(), AttrValue::Bool(true));
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry
+        .ops
+        .extend([const_int(1, value), allocation, store(object, value, 0)]);
+    entry.terminator = Terminator::Return { values: vec![] };
+    assert_eq!(run_fresh(&mut func).ops_removed, 0);
+    assert_eq!(n_stores(&func), 1);
 }

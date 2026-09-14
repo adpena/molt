@@ -137,9 +137,41 @@ fn add_two_f64s() {
         values: vec![result_id],
     };
 
+    let annotated = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(annotated.result_types, vec![ValType::I64]);
+    assert!(annotated.runtime_calls.contains(&"add"));
+    assert!(
+        !annotated
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::F64Add)),
+        "float annotations cannot authorize raw addition"
+    );
+
+    let left = func.fresh_value();
+    let right = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].operands = vec![left, right];
+    for (index, (value, number)) in [(left, 1.25), (right, 2.5)].into_iter().enumerate() {
+        entry.ops.insert(
+            index,
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstFloat,
+                operands: vec![],
+                results: vec![value],
+                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                source_span: None,
+            },
+        );
+    }
     let output = lower_tir_to_wasm(&func).test_view();
 
-    assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
+    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(output.result_types, vec![ValType::F64]);
+    assert!(!output.runtime_calls.contains(&"add"));
+    assert!(!output.bails_to_generic_path);
     let has_f64_add = output
         .instructions
         .iter()
@@ -169,11 +201,13 @@ fn f64_mod_declares_emission_scratch_locals() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
     assert_eq!(
         annotated.result_types,
         vec![ValType::I64],
         "annotation-only operands cannot prove a float return representation"
     );
+    assert!(annotated.runtime_calls.contains(&"mod"));
     let left = func.fresh_value();
     let right = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -192,8 +226,10 @@ fn f64_mod_declares_emission_scratch_locals() {
         );
     }
     let output = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
+    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
     assert_eq!(output.result_types, vec![ValType::F64]);
+    assert!(!output.runtime_calls.contains(&"mod"));
+    assert!(!output.bails_to_generic_path);
     assert_eq!(
         output.locals,
         vec![ValType::F64; 5],

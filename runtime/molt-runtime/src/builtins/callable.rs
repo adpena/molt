@@ -1,6 +1,6 @@
 use molt_obj_model::MoltObject;
 
-use crate::call::has_type_call_attr;
+use crate::call::{has_type_call_attr, is_exact_staticmethod_wrapper};
 use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE,
     function_attr_bits, function_closure_bits, function_dict_bits, intern_static_name, is_truthy,
@@ -98,6 +98,12 @@ pub(crate) fn is_callable_impl(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool 
 #[inline]
 unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
+        // Exact wrappers always have tp_call, even before initialization or
+        // when wrapping a non-callable. Subclasses use normal special lookup;
+        // call dispatch separately resolves builtin forwarding versus overrides.
+        if is_exact_staticmethod_wrapper(_py, ptr) {
+            return true;
+        }
         match object_type_id(ptr) {
             TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_GENERIC_ALIAS => true,
             TYPE_ID_FOREIGN => molt_cpython_abi::bridge::molt_foreign_is_callable(

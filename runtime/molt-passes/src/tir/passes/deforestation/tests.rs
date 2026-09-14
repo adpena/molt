@@ -1,6 +1,5 @@
-use super::fusion::{is_fusable_body, run};
 use super::tuple_scalarize::run_tuple_scalarize;
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -32,7 +31,7 @@ fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
     }
 }
 
-/// Build a minimal function representing `sum(x for x in data)`:
+/// Build a minimal element-consumer graph, NOT `sum(x for x in data)`:
 ///
 ///   bb0 (entry): data = param[0]
 ///     iter = GetIter(data)
@@ -128,195 +127,45 @@ fn build_iter_sum_function() -> TirFunction {
 // Test 1: sum(x for x in data) → fused accumulator loop
 // -----------------------------------------------------------------------
 #[test]
-fn sum_genexpr_fused_to_accumulator() {
-    let mut func = build_iter_sum_function();
-    let stats = run(&mut func);
-
-    assert!(
-        stats.values_changed >= 1,
-        "should have fused at least one chain"
-    );
-    assert!(stats.ops_added >= 2, "should have added init + add ops");
-
-    // The CallBuiltin("sum") should have been replaced with a Copy.
-    let bb3 = BlockId(3);
-    let exit_ops = &func.blocks[&bb3].ops;
-    assert_eq!(exit_ops.len(), 1);
-    assert_eq!(exit_ops[0].opcode, OpCode::Copy);
-    assert_eq!(
-        exit_ops[0].attrs.get("fused"),
-        Some(&AttrValue::Str("sum".into()))
-    );
-}
-
-// -----------------------------------------------------------------------
-// Test 2: any(x > 0 for x in data) → fused early-exit
-// -----------------------------------------------------------------------
-#[test]
-fn any_genexpr_fused_to_early_exit() {
-    let mut func = build_iter_sum_function();
-
-    // Change the CallBuiltin from "sum" to "any".
-    let bb3 = BlockId(3);
-    func.blocks.get_mut(&bb3).unwrap().ops[0] = make_call_builtin(
-        "any",
-        ValueId(2), // elem
-        ValueId(4), // result
-    );
-
-    let stats = run(&mut func);
-
-    assert!(stats.values_changed >= 1);
-    let exit_ops = &func.blocks[&bb3].ops;
-    assert_eq!(exit_ops[0].opcode, OpCode::Copy);
-    assert_eq!(
-        exit_ops[0].attrs.get("fused"),
-        Some(&AttrValue::Str("any".into()))
-    );
-}
-
-// -----------------------------------------------------------------------
-// Test 3: Loop body with Call → NOT fused (impure)
-// -----------------------------------------------------------------------
-#[test]
-fn impure_body_not_fused() {
-    let mut func = build_iter_sum_function();
-
-    // Add a Call op to the loop body (bb2) to make it impure.
-    let bb2 = BlockId(2);
-    let call_result = func.fresh_value();
-    func.blocks.get_mut(&bb2).unwrap().ops.push(make_op(
-        OpCode::Call,
-        vec![ValueId(2)],
-        vec![call_result],
-    ));
-
-    let stats = run(&mut func);
-
-    // Should NOT have fused anything.
-    assert_eq!(stats.values_changed, 0);
-    assert_eq!(stats.ops_added, 0);
-
-    // The CallBuiltin("sum") should remain unchanged.
-    let bb3 = BlockId(3);
-    let exit_ops = &func.blocks[&bb3].ops;
-    assert_eq!(exit_ops[0].opcode, OpCode::CallBuiltin);
-}
-
-// -----------------------------------------------------------------------
-// Test 4: No iterator patterns → no changes
-// -----------------------------------------------------------------------
-#[test]
-fn no_iterator_patterns_no_changes() {
-    let mut func = TirFunction::new("noop".into(), vec![TirType::I64], TirType::I64);
-    {
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::ConstInt, vec![], vec![ValueId(0)]));
-        entry.terminator = Terminator::Return {
-            values: vec![ValueId(0)],
-        };
+fn tuple_scalarization_preserves_calls_on_individual_iterator_elements() {
+    // ForIter produces one element, not the iterator itself. None of these
+    // calls may be rewritten into whole-iterator reductions or tag-only IR.
+    for name in [
+        "len", "sum", "any", "all", "min", "max", "sorted", "reversed", "list", "set", "tuple",
+    ] {
+        let mut func = build_iter_sum_function();
+        for block in func.blocks.values_mut() {
+            for op in &mut block.ops {
+                if op.opcode == OpCode::CallBuiltin {
+                    op.attrs.insert("name".into(), AttrValue::Str(name.into()));
+                }
+            }
+        }
+        let before: Vec<_> = func
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::CallBuiltin)
+            .map(|op| (op.operands.clone(), op.results.clone(), op.attrs.clone()))
+            .collect();
+        let stats = run_tuple_scalarize(&mut func);
+        assert_eq!(stats.values_changed, 0, "{name}");
+        let after: Vec<_> = func
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::CallBuiltin)
+            .map(|op| (op.operands.clone(), op.results.clone(), op.attrs.clone()))
+            .collect();
+        assert_eq!(after, before, "{name}");
+        assert!(
+            func.blocks
+                .values()
+                .flat_map(|block| block.ops.iter())
+                .all(|op| !op.attrs.contains_key("fused"))
+        );
     }
-
-    let stats = run(&mut func);
-    assert_eq!(stats.values_changed, 0);
-    assert_eq!(stats.ops_added, 0);
-    assert_eq!(stats.ops_removed, 0);
 }
-
-// -----------------------------------------------------------------------
-// Test 5: Nested generators → only innermost fused (conservative)
-// -----------------------------------------------------------------------
-#[test]
-fn nested_generators_conservative() {
-    // Build a function with two nested ForIter loops but only one
-    // CallBuiltin("sum") consuming the inner loop's element.
-    // The pass should fuse at most the inner chain.
-    let mut func = build_iter_sum_function();
-
-    // Add a second GetIter → ForIter in a new block that wraps the existing
-    // loop. The outer loop is NOT connected to the CallBuiltin, so the pass
-    // should still fuse the inner one only.
-    let stats = run(&mut func);
-
-    // The inner sum chain should still fuse.
-    assert!(stats.values_changed >= 1);
-    // But at most one chain fused.
-    assert_eq!(stats.values_changed, 1);
-}
-
-// -----------------------------------------------------------------------
-// Test 6: all(genexpr) → fused early-exit with inverted logic
-// -----------------------------------------------------------------------
-#[test]
-fn all_genexpr_fused() {
-    let mut func = build_iter_sum_function();
-
-    let bb3 = BlockId(3);
-    func.blocks.get_mut(&bb3).unwrap().ops[0] = make_call_builtin("all", ValueId(2), ValueId(4));
-
-    let stats = run(&mut func);
-
-    assert!(stats.values_changed >= 1);
-    let exit_ops = &func.blocks[&bb3].ops;
-    assert_eq!(exit_ops[0].opcode, OpCode::Copy);
-    assert_eq!(
-        exit_ops[0].attrs.get("fused"),
-        Some(&AttrValue::Str("all".into()))
-    );
-    // all → init is true, early-exit on false
-    assert_eq!(
-        exit_ops[0].attrs.get("early_exit_on"),
-        Some(&AttrValue::Bool(false))
-    );
-}
-
-// -----------------------------------------------------------------------
-// Test 7: is_fusable_body unit tests
-// -----------------------------------------------------------------------
-#[test]
-fn fusion_check_fusable_ops() {
-    let ops = vec![
-        make_op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]),
-        make_op(OpCode::Mul, vec![ValueId(2), ValueId(0)], vec![ValueId(3)]),
-        make_op(OpCode::Gt, vec![ValueId(3), ValueId(1)], vec![ValueId(4)]),
-    ];
-    assert!(is_fusable_body(&ops));
-}
-
-#[test]
-fn fusion_check_barrier_call() {
-    let ops = vec![make_op(OpCode::Call, vec![ValueId(0)], vec![ValueId(1)])];
-    assert!(!is_fusable_body(&ops));
-}
-
-#[test]
-fn fusion_check_barrier_store_attr() {
-    let ops = vec![make_op(
-        OpCode::StoreAttr,
-        vec![ValueId(0), ValueId(1)],
-        vec![],
-    )];
-    assert!(!is_fusable_body(&ops));
-}
-
-#[test]
-fn fusion_check_barrier_yield() {
-    let ops = vec![make_op(OpCode::Yield, vec![ValueId(0)], vec![ValueId(1)])];
-    assert!(!is_fusable_body(&ops));
-}
-
-#[test]
-fn fusion_check_empty_is_fusable() {
-    assert!(is_fusable_body(&[]));
-}
-
-// ===================================================================
-// Tuple Scalarization Tests
-// ===================================================================
-
-/// Helper: make a first-class unpack_sequence op.
 fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(count));

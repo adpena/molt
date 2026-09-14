@@ -218,6 +218,8 @@ def _wrapper_build_dependency_fingerprints(
         native_artifact_plan=native_artifact_plan,
     )
     try:
+        if prepared_module_graph.target != target:
+            raise ValueError("prepared source closure target changed before materialization")
         import_plan = _materialize_import_plan(
             prepared_module_graph=prepared_module_graph,
             module_reasons=module_reasons,

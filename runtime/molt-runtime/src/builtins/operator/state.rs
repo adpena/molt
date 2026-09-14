@@ -44,8 +44,11 @@ impl OperatorRuntimeState {
     }
 }
 
-pub(crate) fn operator_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+pub(crate) fn operator_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
     crate::gil_assert();
     let slots = state.operator.slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
+    crate::state::cache::clear_atomic_slots(_py, &slots)
 }

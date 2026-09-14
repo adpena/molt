@@ -4,6 +4,7 @@ use super::fc::list_index_fast_path::{
     scan_loop_hoistable_lists, scan_loop_int_sum_reduction, store_index_fallback_import_name,
 };
 use super::fc::loops::metadata_only_structured_loop_ops;
+use super::fc::memory::typed_slot_store_helper_name;
 use super::{
     BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan,
     alias_root_name, box_raw_bool_value, box_raw_i64_value_overflow_safe, cleanup_roots_for_names,

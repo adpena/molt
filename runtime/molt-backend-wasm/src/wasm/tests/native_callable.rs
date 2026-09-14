@@ -7,7 +7,7 @@ use wasm_encoder::{
     Module, SymbolTable, TypeSection, ValType,
 };
 
-struct RemoveNativeCallableTemp(PathBuf);
+pub(super) struct RemoveNativeCallableTemp(PathBuf);
 
 impl Drop for RemoveNativeCallableTemp {
     fn drop(&mut self) {
@@ -15,7 +15,7 @@ impl Drop for RemoveNativeCallableTemp {
     }
 }
 
-fn native_callable_wasm_temp_dir() -> (PathBuf, RemoveNativeCallableTemp) {
+pub(super) fn native_callable_wasm_temp_dir() -> (PathBuf, RemoveNativeCallableTemp) {
     let path = std::env::temp_dir().join(format!(
         "molt-wasm-native-callable-link-{}-{}",
         std::process::id(),
@@ -28,7 +28,11 @@ fn native_callable_wasm_temp_dir() -> (PathBuf, RemoveNativeCallableTemp) {
     (path.clone(), RemoveNativeCallableTemp(path))
 }
 
-fn real_execution_tool(tool: PathBuf, required_env: &str, purpose: &str) -> Option<PathBuf> {
+pub(super) fn real_execution_tool(
+    tool: PathBuf,
+    required_env: &str,
+    purpose: &str,
+) -> Option<PathBuf> {
     let available = Command::new(&tool)
         .arg("--version")
         .output()
@@ -58,7 +62,7 @@ fn wasm_ld_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("wasm-ld"))
 }
 
-fn run_execution_command(command: &mut Command, purpose: &str) {
+pub(super) fn run_execution_command(command: &mut Command, purpose: &str) {
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("{purpose}: failed to start: {error}"));

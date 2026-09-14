@@ -7,6 +7,10 @@ use molt_runtime::{
     molt_string_replace, molt_string_startswith,
 };
 
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime string_ops fuzz target"
+));
+
 fuzz_target!(|data: &[u8]| {
     let mut hay_bits = 0u64;
     unsafe {

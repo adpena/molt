@@ -75,6 +75,12 @@ impl TargetKind {
     }
 }
 
+/// No current target realizes raw boxed `StackAlloc` with a complete header,
+/// payload extent, and frame-owned lifetime. Use heap `Alloc` until that
+/// contract exists; neither heap fallback nor a naked machine alloca is valid.
+pub const BOXED_STACK_ALLOCATION_UNSUPPORTED: &str =
+    "raw stack_alloc has no supported boxed frame allocation contract; use owned alloc";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumericTargetCapabilities {
     pub arbitrary_precision_integers: bool,
@@ -734,3 +740,7 @@ mod tests {
         assert!(w.branch_mispredict_cost > 0);
     }
 }
+
+/// Compiler arena placement requires an owner-lifetime proof, not a boolean hint.
+pub const COMPILER_ARENA_PLACEMENT_UNSUPPORTED: &str =
+    "compiler arena placement has no proved owner lifetime";

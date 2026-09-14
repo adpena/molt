@@ -49,7 +49,7 @@ pub enum FactValue {
 
 pub struct CallFacts {
     pub target: CallTargetFact,        // #71 — typed CallableTarget, never raw bits
-    pub typed_return: Option<Repr>,    // result Repr if precise (else None = DynBox)
+    pub typed_return: Option<Repr>,    // conservative carrier of known type; None = unknown
     pub leaf: FactValue,               // callee makes no further calls
     pub no_throw: FactValue,           // call provably cannot raise on this edge
     pub no_alloc: FactValue,           // call performs no heap allocation
@@ -82,7 +82,7 @@ invalidated by the same events that invalidate its producers.
 | `target` | `call_graph.rs` `classify_call_op` → `CallEdge::StaticDirect` | attached (attr string) → make it a typed `CallTargetFact` (#71) |
 | `typed_return` | `types.rs` result `TirType`/`Repr`; `ip_summary.rs::return_type` | attached |
 | `leaf` | `call_graph.rs` `leaf_functions()` / `!makes_any_call` | DISCARDED → record on site |
-| `no_throw` | `effects.rs::op_may_throw` + callee `has_exception_handlers` + builtin allowlist | DISCARDED |
+| `no_throw` | generated `op_kinds.toml` operation effect contract | recorded; unknown when the contract permits a raise |
 | `no_alloc` | `escape_analysis.rs` (`Alloc`→`StackAlloc`) + callee alloc summary | DISCARDED |
 | `no_escape_args` | `escape_analysis.rs` per-`ValueId` `EscapeState` | DISCARDED |
 | `inlinable` | `inliner.rs::is_inlineable` (+ the 6 exclusion gates as `WhyNot`) | DISCARDED (recomputed) |
@@ -129,8 +129,9 @@ compression-ladder payoff: one primitive retires a *class* of slowness.
 ## 5. Phased implementation (each phase moves coverage % and deletes a fallback)
 
 - **Phase 1 — persist what's already computed.** `CallFactsAnalysis` side-table;
-  fill `target` (typed), `typed_return`, `leaf`, `no_throw` (skeleton: opcode +
-  callee-has-no-handlers + builtin allowlist). Inliner reads `inlinable`/`leaf`
+  fill `target` (typed), `typed_return`, `leaf`, `no_throw` (generated operation
+  contract only; handler absence and builtin names do not prove call admission
+  or body effects). Inliner reads `inlinable`/`leaf`
   from it. Coverage 28.6% → target ≥ 60%. No backend change yet (representation
   first). Gate: `call_fact_coverage.py --check` ratchets UP; differential
   byte-identical (facts are advisory in Phase 1).

@@ -122,7 +122,7 @@ pub extern "C" fn molt_weakref_init(self_bits: u64, _target_bits: u64, _callback
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_callback_get(self_bits: u64) -> u64 {
+pub extern "C" fn molt_weakref_callback_get(_descriptor_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if weakref_receiver(_py, self_bits, "__callback__").is_none() {
             return MoltObject::none().bits();

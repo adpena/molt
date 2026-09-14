@@ -3363,41 +3363,68 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
         } else {
             unsafe { std::ffi::CStr::from_ptr(ml_ref.ml_name) }.to_bytes()
         };
-        let self_bits = if self_.is_null() {
-            none_bits()
+        // `register_c_function` borrows `self_bits`; the resulting Molt
+        // function takes its own closure edge when registration succeeds.
+        // Resolve an existing bridge identity without minting an extra runtime
+        // reference. A genuinely foreign `m_self` needs a first-class wrapper,
+        // and `molt_value_for_pyobj` returns that wrapper as an owned temporary
+        // which must be released after the hook returns on both success and
+        // failure.
+        let converted_self = if self_.is_null() {
+            Some((none_bits(), false))
+        } else if GLOBAL_BRIDGE.molt_handle_for_pyobj(self_).is_some() {
+            // A known managed/static identity that fails projection commit is
+            // an actual conversion failure, not a foreign object and never an
+            // unbound receiver. Keep that failure visible to the C caller.
+            let Some(value) = GLOBAL_BRIDGE.observed_handle_for_pyobj(self_) else {
+                return ptr::null_mut();
+            };
+            Some((value.bits(), false))
         } else {
-            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(self_) }.unwrap_or_else(none_bits)
+            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(self_) }.map(|bits| (bits, true))
         };
-        let meth_addr = fn_ptr as *const () as usize as u64;
-        let h = hooks_or_stubs();
-        let func_bits = unsafe {
-            (h.register_c_function)(
-                meth_addr,
-                ml_ref.ml_flags,
-                self_bits,
-                name_bytes.as_ptr(),
-                name_bytes.len(),
-            )
-        };
-        if func_bits != 0 {
-            unsafe {
-                crate::api::refcount::Py_XINCREF(self_);
-                crate::api::refcount::Py_XINCREF(module);
+        if let Some((self_bits, self_owned_local)) = converted_self {
+            let meth_addr = fn_ptr as *const () as usize as u64;
+            let h = hooks_or_stubs();
+            let func_bits = unsafe {
+                (h.register_c_function)(
+                    meth_addr,
+                    ml_ref.ml_flags,
+                    self_bits,
+                    name_bytes.as_ptr(),
+                    name_bytes.len(),
+                )
+            };
+            if self_owned_local {
+                unsafe { (h.dec_ref)(self_bits) };
             }
-            let obj = Box::new(PyCFunctionObject {
-                ob_base: PyObject {
-                    ob_refcnt: 1,
-                    ob_type: &raw mut crate::abi_types::PyCFunction_Type,
-                },
-                m_ml: ml,
-                m_self: self_,
-                m_module: module,
-                m_weakreflist: ptr::null_mut(),
-                vectorcall: None,
-            });
-            let ptr = Box::into_raw(obj).cast::<PyObject>();
-            unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, func_bits) };
-            return ptr;
+            if func_bits != 0 {
+                unsafe {
+                    crate::api::refcount::Py_XINCREF(self_);
+                    crate::api::refcount::Py_XINCREF(module);
+                }
+                let obj = Box::new(PyCFunctionObject {
+                    ob_base: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut crate::abi_types::PyCFunction_Type,
+                    },
+                    m_ml: ml,
+                    m_self: self_,
+                    m_module: module,
+                    m_weakreflist: ptr::null_mut(),
+                    vectorcall: None,
+                });
+                let ptr = Box::into_raw(obj).cast::<PyObject>();
+                unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, func_bits) };
+                return ptr;
+            }
+        }
+        // A clean miss means no runtime is wired for a genuine foreign receiver
+        // and the ABI-owned fallback remains valid. Any pending conversion or
+        // construction failure must stay NULL instead of being concealed by a
+        // fallback callable.
+        if exception_already_pending() {
+            return ptr::null_mut();
         }
     }
 
@@ -3887,12 +3914,14 @@ pub(crate) fn with_existing_thread_state_context<R>(
 fn destroy_current_thread_state(
     panic_boundary: ThreadStatePanicBoundary,
     custody_mode: ThreadStateDropCustodyMode,
+    mut cleanup_runtime_tls: impl FnMut() -> bool,
 ) {
     let drain = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drain_current_thread_state_managed_edges(custody_mode)
+        drain_current_thread_state_managed_edges(custody_mode, &mut cleanup_runtime_tls)
     }));
-    if let Err(payload) = drain {
-        match panic_boundary {
+    let drained_record = match drain {
+        Ok(drained_record) => drained_record,
+        Err(payload) => match panic_boundary {
             ThreadStatePanicBoundary::Propagate => std::panic::resume_unwind(payload),
             ThreadStatePanicBoundary::AbortProcess => {
                 // TLS destructors cannot unwind. A refcount/finalizer panic is
@@ -3901,7 +3930,10 @@ fn destroy_current_thread_state(
                 // ownership graph.
                 std::process::abort();
             }
-        }
+        },
+    };
+    if !drained_record {
+        return;
     }
     let record = MOLT_THREAD_STATE.with(|slot| {
         let record = slot
@@ -3924,9 +3956,33 @@ fn current_thread_state_has_managed_edges() -> bool {
     })
 }
 
-fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustodyMode) {
-    if !current_thread_state_has_managed_edges() {
-        return;
+/// Drain runtime-owned TLS until either it reaches a fixed point or its
+/// callbacks publish the CPython thread-state domain that the caller must
+/// continue draining. Returning `false` means both domains are absent/quiet;
+/// no empty `PyThreadState` is fabricated solely for teardown.
+fn drain_runtime_tls_until_thread_state_or_quiescent(
+    cleanup_runtime_tls: &mut impl FnMut() -> bool,
+) -> bool {
+    while existing_current_thread_state().is_none() {
+        let runtime_changed = cleanup_runtime_tls();
+        if !runtime_changed && existing_current_thread_state().is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+fn drain_current_thread_state_managed_edges(
+    custody_mode: ThreadStateDropCustodyMode,
+    cleanup_runtime_tls: &mut impl FnMut() -> bool,
+) -> bool {
+    // Ordinary thread exit has no second ownership domain to drain. Preserve
+    // its empty-record fast path so late TLS destruction does not try to
+    // reacquire runtime custody after the runtime has already disappeared.
+    if matches!(custody_mode, ThreadStateDropCustodyMode::Acquire)
+        && !current_thread_state_has_managed_edges()
+    {
+        return existing_current_thread_state().is_some();
     }
     let _custody = match custody_mode {
         ThreadStateDropCustodyMode::Acquire => Some(ThreadStateDropCustody::enter()),
@@ -3939,6 +3995,13 @@ fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustody
             None
         }
     };
+    // Runtime TLS cleanup can itself enter the C API. Give it one custody-held
+    // opportunity to publish a record before deciding there is nothing to
+    // destroy; do not fabricate an otherwise-missing PyThreadState merely to
+    // host an empty drain phase.
+    if !drain_runtime_tls_until_thread_state_or_quiescent(cleanup_runtime_tls) {
+        return false;
+    }
     let _phase = ThreadStateDrainPhase::enter();
     #[cfg(feature = "runtime-test-support")]
     THREAD_STATE_FINALIZER_TEST_PANIC.with(|panic_next| {
@@ -3947,6 +4010,11 @@ fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustody
         }
     });
     loop {
+        // Keep Molt TLS and the CPython error/context/dict domain inside one
+        // quiescence loop. C-edge destruction below may run a finalizer that
+        // repopulates Molt TLS; a non-empty pass forces another cleanup before
+        // the next C managed-edge pass.
+        let runtime_changed = cleanup_runtime_tls();
         let owned = MOLT_THREAD_STATE.with(|slot| {
             let mut slot = slot.borrow_mut();
             let record = slot
@@ -3958,14 +4026,14 @@ fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustody
                 std::mem::take(&mut record.context),
             )
         });
+        let empty = owned.0.is_null() && owned.1.is_none() && owned.2.is_empty();
         #[cfg(feature = "runtime-test-support")]
-        {
+        if !empty {
             let hook = THREAD_STATE_DRAIN_REENTRY_TEST_HOOK.lock().unwrap().take();
             if let Some(hook) = hook {
                 hook();
             }
         }
-        let empty = owned.0.is_null() && owned.1.is_none() && owned.2.is_empty();
         unsafe { crate::api::refcount::Py_XDECREF(owned.0) };
         drop(owned.1);
         for value in owned.2.into_values() {
@@ -3977,7 +4045,7 @@ fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustody
             // any state created by reporting is picked up by the next pass.
             unsafe { crate::api::errors::PyErr_WriteUnraisable(ptr::null_mut()) };
         }
-        if empty && !current_thread_state_has_managed_edges() {
+        if empty && !runtime_changed && !current_thread_state_has_managed_edges() {
             break;
         }
     }
@@ -3992,6 +4060,7 @@ fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustody
                 && record.context.is_empty()
         );
     });
+    true
 }
 
 fn create_prepared_current_thread_state() -> bool {
@@ -4084,6 +4153,7 @@ impl Drop for RuntimeInitializationThreadStateGuard {
             destroy_current_thread_state(
                 ThreadStatePanicBoundary::Propagate,
                 ThreadStateDropCustodyMode::Acquire,
+                || false,
             );
             self.created = false;
         }
@@ -4249,6 +4319,7 @@ impl Drop for AbiTestThreadStateTransaction {
             destroy_current_thread_state(
                 ThreadStatePanicBoundary::Propagate,
                 ThreadStateDropCustodyMode::Acquire,
+                || false,
             );
         }
         ABI_TEST_NATIVE_GC_ACTIVE.with(|active| {
@@ -4349,6 +4420,7 @@ pub fn clear_runtime_execution_thread_state() {
         destroy_current_thread_state(
             ThreadStatePanicBoundary::Propagate,
             ThreadStateDropCustodyMode::Acquire,
+            || false,
         );
     }
 }
@@ -4384,8 +4456,12 @@ pub fn current_thread_has_retained_runtime_state() -> bool {
 ///
 /// Unlike ordinary execution cleanup, shutdown owns the complete runtime
 /// lifetime boundary and must destroy every current-thread record regardless
-/// of which embedding path originally created it.
-pub fn clear_current_thread_state_for_runtime_shutdown() {
+/// of which embedding path originally created it. `cleanup_runtime_tls` is
+/// invoked before every CPython managed-edge pass so finalizers crossing either
+/// ownership domain converge before the record is destroyed. The callback
+/// returns true whenever it detached owned runtime references; even with no C
+/// edges, that requires another pass because their finalizers may refill TLS.
+pub fn clear_current_thread_state_for_runtime_shutdown(cleanup_runtime_tls: impl FnMut() -> bool) {
     assert!(
         !current_thread_state_attached(),
         "runtime shutdown thread-state cleanup requires a detached state"
@@ -4401,12 +4477,11 @@ pub fn clear_current_thread_state_for_runtime_shutdown() {
             "runtime shutdown thread-state cleanup crossed PyGILState custody"
         );
     });
-    if existing_current_thread_state().is_some() {
-        destroy_current_thread_state(
-            ThreadStatePanicBoundary::AbortProcess,
-            ThreadStateDropCustodyMode::ShutdownOwner,
-        );
-    }
+    destroy_current_thread_state(
+        ThreadStatePanicBoundary::AbortProcess,
+        ThreadStateDropCustodyMode::ShutdownOwner,
+        cleanup_runtime_tls,
+    );
 }
 
 fn clear_current_thread_state_for_runtime_thread_exit() {
@@ -4428,6 +4503,7 @@ fn clear_current_thread_state_for_runtime_thread_exit() {
     destroy_current_thread_state(
         ThreadStatePanicBoundary::AbortProcess,
         ThreadStateDropCustodyMode::Acquire,
+        || false,
     );
 }
 
@@ -4922,6 +4998,104 @@ mod thread_state_tests {
             context_value.ob_refcnt, 1,
             "current-context binding owner must be released once"
         );
+    }
+
+    #[test]
+    fn thread_state_drain_quiesces_runtime_cleanup_with_c_managed_edges() {
+        let thread_state = AbiTestThreadStateTransaction::new();
+        let mut context_value = Box::new(PyObject {
+            ob_refcnt: 2,
+            ob_type: ptr::null_mut(),
+        });
+        let context_ptr = &raw mut *context_value;
+        with_thread_state_context(|context| {
+            assert!(context.insert(0xD0A1, context_ptr as usize).is_none());
+        });
+        let cleanup_calls = Cell::new(0);
+
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+            || {
+                assert!(
+                    current_thread_state_attached(),
+                    "runtime TLS cleanup must remain inside the managed drain phase"
+                );
+                let pass = cleanup_calls.get();
+                cleanup_calls.set(pass + 1);
+                false
+            },
+        );
+
+        assert!(existing_current_thread_state().is_none());
+        assert_eq!(
+            cleanup_calls.get(),
+            2,
+            "a non-empty C pass must force another runtime TLS cleanup pass"
+        );
+        assert_eq!(
+            context_value.ob_refcnt, 1,
+            "the C context edge must be released inside the shared drain"
+        );
+        drop(thread_state);
+    }
+
+    #[test]
+    fn runtime_only_thread_state_drain_reaches_fixed_point_without_c_record() {
+        assert!(
+            existing_current_thread_state().is_none(),
+            "runtime-only drain proof inherited a C thread-state record"
+        );
+        let runtime_edges = Cell::new(1u8);
+        let cleanup_calls = Cell::new(0u8);
+
+        let published_c_state = drain_runtime_tls_until_thread_state_or_quiescent(&mut || {
+            let pass = cleanup_calls.get();
+            cleanup_calls.set(pass + 1);
+            if runtime_edges.replace(0) == 0 {
+                return false;
+            }
+            // Model a decref callback from the first detached runtime-TLS edge
+            // repopulating a different runtime-TLS cache. The true activity
+            // result must force another pass even though no C state exists.
+            if pass == 0 {
+                runtime_edges.set(1);
+            }
+            true
+        });
+
+        assert!(!published_c_state);
+        assert_eq!(
+            cleanup_calls.get(),
+            3,
+            "runtime-only true, true, false activity must reach a real fixed point"
+        );
+        assert_eq!(runtime_edges.get(), 0);
+        assert!(
+            existing_current_thread_state().is_none(),
+            "runtime-only activity must not fabricate an empty C thread state"
+        );
+    }
+
+    #[test]
+    fn ordinary_empty_thread_state_drain_does_not_reacquire_runtime_custody() {
+        let thread_state = AbiTestThreadStateTransaction::new();
+        let cleanup_calls = Cell::new(0);
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+            || {
+                cleanup_calls.set(cleanup_calls.get() + 1);
+                false
+            },
+        );
+
+        assert_eq!(cleanup_calls.get(), 0);
+        assert!(
+            existing_current_thread_state().is_none(),
+            "an empty ordinary record must still be retired"
+        );
+        drop(thread_state);
     }
 }
 

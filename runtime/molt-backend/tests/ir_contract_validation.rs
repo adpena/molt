@@ -21,6 +21,44 @@ fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
 }
 
 #[test]
+fn validate_simple_ir_rejects_retired_frame_allocation_before_lowering() {
+    for payload in [None, Some(-1), Some(16), Some(i64::MAX)] {
+        let allocation = OpIR {
+            kind: "object_new_bound_stack".into(),
+            args: Some(vec!["class".into()]),
+            value: payload,
+            out: Some("object".into()),
+            ..OpIR::default()
+        };
+        let mut function = test_func(
+            "retired_frame_escape",
+            vec![
+                allocation,
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["object".into()]),
+                    ..OpIR::default()
+                },
+            ],
+        );
+        function.params.push("class".into());
+        let ir = SimpleIR {
+            functions: vec![function],
+            profile: None,
+        };
+        let error = validate_simple_ir(&ir).expect_err("frame lifetime is unproved");
+        assert!(error.contains("retired compiler operation"));
+        assert!(error.contains("owner-lifetime proof"));
+        let encoded = serde_json::to_string(&ir).unwrap();
+        assert!(
+            SimpleIR::from_json_str(&encoded)
+                .unwrap_err()
+                .contains("retired compiler operation")
+        );
+    }
+}
+
+#[test]
 fn validate_simple_ir_accepts_well_formed_value_uses() {
     let mut c0 = op("const");
     c0.value = Some(1);
@@ -402,27 +440,35 @@ fn validate_simple_ir_accepts_bce_safe_without_container_type() {
 }
 
 #[test]
-fn validate_simple_ir_rejects_arena_eligible_on_non_allocation() {
-    let mut add = op("add");
-    add.args = Some(vec!["lhs".to_string(), "rhs".to_string()]);
-    add.out = Some("sum".to_string());
-    add.arena_eligible = Some(true);
-
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_arena_owner".to_string(),
-            params: vec!["lhs".to_string(), "rhs".to_string()],
-            ops: vec![add],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-    let err = validate_simple_ir(&ir).expect_err("expected arena owner rejection");
-    assert!(err.contains("cannot carry arena_eligible"));
+fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
+    for kind in ["add", "alloc", "alloc_class", "object_new_bound"] {
+        for requested in [false, true] {
+            let mut allocation = op(kind);
+            allocation.args = Some(match kind {
+                "alloc" => vec![],
+                "add" => vec!["lhs".to_string(), "rhs".to_string()],
+                _ => vec!["lhs".to_string()],
+            });
+            allocation.out = Some("result".to_string());
+            allocation.value = Some(16);
+            allocation.arena_eligible = Some(requested);
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "molt_test_validate_arena_owner".to_string(),
+                    params: vec!["lhs".to_string(), "rhs".to_string()],
+                    ops: vec![allocation],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    codegen_partition: false,
+                    execution_context: Default::default(),
+                }],
+                profile: None,
+            };
+            let err = validate_simple_ir(&ir).expect_err("expected arena owner rejection");
+            assert!(err.contains("cannot carry arena_eligible"), "{kind}: {err}");
+        }
+    }
 }
 
 #[test]

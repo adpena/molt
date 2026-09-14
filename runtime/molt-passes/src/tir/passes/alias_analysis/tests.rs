@@ -1,9 +1,11 @@
+use super::super::typed_slot_access::LoadPurity;
 use super::*;
 use crate::tir::analysis::AnalysisManager;
-use crate::tir::blocks::Terminator;
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
+use crate::tir::values::TirValue;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
@@ -65,7 +67,6 @@ fn all_opcodes() -> Vec<OpCode> {
         Alloc,
         StackAlloc,
         ObjectNewBound,
-        ObjectNewBoundStack,
         Free,
         LoadAttr,
         StoreAttr,
@@ -182,7 +183,6 @@ fn assert_opcode_listed(opcode: OpCode) {
         | Alloc
         | StackAlloc
         | ObjectNewBound
-        | ObjectNewBoundStack
         | Free
         | LoadAttr
         | StoreAttr
@@ -371,8 +371,9 @@ fn exception_control_transfer_ops_are_rc_barriers() {
     );
 }
 
-/// `may_observe_slot ⊇ dead_store_elim::may_observe_slot` for every opcode,
-/// in both the aliasing and non-aliasing cases.
+/// `may_observe_slot ⊇ dead_store_elim::may_observe_slot` for every opcode in
+/// the old predicate's aliasing case. Callback-capable operations are now more
+/// conservative and can observe roots absent from their operands.
 #[test]
 fn dse_observe_is_conservative_superset_of_old_may_observe() {
     let root = ValueId(3);
@@ -392,21 +393,64 @@ fn dse_observe_is_conservative_superset_of_old_may_observe() {
             "{opcode:?}: old may_observe_slot=true but new=false (aliasing case) — \
              UNSOUND (would drop an observable store)"
         );
-        // Non-aliasing case: op does not name `root` ⇒ both must be false
-        // (a store-elim observer must alias the object).
-        let non_aliasing = op(opcode, vec![ValueId(60)], vec![ValueId(61)]);
+    }
+}
+
+#[test]
+fn arbitrary_heap_effect_observes_roots_absent_from_operands() {
+    let root = ValueId(3);
+    let res = empty_res();
+    for opcode in [
+        OpCode::Add,
+        OpCode::Index,
+        OpCode::ModuleGetAttr,
+        OpCode::ModuleGetName,
+        OpCode::ModuleImportFrom,
+    ] {
+        let callback = op(opcode, vec![ValueId(40), ValueId(41)], vec![ValueId(42)]);
         assert!(
-            !res.may_observe_slot(&non_aliasing, root),
-            "{opcode:?}: non-aliasing op must not observe slot"
+            res.may_observe_slot(&callback, root),
+            "{opcode:?}: callback can observe a captured root without receiving it"
         );
     }
 }
 
-/// Byte-identical equivalence (not just superset) on the typed-slot store
-/// overwrite semantics, so dead_store_elim keeps eliminating exactly what it
-/// used to.
 #[test]
-fn dse_typed_slot_store_overwrite_matches_old() {
+fn check_exception_callback_effect_is_instance_sensitive() {
+    let root = ValueId(3);
+    let res = empty_res();
+    let plain = op(OpCode::CheckException, vec![], vec![]);
+    assert!(!res.may_observe_slot(&plain, root));
+    assert_eq!(res.region_of(&plain), MemRegion::ScalarRegister);
+
+    let mut poll = plain.clone();
+    assert!(poll.mark_async_work_poll());
+    assert!(res.may_observe_slot(&poll, root));
+    assert_eq!(res.region_of(&poll), MemRegion::GenericHeap);
+}
+
+#[test]
+fn local_memory_operations_cannot_claim_async_work_observation_role() {
+    let mut load = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load");
+    load.attrs.insert("value".into(), AttrValue::Int(0));
+    assert!(!load.can_carry_async_work_poll());
+    assert_eq!(load.plain_typed_slot_load(), Some((ValueId(0), 0)));
+
+    let mut store = op_kind(
+        OpCode::StoreAttr,
+        vec![ValueId(0), ValueId(2)],
+        vec![],
+        "store",
+    );
+    store.attrs.insert("value".into(), AttrValue::Int(0));
+    assert!(!store.can_carry_async_work_poll());
+    assert_eq!(store.plain_typed_slot_store(), Some((ValueId(0), 0)));
+}
+
+/// An ordinary store remains an observer unless the shared pristine-slot
+/// analysis has separately proved its old release callback-free.
+#[test]
+fn typed_slot_store_requires_contextual_release_proof() {
     let root = ValueId(3);
     let val = ValueId(4);
     let res = AliasAnalysisResult {
@@ -415,15 +459,22 @@ fn dse_typed_slot_store_overwrite_matches_old() {
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
     };
-    // store to the SAME root+offset is an overwrite, not an observer.
     let mut store = op(OpCode::StoreAttr, vec![root, val], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     store
         .attrs
         .insert("_original_kind".into(), AttrValue::Str("store".into()));
     assert!(
-        !res.may_observe_slot(&store, root),
-        "same-root store is an overwrite"
+        res.may_observe_slot(&store, root),
+        "replacing store may run an arbitrary old-value destructor"
+    );
+    assert!(
+        !res.may_observe_slot_with_boxed_neutral_old_value(&store, root),
+        "a pristine local root and boxed-neutral old value discharge every release path"
+    );
+    assert!(
+        !res.may_observe_slot_with_boxed_neutral_old_value(&store, ValueId(9)),
+        "a fully discharged replacing store does not observe an unrelated root"
     );
     // store that USES root as the stored value (target != root) observes it.
     let other = ValueId(8);
@@ -443,19 +494,43 @@ fn dse_typed_slot_store_overwrite_matches_old() {
 // ── LoadPurity dunder gate ─────────────────────────────────────────────
 
 #[test]
-fn typed_slot_load_is_proven_pure() {
-    for kind in ["guarded_field_get", "load"] {
-        let o = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], kind);
-        assert_eq!(
-            classify_load(&o),
-            LoadPurity::ProvenPure,
-            "{kind} is a typed slot"
-        );
-    }
+fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
+    let plan = super::super::typed_slot_access::TypedSlotAccessPlan::default();
+    let res = empty_res();
+    let load = with_field_attrs(
+        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        8,
+        Some("Point"),
+    );
+    assert_eq!(
+        plan.load_purity_at((BlockId(0), 0), &load),
+        LoadPurity::MayDispatch
+    );
+    assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
+    assert!(
+        res.may_observe_slot(&load, ValueId(9)),
+        "an unadmitted load fallback may observe a root absent from its operands"
+    );
+
+    let guarded = with_field_attrs(
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0), ValueId(2), ValueId(3)],
+            vec![ValueId(1)],
+            "guarded_field_get",
+        ),
+        8,
+        Some("Point"),
+    );
+    assert_eq!(
+        plan.load_purity_at((BlockId(0), 1), &guarded),
+        LoadPurity::MayDispatch
+    );
 }
 
 #[test]
 fn opaque_attr_load_may_dispatch() {
+    let plan = super::super::typed_slot_access::TypedSlotAccessPlan::default();
     for kind in [
         "get_attr",
         "get_attr_name",
@@ -464,14 +539,17 @@ fn opaque_attr_load_may_dispatch() {
     ] {
         let o = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], kind);
         assert_eq!(
-            classify_load(&o),
+            plan.load_purity_at((BlockId(0), 0), &o),
             LoadPurity::MayDispatch,
             "{kind} can dispatch __getattr__/__getattribute__"
         );
     }
     // A LoadAttr with no kind annotation is conservatively opaque.
     let bare = op(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)]);
-    assert_eq!(classify_load(&bare), LoadPurity::MayDispatch);
+    assert_eq!(
+        plan.load_purity_at((BlockId(0), 0), &bare),
+        LoadPurity::MayDispatch
+    );
 }
 
 #[test]
@@ -482,7 +560,11 @@ fn index_always_may_dispatch() {
         vec![ValueId(0), ValueId(1)],
         vec![ValueId(2)],
     );
-    assert_eq!(classify_load(&o), LoadPurity::MayDispatch);
+    assert_eq!(
+        super::super::typed_slot_access::TypedSlotAccessPlan::default()
+            .load_purity_at((BlockId(0), 0), &o),
+        LoadPurity::MayDispatch
+    );
 }
 
 // ── MemRegion may-alias ────────────────────────────────────────────────
@@ -494,11 +576,11 @@ fn scalar_register_aliases_nothing() {
         MemRegion::GenericHeap,
         MemRegion::ContainerElement,
         MemRegion::ModuleDict,
-        MemRegion::TypedField {
-            class: "Point".into(),
+        MemRegion::Field {
+            allocation: None,
             offset: 0,
         },
-        MemRegion::StackObject { root: ValueId(1) },
+        MemRegion::LocalAllocation { root: ValueId(1) },
         MemRegion::ScalarRegister,
     ] {
         assert!(!scalar.may_alias(&other));
@@ -507,32 +589,126 @@ fn scalar_register_aliases_nothing() {
 }
 
 #[test]
-fn distinct_typed_fields_are_disjoint() {
-    let f0 = MemRegion::TypedField {
-        class: "Point".into(),
+fn field_aliasing_uses_allocation_identity_and_word_overlap() {
+    let unknown0 = MemRegion::Field {
+        allocation: None,
         offset: 0,
     };
-    let f8 = MemRegion::TypedField {
-        class: "Point".into(),
+    let unknown8 = MemRegion::Field {
+        allocation: None,
         offset: 8,
     };
-    let g0 = MemRegion::TypedField {
-        class: "Line".into(),
+    let first0 = MemRegion::Field {
+        allocation: Some(ValueId(1)),
         offset: 0,
     };
-    assert!(!f0.may_alias(&f8), "different offset ⇒ disjoint");
-    assert!(!f0.may_alias(&g0), "different class ⇒ disjoint");
-    assert!(f0.may_alias(&f0.clone()), "same class+offset ⇒ may alias");
+    let first8 = MemRegion::Field {
+        allocation: Some(ValueId(1)),
+        offset: 8,
+    };
+    let second0 = MemRegion::Field {
+        allocation: Some(ValueId(2)),
+        offset: 0,
+    };
+    assert!(
+        unknown0.may_alias(&first0),
+        "unknown receiver may be allocation 1"
+    );
+    assert!(
+        unknown0.may_alias(&second0),
+        "unknown receiver may be allocation 2"
+    );
+    assert!(
+        !unknown0.may_alias(&unknown8),
+        "different words are disjoint"
+    );
+    assert!(!first0.may_alias(&first8), "different words are disjoint");
+    assert!(
+        first0.may_alias(&first0.clone()),
+        "same allocation and word may alias"
+    );
+    assert!(
+        !first0.may_alias(&second0),
+        "distinct proven allocations are disjoint"
+    );
 }
 
 #[test]
-fn distinct_stack_objects_are_disjoint() {
-    let a = MemRegion::StackObject { root: ValueId(1) };
-    let b = MemRegion::StackObject { root: ValueId(2) };
+fn distinct_local_allocations_are_disjoint() {
+    let a = MemRegion::LocalAllocation { root: ValueId(1) };
+    let b = MemRegion::LocalAllocation { root: ValueId(2) };
     assert!(!a.may_alias(&b));
     assert!(a.may_alias(&a.clone()));
-    // A stack object never aliases generic heap (it is proven non-escaping).
-    assert!(!a.may_alias(&MemRegion::GenericHeap));
+    // Callback/destruction effects remain observable regardless of placement.
+    assert!(a.may_alias(&MemRegion::GenericHeap));
+    assert!(MemRegion::GenericHeap.may_alias(&a));
+}
+
+#[test]
+fn field_alias_matrix_preserves_word_overlap_and_callback_barriers() {
+    let field = MemRegion::Field {
+        allocation: Some(ValueId(1)),
+        offset: 0,
+    };
+    for (other, expected) in [
+        (
+            MemRegion::Field {
+                allocation: Some(ValueId(1)),
+                offset: 0,
+            },
+            true,
+        ),
+        (
+            MemRegion::Field {
+                allocation: Some(ValueId(1)),
+                offset: 7,
+            },
+            true,
+        ),
+        (
+            MemRegion::Field {
+                allocation: Some(ValueId(1)),
+                offset: 8,
+            },
+            false,
+        ),
+        (
+            MemRegion::Field {
+                allocation: Some(ValueId(2)),
+                offset: 0,
+            },
+            false,
+        ),
+        (MemRegion::LocalAllocation { root: ValueId(1) }, true),
+        (MemRegion::LocalAllocation { root: ValueId(2) }, false),
+        (
+            MemRegion::Field {
+                allocation: None,
+                offset: 0,
+            },
+            true,
+        ),
+        (MemRegion::ModuleDict, false),
+        (MemRegion::ContainerElement, false),
+        (MemRegion::GenericHeap, true),
+        (MemRegion::ScalarRegister, false),
+    ] {
+        assert_eq!(field.may_alias(&other), expected, "{other:?}");
+        assert_eq!(other.may_alias(&field), expected, "symmetric {other:?}");
+    }
+    let field = |offset| MemRegion::Field {
+        allocation: None,
+        offset,
+    };
+    assert!(
+        field(0).may_alias(&field(7)),
+        "partial boxed-word overlap is not disjoint"
+    );
+    assert!(!field(0).may_alias(&field(8)));
+    assert!(
+        !field(0).may_alias(&field(i64::MAX)),
+        "extent checks cannot overflow"
+    );
 }
 
 #[test]
@@ -541,8 +717,8 @@ fn generic_heap_aliases_opaque_regions() {
     assert!(g.may_alias(&MemRegion::ContainerElement));
     assert!(g.may_alias(&MemRegion::ModuleDict));
     assert!(g.may_alias(&MemRegion::GenericHeap));
-    assert!(g.may_alias(&MemRegion::TypedField {
-        class: "P".into(),
+    assert!(g.may_alias(&MemRegion::Field {
+        allocation: None,
         offset: 0
     }));
 }
@@ -835,32 +1011,149 @@ fn escape_map_matches_escape_analysis_and_caches() {
 }
 
 #[test]
-fn region_of_classifies_pure_compute_as_scalar() {
+fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     let add = op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
-    let res = AliasAnalysisResult {
+    let dynamic = AliasAnalysisResult {
         exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::new(),
         alloc_roots: HashSet::new(),
     };
-    assert_eq!(res.region_of(&add), MemRegion::ScalarRegister);
+    assert_eq!(dynamic.region_of(&add), MemRegion::GenericHeap);
     let idx = op(
         OpCode::Index,
         vec![ValueId(0), ValueId(1)],
         vec![ValueId(2)],
     );
-    assert_eq!(res.region_of(&idx), MemRegion::ContainerElement);
-    let mcg = op(
+    assert_eq!(dynamic.region_of(&idx), MemRegion::GenericHeap);
+    let module_callback = op(
         OpCode::ModuleGetGlobal,
         vec![ValueId(0), ValueId(1)],
         vec![ValueId(2)],
     );
-    assert_eq!(res.region_of(&mcg), MemRegion::ModuleDict);
+    assert_eq!(dynamic.region_of(&module_callback), MemRegion::GenericHeap);
+    let cache_get = op(OpCode::ModuleCacheGet, vec![ValueId(0)], vec![ValueId(2)]);
+    assert_eq!(dynamic.region_of(&cache_get), MemRegion::ModuleDict);
+
+    let exact = AliasAnalysisResult {
+        exact_scalar_types: HashMap::from([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]),
+        aliases: AliasUnionFind::default(),
+        escape: HashMap::new(),
+        alloc_roots: HashSet::new(),
+    };
+    assert_eq!(exact.region_of(&add), MemRegion::ScalarRegister);
+    assert!(!exact.may_observe_slot(&add, ValueId(9)));
 }
 
-// ── region_of: class-aware TypedField regions (S5-1.5) ─────────────────
+#[test]
+fn allocation_callback_boundaries_preserve_only_independent_slot_facts() {
+    let res = empty_res();
+    let stored_root = ValueId(0);
+    let independent = ValueId(1);
 
-/// Set the offset + class attrs on a typed-slot field op.
+    for opcode in [
+        OpCode::Alloc,
+        OpCode::StackAlloc,
+        OpCode::BuildList,
+        OpCode::BuildTuple,
+        OpCode::BuildSlice,
+    ] {
+        let allocation = op(opcode, vec![independent], vec![ValueId(2)]);
+        assert!(
+            !res.may_observe_slot(&allocation, stored_root),
+            "{opcode:?} must preserve a pristine unrelated slot"
+        );
+    }
+
+    for opcode in [OpCode::BuildDict, OpCode::BuildSet, OpCode::ObjectNewBound] {
+        let allocation = op(opcode, vec![independent], vec![ValueId(2)]);
+        assert!(
+            res.may_observe_slot(&allocation, stored_root),
+            "{opcode:?} must retain its callback/finalizer floor"
+        );
+    }
+
+    for opcode in [OpCode::BuildList, OpCode::BuildTuple] {
+        let capturing_allocation = op(opcode, vec![stored_root], vec![ValueId(2)]);
+        assert!(
+            res.may_observe_slot(&capturing_allocation, stored_root),
+            "{opcode:?} must still observe a retained source root"
+        );
+    }
+}
+
+#[test]
+fn raw_allocation_writes_share_proven_local_storage_without_erasing_effects() {
+    let root = ValueId(2);
+    let mut res = empty_res();
+    res.escape.insert(root, EscapeState::NoEscape);
+    res.alloc_roots.insert(root);
+    for opcode in [OpCode::Alloc, OpCode::StackAlloc] {
+        let mut allocation = op(opcode, vec![], vec![root]);
+        allocation.attrs.insert("value".into(), AttrValue::Int(8));
+        assert_eq!(
+            res.region_of(&allocation),
+            MemRegion::LocalAllocation { root }
+        );
+        assert!(!res.region_of(&allocation).may_alias(&MemRegion::ModuleDict));
+        assert!(
+            res.region_of(&allocation)
+                .may_alias(&MemRegion::GenericHeap)
+        );
+        assert!(
+            res.region_of(&allocation)
+                .may_alias(&MemRegion::LocalAllocation { root })
+        );
+        assert!(
+            !super::super::effects::op_is_pure_movable_with_types(
+                &allocation,
+                &res.exact_scalar_types,
+            ),
+            "storage disjointness must not make allocation pure or movable"
+        );
+        let field = with_field_attrs(
+            op_kind(OpCode::StoreAttr, vec![root, ValueId(1)], vec![], "store"),
+            0,
+            None,
+        );
+        assert_eq!(res.region_of(&field), MemRegion::GenericHeap);
+
+        let mut captured = res.clone();
+        captured.escape.insert(root, EscapeState::GlobalEscape);
+        assert_eq!(captured.region_of(&allocation), MemRegion::GenericHeap);
+        assert_eq!(empty_res().region_of(&allocation), MemRegion::GenericHeap);
+        for results in [vec![], vec![root, ValueId(3)]] {
+            allocation.results = results;
+            assert_eq!(res.region_of(&allocation), MemRegion::GenericHeap);
+        }
+    }
+}
+
+#[test]
+fn fresh_result_identity_does_not_disprove_constructor_or_poll_callbacks() {
+    let root = ValueId(2);
+    let mut res = empty_res();
+    res.escape.insert(root, EscapeState::NoEscape);
+    res.alloc_roots.insert(root);
+    for opcode in [
+        OpCode::ObjectNewBound,
+        OpCode::BuildDict,
+        OpCode::BuildSet,
+        OpCode::AllocTask,
+    ] {
+        let constructor = op(opcode, vec![ValueId(0)], vec![root]);
+        assert_eq!(res.region_of(&constructor), MemRegion::GenericHeap);
+    }
+    let named_constructor = op_kind(OpCode::Copy, vec![ValueId(0)], vec![root], "alloc_class");
+    assert_eq!(res.region_of(&named_constructor), MemRegion::GenericHeap);
+    let mut poll = op(OpCode::CheckException, vec![], vec![]);
+    assert!(poll.mark_async_work_poll());
+    assert_eq!(res.region_of(&poll), MemRegion::GenericHeap);
+}
+
+// ── region_of: direct physical field regions ─────────────────────
+
+/// Set the physical offset and optional frontend class metadata on a field op.
 fn with_field_attrs(mut o: TirOp, offset: i64, class: Option<&str>) -> TirOp {
     o.attrs.insert("value".into(), AttrValue::Int(offset));
     if let Some(c) = class {
@@ -879,22 +1172,23 @@ fn empty_res() -> AliasAnalysisResult {
 }
 
 #[test]
-fn plain_load_store_classify_as_typed_field_from_class_attr() {
+fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
     let res = empty_res();
-    // `load obj.<8>` of class Point  (operands [obj], offset 8).
+    // `_class` documents frontend provenance but does not admit or identify the
+    // physical field region.
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         8,
         Some("Point"),
     );
     assert_eq!(
-        res.region_of(&load),
-        MemRegion::TypedField {
-            class: "Point".into(),
+        res.typed_slot_region(&load),
+        MemRegion::Field {
+            allocation: None,
             offset: 8
         }
     );
-    // `store obj.<16> = val` of class Line (operands [obj, val], offset 16).
+    assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
     let store = with_field_attrs(
         op_kind(
             OpCode::StoreAttr,
@@ -905,31 +1199,40 @@ fn plain_load_store_classify_as_typed_field_from_class_attr() {
         16,
         Some("Line"),
     );
+    // Store release behavior is site-contextual, so only the retained typed
+    // store plan may refine it beyond GenericHeap.
+    assert_eq!(res.region_of(&store), MemRegion::GenericHeap);
+}
+
+#[test]
+fn base_and_derived_metadata_cannot_disambiguate_one_physical_field() {
+    let res = empty_res();
+    let base_load = with_field_attrs(
+        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        24,
+        Some("Base"),
+    );
+    let derived_load = with_field_attrs(
+        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(2)], "load"),
+        24,
+        Some("Derived"),
+    );
+    let base_region = res.typed_slot_region(&base_load);
+    let derived_region = res.typed_slot_region(&derived_load);
     assert_eq!(
-        res.region_of(&store),
-        MemRegion::TypedField {
-            class: "Line".into(),
-            offset: 16
+        base_region,
+        MemRegion::Field {
+            allocation: None,
+            offset: 24,
         }
     );
-    // `store_init` is also a typed-slot store.
-    let init = with_field_attrs(
-        op_kind(
-            OpCode::StoreAttr,
-            vec![ValueId(0), ValueId(2)],
-            vec![],
-            "store_init",
-        ),
-        0,
-        Some("Point"),
+    assert_eq!(base_region, derived_region);
+    assert!(
+        base_region.may_alias(&derived_region),
+        "inherited Base/Derived views can name the same boxed word"
     );
-    assert_eq!(
-        res.region_of(&init),
-        MemRegion::TypedField {
-            class: "Point".into(),
-            offset: 0
-        }
-    );
+    assert_eq!(res.region_of(&base_load), MemRegion::GenericHeap);
+    assert_eq!(res.region_of(&derived_load), MemRegion::GenericHeap);
 }
 
 /// A `Copy` is classified by whether it touches heap memory: a pure SSA
@@ -1005,7 +1308,7 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
 }
 
 #[test]
-fn guarded_field_get_3operand_abi_classifies_as_typed_field() {
+fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
     // `guarded_field_get` ABI: operands [obj, class_bits, expected_version],
     // offset in `value`, class in `_class`. obj is operand[0].
     let res = empty_res();
@@ -1019,40 +1322,30 @@ fn guarded_field_get_3operand_abi_classifies_as_typed_field() {
         24,
         Some("Account"),
     );
+    assert_eq!(res.region_of(&get), MemRegion::GenericHeap);
     assert_eq!(
-        res.region_of(&get),
-        MemRegion::TypedField {
-            class: "Account".into(),
-            offset: 24
-        }
+        super::super::typed_slot_access::TypedSlotAccessPlan::default()
+            .load_purity_at((BlockId(0), 0), &get),
+        LoadPurity::MayDispatch
     );
 }
 
 #[test]
-fn guarded_field_set_4operand_abi_classifies_as_typed_field() {
+fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
     // `guarded_field_set` ABI: operands [obj, class_bits, expected_version,
     // val], offset in `value`, class in `_class`. obj is operand[0].
     let res = empty_res();
-    for kind in ["guarded_field_set", "guarded_field_init"] {
-        let set = with_field_attrs(
-            op_kind(
-                OpCode::StoreAttr,
-                vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
-                vec![],
-                kind,
-            ),
-            32,
-            Some("Account"),
-        );
-        assert_eq!(
-            res.region_of(&set),
-            MemRegion::TypedField {
-                class: "Account".into(),
-                offset: 32
-            },
-            "{kind} on operand[0]=obj is a TypedField"
-        );
-    }
+    let set = with_field_attrs(
+        op_kind(
+            OpCode::StoreAttr,
+            vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
+            vec![],
+            "guarded_field_set",
+        ),
+        32,
+        Some("Account"),
+    );
+    assert_eq!(res.region_of(&set), MemRegion::GenericHeap);
 
     let rejected = with_field_attrs(
         op_kind(
@@ -1072,14 +1365,22 @@ fn guarded_field_set_4operand_abi_classifies_as_typed_field() {
 }
 
 #[test]
-fn typed_slot_without_class_attr_fails_closed_to_generic_heap() {
-    // FAIL-CLOSED: a typed-slot kind with offset but NO `_class` proof stays
-    // GenericHeap (a pre-S5-1.5 cached artifact, or a dropped attr).
+fn direct_field_without_class_attr_uses_unknown_allocation_identity() {
+    // Exact load shape and offset admit the field. Missing `_class` metadata
+    // does not erase its physical footprint or mint object identity. Ordinary
+    // stores remain GenericHeap without site-specific release-neutral proof.
     let res = empty_res();
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         8,
         None,
+    );
+    assert_eq!(
+        res.typed_slot_region(&load),
+        MemRegion::Field {
+            allocation: None,
+            offset: 8,
+        }
     );
     assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
     let store = with_field_attrs(
@@ -1127,71 +1428,137 @@ fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
 }
 
 #[test]
-fn non_escaping_object_field_is_stack_object_even_without_class() {
-    // A field op on a proven-non-escaping object root gets the per-object
-    // `StackObject` region — derived from the allocation root ALONE, so it
-    // stays precise even when the op carries no `_class` attr.
+fn exact_allocation_field_keeps_identity_independent_of_class_and_escape() {
+    // Exact allocation-site identity, not `_class` or escape placement, admits
+    // the per-allocation field refinement.
     let root = ValueId(0);
     let mut escape = HashMap::new();
-    escape.insert(root, EscapeState::NoEscape);
+    escape.insert(root, EscapeState::GlobalEscape);
     let res = AliasAnalysisResult {
         exact_scalar_types: HashMap::new(),
         aliases: AliasUnionFind::default(),
         escape,
         alloc_roots: [root].into_iter().collect(),
     };
-    // No `_class` attr, but the root is non-escaping ⇒ StackObject.
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
         8,
         None,
     );
-    assert_eq!(res.region_of(&load), MemRegion::StackObject { root });
-    // With a class attr too, StackObject still wins (more precise than the
-    // class-shared TypedField).
+    assert_eq!(
+        res.typed_slot_region(&load),
+        MemRegion::Field {
+            allocation: Some(root),
+            offset: 8,
+        }
+    );
+    assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
+    // Class metadata cannot change allocation identity.
     let load_c = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
         8,
         Some("Point"),
     );
-    assert_eq!(res.region_of(&load_c), MemRegion::StackObject { root });
+    assert_eq!(
+        res.typed_slot_region(&load_c),
+        MemRegion::Field {
+            allocation: Some(root),
+            offset: 8,
+        }
+    );
+    assert_eq!(res.region_of(&load_c), MemRegion::GenericHeap);
 }
 
-// ── may_alias matrix: TypedField vs every region ───────────────────────
+#[test]
+fn cfg_parameter_that_may_select_external_does_not_mint_allocation_identity() {
+    let mut func = TirFunction::new(
+        "mixed_field_receiver".into(),
+        vec![TirType::DynBox, TirType::Bool],
+        TirType::DynBox,
+    );
+    let external = ValueId(0);
+    let control = ValueId(1);
+    let allocation = func.fresh_value();
+    let parameter = func.fresh_value();
+    let loaded = func.fresh_value();
+    let join = func.fresh_block();
+
+    let mut alloc = op(OpCode::Alloc, vec![], vec![allocation]);
+    alloc.attrs.insert("value".into(), AttrValue::Int(16));
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(alloc);
+    entry.terminator = Terminator::CondBranch {
+        cond: control,
+        then_block: join,
+        then_args: vec![allocation],
+        else_block: join,
+        else_args: vec![external],
+    };
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: parameter,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![with_field_attrs(
+                op_kind(OpCode::LoadAttr, vec![parameter], vec![loaded], "load"),
+                0,
+                None,
+            )],
+            terminator: Terminator::Return {
+                values: vec![loaded],
+            },
+        },
+    );
+
+    let res = AliasAnalysisResult::compute(&func);
+    assert!(res.alloc_roots.contains(&res.root(allocation)));
+    assert!(
+        !res.alloc_roots.contains(&res.root(parameter)),
+        "a CFG merge that may select an external object is not an allocation definition"
+    );
+    assert_eq!(
+        res.typed_slot_region(&func.blocks[&join].ops[0]),
+        MemRegion::Field {
+            allocation: None,
+            offset: 0,
+        }
+    );
+    assert_eq!(
+        res.region_of(&func.blocks[&join].ops[0]),
+        MemRegion::GenericHeap
+    );
+}
+
+// ── may_alias matrix: Field vs every region ───────────────────────────
 
 #[test]
-fn typed_field_may_alias_matrix() {
-    let pt0 = MemRegion::TypedField {
-        class: "Point".into(),
+fn field_may_alias_matrix() {
+    let unknown0 = MemRegion::Field {
+        allocation: None,
         offset: 0,
     };
-    let pt8 = MemRegion::TypedField {
-        class: "Point".into(),
+    let unknown8 = MemRegion::Field {
+        allocation: None,
         offset: 8,
     };
-    let ln0 = MemRegion::TypedField {
-        class: "Line".into(),
+    let known0 = MemRegion::Field {
+        allocation: Some(ValueId(1)),
         offset: 0,
     };
-    // Same class+offset ⇒ may-alias (object identity untracked, oblig. (b)).
-    assert!(pt0.may_alias(&pt0.clone()));
-    // Different offset ⇒ disjoint.
-    assert!(!pt0.may_alias(&pt8));
-    // Different class ⇒ disjoint (oblig. (a): distinct classes never share).
-    assert!(!pt0.may_alias(&ln0));
-    // TypedField vs ContainerElement ⇒ disjoint (oblig. (a)).
-    assert!(!pt0.may_alias(&MemRegion::ContainerElement));
-    assert!(!MemRegion::ContainerElement.may_alias(&pt0));
-    // TypedField vs ModuleDict ⇒ disjoint (oblig. (a)).
-    assert!(!pt0.may_alias(&MemRegion::ModuleDict));
-    assert!(!MemRegion::ModuleDict.may_alias(&pt0));
-    // TypedField vs GenericHeap ⇒ may-alias (oblig. (c): opaque clobbers).
-    assert!(pt0.may_alias(&MemRegion::GenericHeap));
-    assert!(MemRegion::GenericHeap.may_alias(&pt0));
-    // TypedField vs ScalarRegister ⇒ disjoint (no heap footprint).
-    assert!(!pt0.may_alias(&MemRegion::ScalarRegister));
-    // TypedField vs a distinct StackObject ⇒ disjoint (different object).
-    assert!(!pt0.may_alias(&MemRegion::StackObject { root: ValueId(9) }));
+    assert!(unknown0.may_alias(&known0));
+    assert!(!unknown0.may_alias(&unknown8));
+    assert!(!known0.may_alias(&MemRegion::ContainerElement));
+    assert!(!MemRegion::ContainerElement.may_alias(&known0));
+    assert!(!known0.may_alias(&MemRegion::ModuleDict));
+    assert!(!MemRegion::ModuleDict.may_alias(&known0));
+    assert!(known0.may_alias(&MemRegion::GenericHeap));
+    assert!(MemRegion::GenericHeap.may_alias(&known0));
+    assert!(!known0.may_alias(&MemRegion::ScalarRegister));
+    assert!(!known0.may_alias(&MemRegion::LocalAllocation { root: ValueId(9) }));
+    assert!(unknown0.may_alias(&MemRegion::LocalAllocation { root: ValueId(9) }));
 }
 
 /// Borrow provenance (design 20 interior-borrow keepalive). A `LoadAttr` /

@@ -100,7 +100,7 @@ impl FactProfile {
                 profile.note_value(arg.id, &arg.ty, &repr_by_value, &mut seen_values);
             }
             for op in &block.ops {
-                profile.note_op(func, op);
+                profile.note_op(op, &repr_by_value);
             }
         }
 
@@ -127,7 +127,7 @@ impl FactProfile {
         *self.repr_counts.entry(repr_name).or_default() += 1;
     }
 
-    fn note_op(&mut self, func: &TirFunction, op: &TirOp) {
+    fn note_op(&mut self, op: &TirOp, repr_by_value: &HashMap<ValueId, Repr>) {
         self.ops += 1;
         *self
             .op_counts
@@ -143,7 +143,7 @@ impl FactProfile {
         }
         if facts.generic_call {
             self.generic_calls += 1;
-            self.note_call_results(func, op);
+            self.note_call_results(op, repr_by_value);
         }
         if facts.direct_call {
             self.direct_calls += 1;
@@ -177,13 +177,9 @@ impl FactProfile {
         }
     }
 
-    fn note_call_results(&mut self, func: &TirFunction, op: &TirOp) {
+    fn note_call_results(&mut self, op: &TirOp, repr_by_value: &HashMap<ValueId, Repr>) {
         for result in &op.results {
-            let repr = func
-                .value_types
-                .get(result)
-                .map(Repr::default_for)
-                .unwrap_or(Repr::DynBox);
+            let repr = repr_by_value.get(result).copied().unwrap_or(Repr::DynBox);
             if repr == Repr::DynBox {
                 self.call_results_dynbox += 1;
             } else {

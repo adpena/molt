@@ -61,7 +61,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
         // Infer result types from operand-independent producers.
         for op in &block.ops {
-            if !op.has_valid_result_arity() {
+            if !op.has_valid_shape() {
                 continue;
             }
             for (index, &res) in op.results.iter().enumerate() {

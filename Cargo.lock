@@ -3013,6 +3013,7 @@ dependencies = [
  "libc",
  "memmap2",
  "molt-ir",
+ "num-integer",
  "rayon",
  "rmp-serde",
  "serde",

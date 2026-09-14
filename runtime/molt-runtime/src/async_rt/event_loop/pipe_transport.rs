@@ -80,20 +80,25 @@ impl PipeTransportRegistry {
         }
     }
 
-    pub(crate) fn clear(&self) {
+    pub(crate) fn clear(&self) -> bool {
         let transports = {
             let mut guard = self.transports.lock().unwrap();
             std::mem::take(&mut *guard)
         };
+        let changed = !transports.is_empty();
         #[cfg(not(target_arch = "wasm32"))]
         {
             for (_, mut state) in transports {
                 close_pipe_transport_state(&mut state);
             }
-            self.next_handle.store(1, Ordering::Relaxed);
+            // Draining owners does not start a new registry identity epoch.
+            changed
         }
         #[cfg(target_arch = "wasm32")]
-        drop(transports);
+        {
+            drop(transports);
+            changed
+        }
     }
 }
 

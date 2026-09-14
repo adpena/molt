@@ -5,10 +5,9 @@ use molt_runtime::{
     lifecycle, molt_bigint_from_str, molt_bytes_from_bytes, molt_string_from_bytes,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/string_from_bytes_alignment"
+));
 
 fn init_runtime() {
     static ONCE: Once = Once::new();

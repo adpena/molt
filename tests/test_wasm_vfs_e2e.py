@@ -138,11 +138,14 @@ def test_snapshot_generation(tmp_path):
 
     # Check snapshot was generated
     snapshot = output.with_name("molt.snapshot.json")
-    if snapshot.exists():
-        data = json.loads(snapshot.read_text())
-        assert "snapshot_version" in data
-        assert "module_hash" in data
-        assert "integrity_hash" in data
+    assert snapshot.is_file(), f"Requested snapshot metadata missing: {snapshot}"
+    data = json.loads(snapshot.read_text())
+    assert data["snapshot_version"] == 2
+    assert data["artifact_kind"] == "metadata-template"
+    assert data["restorable"] is False
+    assert "execution_identity" in data
+    assert data["payload_hash"] is None
+    assert data["integrity_hash"] is None
 
 
 @pytest.mark.slow

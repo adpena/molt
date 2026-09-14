@@ -3,10 +3,9 @@
 use molt_obj_model::MoltObject;
 use std::sync::Once;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/test_comparisons"
+));
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;

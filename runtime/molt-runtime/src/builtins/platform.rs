@@ -85,10 +85,13 @@ fn init_platform_cached_owned_bits(
     bits
 }
 
-pub(crate) fn platform_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+pub(crate) fn platform_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
     crate::gil_assert();
     let slots = state.platform.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
+    crate::state::cache::clear_atomic_slots(_py, &slots)
 }
 
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
@@ -972,7 +975,9 @@ fn cext_loader_dlopen(
 ) -> Result<(), String> {
     // Initialize the CPython ABI bridge and register runtime hooks (idempotent).
     molt_cpython_abi::bridge::molt_cpython_abi_init();
-    crate::cpython_abi_hooks::register_cpython_hooks();
+    if !crate::cpython_abi_hooks::register_cpython_hooks() {
+        return Err("process-static C extensions require the primary runtime".into());
+    }
 
     // For "pkg.mod", use "mod" as the init function suffix.
     let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
@@ -3437,7 +3442,9 @@ fn importlib_try_cext_on_sys_path(
         if let Some(ext_path) = importlib_find_extension_module(dir, module_name) {
             // Found a candidate – attempt dlopen.
             molt_cpython_abi::bridge::molt_cpython_abi_init();
-            crate::cpython_abi_hooks::register_cpython_hooks();
+            if !crate::cpython_abi_hooks::register_cpython_hooks() {
+                return None;
+            }
 
             let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
             let path_obj = std::path::Path::new(&ext_path);

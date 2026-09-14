@@ -8,6 +8,12 @@ it never duplicates or contradicts them. Council Operating Doctrine (CLAUDE.md,
 
 # 55 — Memory Safety via the Ownership Lattice (the P0 keystone)
 
+Historical June 2026 design. Designs 20 and 49 own current executable lifetime
+and field contracts. The compiler's heap-RC stripping, `DecRef→Free`, automatic
+frame promotion and unproved class-frame operation have been retired. Proposed
+fact refinements below must not recreate those lanes from absent flags or
+nonescape; positive storage/lifetime proofs and target execution remain required.
+
 ## 0. END-STATE (stated crisply)
 
 **A finalizer / resurrection / weakref interaction can no longer produce memory
@@ -119,7 +125,7 @@ emphatically NOT a rewrite of drop_insertion.
 
 | Structural fact (rung 2/4) | Where it lives | Class it makes unexpressible |
 |---|---|---|
-| `MayFinalize(class)` — class/MRO/version cached `__del__` reachability | already `HEADER_FLAG_CLASS_HAS_FINALIZER`; lift to a TIR `LifetimeClassFacts` row | `__del__` skipped or run at wrong time (doc 48/50 #58) |
+| `MayFinalize(class)` — current MRO declaration reachability | [Runtime declaration authority](48_finalizer_region_deferred_drain.md); compile-time positive facts are not absence proofs | `__del__` skipped or run at wrong time (doc 48/50 #58) |
 | `HasWeakrefs(class)` — class supports weakref OR any live `weakref.ref`/`proxy`/`WeakValueDictionary` targets an instance | NEW `HEADER_FLAG_CLASS_SUPPORTS_WEAKREF` + TIR fact | weakref left dangling past free; `Free` skipping `weakref_clear_for_ptr` (object/mod.rs:2173) → UAF on later weakref deref |
 | `MayResurrect(class)` — `MayFinalize` ∧ `__del__` can re-root self (conservatively = `MayFinalize`) | derived from `MayFinalize` | dealloc counted before resurrection check → phantom-no-leak; Free bypassing the rc 0→1 abort (object/mod.rs:1949-1953) → free of a resurrected object |
 | `InnerRefOrdering(class)` — object owns inner refs whose release order is observable (`__del__` reads a field, or finalizer order across a container) | derived: `MayFinalize` ∧ `HEADER_FLAG_HAS_PTRS` | field freed before `__del__` reads it; out-of-order container teardown |
@@ -158,7 +164,7 @@ Two layers, one source of truth:
 
 - **Runtime/class layer** (`runtime/molt-runtime/src/object/mod.rs`): the
   existing per-class header flags are the cached, version-refreshed source.
-  - `HEADER_FLAG_CLASS_HAS_FINALIZER` (mod.rs:472 region) — EXISTS.
+  - Finalizer declaration and current-MRO projection: [design 48](48_finalizer_region_deferred_drain.md). No cached inherited negative fact.
   - `HEADER_FLAG_CLASS_SUPPORTS_WEAKREF` — NEW, set when a class's `__slots__`
     omits `__weakref__` suppression / the type allows weakrefs (CPython
     `tp_weaklistoffset != 0`). Refreshed on the same MRO/version-change hook that
@@ -456,13 +462,11 @@ Widen Python-lifetime-boundary placement from `MayFinalize` to `¬Trivial`.
 
 The keystone safety lowering. `Free` becomes a `Trivial`-unique `DecRef` lowering.
 
-- **Files:** `refcount_elim.rs` Step 6 (lines 621-718): replace the
-  finalizer-only guard with `is_trivial_lifetime_root` (§2.3); update the Step-6
-  FinalizerSensitive guard tests (lines 1566-1700) to cover all four classes.
-  Doc 20 §1.2 line 47 ownership-table row re-documented. Backend `Free` lowerings
-  (native simple_backend, llvm_backend/lowering, lower_to_wasm, luau) audited to
-  confirm they lower to the finalizer-free *tail*, not a path that could re-enter
-  finalizer dispatch.
+- **Current resolution:** the `DecRef→Free` rewrite is deleted, not retained
+  behind a wider negative flag test. Future destruction optimizations must share
+  the current runtime lifecycle and prove the entire owned-edge protocol;
+  Design 20 owns that contract. The historical gates below remain regression
+  scenarios, not instructions to reconstruct Step 6.
 - **Gate (G3):**
   - `cargo test -p molt-backend --lib --features "native-backend llvm
     luau-backend wasm-backend" refcount_elim` — extend the Step-6 guard tests:
@@ -606,14 +610,10 @@ backends; regressions zero or explicitly tracked."
   fact's runtime counterpart (do not add a second field-release authority — doc 49
   rule 1). Doc 48's `maybe_run_object_finalizer` is the SOLE finalizer authority
   M3's `Free` demotion protects.
-- **Perceus borrow inference (doc 27)** and **escape analysis**: both consume
-  `LifetimeClassFacts` for stack-allocation / RC-strip eligibility (the council's
-  "consumed by escape + refcount-elim + stack-alloc + Free-eligibility +
-  ownership-lowering"). Escape analysis already declines stack-promotion for
-  finalizer roots (escape_analysis.rs finalizer guard, doc 48 status); generalize
-  to `¬Trivial`. **Perf depends on this fact-plane** (the Performance
-  Constitution "fix the REPRESENTATION": dynamic dispatch/RC overhead → ownership
-  facts) — this arc supplies the fact perf later optimizes against.
+- **Perceus borrow inference (doc 27)** and **capture analysis** must consume
+  common positive ownership facts. Capture analysis does not rewrite storage,
+  and negative lifetime masks do not establish RC freedom. Current consumers
+  are described once in Designs 20/49 and `lifetime_class_facts.md` section 3.
 - **Bootstrap (CLAUDE.md Bootstrap Authority)**: `classmethod`/`staticmethod`/
   `property` type objects come from runtime bootstrap intrinsics; M1's
   class-flag refresh must run *after* those types exist (use the existing

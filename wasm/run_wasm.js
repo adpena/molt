@@ -28,6 +28,7 @@ const {
   reservedRuntimeCallablesFromManifest,
   resolveWasmTableBase,
   callableTableSignature,
+  runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
   verifyCallableTableEntries,
@@ -154,6 +155,11 @@ const withRuntimeExecution = (runtimeInst, operation) => {
     throw new Error('runtime returned an empty execution-boundary token');
   }
   try {
+    // Validate canonical status ABI before invoking application startup/callbacks.
+    if (runtimeExceptionPending(runtimeInst)) {
+      throw new Error(pendingRuntimeExceptionMessage(runtimeInst) ||
+        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+    }
     return operation();
   } finally {
     leave(token);
@@ -451,7 +457,6 @@ const loadRuntimeAssets = () => {
 };
 
 let runtimeInstance = null;
-let appInstanceForExceptions = null;
 let appInstanceForHostCalls = null;
 let wasmMemory = null;
 let appWasmMemory = null;
@@ -714,9 +719,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
   let shouldDecRefFetched = false;
   const errPending =
     typeof exports.molt_err_pending === 'function' && Number(exports.molt_err_pending()) !== 0;
-  const exceptionPending =
-    typeof exports.molt_exception_pending === 'function' &&
-    Number(exports.molt_exception_pending()) !== 0;
+  const exceptionPending = runtimeExceptionPending(instance);
   const exceptionPendingFast =
     typeof exports.molt_exception_pending_fast === 'function' &&
     Number(exports.molt_exception_pending_fast()) !== 0;
@@ -738,7 +741,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
   }
   try {
     if (!excBits || excBits === 0n) {
-      return null;
+      return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
     }
     if (
       typeof exports.molt_traceback_format_exc === 'function' &&
@@ -806,7 +809,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
           const repr = readRuntimeStringBits(instance, reprBits);
           if (repr) {
             if (repr === 'None') {
-              return null;
+              return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
             }
             return `Unhandled Molt exception: ${repr}`;
           }
@@ -1004,10 +1007,6 @@ const maybeDumpRuntimeProfile = () => {
   }
 };
 
-const pendingAnyRuntimeExceptionMessage = () =>
-  pendingRuntimeExceptionMessage(runtimeInstance) ||
-  pendingRuntimeExceptionMessage(appInstanceForExceptions);
-
 const makeHostArgObject = (spec) => {
   if (!spec || typeof spec !== 'object') {
     throw new Error('host export arg spec must be an object');
@@ -1042,7 +1041,7 @@ const runHostExportCalls = () => {
     throw new Error('app instance not initialized for host export calls');
   }
   return withRuntimeExecution(runtimeInstance, () => {
-    runMoltHostInit(appInstanceForHostCalls, 'host-call');
+    // runMain admits this path only after successful main initialization.
     const results = [];
     for (const call of calls) {
     if (!call || typeof call !== 'object' || typeof call.export !== 'string') {
@@ -1078,7 +1077,7 @@ const runHostExportCalls = () => {
       }
     }
       withOwnedValue(resultBits, decRefMaybe, (ownedResultBits) => {
-        const pending = pendingAnyRuntimeExceptionMessage();
+        const pending = pendingRuntimeExceptionMessage(runtimeInstance);
         if (pending) {
           throw new Error(pending);
         }
@@ -1097,24 +1096,6 @@ const runHostExportCalls = () => {
     }
     process.stdout.write(`${JSON.stringify(results)}\n`);
   });
-};
-
-const runMoltHostInit = (instance, label) => {
-  const hostInit = instance?.exports?.molt_host_init;
-  if (typeof hostInit !== 'function') {
-    return;
-  }
-  if (traceRun) {
-    console.error(`[molt wasm] ${label}: call molt_host_init`);
-  }
-  hostInit();
-  const pending = pendingAnyRuntimeExceptionMessage();
-  if (pending) {
-    throw new Error(pending);
-  }
-  if (traceRun) {
-    console.error(`[molt wasm] ${label}: molt_host_init returned`);
-  }
 };
 
 const sendStreamFrame = (streamHandle, bytes) => {
@@ -5123,7 +5104,6 @@ const assertNoUnresolvedNativeImports = (importsDesc, description) => {
 
 const runDirectLink = async () => {
   appInstanceForHostCalls = null;
-  appInstanceForExceptions = null;
   appWasmMemory = null;
   if (!runtimeBuffer) {
     throw new Error('split-runtime manifest did not resolve a runtime module');
@@ -5354,7 +5334,6 @@ const runDirectLink = async () => {
   const outputModule = await WebAssembly.instantiate(wasmBuffer, outputImportObject);
   outputInstance = outputModule.instance;
   appInstanceForHostCalls = outputInstance;
-  appInstanceForExceptions = outputInstance;
   if (traceRun) {
     console.error('[molt wasm] direct: output instantiated');
   }
@@ -5380,16 +5359,7 @@ const runDirectLink = async () => {
       const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
       console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
     }
-    runMoltHostInit(outputInstance, 'direct');
-    if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
-      if (traceRun) {
-        console.error('[molt wasm] direct: call molt_isolate_bootstrap');
-      }
-      outputInstance.exports.molt_isolate_bootstrap();
-      if (traceRun) {
-        console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
-      }
-    }
+    // The generated molt_main wrapper is the sole normal-startup authority.
     if (traceRun) {
       console.error('[molt wasm] direct: call molt_main');
     }
@@ -5401,7 +5371,6 @@ const runDirectLink = async () => {
 
 const runLinked = async () => {
   appInstanceForHostCalls = null;
-  appInstanceForExceptions = null;
   if (!linkedBuffer) {
     throw new Error(`Linked wasm not found at ${linkedPath}`);
   }
@@ -5543,22 +5512,12 @@ const runLinked = async () => {
     (importObject.env && importObject.env.memory);
   runtimeInstance = linkedModule.instance;
   appInstanceForHostCalls = linkedModule.instance;
-  appInstanceForExceptions = linkedModule.instance;
   if (linkedMemory) {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
   withRuntimeExecution(linkedModule.instance, () => {
-    runMoltHostInit(linkedModule.instance, 'linked');
-    if (typeof linkedModule.instance.exports.molt_isolate_bootstrap === 'function') {
-      if (traceRun) {
-        console.error('[molt wasm] linked: call molt_isolate_bootstrap');
-      }
-      linkedModule.instance.exports.molt_isolate_bootstrap();
-      if (traceRun) {
-        console.error('[molt wasm] linked: molt_isolate_bootstrap returned');
-      }
-    }
+    // The generated molt_main wrapper is the sole normal-startup authority.
     runMainWithWasiExit(() => {
       molt_main();
     });
@@ -5567,7 +5526,6 @@ const runLinked = async () => {
 
 const runMain = async () => {
   appInstanceForHostCalls = null;
-  appInstanceForExceptions = null;
   initWasmAssets();
   traceMark('runMain:init');
   const outputMetadata = parseWasmMetadata(wasmBuffer, {
@@ -5619,18 +5577,19 @@ const runMain = async () => {
   }
   try {
     await runner();
-    await runHostExportCalls();
     traceMark('runMain:runner_completed');
     if (traceRun) {
       console.error('[molt wasm] runner completed');
     }
     const pendingException =
-      pendingRuntimeExceptionMessage(runtimeInstance) ||
-      pendingRuntimeExceptionMessage(appInstanceForExceptions);
+      pendingRuntimeExceptionMessage(runtimeInstance);
     if (pendingException) {
       traceMark(`runMain:pending_exception:${pendingException.replaceAll('\n', '\\n')}`);
       throw new Error(pendingException);
     }
+    // Host exports require successful initialization; their own invoker checks
+    // each call for runtime exceptions before continuing to the next call.
+    await runHostExportCalls();
     if (wasiExitCode !== null && wasiExitCode !== 0) {
       traceMark(`runMain:exit_wasi:${wasiExitCode}`);
       if (traceRun) {

@@ -10,7 +10,7 @@
 Molt should add an explicit Edge/Workers product tier with these defining properties:
 
 - WASM-first deployment profile
-- snapshot-oriented startup pipeline
+- precompiled-module startup with verified deployment metadata
 - small capability-based virtual filesystem
 - schema-first host interop
 - Cloudflare Worker compatibility as a first production target
@@ -19,7 +19,7 @@ Molt should not copy Emscripten's full filesystem/runtime model.
 
 The right move is:
 
-- steal Cloudflare's deploy-time init plus snapshot discipline
+- adapt Cloudflare's deploy-time init discipline without treating partial WASM state as restorable
 - exploit Worker-native VFS/Web APIs where they exist
 - preserve Molt's current "no ambient authority, no hidden host fallback, no arbitrary object proxying" rules
 - implement only the filesystem semantics that unlock real compatibility and notebook/app workloads
@@ -63,7 +63,7 @@ Cloudflare Workers also now exposes a Worker-native virtual filesystem for `node
 
 Takeaway for Molt:
 
-- snapshotting is worth copying
+- full-state snapshotting is worth pursuing only after Molt owns a real resumable boundary
 - Worker-native filesystem semantics are worth targeting
 - a second, larger compatibility filesystem layered over the Worker VFS is not automatically a win
 
@@ -121,7 +121,7 @@ Its contract is:
 
 - strict-by-default
 - capability-gated host I/O
-- snapshot-aware deployment
+- execution-identity-aware deployment
 - deterministic unless capabilities explicitly permit nondeterminism
 
 ### 3.2 Add a minimal virtual filesystem
@@ -153,16 +153,19 @@ The following should remain explicit host services:
 
 Filesystem and web APIs should coexist, not collapse into one another.
 
-### 3.4 Standardize snapshots as deployment artifacts
-Molt should define a `molt.snapshot` artifact that captures:
+### 3.4 Standardize snapshot metadata before executable state
 
-- initialized module graph
-- deterministic cached state
+Molt currently defines a non-restorable `molt.snapshot.json` v2 metadata
+template that records:
+
+- complete linked or split-runtime execution identity
 - capability manifest
 - mount plan
-- compatibility/version hashes
+- compatibility/version metadata
 
-Snapshotting is the cold-start lever that most directly answers the Pyodide-in-Workers replacement goal.
+A future executable snapshot may become a cold-start lever only when one
+production authority captures and restores the continuation, linear memory,
+mutable globals, tables, and host resources together.
 
 ### 3.5 Make Cloudflare Workers the first production edge target
 Cloudflare Workers should be the first concrete target because it offers:
@@ -220,7 +223,7 @@ Molt wins when it is:
 1. Compiler lowers supported Python semantics into Molt runtime intrinsics and wasm-compatible host calls.
 2. Runtime exposes a target-independent VFS contract and capability contract.
 3. Host adapters map that contract onto browser APIs, Worker APIs, or WASI.
-4. Snapshot artifacts freeze init-time state for fast startup.
+4. Precompiled modules remove compilation cost; metadata templates bind the execution and policy context without claiming restorable state.
 
 ### 5.2 Host profile matrix
 
@@ -261,8 +264,9 @@ This proposal does not authorize:
 - Add parity tests for minimal filesystem semantics.
 
 ### Phase 2 - Snapshot artifact
-- Implement `molt.snapshot` generation and validation.
-- Add snapshot-required deployment lane for edge/Workers targets.
+- Generate and validate the non-restorable `molt.snapshot.json` v2 metadata template.
+- Require verified execution identity and capability metadata for edge/Workers deployments.
+- Defer executable capture/restore until complete continuation and runtime-state custody exists.
 - Benchmark cold starts against current wasm lanes and Pyodide baselines.
 
 ### Phase 3 - Worker host integration
@@ -282,7 +286,7 @@ This proposal is successful when all of the following are true:
 - Molt has a documented Edge/Workers tier with explicit constraints.
 - Molt defines a small, portable VFS instead of relying on ad hoc host bindings.
 - Cloudflare Workers can host Molt with a first-class target profile.
-- Snapshot artifacts materially improve cold starts.
+- Precompiled-module custody materially improves cold starts; snapshot metadata never claims an unimplemented restore.
 - Web APIs remain schema-first capabilities, not arbitrary proxy bridges.
 - The resulting runtime is meaningfully smaller and more operationally explicit than a Pyodide/Emscripten stack aimed at broad compatibility.
 

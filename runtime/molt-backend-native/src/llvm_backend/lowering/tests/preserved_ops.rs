@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
+    for (named, operand_count, expected_arguments) in
+        [(true, 0, 0), (true, 1, 1), (true, 2, 2), (false, 2, 1)]
+    {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("builtin_arguments".into(), vec![], TirType::DynBox);
+        let operands: Vec<_> = (0..operand_count).map(|_| func.fresh_value()).collect();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for &operand in &operands {
+            entry.ops.push(const_none_def(operand));
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CallBuiltin,
+            operands,
+            results: vec![result],
+            attrs: if named {
+                AttrDict::from([("name".into(), AttrValue::Str("len".into()))])
+            } else {
+                AttrDict::new()
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .expect("valid builtin call contract")
+            .print_to_string()
+            .to_string();
+        assert_eq!(
+            ir.matches("@molt_callargs_push_pos(").count(),
+            expected_arguments,
+            "{ir}"
+        );
+        assert!(ir.contains("@molt_call_builtin("), "{ir}");
+    }
+}
+
 /// The preserved-op passthrough-class closure: each kind that previously
 /// fell to the `Copy` operand-0 passthrough (a silent miscompile / dropped
 /// side effect) must now lower to its dedicated runtime call. This pins the
@@ -44,8 +86,8 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("binding_alias", 1, true, None, "molt_inc_ref_obj"),
         ("release", 1, true, None, "molt_dec_ref_obj"),
         ("guard_tag", 2, false, None, "molt_guard_type"),
-        ("guard_layout", 3, true, None, "molt_guard_layout_ptr"),
-        ("guard_dict_shape", 3, true, None, "molt_guard_layout_ptr"),
+        ("guard_layout", 3, true, None, "molt_guard_layout"),
+        ("guard_dict_shape", 3, true, None, "molt_guard_layout"),
         ("dataclass_new", 4, true, None, "molt_dataclass_new"),
         ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
         (
@@ -77,6 +119,12 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             "preserved `{kind}` must lower to `{sym}` (not an operand-0 \
                  passthrough); IR:\n{ir}"
         );
+        if matches!(kind, "guard_layout" | "guard_dict_shape") {
+            assert!(
+                ir.contains("@molt_guard_layout(i64 %0, i64 %1, i64 %2)"),
+                "layout guards must preserve the receiver tag: {ir}"
+            );
+        }
     }
 }
 

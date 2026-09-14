@@ -2118,11 +2118,13 @@ pub unsafe fn init_static_types() {
 /// Bootstrap never mints synthetic handles.
 pub fn type_static_ptrs() -> Vec<*mut PyObject> {
     vec![
+        &raw mut MoltManaged_Type as *mut PyObject,
         &raw mut PyBaseObject_Type as *mut PyObject,
         &raw mut PyBool_Type as *mut PyObject,
         &raw mut PyByteArray_Type as *mut PyObject,
         &raw mut PyBytes_Type as *mut PyObject,
         &raw mut PyCFunction_Type as *mut PyObject,
+        &raw mut PyCMethod_Type as *mut PyObject,
         &raw mut PyCapsule_Type as *mut PyObject,
         &raw mut PyComplex_Type as *mut PyObject,
         &raw mut PyContextVar_Type as *mut PyObject,
@@ -2152,8 +2154,53 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyTuple_Type as *mut PyObject,
         &raw mut PyType_Type as *mut PyObject,
         &raw mut PyUnicode_Type as *mut PyObject,
+        &raw mut PyWrapperDescr_Type as *mut PyObject,
         &raw mut Py_GenericAliasType as *mut PyObject,
     ]
+}
+
+/// Retire runtime-backed state without destroying canonical builtin C shells.
+///
+/// Include the ordinary builtin parents as well as every exception singleton
+/// (including the internal ExceptionGroup): a parent may acquire a dict, MRO,
+/// bases tuple, or cache after process bootstrap. No extension-owned type,
+/// capsule registry, foreign bridge entry, or process-owned hook is retired.
+///
+/// # Safety
+/// Call under exclusive teardown custody while the retiring runtime and its
+/// bridge bindings are still alive, before builtin class cycle breaking. No
+/// concurrent caller may read or populate these fields. A subsequent runtime
+/// must publish fresh static bindings, call
+/// `prepare_builtin_static_type_runtime_state`, then call
+/// `ready_exception_singleton_types`; this also rebuilds ordinary builtin shells
+/// with retired roots. Readiness admission stays closed between those runtimes.
+pub unsafe fn retire_builtin_static_type_runtime_state() {
+    let types = builtin_static_type_runtime_cohort();
+    unsafe { crate::api::typeobj::retire_static_type_runtime_roots(&types) };
+}
+
+fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
+    type_static_ptrs()
+        .into_iter()
+        .map(|object| (object.cast(), true))
+        .chain(
+            exc_singleton_ptrs()
+                .into_iter()
+                .map(|object| (object.cast(), false)),
+        )
+        .collect()
+}
+
+/// Open builtin type readiness for a new runtime, after its bindings are live.
+///
+/// # Safety
+/// This is a bootstrap-only admission boundary, not a teardown callback API.
+/// The previous runtime must have finished all root retirement and callbacks.
+/// Call before `ready_exception_singleton_types`; failed bootstrap must close
+/// the cohort again with `retire_builtin_static_type_runtime_state` while its
+/// runtime and bindings are still available.
+pub unsafe fn prepare_builtin_static_type_runtime_state() {
+    crate::api::typeobj::reopen_static_type_runtime_roots(&builtin_static_type_runtime_cohort());
 }
 
 // ─── Exception singletons ──────────────────────────────────────────────────
@@ -2351,7 +2398,21 @@ macro_rules! exc_singletons {
         /// runtime hook table is live. PyType_Ready allocates tp_dict through
         /// the runtime-owned dict authority, so doing this during bootstrap
         /// would recurse through fail-closed stubs.
+        /// After runtime retirement, first call
+        /// `prepare_builtin_static_type_runtime_state` under new-runtime custody.
         pub unsafe fn ready_exception_singleton_types() -> c_int {
+            // Bootstrap-only READY is process-owned, but a builtin parent can
+            // later acquire runtime-backed roots. Retirement clears READY only
+            // for those ordinary shells; rebuild them under the new bindings
+            // before publishing the exception hierarchy's descriptors/MROs.
+            for object in type_static_ptrs() {
+                let ty = object.cast::<PyTypeObject>();
+                if unsafe { (*ty).tp_flags } & Py_TPFLAGS_READY == 0
+                    && unsafe { crate::api::typeobj::PyType_Ready(ty) } < 0
+                {
+                    return -1;
+                }
+            }
             // Descriptor materialization and MRO publication belong to the
             // same readiness transaction as the type shells above.  Setting
             // READY by hand silently skipped tp_members/tp_getset and left the
@@ -2882,10 +2943,11 @@ mod unresolved_pyobject_tests {
 
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
-        // Exactly the canonical `Py*_Type` data-symbol set (35 statics). Guards
+        // Canonical builtin shells, including the internal managed carrier
+        // and CMethod/WrapperDescr types (38 statics). Guards
         // against an accidental drop/duplicate when the type static list changes.
         let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 35, "type static count drifted");
+        assert_eq!(ptrs.len(), 38, "type static count drifted");
         for p in &ptrs {
             assert!(!p.is_null());
         }
@@ -2894,7 +2956,7 @@ mod unresolved_pyobject_tests {
         addrs.dedup();
         assert_eq!(
             addrs.len(),
-            35,
+            38,
             "duplicate type static in type_static_ptrs()"
         );
     }

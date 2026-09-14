@@ -361,7 +361,7 @@ class CallMethodDispatchMixin(_MixinBase):
         for name, expression in init_assigns:
             value = self._emit_inline_expression(expression, bindings)
             self._emit_guarded_setattr(
-                receiver, name, value, class_name, use_init=True, assume_exact=True
+                receiver, name, value, class_name, assume_exact=True
             )
         return True
 

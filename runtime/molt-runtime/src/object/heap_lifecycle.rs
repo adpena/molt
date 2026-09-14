@@ -7,6 +7,9 @@
 //! `clear_cycle_edges`
 //! publishes an empty/cleared state before releasing the mutable subset used to
 //! break cycles; immutable ownership edges remain for terminal deallocation.
+//! Collector pins remain physical owners throughout projection/resource and
+//! semantic-edge retirement. Only GC reachability discounts those pins; the
+//! final pin release uses ordinary lifetime/ABI-view transactions.
 
 use super::heap_kinds_generated::{
     HeapLifecycleHandler, HeapTrackProjection, heap_lifecycle_handler, heap_track_projection,
@@ -296,7 +299,58 @@ fn visit_ptr(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
 #[inline]
 unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
     if !unsafe { object_class_edge_is_borrowed(ptr) } {
-        visit_bits(unsafe { object_class_bits(ptr) }, visit);
+        let class = unsafe { object_class_bits(ptr) };
+        if class != 0 {
+            visit_bits(class, visit);
+        }
+    }
+}
+
+#[inline]
+unsafe fn visit_class_shaped_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+        unsafe {
+            super::field_storage::for_each_instance_field(
+                py,
+                ptr,
+                class_ptr,
+                &mut |_field, slot| {
+                    if !crate::is_missing_bits(py, *slot) {
+                        visit_bits(*slot, visit);
+                    }
+                },
+            );
+        }
+    }
+    let dictionary = unsafe { instance_dict_bits(ptr) };
+    if dictionary != 0 {
+        visit_bits(dictionary, visit);
+    }
+}
+
+#[inline]
+unsafe fn visit_wrapper_prefix_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+    let kind = super::layout::WrapperKind::from_type_id(unsafe { object_type_id(ptr) })
+        .expect("wrapper lifecycle handler requires wrapper storage");
+    for index in 0..kind.reference_words() {
+        let bits = unsafe { super::layout::wrapper_reference_bits(ptr, index) };
+        // Raw zero exists only while unpublished allocation is being rolled
+        // back. Missing is native initialization state, never a Python referent.
+        if bits != 0 && !crate::is_missing_bits(py, bits) {
+            visit_bits(bits, visit);
+        }
+    }
+}
+
+#[inline]
+unsafe fn visit_native_descriptor_values(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+    for index in 0..super::layout::NATIVE_DESCRIPTOR_REFERENCE_WORDS {
+        let bits = unsafe { super::layout::native_descriptor_reference_bits(ptr, index) };
+        // Zero is possible only during exclusive unpublished rollback.
+        if bits != 0 {
+            visit_bits(bits, visit);
+        }
     }
 }
 
@@ -357,16 +411,7 @@ pub(crate) unsafe fn visit_owned_values(
     unsafe {
         match handler {
             HeapLifecycleHandler::Object | HeapLifecycleHandler::Weakref => {
-                let class_bits = object_class_bits(ptr);
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    crate::builtins::attr::for_each_object_inline_field_ptr(
-                        py,
-                        ptr,
-                        class_ptr,
-                        &mut |_name, _slot, bits| visit_bits(bits, visit),
-                    );
-                }
-                visit_bits(instance_dict_bits(ptr), visit);
+                visit_class_shaped_values(py, ptr, visit);
                 super::object_shape_visit_owned_edges(py, ptr, |bits| visit_bits(bits, visit));
                 if handler == HeapLifecycleHandler::Weakref {
                     super::weakref::weakref_object_visit_owned_edges(py, ptr, |bits| {
@@ -471,24 +516,18 @@ pub(crate) unsafe fn visit_owned_values(
                 });
             }
             HeapLifecycleHandler::Type => {
-                visit_bits(super::layout::class_name_bits(ptr), visit);
-                visit_bits(super::layout::class_bases_bits(ptr), visit);
-                visit_bits(super::layout::class_mro_bits(ptr), visit);
-                visit_bits(super::layout::class_annotations_bits(ptr), visit);
-                visit_bits(super::layout::class_annotate_bits(ptr), visit);
-                visit_bits(super::layout::class_qualname_bits(ptr), visit);
-                visit_bits(super::layout::class_dict_bits(ptr), visit);
+                for slot in super::class_storage::ClassReferenceSlot::ALL {
+                    visit_bits(slot.load(ptr), visit);
+                }
             }
-            HeapLifecycleHandler::Classmethod => {
-                visit_bits(super::layout::classmethod_func_bits(ptr), visit);
+            HeapLifecycleHandler::Classmethod
+            | HeapLifecycleHandler::Staticmethod
+            | HeapLifecycleHandler::Property => {
+                visit_class_shaped_values(py, ptr, visit);
+                visit_wrapper_prefix_values(py, ptr, visit);
             }
-            HeapLifecycleHandler::Staticmethod => {
-                visit_bits(super::layout::staticmethod_func_bits(ptr), visit);
-            }
-            HeapLifecycleHandler::Property => {
-                visit_bits(super::layout::property_get_bits(ptr), visit);
-                visit_bits(super::layout::property_set_bits(ptr), visit);
-                visit_bits(super::layout::property_del_bits(ptr), visit);
+            HeapLifecycleHandler::NativeDescriptor => {
+                visit_native_descriptor_values(ptr, visit);
             }
             HeapLifecycleHandler::Super => {
                 visit_bits(super::layout::super_type_bits(ptr), visit);
@@ -559,7 +598,13 @@ pub(crate) unsafe fn visit_owned_values(
                         visit_bits(bits, visit);
                     }
                 }
-                visit_bits(super::dataclass_dict_bits(ptr), visit);
+                let desc = super::dataclass_desc_ptr(ptr);
+                if !desc.is_null() {
+                    for &bits in &(*desc).field_keys {
+                        visit_bits(bits, visit);
+                    }
+                }
+                visit_bits(super::instance_dict_bits(ptr), visit);
             }
             HeapLifecycleHandler::Code => {
                 for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16] {
@@ -753,6 +798,49 @@ pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut Detac
     }
 }
 
+#[inline]
+unsafe fn clear_class_shaped_edges(py: &PyToken<'_>, ptr: *mut u8, sink: &mut DetachedEdgeSink) {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+        unsafe {
+            super::field_storage::for_each_instance_field(
+                py,
+                ptr,
+                class_ptr,
+                &mut |_field, slot| {
+                    let old = slot.replace(crate::missing_bits(py));
+                    if !crate::is_missing_bits(py, old) {
+                        sink.detach_if_heap(old);
+                    }
+                },
+            );
+        }
+    }
+    let dict = unsafe { super::instance_dict_bits_ptr(ptr) };
+    if !dict.is_null() {
+        sink.detach_if_heap(unsafe { dict.replace(0) });
+    }
+}
+
+#[inline]
+unsafe fn clear_wrapper_prefix_edges(py: &PyToken<'_>, ptr: *mut u8, sink: &mut DetachedEdgeSink) {
+    let kind = super::layout::WrapperKind::from_type_id(unsafe { object_type_id(ptr) })
+        .expect("wrapper lifecycle handler requires wrapper storage");
+    for index in 0..kind.reference_words() {
+        // Every published wrapper proved these defaults available during its
+        // unpublished construction. Losing the immortal missing singleton here
+        // would violate that representation invariant; never reinterpret it as
+        // an explicitly stored None.
+        let cleared = super::layout::wrapper_empty_reference_bits(py, kind, index)
+            .unwrap_or_else(|| std::process::abort());
+        let slot = unsafe { ptr.cast::<u64>().add(index) };
+        let old = unsafe { slot.replace(cleared) };
+        if old != 0 && !crate::is_missing_bits(py, old) {
+            sink.detach_if_heap(old);
+        }
+    }
+}
+
 /// Idempotently detach the mutable cycle-breaking edge subset, then release it.
 /// Immutable edges and the common class edge stay owned until terminal dealloc.
 #[cfg(test)]
@@ -871,22 +959,13 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             }
             HeapLifecycleHandler::Object | HeapLifecycleHandler::Weakref => {
                 super::object_shape_clear_cycle_edges(py, ptr, sink);
-                let class_bits = object_class_bits(ptr);
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    crate::builtins::attr::for_each_object_inline_field_ptr(
-                        py,
-                        ptr,
-                        class_ptr,
-                        &mut |_name, slot, bits| {
-                            *slot = 0;
-                            sink.detach_if_heap(bits);
-                        },
-                    );
-                }
-                let dict = super::instance_dict_bits_ptr(ptr);
-                if !dict.is_null() {
-                    sink.detach_if_heap(dict.replace(MoltObject::none().bits()));
-                }
+                clear_class_shaped_edges(py, ptr, sink);
+            }
+            HeapLifecycleHandler::Classmethod
+            | HeapLifecycleHandler::Staticmethod
+            | HeapLifecycleHandler::Property => {
+                clear_wrapper_prefix_edges(py, ptr, sink);
+                clear_class_shaped_edges(py, ptr, sink);
             }
             HeapLifecycleHandler::WeakContainerState => {
                 super::weak_container::weakcontainer_detach_state(py, ptr, sink);
@@ -927,7 +1006,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 }
             }
             HeapLifecycleHandler::Type => {
-                detach(sink, detach_slots(ptr, [0, 2, 3, 5, 6, 7, 1]));
+                detach(sink, super::class_storage::detach_class_references(ptr));
             }
             HeapLifecycleHandler::Dataclass => {
                 let fields = super::dataclass_fields_ptr(ptr);
@@ -935,6 +1014,12 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     Vec::new()
                 } else {
                     std::mem::take(&mut *fields)
+                };
+                let desc = super::dataclass_desc_ptr(ptr);
+                let detached_keys = if desc.is_null() {
+                    Vec::new()
+                } else {
+                    std::mem::take(&mut (*desc).field_keys)
                 };
                 let dict = super::dataclass_dict_bits_ptr(ptr);
                 let detached_dict = if dict.is_null() {
@@ -946,6 +1031,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     sink,
                     detached_fields
                         .into_iter()
+                        .chain(detached_keys)
                         .chain(std::iter::once(detached_dict)),
                 );
             }
@@ -980,9 +1066,6 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::Slice
             | HeapLifecycleHandler::Memoryview
             | HeapLifecycleHandler::BoundMethod
-            | HeapLifecycleHandler::Classmethod
-            | HeapLifecycleHandler::Staticmethod
-            | HeapLifecycleHandler::Property
             | HeapLifecycleHandler::Super
             | HeapLifecycleHandler::Frozenset
             | HeapLifecycleHandler::Enumerate
@@ -995,6 +1078,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::Union
             | HeapLifecycleHandler::TracebackPayload
             | HeapLifecycleHandler::ContextManager
+            | HeapLifecycleHandler::NativeDescriptor
             | HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::ListBuilder
@@ -1077,8 +1161,6 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::DictKeysView
             | HeapLifecycleHandler::DictValuesView
             | HeapLifecycleHandler::DictItemsView
-            | HeapLifecycleHandler::Classmethod
-            | HeapLifecycleHandler::Staticmethod
             | HeapLifecycleHandler::Reversed
             | HeapLifecycleHandler::Union => detach_slots(ptr, [0], sink),
             HeapLifecycleHandler::BoundMethod
@@ -1088,7 +1170,6 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::Slice | HeapLifecycleHandler::Range => {
                 detach_slots(ptr, [0, 1, 2], sink)
             }
-            HeapLifecycleHandler::Property => detach_slots(ptr, [0, 1, 2], sink),
             HeapLifecycleHandler::Memoryview => {
                 let view = super::memoryview_ptr(ptr);
                 sink.detach_if_heap(std::mem::replace(
@@ -1154,6 +1235,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::Code => {
                 detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16], sink)
             }
+            HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder
             | HeapLifecycleHandler::DictBuilder
             | HeapLifecycleHandler::SetBuilder => {
@@ -1173,6 +1255,9 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             // Mutable handlers were fully emptied by clear_cycle_edges_with_sink.
             HeapLifecycleHandler::Object
             | HeapLifecycleHandler::Weakref
+            | HeapLifecycleHandler::Classmethod
+            | HeapLifecycleHandler::Staticmethod
+            | HeapLifecycleHandler::Property
             | HeapLifecycleHandler::List
             | HeapLifecycleHandler::Dict
             | HeapLifecycleHandler::Set

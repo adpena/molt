@@ -1,8 +1,10 @@
+use super::class_storage::ClassReferenceSlot;
 use crate::{
-    MoltObject, PyToken, TYPE_ID_CODE, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_code_obj,
-    alloc_string, alloc_tuple, builtin_classes_if_initialized, dec_ref_bits, dict_get_in_place,
-    fn_ptr_code_set, inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits,
-    object_type_id, runtime_state,
+    MoltObject, PyToken, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_DICT,
+    TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, alloc_code_obj, alloc_string, alloc_tuple, builtin_classes_if_initialized,
+    dec_ref_bits, dict_get_in_place, fn_ptr_code_set, inc_ref_bits, intern_static_name,
+    obj_from_bits, object_class_bits, object_type_id, runtime_state,
 };
 
 pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
@@ -1350,44 +1352,31 @@ pub(crate) unsafe fn module_dict_bits(ptr: *mut u8) -> u64 {
 }
 
 pub(crate) unsafe fn class_name_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr as *const u64) }
+    unsafe { ClassReferenceSlot::Name.load(ptr) }
 }
 
 pub(crate) unsafe fn class_set_name_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
-        crate::gil_assert();
-        let slot = ptr as *mut u64;
-        let old_bits = *slot;
-        if old_bits != bits {
-            dec_ref_bits(_py, old_bits);
-            inc_ref_bits(_py, bits);
-            *slot = bits;
-        }
+        ClassReferenceSlot::Name.replace_borrowed(_py, ptr, bits);
     }
 }
 
 pub(crate) unsafe fn class_dict_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { ClassReferenceSlot::Dictionary.load(ptr) }
 }
 
 pub(crate) unsafe fn class_bases_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { ClassReferenceSlot::Bases.load(ptr) }
 }
 
-pub(crate) unsafe fn class_set_bases_bits(ptr: *mut u8, bits: u64) {
+pub(crate) unsafe fn class_set_bases_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+        ClassReferenceSlot::Bases.replace_borrowed(py, ptr, bits);
     }
 }
 
 pub(crate) unsafe fn class_mro_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
-}
-
-pub(crate) unsafe fn class_set_mro_bits(ptr: *mut u8, bits: u64) {
-    unsafe {
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
-    }
+    unsafe { ClassReferenceSlot::Mro.load(ptr) }
 }
 
 pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
@@ -1413,6 +1402,84 @@ pub(crate) unsafe fn class_cached_layout_size(ptr: *mut u8) -> Option<usize> {
     }
 }
 
+/// Original slot declarations belong to the physical class layout, not the
+/// mutable Python namespace. Zero exists only while the class is being built;
+/// None records absence and a private immutable tuple records declared names.
+#[derive(Clone, Copy)]
+pub(crate) enum ClassSlotDeclaration {
+    Uninitialized,
+    Absent,
+    Names(u64),
+}
+
+pub(crate) const CLASS_FIELD_OFFSETS_WORD: usize = ClassReferenceSlot::FieldOffsets as usize;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_FIELD_OFFSETS_WORD + 1;
+
+pub(crate) unsafe fn class_slot_declaration_bits(ptr: *mut u8) -> u64 {
+    unsafe { ClassReferenceSlot::SlotDeclaration.load(ptr) }
+}
+
+pub(crate) unsafe fn class_slot_declaration(ptr: *mut u8) -> ClassSlotDeclaration {
+    let bits = unsafe { class_slot_declaration_bits(ptr) };
+    if bits == 0 {
+        ClassSlotDeclaration::Uninitialized
+    } else if obj_from_bits(bits).is_none() {
+        ClassSlotDeclaration::Absent
+    } else {
+        ClassSlotDeclaration::Names(bits)
+    }
+}
+
+/// Publish one owned, validated declaration. The private tuple is never exposed
+/// as a Python attribute; later __slots__ assignment cannot alter this record.
+pub(crate) unsafe fn class_set_slot_declaration_owned(ptr: *mut u8, bits: u64) {
+    unsafe {
+        crate::gil_assert();
+        assert_eq!(
+            class_slot_declaration_bits(ptr),
+            0,
+            "class slots already captured"
+        );
+        assert!(
+            obj_from_bits(bits).is_none()
+                || obj_from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|tuple| object_type_id(tuple) == TYPE_ID_TUPLE)
+        );
+        let old = ClassReferenceSlot::SlotDeclaration.exchange_owned(ptr, bits);
+        debug_assert_eq!(old, 0);
+    }
+}
+
+/// Private physical-layout authority retained at class seal. Zero is reserved
+/// for unfinished construction, `None` records a sealed class with no map, and
+/// every other value is the exact frozen dict also published in the namespace.
+pub(crate) unsafe fn class_field_offsets_bits(ptr: *mut u8) -> u64 {
+    unsafe { ClassReferenceSlot::FieldOffsets.load(ptr) }
+}
+
+/// Publish one owned, validated field-offset map edge. The caller transfers an
+/// existing owned reference; TYPE lifecycle tracing and detachment own it from
+/// this point onward.
+pub(crate) unsafe fn class_set_field_offsets_owned(ptr: *mut u8, bits: u64) {
+    unsafe {
+        crate::gil_assert();
+        assert_eq!(
+            class_field_offsets_bits(ptr),
+            0,
+            "class field offsets already captured"
+        );
+        assert!(
+            obj_from_bits(bits).is_none()
+                || obj_from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|map| object_type_id(map) == TYPE_ID_DICT)
+        );
+        let old = ClassReferenceSlot::FieldOffsets.exchange_owned(ptr, bits);
+        debug_assert_eq!(old, 0);
+    }
+}
+
 pub(crate) unsafe fn class_set_cached_layout_size(ptr: *mut u8, size: usize) {
     unsafe {
         let slot =
@@ -1430,57 +1497,32 @@ pub(crate) unsafe fn class_set_cached_layout_size(ptr: *mut u8, size: usize) {
 }
 
 pub(crate) unsafe fn class_annotations_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { ClassReferenceSlot::Annotations.load(ptr) }
 }
 
 pub(crate) unsafe fn class_set_annotations_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
-        crate::gil_assert();
-        let slot = ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != 0 {
-            dec_ref_bits(_py, old_bits);
-        }
-        *slot = bits;
-        if bits != 0 {
-            inc_ref_bits(_py, bits);
-        }
+        ClassReferenceSlot::Annotations.replace_borrowed(_py, ptr, bits);
     }
 }
 
 pub(crate) unsafe fn class_annotate_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { ClassReferenceSlot::Annotate.load(ptr) }
 }
 
 pub(crate) unsafe fn class_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
-        crate::gil_assert();
-        let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != 0 {
-            dec_ref_bits(_py, old_bits);
-        }
-        *slot = bits;
-        if bits != 0 {
-            inc_ref_bits(_py, bits);
-        }
+        ClassReferenceSlot::Annotate.replace_borrowed(_py, ptr, bits);
     }
 }
 
 pub(crate) unsafe fn class_qualname_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { ClassReferenceSlot::Qualname.load(ptr) }
 }
 
 pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
-        crate::gil_assert();
-        let slot = ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != bits {
-            dec_ref_bits(_py, old_bits);
-            inc_ref_bits(_py, bits);
-            *slot = bits;
-        }
+        ClassReferenceSlot::Qualname.replace_borrowed(_py, ptr, bits);
     }
 }
 
@@ -1496,6 +1538,217 @@ pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
     }
     // Also bump the global type version so inline caches are invalidated.
     super::bump_type_version();
+}
+
+/// The native prefix carried by every exact wrapper and wrapper subclass.
+///
+/// The physical heap type id is inherited with the class layout and is the
+/// sole discriminator for this prefix. Object shapes remain available for
+/// orthogonal class-owned payload families; duplicating wrapper identity there
+/// would allow the two authorities to drift.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WrapperKind {
+    Classmethod,
+    Staticmethod,
+    Property,
+}
+
+impl WrapperKind {
+    #[inline(always)]
+    pub(crate) const fn from_type_id(type_id: u32) -> Option<Self> {
+        match type_id {
+            TYPE_ID_CLASSMETHOD => Some(Self::Classmethod),
+            TYPE_ID_STATICMETHOD => Some(Self::Staticmethod),
+            TYPE_ID_PROPERTY => Some(Self::Property),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn type_id(self) -> u32 {
+        match self {
+            Self::Classmethod => TYPE_ID_CLASSMETHOD,
+            Self::Staticmethod => TYPE_ID_STATICMETHOD,
+            Self::Property => TYPE_ID_PROPERTY,
+        }
+    }
+
+    /// Reference-valued words owned by the native prefix. Property's final
+    /// `getter_doc` word is an immediate bool and deliberately excluded.
+    #[inline(always)]
+    pub(crate) const fn reference_words(self) -> usize {
+        match self {
+            Self::Classmethod | Self::Staticmethod => 1,
+            Self::Property => 5,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn prefix_words(self) -> usize {
+        match self {
+            Self::Classmethod | Self::Staticmethod => 1,
+            Self::Property => 6,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn prefix_size(self) -> usize {
+        self.prefix_words() * std::mem::size_of::<u64>()
+    }
+}
+
+#[inline(always)]
+pub(crate) const fn wrapper_prefix_size_for_type_id(type_id: u32) -> usize {
+    match WrapperKind::from_type_id(type_id) {
+        Some(kind) => kind.prefix_size(),
+        None => 0,
+    }
+}
+
+#[inline(always)]
+pub(crate) unsafe fn wrapper_reference_bits(ptr: *mut u8, index: usize) -> u64 {
+    let kind = WrapperKind::from_type_id(unsafe { object_type_id(ptr) })
+        .expect("wrapper reference access requires wrapper storage");
+    assert!(
+        unsafe { super::object_payload_size(ptr) } >= kind.prefix_size(),
+        "wrapper reference access requires a complete native prefix"
+    );
+    assert!(
+        index < kind.reference_words(),
+        "wrapper reference index exceeds native prefix"
+    );
+    unsafe { *ptr.cast::<u64>().add(index) }
+}
+
+/// Canonical empty state for one wrapper-owned reference word. Property name
+/// deliberately differs from its other references: missing means no explicit
+/// `__name__` has been assigned and permits fallback to `fget.__name__`, while
+/// an explicitly stored `None` remains observable as `None`.
+#[inline]
+pub(crate) fn wrapper_empty_reference_bits(
+    py: &PyToken<'_>,
+    kind: WrapperKind,
+    index: usize,
+) -> Option<u64> {
+    if index >= kind.reference_words() {
+        return None;
+    }
+    if matches!(kind, WrapperKind::Classmethod | WrapperKind::Staticmethod)
+        || (kind == WrapperKind::Property && index == 4)
+    {
+        let missing = crate::missing_bits(py);
+        return obj_from_bits(missing).as_ptr().map(|_| missing);
+    }
+    Some(MoltObject::none().bits())
+}
+
+/// Initialize the hidden native prefix before any declared field or GC
+/// publication can observe the object. Zero is reserved for allocation failure
+/// cleanup and never represents a Python value. Class/static wrappers use the
+/// missing singleton so an uninitialized wrapper remains distinct from one
+/// explicitly initialized with None; property exposes absent accessors as None.
+#[must_use]
+pub(crate) unsafe fn wrapper_initialize_prefix_unpublished(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    let Some(kind) = WrapperKind::from_type_id(unsafe { object_type_id(ptr) }) else {
+        return true;
+    };
+    if unsafe { super::object_payload_size(ptr) } < kind.prefix_size() {
+        return false;
+    }
+    unsafe {
+        for index in 0..kind.reference_words() {
+            let Some(empty) = wrapper_empty_reference_bits(py, kind, index) else {
+                return false;
+            };
+            *ptr.cast::<u64>().add(index) = empty;
+        }
+        if kind == WrapperKind::Property {
+            *ptr.cast::<u64>().add(5) = MoltObject::from_bool(false).bits();
+        }
+    }
+    true
+}
+
+#[inline]
+#[must_use]
+unsafe fn wrapper_replace_reference_bits(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    expected: WrapperKind,
+    index: usize,
+    bits: u64,
+) -> bool {
+    if WrapperKind::from_type_id(unsafe { object_type_id(ptr) }) != Some(expected)
+        || index >= expected.reference_words()
+        || unsafe { super::object_payload_size(ptr) } < expected.prefix_size()
+    {
+        return false;
+    }
+    // Raw zero is the allocation-failure carrier at the runtime ABI. It is not
+    // a Python value and must never be normalized into a visible `None` edge.
+    if bits == 0 {
+        return false;
+    }
+    unsafe {
+        let slot = ptr.cast::<u64>().add(index);
+        let old = *slot;
+        if old == bits {
+            return true;
+        }
+        // Retain before publishing and release only after the slot owns the new
+        // value. A finalizer on the displaced edge may re-enter this wrapper.
+        if bits != 0 {
+            inc_ref_bits(py, bits);
+        }
+        *slot = bits;
+        if old != 0 {
+            dec_ref_bits(py, old);
+        }
+    }
+    true
+}
+
+#[must_use]
+pub(crate) unsafe fn classmethod_replace_func_bits(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Classmethod, 0, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn staticmethod_replace_func_bits(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Staticmethod, 0, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn property_replace_get_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Property, 0, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn property_replace_set_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Property, 1, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn property_replace_del_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Property, 2, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn property_replace_doc_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Property, 3, bits) }
+}
+
+#[must_use]
+pub(crate) unsafe fn property_replace_name_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { wrapper_replace_reference_bits(py, ptr, WrapperKind::Property, 4, bits) }
 }
 
 pub(crate) unsafe fn classmethod_func_bits(ptr: *mut u8) -> u64 {
@@ -1516,6 +1769,115 @@ pub(crate) unsafe fn property_set_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn property_del_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn property_doc_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn property_name_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn property_getter_doc(ptr: *mut u8) -> bool {
+    unsafe {
+        obj_from_bits(*(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64))
+            .as_bool()
+            .unwrap_or(false)
+    }
+}
+
+pub(crate) unsafe fn property_set_getter_doc(ptr: *mut u8, getter_doc: bool) {
+    unsafe {
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) =
+            MoltObject::from_bool(getter_doc).bits();
+    }
+}
+
+/// Immutable representation shared by builtin member and getset descriptors.
+/// The class edge owns the public descriptor type identity; this immediate is
+/// the protocol/error-policy discriminator and never a Python reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub(crate) enum NativeDescriptorFlavor {
+    Member = 1,
+    GetSet = 2,
+}
+
+impl NativeDescriptorFlavor {
+    #[inline]
+    pub(crate) const fn from_raw(raw: u64) -> Option<Self> {
+        match raw {
+            1 => Some(Self::Member),
+            2 => Some(Self::GetSet),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) const NATIVE_DESCRIPTOR_REFERENCE_WORDS: usize = 6;
+pub(crate) const NATIVE_DESCRIPTOR_PREFIX_WORDS: usize = 7;
+pub(crate) const NATIVE_DESCRIPTOR_PREFIX_SIZE: usize =
+    NATIVE_DESCRIPTOR_PREFIX_WORDS * std::mem::size_of::<u64>();
+
+#[inline]
+fn native_descriptor_storage_is_valid(ptr: *mut u8) -> bool {
+    !ptr.is_null()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_NATIVE_DESCRIPTOR
+        && unsafe { super::object_payload_size(ptr) } >= NATIVE_DESCRIPTOR_PREFIX_SIZE
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_reference_bits(ptr: *mut u8, index: usize) -> u64 {
+    assert!(
+        native_descriptor_storage_is_valid(ptr),
+        "native descriptor access requires a complete descriptor prefix"
+    );
+    assert!(
+        index < NATIVE_DESCRIPTOR_REFERENCE_WORDS,
+        "native descriptor reference index exceeds its prefix"
+    );
+    unsafe { *ptr.cast::<u64>().add(index) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_owner_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 0) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_name_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 1) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_doc_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 2) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_getter_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 3) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_setter_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 4) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_deleter_bits(ptr: *mut u8) -> u64 {
+    unsafe { native_descriptor_reference_bits(ptr, 5) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_flavor(ptr: *mut u8) -> Option<NativeDescriptorFlavor> {
+    if !native_descriptor_storage_is_valid(ptr) {
+        return None;
+    }
+    NativeDescriptorFlavor::from_raw(unsafe {
+        *ptr.cast::<u64>().add(NATIVE_DESCRIPTOR_REFERENCE_WORDS)
+    })
 }
 
 pub(crate) unsafe fn super_type_bits(ptr: *mut u8) -> u64 {

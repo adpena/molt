@@ -25,6 +25,12 @@ import types
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from molt.cli.models import (
+    _CompleteImportScan,
+    _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
+)
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 from typing import Any, Collection, Mapping, Sequence, cast
 
 from molt.cli import native_symbol_inspection
@@ -92,7 +98,6 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
-from molt.target_python import TargetPythonVersion
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
@@ -567,20 +572,19 @@ def test_write_importer_module_is_transaction_shim(tmp_path: Path) -> None:
 def test_write_importer_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    importer_path = tmp_path / f"{cli_module_import_scanner.IMPORTER_MODULE_NAME}.py"
     original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
         destination = Path(dst)
-        if destination == importer_path:
+        if destination.parent == tmp_path and destination.suffix == ".py":
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
     monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
-    cli._write_importer_module(tmp_path)
-    cli._write_importer_module(tmp_path)
+    importer_path = cli._write_importer_module(tmp_path)
+    assert cli._write_importer_module(tmp_path) == importer_path
 
     assert replaced_destinations == [importer_path]
 
@@ -1282,10 +1286,13 @@ def _sealed_manifest_custody_overrides() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("target_minor", [12, 13, 14])
 def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target_minor: int,
 ) -> None:
     """A sealed manifest's persisted runtime-import field stages a C-only import.
 
@@ -1296,6 +1303,22 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     The field must stage that submodule even when the original build checkout
     is absent. Without the field the submodule used to silently vanish.
     """
+    selected_target = TargetPythonVersion(3, target_minor, 0)
+    collected_targets: list[TargetPythonVersion] = []
+    parsed_targets: list[TargetPythonVersion] = []
+    original_collect = cli_module_import_scanner._collect_imports
+    original_parse = cli_external_native._parse_source_for_target
+
+    def collect_selected(*args, target_python, **kwargs):
+        collected_targets.append(target_python)
+        return original_collect(*args, target_python=target_python, **kwargs)
+
+    def parse_selected(*args, target_python, **kwargs):
+        parsed_targets.append(target_python)
+        return original_parse(*args, target_python=target_python, **kwargs)
+
+    monkeypatch.setattr(cli_module_import_scanner, "_collect_imports", collect_selected)
+    monkeypatch.setattr(cli_external_native, "_parse_source_for_target", parse_selected)
     external_root = tmp_path / "site"
     # The runtime-imported package-internal submodule has NO Python importer.
     hidden_path = external_root / "nativepkg" / "hidden.py"
@@ -1306,6 +1329,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     )
     hidden_sha = hashlib.sha256(hidden_path.read_bytes()).hexdigest()
     overrides = {
+        "target_python": selected_target.tag,
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
         "runtime_linkage": "static_link",
@@ -1337,7 +1361,15 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
         external_module_roots=(external_root,),
         json_output=False,
         target="wasm",
+        target_python=selected_target,
     )
+    assert parsed_targets and set(parsed_targets) == {selected_target}
+    if target_minor > sys.version_info.minor:
+        assert policy is None and policy_error is not None
+        assert collected_targets == []
+        assert f"requires a Python 3.{target_minor}+ frontend" in capsys.readouterr().err
+        return
+    assert collected_targets and set(collected_targets) == {selected_target}
     assert policy_error is None
     assert policy is not None
     artifact = policy.native_artifact_plan.artifacts[0]
@@ -1812,7 +1844,8 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
     compiled_path = import_plan.module_graph["nativepkg.ndimage._filters"]
     compiled_source = compiled_path.read_text(encoding="utf-8")
     assert compiled_path != support_path.resolve()
-    assert compiled_path.name == "native_support_nativepkg_ndimage__filters.py"
+    assert compiled_path.name.startswith("_molt_generated_nativepkg_ndimage__filters.")
+    assert len(compiled_path.stem.rsplit(".", 1)[-1]) == 64
     assert "def gaussian_filter" in compiled_source
     assert "import math" in compiled_source
     assert "import re" not in compiled_source
@@ -3974,20 +4007,22 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
 def test_write_namespace_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    expected_path = tmp_path / "namespace_demo_pkg.py"
     original_replace = ATOMIC_IO.file_publication.durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
         destination = Path(dst)
-        if destination == expected_path:
+        if destination.parent == tmp_path and destination.suffix == ".py":
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
     monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
-    cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
-    cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
+    expected_path = cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
+    assert (
+        cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
+        == expected_path
+    )
 
     assert replaced_destinations == [expected_path]
 
@@ -4236,7 +4271,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4246,6 +4281,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    module_graph = discovery_result.graph
     cli._collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
     cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
@@ -4261,17 +4297,19 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         if (path := module_graph.get(name)) is not None
     ]
     if core_paths:
-        core_graph, _ = cli_module_graph_discovery._discover_module_graph_from_paths(
+        discovery_result = cli_module_graph_discovery._discover_module_graph_from_paths(
             core_paths,
             roots,
             module_roots,
             stdlib_root,
             ROOT,
             stdlib_allowlist,
+            full_scan_roots=False,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
             stdlib_static_import_helper_modules=set(),
         )
+        core_graph = discovery_result.graph
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
     return module_graph
@@ -4292,7 +4330,7 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         project / "main.py",
         [*module_roots, stdlib_root],
         module_roots,
@@ -4301,6 +4339,8 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
         cli_module_stdlib_policy._stdlib_allowlist(),
         import_admission_policy=policy,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert "hugepkg" in graph
     assert "hugepkg.heavy" not in graph
@@ -4326,7 +4366,7 @@ def test_external_static_package_admission_closes_transitive_children(
         admitted_external_packages=frozenset({"hugepkg"}),
     )
 
-    graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         project / "main.py",
         [*module_roots, stdlib_root],
         module_roots,
@@ -4335,6 +4375,7 @@ def test_external_static_package_admission_closes_transitive_children(
         cli_module_stdlib_policy._stdlib_allowlist(),
         import_admission_policy=policy,
     )
+    graph = discovery_result.graph
 
     assert {"hugepkg", "hugepkg.heavy"} <= set(graph)
 
@@ -4422,7 +4463,7 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), site.resolve()]
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         [*module_roots, stdlib_root],
         module_roots,
@@ -4432,6 +4473,8 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert {"tinygrad", "tinygrad.tensor"} <= set(graph)
     assert graph["tinygrad.tensor"] == tensor
@@ -4458,7 +4501,7 @@ def test_from_import_star_graph_admits_static_all_child_module(
     roots = [*module_roots, stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4469,6 +4512,8 @@ def test_from_import_star_graph_admits_static_all_child_module(
         stub_parents=cli.STUB_PARENT_MODULES,
         resolver_cache=cache,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert {"tinygrad", "tinygrad.tensor"} <= set(graph)
     assert graph["tinygrad.tensor"] == tensor
@@ -10144,7 +10189,7 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         [*module_roots, stdlib_root],
         module_roots,
@@ -10154,6 +10199,8 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert graph["pkg.helper"] == helper
     assert "pkg.helper" in explicit_imports
@@ -10197,7 +10244,7 @@ def test_discover_module_graph_admits_static_loader_source_under_execution_name(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         [*module_roots, stdlib_root],
         module_roots,
@@ -10207,6 +10254,8 @@ def test_discover_module_graph_admits_static_loader_source_under_execution_name(
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert graph["loaded_name"] == target.resolve()
     assert "loaded_name" in explicit_imports
@@ -11563,7 +11612,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     shared_second = resolve_calls - shared_first
 
     resolve_calls = 0
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11571,6 +11620,8 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         None,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     unshared_first = resolve_calls
     cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
     cli._collect_namespace_parents(
@@ -11580,7 +11631,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         stdlib_allowlist,
         explicit_imports,
     )
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11588,6 +11639,8 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         None,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
     cli._collect_namespace_parents(
         graph,
@@ -11648,7 +11701,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     monkeypatch.setattr(TARGET_PYTHON.ast, "parse", wrapped_parse)
 
     shared_cache = cli_module_resolution._ModuleResolutionCache()
-    graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11657,6 +11710,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
+    graph = discovery_result.graph
     first_read_calls = read_calls
     first_parse_calls = parse_calls
     assert first_read_calls > 0
@@ -11676,7 +11730,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 
     read_calls = 0
     parse_calls = 0
-    unshared_graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11684,6 +11738,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         tmp_path,
         stdlib_allowlist,
     )
+    unshared_graph = discovery_result.graph
     for module_path in unshared_graph.values():
         source = cli_module_source._read_module_source(module_path)
         TARGET_PYTHON.ast.parse(source, filename=str(module_path))
@@ -11777,15 +11832,19 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     collect_calls = 0
     original_collect = cli_module_import_scanner._collect_imports
 
-    def wrapped_collect(*args: object, **kwargs: object) -> list[str]:
+    def wrapped_collect(
+        *args: object,
+        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+        **kwargs: object,
+    ) -> list[str]:
         nonlocal collect_calls
         collect_calls += 1
-        return original_collect(*args, **kwargs)
+        return original_collect(*args, target_python=target_python, **kwargs)
 
     monkeypatch.setattr(cli_module_import_scanner, "_collect_imports", wrapped_collect)
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_read_persisted_import_scan",
+        "_read_persisted_import_scan_record",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
@@ -11795,7 +11854,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     )
 
     cache = cli_module_resolution._ModuleResolutionCache()
-    graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11804,19 +11863,18 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         stdlib_allowlist,
         resolver_cache=cache,
     )
+    graph = discovery_result.graph
     first_collect_calls = collect_calls
 
     for module_name, module_path in graph.items():
         source = cache.read_module_source(module_path)
         tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
-        import_scan_mode = cli_module_graph_discovery._module_graph_import_scan_mode(
-            path=module_path,
+        import_scan_mode = cli_module_import_scanner._module_import_scan_mode(
             module_name=module_name,
-            entry_paths=frozenset({cache.resolved_path(entry)}),
+            full_scan=cache.resolved_path(module_path) == cache.resolved_path(entry),
             static_import_helper_modules=(
                 cli_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES
             ),
-            resolution_cache=cache,
         )
         cache.collect_imports(
             module_path,
@@ -11844,7 +11902,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11852,6 +11910,8 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
@@ -11860,7 +11920,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
 
     monkeypatch.setattr(cli_module_source, "_read_module_source", fail_read)
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -11868,6 +11928,8 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
@@ -11890,7 +11952,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        imports=("json",),
+        scan=cli_module_graph_cache._PersistedImportScan(("json",), ()),
     )
     assert cli_module_graph_cache._read_persisted_import_scan(
         tmp_path,
@@ -11936,7 +11998,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        imports=("json",),
+        scan=cli_module_graph_cache._PersistedImportScan(("json",), ()),
     )
 
     _rewrite_preserving_mtime(module_path, "import math\n", original)
@@ -12041,6 +12103,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         tmp_path,
         entry_path,
         roots=roots,
+        full_scan_roots=True,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules=set(),
@@ -12048,6 +12111,12 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path, "pkg.mod": module_path},
+        scan_authority=_ModuleGraphScanAuthority(
+            (
+                _ModuleSourceScanAuthority("__main__", entry_path, "full"),
+                _ModuleSourceScanAuthority("pkg.mod", module_path, "module_init"),
+            )
+        ),
         explicit_imports={"pkg.mod"},
     )
     assert (
@@ -12055,6 +12124,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             tmp_path,
             entry_path,
             roots=roots,
+            full_scan_roots=True,
             module_roots=module_roots,
             stdlib_root=stdlib_root,
             skip_modules=set(),
@@ -12075,6 +12145,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             tmp_path,
             entry_path,
             roots=roots,
+            full_scan_roots=True,
             module_roots=module_roots,
             stdlib_root=stdlib_root,
             skip_modules=set(),
@@ -12105,6 +12176,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         tmp_path,
         entry_path,
         roots=roots,
+        full_scan_roots=True,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules=set(),
@@ -12112,6 +12184,9 @@ def test_persisted_module_graph_cache_tracks_source_content(
         stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path},
+        scan_authority=_ModuleGraphScanAuthority(
+            (_ModuleSourceScanAuthority("__main__", entry_path, "full"),)
+        ),
         explicit_imports={"json"},
     )
 
@@ -12121,6 +12196,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         tmp_path,
         entry_path,
         roots=roots,
+        full_scan_roots=True,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules=set(),
@@ -12225,7 +12301,7 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12233,6 +12309,8 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert graph["pkg.helper"] == helper
 
@@ -12253,11 +12331,11 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     )
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_read_persisted_import_scan",
+        "_read_persisted_import_scan_record",
         lambda *args, **kwargs: None,
     )
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12265,6 +12343,8 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert "pkg.helper" in explicit_imports
     assert graph["pkg.helper"] == helper
@@ -12284,7 +12364,7 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12292,6 +12372,8 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
@@ -12321,7 +12403,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12329,9 +12411,16 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
         tmp_path,
         stdlib_allowlist,
         resolver_cache=cache,
-        precomputed_imports=("pkg.helper",),
-        precomputed_source_executions=(),
+        precomputed_scan=cli_module_graph_discovery._bind_precomputed_module_import_scan(
+            entry,
+            module_name="main",
+            import_scan_mode="full",
+            scan=_CompleteImportScan(("pkg.helper",), ()),
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        ),
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert entry not in reads
     assert helper in reads
@@ -12363,17 +12452,18 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
-    graph, explicit_imports = (
-        cli_module_graph_discovery._discover_module_graph_from_paths(
-            [first, second],
-            roots,
-            module_roots,
-            stdlib_root,
-            tmp_path,
-            set(),
-            resolver_cache=cache,
-        )
+    discovery_result = cli_module_graph_discovery._discover_module_graph_from_paths(
+        [first, second],
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        set(),
+        full_scan_roots=True,
+        resolver_cache=cache,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert reads.count(first) == 1
     assert reads.count(second) == 1
@@ -12410,16 +12500,17 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
         wrapped_expand,
     )
 
-    graph, explicit_imports = (
-        cli_module_graph_discovery._discover_module_graph_from_paths(
-            [first, second],
-            roots,
-            module_roots,
-            stdlib_root,
-            tmp_path,
-            set(),
-        )
+    discovery_result = cli_module_graph_discovery._discover_module_graph_from_paths(
+        [first, second],
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        set(),
+        full_scan_roots=True,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert expand_calls == 1
     assert explicit_imports == {"shared"}
@@ -12456,7 +12547,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12465,6 +12556,8 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
         set(),
         resolver_cache=cli_module_resolution._ModuleResolutionCache(),
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert "pkg.device" in graph
     assert "pkg.core" in graph
@@ -12489,7 +12582,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12497,6 +12590,8 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert {"pkg", "pkg.helper", "pkg.extra"} <= set(graph)
     assert {"pkg.helper", "pkg.extra"} <= explicit_imports
 
@@ -12525,7 +12620,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
     monkeypatch.setattr(cache, "resolve_module", wrapped_resolve)
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12534,6 +12629,8 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
         stdlib_allowlist,
         resolver_cache=cache,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert {"pkg", "pkg.helper", "pkg.extra"} <= set(graph)
     assert {"pkg.helper", "pkg.extra"} <= explicit_imports
@@ -12558,7 +12655,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, _ = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12566,10 +12663,11 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
     assert "pkg.old" in graph
 
     entry.write_text("import pkg.helper\n")
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12577,6 +12675,8 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
         tmp_path,
         stdlib_allowlist,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert "pkg.old" not in graph
     assert "pkg.old" not in explicit_imports
@@ -12597,7 +12697,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
 
     monkeypatch.setattr(Path, "read_text", fail_read_text)
 
-    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -12606,6 +12706,8 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
         stdlib_allowlist,
         resolver_cache=cache,
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
@@ -12969,6 +13071,7 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
         ("tkinter",),
         cli_module_graph_cache._module_graph_policy_digest({"json"}),
         "tooling",
+        full_scan_roots=True,
     )
     second = cli_module_graph_cache._module_graph_cache_key(
         str(entry_path),
@@ -12980,6 +13083,7 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
         ("tkinter",),
         cli_module_graph_cache._module_graph_policy_digest({"json"}),
         "tooling",
+        full_scan_roots=True,
     )
     different_policy = cli_module_graph_cache._module_graph_cache_key(
         str(entry_path),
@@ -12991,6 +13095,7 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
         ("tkinter",),
         cli_module_graph_cache._module_graph_policy_digest({"math"}),
         "tooling",
+        full_scan_roots=True,
     )
 
     info = cli_module_graph_cache._module_graph_cache_key.cache_info()
@@ -13019,6 +13124,7 @@ def test_module_graph_cache_key_tracks_capability_config_digest(
         (),
         cli_module_graph_cache._module_graph_policy_digest({"json"}),
         "tooling",
+        full_scan_roots=True,
         capability_config_digest="capability-a",
     )
     changed = cli_module_graph_cache._module_graph_cache_key(
@@ -13031,6 +13137,7 @@ def test_module_graph_cache_key_tracks_capability_config_digest(
         (),
         cli_module_graph_cache._module_graph_policy_digest({"json"}),
         "tooling",
+        full_scan_roots=True,
         capability_config_digest="capability-b",
     )
 
@@ -13061,6 +13168,8 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         compiler_fingerprint: str,
         target_python_tag: str = cli_module_graph_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
         capability_config_digest: str = "",
+        *,
+        full_scan_roots: bool,
     ) -> str:
         nonlocal calls
         calls += 1
@@ -13076,6 +13185,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             compiler_fingerprint,
             target_python_tag,
             capability_config_digest=capability_config_digest,
+            full_scan_roots=full_scan_roots,
         )
 
     monkeypatch.setattr(
@@ -13086,6 +13196,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         tmp_path,
         entry_path,
         roots=roots,
+        full_scan_roots=True,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
@@ -13097,6 +13208,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         tmp_path,
         entry_path,
         roots=roots,
+        full_scan_roots=True,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
@@ -14117,12 +14229,12 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         project_root=tmp_path,
     )
 
-    def fail_import_scan(*args: object, **kwargs: object) -> tuple[str, ...] | None:
+    def fail_import_scan(
+        *args: object, **kwargs: object
+    ) -> cli_module_graph_discovery._LoadedModuleImportScan:
         raise AssertionError("unexpected persisted import-scan read")
 
-    monkeypatch.setattr(
-        cli_module_cache, "_read_persisted_import_scan", fail_import_scan
-    )
+    monkeypatch.setattr(cli_module_cache, "_load_module_import_scan", fail_import_scan)
     monkeypatch.setattr(
         cache,
         "parse_module_ast",
@@ -17652,7 +17764,7 @@ def test_codecs_os_type_checking_imports_are_pruned() -> None:
     codecs_path = cache.resolve_module("codecs", roots, stdlib_root, stdlib_allowlist)
     assert codecs_path is not None
 
-    graph, _explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         codecs_path,
         roots,
         module_roots,
@@ -17663,6 +17775,8 @@ def test_codecs_os_type_checking_imports_are_pruned() -> None:
         stub_parents=cli.STUB_PARENT_MODULES,
         resolver_cache=cache,
     )
+    graph = discovery_result.graph
+    _explicit_imports = discovery_result.explicit_imports
 
     assert "codecs" in graph
     assert "os" in graph
@@ -17690,7 +17804,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -17700,6 +17814,8 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    module_graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     cli._collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
     cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
@@ -17715,17 +17831,19 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         if (path := module_graph.get(name)) is not None
     ]
     if core_paths:
-        core_graph, _ = cli_module_graph_discovery._discover_module_graph_from_paths(
+        discovery_result = cli_module_graph_discovery._discover_module_graph_from_paths(
             core_paths,
             roots,
             module_roots,
             stdlib_root,
             ROOT,
             stdlib_allowlist,
+            full_scan_roots=False,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
             stdlib_static_import_helper_modules=set(),
         )
+        core_graph = discovery_result.graph
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
     assert not cli._requires_spawn_entry_override(module_graph, explicit_imports)
@@ -17738,7 +17856,7 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+    discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -17748,6 +17866,8 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
+    module_graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
     assert "multiprocessing" in module_graph
     assert cli._requires_spawn_entry_override(module_graph, explicit_imports)
 
@@ -18143,6 +18263,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
         stdlib_allowlist=cli_module_stdlib_policy._stdlib_allowlist(),
         entry_imports=(),
         module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        scan_authorities={},
         module_graph=module_graph,
         module_reasons={},
         diagnostics_enabled=False,
@@ -18156,7 +18277,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     assert list(module_graph.values()) == [source_path]
 
 
-def test_native_support_source_slices_parse_and_prune_once(
+def test_native_support_source_slices_capture_original_and_emitted_source_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -18217,7 +18338,7 @@ def test_native_support_source_slices_parse_and_prune_once(
         "native_support_slice_requests": 2,
         "native_support_slice_cache_hits": 1,
         "native_support_slice_cache_misses": 1,
-        "native_support_source_parses": 1,
+        "native_support_source_parses": 2,
         "native_support_source_prunes": 1,
         "native_support_legacy_equivalent_source_parses": 4,
     }

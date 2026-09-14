@@ -4,27 +4,11 @@ use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::lir::LirRepr;
 use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use molt_backend::tir::ops::AttrDict;
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
-use molt_backend_wasm::test_util::{WasmLirFallbackReason, lower_lir_to_wasm};
+use molt_backend_wasm::test_util::lower_lir_to_wasm;
 use wasm_encoder::{Instruction, ValType};
-
-fn make_op(
-    opcode: OpCode,
-    operands: Vec<ValueId>,
-    results: Vec<ValueId>,
-    attrs: AttrDict,
-) -> TirOp {
-    TirOp {
-        dialect: Dialect::Molt,
-        opcode,
-        operands,
-        results,
-        attrs,
-        source_span: None,
-    }
-}
 
 fn empty_tir_function(
     name: &str,
@@ -55,43 +39,39 @@ fn empty_tir_function(
 }
 
 #[test]
-fn wasm_lir_ref64_stack_object_uses_i64_reference_word() {
+fn wasm_lir_ref64_parameter_uses_i64_reference_word() {
     let entry_id = BlockId(0);
     let obj = ValueId(0);
-    let mut attrs = AttrDict::new();
-    attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
-    attrs.insert("value".into(), AttrValue::Int(24));
     let mut blocks = std::collections::HashMap::new();
     blocks.insert(
         entry_id,
         TirBlock {
             id: entry_id,
-            args: vec![],
-            ops: vec![make_op(
-                OpCode::ObjectNewBoundStack,
-                vec![],
-                vec![obj],
-                attrs,
-            )],
+            args: vec![TirValue {
+                id: obj,
+                ty: TirType::UserClass("Point".into()),
+            }],
+            ops: vec![],
             terminator: Terminator::Return { values: vec![obj] },
         },
     );
-    let func = empty_tir_function(
-        "ref64_stack_object",
+    let mut func = empty_tir_function(
+        "ref64_parameter",
         blocks,
         TirType::UserClass("Point".into()),
         1,
         1,
     );
 
-    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
-    let alloc = &lir.blocks[&entry_id].ops[0];
-    assert_eq!(alloc.result_values[0].repr, LirRepr::Ref64);
+    func.param_names = vec!["object".into()];
+    func.param_types = vec![TirType::UserClass("Point".into())];
+    let mut lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    lir.blocks.get_mut(&entry_id).unwrap().args[0].repr = LirRepr::Ref64;
 
     let output = lower_lir_to_wasm(&lir);
 
     assert_eq!(output.result_types, vec![ValType::I64]);
-    assert_eq!(output.locals, vec![ValType::I64]);
+    assert!(output.locals.is_empty());
 }
 
 #[test]
@@ -100,21 +80,16 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
     let then_id = BlockId(1);
     let else_id = BlockId(2);
     let obj = ValueId(0);
-    let mut attrs = AttrDict::new();
-    attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
-    attrs.insert("value".into(), AttrValue::Int(24));
     let mut blocks = std::collections::HashMap::new();
     blocks.insert(
         entry_id,
         TirBlock {
             id: entry_id,
-            args: vec![],
-            ops: vec![make_op(
-                OpCode::ObjectNewBoundStack,
-                vec![],
-                vec![obj],
-                attrs,
-            )],
+            args: vec![TirValue {
+                id: obj,
+                ty: TirType::UserClass("Point".into()),
+            }],
+            ops: vec![],
             terminator: Terminator::CondBranch {
                 cond: obj,
                 then_block: then_id,
@@ -142,24 +117,17 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
             terminator: Terminator::Return { values: vec![] },
         },
     );
-    let func = empty_tir_function("ref64_truthy", blocks, TirType::None, 1, 3);
+    let mut func = empty_tir_function("ref64_truthy", blocks, TirType::None, 1, 3);
 
-    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
-    assert_eq!(
-        lir.blocks[&entry_id].ops[0].result_values[0].repr,
-        LirRepr::Ref64
-    );
+    func.param_names = vec!["object".into()];
+    func.param_types = vec![TirType::UserClass("Point".into())];
+    let mut lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    lir.blocks.get_mut(&entry_id).unwrap().args[0].repr = LirRepr::Ref64;
 
     let output = lower_lir_to_wasm(&lir);
 
-    assert!(
-        output.bails_to_generic_path,
-        "ObjectNewBoundStack is still an unsupported LIR-fast producer"
-    );
-    assert_eq!(
-        output.bail_to_generic_reason,
-        Some(WasmLirFallbackReason::UnsupportedOperation)
-    );
+    assert!(!output.bails_to_generic_path);
+    assert_eq!(output.bail_to_generic_reason, None);
     assert!(
         output.runtime_calls.contains(&"is_truthy"),
         "Ref64 condition lowering must call is_truthy instead of treating the reference word as integer nonzero; got {:?}",

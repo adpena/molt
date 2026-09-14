@@ -17,36 +17,6 @@ fn value(id: u32, ty: TirType, repr: LirRepr) -> LirValue {
     }
 }
 
-fn object_new_bound_stack_ref64_op(
-    result: u32,
-    semantic_class: &str,
-    hinted_class: Option<&str>,
-    payload_size: Option<i64>,
-) -> LirOp {
-    let mut attrs = AttrDict::new();
-    if let Some(hinted_class) = hinted_class {
-        attrs.insert("_type_hint".into(), AttrValue::Str(hinted_class.into()));
-    }
-    if let Some(payload_size) = payload_size {
-        attrs.insert("value".into(), AttrValue::Int(payload_size));
-    }
-    LirOp {
-        tir_op: TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::ObjectNewBoundStack,
-            operands: vec![],
-            results: vec![ValueId(result)],
-            attrs,
-            source_span: None,
-        },
-        result_values: vec![value(
-            result,
-            TirType::UserClass(semantic_class.into()),
-            LirRepr::Ref64,
-        )],
-    }
-}
-
 fn ref64_provenance_func(entry: LirBlock) -> LirFunction {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
@@ -62,106 +32,42 @@ fn ref64_provenance_func(entry: LirBlock) -> LirFunction {
 }
 
 #[test]
-fn ref64_result_requires_stack_allocation_provenance() {
-    let entry = LirBlock {
-        id: BlockId(0),
-        args: vec![],
-        ops: vec![LirOp {
-            tir_op: TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::Copy,
-                operands: vec![],
-                results: vec![ValueId(0)],
-                attrs: AttrDict::new(),
-                source_span: None,
+fn ref64_result_requires_supported_allocation_provenance() {
+    for opcode in [OpCode::Copy, OpCode::ObjectNewBound] {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![],
+            ops: vec![LirOp {
+                tir_op: TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![],
+                    results: vec![ValueId(0)],
+                    attrs: AttrDict::from([
+                        ("_type_hint".into(), AttrValue::Str("Point".into())),
+                        ("value".into(), AttrValue::Int(24)),
+                    ]),
+                    source_span: None,
+                },
+                result_values: vec![value(
+                    0,
+                    TirType::UserClass("Point".to_string()),
+                    LirRepr::Ref64,
+                )],
+            }],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
             },
-            result_values: vec![value(
-                0,
-                TirType::UserClass("Point".to_string()),
-                LirRepr::Ref64,
-            )],
-        }],
-        terminator: LirTerminator::Return {
-            values: vec![ValueId(0)],
-        },
-    };
-    let func = ref64_provenance_func(entry);
-    let errors = verify_lir_function(&func).expect_err("arbitrary Ref64 producer must fail");
-    assert!(
-        errors
-            .iter()
-            .any(|err| err.message.contains("Ref64 producer")),
-        "expected Ref64 producer error, got {errors:?}"
-    );
-}
-
-#[test]
-fn ref64_stack_allocation_requires_positive_payload() {
-    let entry = LirBlock {
-        id: BlockId(0),
-        args: vec![],
-        ops: vec![object_new_bound_stack_ref64_op(
-            0,
-            "Point",
-            Some("Point"),
-            None,
-        )],
-        terminator: LirTerminator::Return {
-            values: vec![ValueId(0)],
-        },
-    };
-    let func = ref64_provenance_func(entry);
-    let errors = verify_lir_function(&func).expect_err("missing payload must fail");
-    assert!(
-        errors
-            .iter()
-            .any(|err| err.message.contains("Ref64 producer")),
-        "expected Ref64 producer error, got {errors:?}"
-    );
-}
-
-#[test]
-fn ref64_stack_allocation_requires_matching_type_hint() {
-    let entry = LirBlock {
-        id: BlockId(0),
-        args: vec![],
-        ops: vec![object_new_bound_stack_ref64_op(
-            0,
-            "Point",
-            Some("Other"),
-            Some(24),
-        )],
-        terminator: LirTerminator::Return {
-            values: vec![ValueId(0)],
-        },
-    };
-    let func = ref64_provenance_func(entry);
-    let errors = verify_lir_function(&func).expect_err("mismatched class hint must fail");
-    assert!(
-        errors
-            .iter()
-            .any(|err| err.message.contains("Ref64 producer")),
-        "expected Ref64 producer error, got {errors:?}"
-    );
-}
-
-#[test]
-fn ref64_stack_allocation_with_matching_class_and_payload_passes() {
-    let entry = LirBlock {
-        id: BlockId(0),
-        args: vec![],
-        ops: vec![object_new_bound_stack_ref64_op(
-            0,
-            "Point",
-            Some("Point"),
-            Some(24),
-        )],
-        terminator: LirTerminator::Return {
-            values: vec![ValueId(0)],
-        },
-    };
-    let func = ref64_provenance_func(entry);
-    assert!(verify_lir_function(&func).is_ok());
+        };
+        let func = ref64_provenance_func(entry);
+        let errors = verify_lir_function(&func).expect_err("arbitrary Ref64 producer must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("Ref64 producer")),
+            "expected Ref64 producer error, got {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -170,13 +76,8 @@ fn non_entry_ref64_block_arg_requires_explicit_phi_provenance() {
     let target_id = BlockId(1);
     let entry = LirBlock {
         id: entry_id,
-        args: vec![],
-        ops: vec![object_new_bound_stack_ref64_op(
-            0,
-            "Point",
-            Some("Point"),
-            Some(24),
-        )],
+        args: vec![value(0, TirType::UserClass("Point".into()), LirRepr::Ref64)],
+        ops: vec![],
         terminator: LirTerminator::Branch {
             target: target_id,
             args: vec![ValueId(0)],
@@ -199,8 +100,8 @@ fn non_entry_ref64_block_arg_requires_explicit_phi_provenance() {
     blocks.insert(target_id, target);
     let func = LirFunction {
         name: "ref64_phi".to_string(),
-        param_names: vec![],
-        param_types: vec![],
+        param_names: vec!["object".into()],
+        param_types: vec![TirType::UserClass("Point".into())],
         return_types: vec![TirType::UserClass("Point".to_string())],
         blocks,
         entry_block: entry_id,
@@ -237,6 +138,50 @@ fn repr_for_bool_return_must_match_bool1() {
         label_id_map: HashMap::new(),
     };
     assert!(verify_lir_function(&func).is_ok());
+}
+
+#[test]
+fn truthiness_marker_requires_the_real_bool_operation() {
+    for opcode in [OpCode::Bool, OpCode::CallBuiltin, OpCode::Copy] {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(0, TirType::DynBox, LirRepr::DynBox)],
+            ops: vec![LirOp {
+                tir_op: TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![ValueId(0)],
+                    results: vec![ValueId(1)],
+                    attrs: AttrDict::from([("lir.truthy_cond".into(), AttrValue::Bool(true))]),
+                    source_span: None,
+                },
+                result_values: vec![value(1, TirType::Bool, LirRepr::Bool1)],
+            }],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(1)],
+            },
+        };
+        let func = LirFunction {
+            name: "truthy".into(),
+            param_names: vec!["x".into()],
+            param_types: vec![TirType::DynBox],
+            return_types: vec![TirType::Bool],
+            blocks: HashMap::from([(BlockId(0), entry)]),
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        if opcode == OpCode::Bool {
+            assert!(verify_lir_function(&func).is_ok());
+        } else {
+            let errors =
+                verify_lir_function(&func).expect_err("a call hint is not the Bool operation");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("requires the Bool operation"))
+            );
+        }
+    }
 }
 
 #[test]

@@ -623,65 +623,60 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
 }
 
 pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(
+    let state = types_state(_py);
+    let signature = RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true);
+    let methods = [
+        RuntimeClassMethodSpec::with_signature(
+            "__init__",
+            &state.dynamic_class_attribute_init_fn,
+            molt_types_dynamic_class_attr_init as *const () as usize as u64,
+            3,
+            signature,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "__get__",
+            &state.dynamic_class_attribute_get_fn,
+            molt_types_dynamic_class_attr_get as *const () as usize as u64,
+            3,
+            signature,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__set__",
+            &state.dynamic_class_attribute_set_fn,
+            molt_types_dynamic_class_attr_set as *const () as usize as u64,
+            3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__delete__",
+            &state.dynamic_class_attribute_delete_fn,
+            molt_types_dynamic_class_attr_delete as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "getter",
+            &state.dynamic_class_attribute_getter_fn,
+            molt_types_dynamic_class_attr_getter as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "setter",
+            &state.dynamic_class_attribute_setter_fn,
+            molt_types_dynamic_class_attr_setter as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "deleter",
+            &state.dynamic_class_attribute_deleter_fn,
+            molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
-        &types_state(_py).dynamic_class_attribute_class,
+        &state.dynamic_class_attribute_class,
         "DynamicClassAttribute",
         8,
-    );
-    if class_bits == 0 || obj_from_bits(class_bits).is_none() {
-        return class_bits;
-    }
-    let init_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_init_fn,
-        molt_types_dynamic_class_attr_init as *const () as usize as u64,
-        3,
-    );
-    let get_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_get_fn,
-        molt_types_dynamic_class_attr_get as *const () as usize as u64,
-        3,
-    );
-    let set_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_set_fn,
-        molt_types_dynamic_class_attr_set as *const () as usize as u64,
-        3,
-    );
-    let delete_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_delete_fn,
-        molt_types_dynamic_class_attr_delete as *const () as usize as u64,
-        2,
-    );
-    let getter_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_getter_fn,
-        molt_types_dynamic_class_attr_getter as *const () as usize as u64,
-        2,
-    );
-    let setter_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_setter_fn,
-        molt_types_dynamic_class_attr_setter as *const () as usize as u64,
-        2,
-    );
-    let deleter_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).dynamic_class_attribute_deleter_fn,
-        molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__init__", init_bits);
-    set_class_method(_py, class_bits, "__get__", get_bits);
-    set_class_method(_py, class_bits, "__set__", set_bits);
-    set_class_method(_py, class_bits, "__delete__", delete_bits);
-    set_class_method(_py, class_bits, "getter", getter_bits);
-    set_class_method(_py, class_bits, "setter", setter_bits);
-    set_class_method(_py, class_bits, "deleter", deleter_bits);
-    mark_vararg_method(_py, init_bits, true);
-    mark_vararg_method(_py, get_bits, true);
-    class_bits
+        None,
+        &methods,
+    )
 }

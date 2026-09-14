@@ -1,6 +1,5 @@
 use super::ControlOpContext;
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_return_control_op(
@@ -11,7 +10,6 @@ pub(super) fn emit_return_control_op(
     match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => emit_ret(context, func, op),
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
-            emit_arena_free(context, func);
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::Return);
         }
@@ -37,17 +35,5 @@ fn emit_ret(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
             format_args!("ret target args {:?} are not present", op.args),
         );
     }
-    emit_arena_free(context, func);
     func.instruction(&Instruction::Return);
-}
-
-fn emit_arena_free(context: &ControlOpContext<'_>, func: &mut Function) {
-    if let Some(arena_idx) = context.arena_local {
-        func.instruction(&Instruction::LocalGet(arena_idx));
-        emit_call(
-            func,
-            context.reloc_enabled,
-            context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
-        );
-    }
 }

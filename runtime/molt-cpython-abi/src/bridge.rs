@@ -3862,6 +3862,43 @@ impl ObjectBridge {
         true
     }
 
+    /// Retire one exact static/direct C-object binding without changing any
+    /// reference ownership.
+    ///
+    /// Static bindings occupy both address-keyed ingress maps.  Requiring the
+    /// supplied pair to match in both maps distinguishes them from managed
+    /// views, while conditional reverse removal preserves a newer canonical
+    /// pointer or an independent alias for the same runtime handle.  The
+    /// runtime owns any strong class anchor associated with this identity and
+    /// must retire that anchor separately after unbinding.
+    ///
+    /// Returns `false` without mutation for null/zero inputs or when the exact
+    /// forward pair is no longer current.  A missing reverse mapping is valid:
+    /// bindings created with `canonical_view == false` intentionally have no
+    /// handle-to-pointer entry.
+    pub unsafe fn unbind_static_pyobj_from_runtime_handle(
+        &self,
+        ptr: *mut PyObject,
+        bits: AbiHandle,
+    ) -> bool {
+        if ptr.is_null() || bits == 0 {
+            return false;
+        }
+        let addr = ptr.addr();
+        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
+        if address.from_py.get(&addr).copied() != Some(bits)
+            || address.direct_molt_py.get(&addr).copied() != Some(bits)
+        {
+            return false;
+        }
+        address.from_py.remove(&addr);
+        address.direct_molt_py.remove(&addr);
+        if handle.raw_py.get(&bits).copied() == Some(addr) {
+            handle.raw_py.remove(&bits);
+        }
+        true
+    }
+
     pub unsafe fn register_pyobj_for_handle(&self, ptr: *mut PyObject, bits: AbiHandle) {
         if ptr.is_null() || bits == 0 {
             return;
@@ -4263,46 +4300,65 @@ impl ObjectBridge {
         }
     }
 
-    /// Retire tuple identity immediately while deferring the projection's C
-    /// references. The runtime terminal path drops the returned guard only
-    /// after releasing inline tuple-owned runtime edges, so a projected child
-    /// cannot be finalized between the two independent ownership releases.
-    pub fn retire_tuple_view_deferred(&self, bits: AbiHandle) -> Option<RetiredTupleView> {
+    fn retire_managed_view_entry_deferred(
+        &self,
+        bits: AbiHandle,
+        matches_view: impl Fn(&ManagedView) -> bool,
+    ) -> Option<Box<BridgeEntry>> {
         let addr = {
             let handle = self.handle_shard(bits).lock();
             let entry = handle.to_py.get(&bits)?;
-            if !matches!(&entry.view, ManagedView::Tuple { .. }) {
+            if !matches_view(&entry.view) {
                 return None;
             }
             entry.view.py_obj().addr()
         };
         let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
+        let entry = handle.to_py.get_mut(&bits)?;
+        if entry.view.py_obj().addr() != addr || !matches_view(&entry.view) {
+            return None;
+        }
+        entry.publication = PublicationState::Retiring;
         address.from_py.remove(&addr);
         address.direct_molt_py.remove(&addr);
-        handle.to_py.get_mut(&bits)?.publication = PublicationState::Retiring;
         let entry = handle.to_py.remove(&bits)?;
         self.publication_ready[self.handle_shard_index(bits)].notify_all();
         drop(handle);
         drop(address);
+        Some(entry)
+    }
+
+    /// Retire tuple identity immediately while deferring the projection's C
+    /// references. The runtime terminal path drops the returned guard only
+    /// after releasing inline tuple-owned runtime edges, so a projected child
+    /// cannot be finalized between the two independent ownership releases.
+    pub fn retire_tuple_view_deferred(&self, bits: AbiHandle) -> Option<RetiredTupleView> {
+        let entry = self.retire_managed_view_entry_deferred(bits, |view| {
+            matches!(view, ManagedView::Tuple { .. })
+        })?;
         Some(RetiredTupleView { entry: Some(entry) })
     }
 
     /// Retire canonical identity while deferring every physical projection
     /// edge until the runtime has published all semantic sources empty.
     pub fn retire_runtime_object_deferred(&self, bits: AbiHandle) -> Option<RetiredRuntimeView> {
-        let addr = {
-            let handle = self.handle_shard(bits).lock();
-            let entry = handle.to_py.get(&bits)?;
-            entry.view.py_obj().addr()
-        };
-        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
-        address.from_py.remove(&addr);
-        address.direct_molt_py.remove(&addr);
-        handle.to_py.get_mut(&bits)?.publication = PublicationState::Retiring;
-        let entry = handle.to_py.remove(&bits)?;
-        self.publication_ready[self.handle_shard_index(bits)].notify_all();
-        drop(handle);
-        drop(address);
+        let entry = self.retire_managed_view_entry_deferred(bits, |_| true)?;
+        Some(RetiredRuntimeView { entry: Some(entry) })
+    }
+
+    /// Invalidate one runtime class's generic managed `PyTypeObject` view at
+    /// interpreter finalization, including any otherwise-live direct C refs.
+    /// Static/raw bindings are not managed entries and therefore never match.
+    ///
+    /// The returned guard must be dropped before the caller releases the
+    /// stable runtime view hold: dropping it removes the physical projection
+    /// and clears `HAS_ABI_VIEW`, after which the caller releases exactly one
+    /// runtime reference while its separate retirement pin keeps the class
+    /// allocation alive.
+    pub fn retire_runtime_type_view_deferred(&self, bits: AbiHandle) -> Option<RetiredRuntimeView> {
+        let entry = self.retire_managed_view_entry_deferred(bits, |view| {
+            matches!(view, ManagedView::Type { .. })
+        })?;
         Some(RetiredRuntimeView { entry: Some(entry) })
     }
 
@@ -5661,6 +5717,334 @@ mod bridge_handle_tests {
                 .raw_py
                 .contains_key(&w_bits)
         );
+    }
+
+    #[test]
+    fn static_binding_unbind_retires_exact_canonical_pair() {
+        let bridge = ObjectBridge::new();
+        let mut object = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let ptr = &raw mut object;
+        let addr = ptr.addr();
+        let bits = 0xA110_0000_0000_0010;
+
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(ptr, bits, true) });
+        assert_eq!(
+            bridge.address_shard(addr).lock().from_py.get(&addr),
+            Some(&bits)
+        );
+        assert_eq!(
+            bridge.address_shard(addr).lock().direct_molt_py.get(&addr),
+            Some(&bits)
+        );
+        assert_eq!(
+            bridge.handle_shard(bits).lock().raw_py.get(&bits),
+            Some(&addr)
+        );
+
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, bits) });
+        let address = bridge.address_shard(addr).lock();
+        assert!(!address.from_py.contains_key(&addr));
+        assert!(!address.direct_molt_py.contains_key(&addr));
+        drop(address);
+        assert!(!bridge.handle_shard(bits).lock().raw_py.contains_key(&bits));
+    }
+
+    #[test]
+    fn static_binding_unbind_accepts_noncanonical_alias_without_reverse() {
+        let bridge = ObjectBridge::new();
+        let mut object = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let ptr = &raw mut object;
+        let addr = ptr.addr();
+        let bits = 0xA110_0000_0000_0020;
+
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(ptr, bits, false) });
+        assert!(!bridge.handle_shard(bits).lock().raw_py.contains_key(&bits));
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, bits) });
+        let address = bridge.address_shard(addr).lock();
+        assert!(!address.from_py.contains_key(&addr));
+        assert!(!address.direct_molt_py.contains_key(&addr));
+    }
+
+    #[test]
+    fn static_binding_unbind_preserves_newer_forward_identity() {
+        let bridge = ObjectBridge::new();
+        let mut object = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let ptr = &raw mut object;
+        let addr = ptr.addr();
+        let old_bits = 0xA110_0000_0000_0030;
+        let new_bits = 0xA110_0000_0000_0040;
+
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(ptr, old_bits, true) });
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(ptr, new_bits, true) });
+        assert!(!unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, old_bits) });
+        let address = bridge.address_shard(addr).lock();
+        assert_eq!(address.from_py.get(&addr), Some(&new_bits));
+        assert_eq!(address.direct_molt_py.get(&addr), Some(&new_bits));
+        drop(address);
+        assert_eq!(
+            bridge.handle_shard(new_bits).lock().raw_py.get(&new_bits),
+            Some(&addr)
+        );
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, new_bits) });
+    }
+
+    #[test]
+    fn static_binding_unbind_rejects_inconsistent_forward_pair_without_mutation() {
+        let bridge = ObjectBridge::new();
+        let mut object = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let ptr = &raw mut object;
+        let addr = ptr.addr();
+        let bits = 0xA110_0000_0000_0048;
+        let conflicting_bits = 0xA110_0000_0000_0049;
+
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(ptr, bits, true) });
+        bridge
+            .address_shard(addr)
+            .lock()
+            .direct_molt_py
+            .insert(addr, conflicting_bits);
+        assert!(!unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, bits) });
+        let mut address = bridge.address_shard(addr).lock();
+        assert_eq!(address.from_py.get(&addr), Some(&bits));
+        assert_eq!(address.direct_molt_py.get(&addr), Some(&conflicting_bits));
+        address.direct_molt_py.insert(addr, bits);
+        drop(address);
+        assert_eq!(
+            bridge.handle_shard(bits).lock().raw_py.get(&bits),
+            Some(&addr)
+        );
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(ptr, bits) });
+    }
+
+    #[test]
+    fn static_binding_unbind_preserves_newer_reverse_identity() {
+        let bridge = ObjectBridge::new();
+        let mut canonical = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let mut alias = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let canonical_ptr = &raw mut canonical;
+        let alias_ptr = &raw mut alias;
+        let canonical_addr = canonical_ptr.addr();
+        let alias_addr = alias_ptr.addr();
+        let bits = 0xA110_0000_0000_0050;
+
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(canonical_ptr, bits, true) });
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(alias_ptr, bits, false) });
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(alias_ptr, bits) });
+        assert_eq!(
+            bridge.handle_shard(bits).lock().raw_py.get(&bits),
+            Some(&canonical_addr)
+        );
+        assert!(
+            !bridge
+                .address_shard(alias_addr)
+                .lock()
+                .from_py
+                .contains_key(&alias_addr)
+        );
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(canonical_ptr, bits) });
+    }
+
+    #[test]
+    fn static_binding_unbind_isolated_from_other_identity_classes() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let mut first = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let mut second = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let first_ptr = &raw mut first;
+        let second_ptr = &raw mut second;
+        let first_bits = 0xA110_0000_0000_0060;
+        let second_bits = 0xA110_0000_0000_0070;
+        assert!(unsafe { bridge.bind_static_pyobj_to_runtime_handle(first_ptr, first_bits, true) });
+        assert!(unsafe {
+            bridge.bind_static_pyobj_to_runtime_handle(second_ptr, second_bits, true)
+        });
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(first_ptr, first_bits) });
+        assert_eq!(
+            bridge
+                .address_shard(second_ptr.addr())
+                .lock()
+                .direct_molt_py
+                .get(&second_ptr.addr()),
+            Some(&second_bits)
+        );
+
+        let managed_bits = MoltObject::from_int(20_001).bits();
+        let managed_ptr = unsafe { bridge.owned_handle_to_pyobj(managed_bits) };
+        assert!(!unsafe {
+            bridge.unbind_static_pyobj_from_runtime_handle(managed_ptr, managed_bits)
+        });
+        assert_eq!(
+            bridge
+                .pyobj_to_handle(managed_ptr)
+                .map(BridgeIdentity::as_handle),
+            Some(managed_bits)
+        );
+
+        let mut foreign = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let foreign_ptr = &raw mut foreign;
+        let foreign_bits = 0xA110_0000_0000_0080;
+        bridge.insert_foreign_for_test(foreign_ptr, foreign_bits);
+        assert!(!unsafe {
+            bridge.unbind_static_pyobj_from_runtime_handle(foreign_ptr, foreign_bits)
+        });
+        assert_eq!(
+            bridge
+                .address_shard(foreign_ptr.addr())
+                .lock()
+                .foreign
+                .get(&foreign_ptr.addr()),
+            Some(&foreign_bits)
+        );
+
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(second_ptr, second_bits) });
+        assert_eq!(
+            bridge.release_pyobj(managed_ptr),
+            PyObjRelease::ManagedViewRetired
+        );
+        unsafe { bridge.release_foreign(foreign_ptr.addr()) };
+    }
+
+    #[test]
+    fn runtime_type_view_retirement_invalidates_only_managed_type_identity() {
+        let bridge = ObjectBridge::new();
+        let type_bits = MoltObject::from_int(31_001).bits();
+        let mut type_object = unsafe { std::mem::zeroed::<PyTypeObject>() };
+        type_object.ob_base.ob_base.ob_refcnt = 7;
+        let type_view = ManagedView::Type {
+            object: Box::new(UnsafeCell::new(type_object)),
+            _name: std::ffi::CString::new("retiring.Type").unwrap(),
+        };
+        let type_ptr = type_view.py_obj();
+        let type_addr = type_ptr.addr();
+        let type_entry = Box::new(BridgeEntry {
+            view: type_view,
+            bits: type_bits,
+            utf8: None,
+            publication: PublicationState::Ready,
+            lifecycle: BridgeLifecycle::RuntimeOwned,
+        });
+        {
+            let (mut address, mut handle) = bridge.lock_address_then_handle(type_addr, type_bits);
+            address.from_py.insert(type_addr, type_bits);
+            address.direct_molt_py.insert(type_addr, type_bits);
+            handle.to_py.insert(type_bits, type_entry);
+        }
+
+        let object_bits = MoltObject::from_int(31_002).bits();
+        let object_view = ManagedView::Object(Box::new(BridgeHeader {
+            py_obj: UnsafeCell::new(PyObject {
+                ob_refcnt: 1,
+                ob_type: std::ptr::null_mut(),
+            }),
+        }));
+        let object_ptr = object_view.py_obj();
+        let object_addr = object_ptr.addr();
+        let object_entry = Box::new(BridgeEntry {
+            view: object_view,
+            bits: object_bits,
+            utf8: None,
+            publication: PublicationState::Ready,
+            lifecycle: BridgeLifecycle::ViewHoldOnly,
+        });
+        {
+            let (mut address, mut handle) =
+                bridge.lock_address_then_handle(object_addr, object_bits);
+            address.from_py.insert(object_addr, object_bits);
+            address.direct_molt_py.insert(object_addr, object_bits);
+            handle.to_py.insert(object_bits, object_entry);
+        }
+
+        let mut static_object = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let static_ptr = &raw mut static_object;
+        let static_addr = static_ptr.addr();
+        let static_bits = 0xA110_0000_0000_0090;
+        assert!(unsafe {
+            bridge.bind_static_pyobj_to_runtime_handle(static_ptr, static_bits, true)
+        });
+
+        assert!(
+            bridge
+                .retire_runtime_type_view_deferred(object_bits)
+                .is_none()
+        );
+        assert_eq!(
+            bridge
+                .pyobj_to_handle(object_ptr)
+                .map(BridgeIdentity::as_handle),
+            Some(object_bits)
+        );
+
+        let retired = bridge
+            .retire_runtime_type_view_deferred(type_bits)
+            .expect("managed type view retirement");
+        assert!(bridge.pyobj_to_handle(type_ptr).is_none());
+        assert!(
+            !bridge
+                .address_shard(type_addr)
+                .lock()
+                .direct_molt_py
+                .contains_key(&type_addr)
+        );
+        assert!(
+            !bridge
+                .handle_shard(type_bits)
+                .lock()
+                .to_py
+                .contains_key(&type_bits)
+        );
+        assert_eq!(
+            bridge
+                .address_shard(static_addr)
+                .lock()
+                .from_py
+                .get(&static_addr),
+            Some(&static_bits)
+        );
+        assert_eq!(
+            bridge
+                .handle_shard(static_bits)
+                .lock()
+                .raw_py
+                .get(&static_bits),
+            Some(&static_addr)
+        );
+        drop(retired);
+
+        assert_eq!(
+            bridge.release_pyobj(object_ptr),
+            PyObjRelease::ManagedViewRetired
+        );
+        assert!(unsafe { bridge.unbind_static_pyobj_from_runtime_handle(static_ptr, static_bits) });
     }
 }
 

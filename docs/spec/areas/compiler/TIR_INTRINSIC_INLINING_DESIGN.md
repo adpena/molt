@@ -384,9 +384,9 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_del_attr_object` | 1 | Low | |
 | `molt_del_attr_name` | 1 | Low | |
 | `molt_guard_type` | 1 | Yes | Type guard for field access |
-| `molt_guard_layout_ptr` | 1 | Yes | Layout guard for IC |
-| `molt_guarded_field_get_ptr` | 1 | Yes | Guarded field load |
-| `molt_guarded_field_set_ptr` | 1 | Moderate | |
+| `molt_guard_layout` | 1 | Yes | Layout guard for IC |
+| `molt_guarded_field_get` | 1 | Yes | Guarded field load |
+| `molt_guarded_field_set` | 1 | Moderate | |
 | `molt_guarded_field_init_ptr` | 1 | Moderate | |
 
 #### Module System (12 functions)

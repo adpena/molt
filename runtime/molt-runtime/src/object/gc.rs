@@ -605,7 +605,7 @@ impl GcRuntimeState {
         bits
     }
 
-    pub(crate) fn clear_api_roots(&self, py: &PyToken<'_>) {
+    pub(crate) fn clear_api_roots(&self, py: &PyToken<'_>) -> bool {
         Self::assert_custody();
         let (callbacks, garbage) = {
             let mut roots = self
@@ -617,16 +617,18 @@ impl GcRuntimeState {
             roots.garbage = 0;
             values
         };
+        let changed = callbacks != 0 || garbage != 0;
         for bits in [callbacks, garbage] {
             if bits != 0 {
                 crate::dec_ref_bits(py, bits);
             }
         }
+        changed
     }
 }
 
-pub(crate) fn gc_clear_api_roots(py: &PyToken<'_>) {
-    crate::runtime_state(py).gc.clear_api_roots(py);
+pub(crate) fn gc_clear_api_roots(py: &PyToken<'_>) -> bool {
+    crate::runtime_state(py).gc.clear_api_roots(py)
 }
 
 /// Side registry of live cycle-capable objects (CPython's three gc-tracked
@@ -1608,6 +1610,9 @@ unsafe fn effective_gc_refcount(ptr: *mut u8) -> i64 {
     // scratch must represent that complete domain on every architecture.
     let mut raw = i64::from(unsafe { header_refcount(ptr) });
     let header = unsafe { header_from_obj_ptr(ptr) };
+    // Collector pins are physical lifetime owners but not reachability roots.
+    // This scratch projection is the only place the runtime discounts a pin;
+    // header/ABI-view retain and release keep its full ownership contribution.
     if unsafe { (*header).has_flag(HEADER_FLAG_GC_PINNED) } {
         raw -= 1;
     }
@@ -1646,7 +1651,7 @@ unsafe fn pin_node(node: GcNode) {
     match node {
         GcNode::Runtime(ptr) => {
             let header = unsafe { header_from_obj_ptr(ptr.0) };
-            unsafe { (*header).pin_for_gc() };
+            unsafe { (*header).pin_for_gc(MoltObject::from_ptr(ptr.0).bits()) };
         }
         GcNode::Native(address) => {
             unsafe { molt_cpython_abi::native_gc_node_incref(address) };
@@ -1659,18 +1664,14 @@ unsafe fn release_node_pin(py: &PyToken<'_>, node: GcNode) {
     match node {
         GcNode::Runtime(ptr) => {
             let header = unsafe { header_from_obj_ptr(ptr.0) };
-            let flags = unsafe { (*header).load_synchronized_flags() };
-            unsafe { (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED) };
-            if flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
-                let previous =
-                    unsafe { (*header).release_owned("cycle collector pin release") }.previous();
-                if previous <= 1 {
-                    eprintln!("molt fatal: ABI-view GC pin lost its stable view hold");
-                    std::process::abort();
-                }
-            } else {
-                unsafe { dec_ref_ptr(py, ptr.0) };
+            let flags = unsafe { (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED) };
+            if flags & HEADER_FLAG_GC_PINNED == 0 {
+                eprintln!("molt fatal: cycle collector released an unowned pin");
+                std::process::abort();
             }
+            // Retire the physical owner through the same bridge/finalization
+            // transaction as every other reference, including ABI-view objects.
+            unsafe { dec_ref_ptr(py, ptr.0) };
         }
         GcNode::Native(address) => {
             native_gc_set_pinned(address, false);
@@ -2848,7 +2849,7 @@ pub(crate) unsafe fn collect_pending(py: &PyToken<'_>) -> CollectStats {
 unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        if !object_class_has_finalizer(ptr) {
+        if !object_class_has_finalizer(py, ptr) {
             return;
         }
         if (*header).has_flag(HEADER_FLAG_FINALIZER_RAN) {
@@ -3709,6 +3710,197 @@ mod tests {
                 stats2.collected, 2,
                 "after the external root drops, the cycle is collectable"
             );
+        });
+    }
+
+    #[test]
+    fn collector_pin_owns_physical_lifetime_without_becoming_a_gc_root() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(_py, {
+            for viewed in [false, true] {
+                let ptr = alloc_list(_py, &[]);
+                let bits = MoltObject::from_ptr(ptr).bits();
+                if viewed {
+                    assert!(
+                        !unsafe {
+                            molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                        }
+                        .is_null()
+                    );
+                }
+                let stable_hold = u32::from(viewed);
+                let node = GcNode::Runtime(PtrSlot(ptr));
+                unsafe {
+                    assert_eq!(header_refcount(ptr), 1 + stable_hold);
+                    pin_node(node);
+                    assert_eq!(header_refcount(ptr), 2 + stable_hold);
+                    assert_eq!(effective_gc_refcount(ptr), 1);
+                    dec_ref_bits(_py, bits);
+                    assert_eq!(header_refcount(ptr), 1 + stable_hold);
+                    assert_eq!(effective_gc_refcount(ptr), 0, "pin is not a GC root");
+                    assert!(gc_is_tracked(ptr), "pin keeps allocation live");
+                    assert!(!molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(bits));
+                    crate::inc_ref_bits(_py, bits);
+                    assert_eq!(effective_gc_refcount(ptr), 1);
+                    release_node_pin(_py, node);
+                    assert!(!(*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_GC_PINNED));
+                    assert_eq!(header_refcount(ptr), 1 + stable_hold);
+                    assert_eq!(effective_gc_refcount(ptr), 1);
+                    dec_ref_bits(_py, bits);
+                    assert!(
+                        !gc_is_tracked(ptr),
+                        "final ordinary owner destroys allocation"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn collector_pin_rebases_view_only_bias_and_defers_last_c_owner_destruction() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_list(_py, &[]);
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            let view = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+            assert!(!view.is_null());
+            let node = GcNode::Runtime(PtrSlot(ptr));
+            unsafe {
+                molt_cpython_abi::api::refcount::Py_INCREF(view);
+                dec_ref_bits(_py, bits);
+                assert_eq!(header_refcount(ptr), 1, "only stable view hold remains");
+                assert_eq!((*view).ob_refcnt, 1, "one direct C owner, no runtime bias");
+                pin_node(node);
+                assert_eq!(header_refcount(ptr), 2);
+                assert_eq!(
+                    (*view).ob_refcnt,
+                    2,
+                    "physical pin restores runtime-owner bias"
+                );
+                assert_eq!(
+                    effective_gc_refcount(ptr),
+                    1,
+                    "direct C owner is still a root"
+                );
+                release_node_pin(_py, node);
+                assert_eq!(header_refcount(ptr), 1);
+                assert_eq!(
+                    (*view).ob_refcnt,
+                    1,
+                    "pin release retires runtime-owner bias"
+                );
+                assert!(!bridge.has_finalizing_pin(bits));
+
+                pin_node(node);
+                molt_cpython_abi::api::refcount::Py_DECREF(view);
+                assert_eq!(
+                    (*view).ob_refcnt,
+                    1,
+                    "physical pin retains runtime-owner bias"
+                );
+                assert_eq!(header_refcount(ptr), 2);
+                assert_eq!(effective_gc_refcount(ptr), 0);
+                assert!(
+                    !bridge.has_finalizing_pin(bits),
+                    "collector pin defers terminal claim"
+                );
+                release_node_pin(_py, node);
+                assert!(
+                    !gc_is_tracked(ptr),
+                    "last physical pin completes view retirement"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn collector_pin_keeps_exception_view_live_through_physical_projection_detach() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = crate::alloc_exception(_py, "RuntimeError", "collector pin projection");
+            let bits = MoltObject::from_ptr(ptr).bits();
+            crate::builtins::exceptions::exception_replace_field_bits(
+                _py,
+                bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                bits,
+            )
+            .expect("self context edge");
+            let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            let view = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+            assert!(!view.is_null());
+            let node = GcNode::Runtime(PtrSlot(ptr));
+            unsafe {
+                pin_node(node);
+                dec_ref_bits(_py, bits);
+                super::super::heap_lifecycle::clear_cycle_edges(_py, ptr);
+                assert_eq!(
+                    header_refcount(ptr),
+                    2,
+                    "stable view hold plus physical collector pin"
+                );
+                assert_eq!(effective_gc_refcount(ptr), 0);
+                assert!(!bridge.has_finalizing_pin(bits));
+                let projection = view.cast::<molt_cpython_abi::abi_types::PyBaseExceptionObject>();
+                assert!(
+                    (*projection).context.is_null(),
+                    "projection publishes cleared state first"
+                );
+                release_node_pin(_py, node);
+                assert!(!gc_is_tracked(ptr));
+            }
+            assert!(!crate::exception_pending(_py));
+        });
+    }
+
+    #[test]
+    fn weak_registry_upgrade_preserves_collector_owned_abi_view() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(_py, {
+            let reference_type = crate::builtin_classes(_py).reference_type;
+            let weak = unsafe {
+                crate::alloc_instance_for_class(
+                    _py,
+                    obj_from_bits(reference_type).as_ptr().unwrap(),
+                )
+            };
+            let ptr = crate::object::builders::alloc_set_with_entries(_py, &[]);
+            let bits = MoltObject::from_ptr(ptr).bits();
+            assert_eq!(
+                crate::molt_weakref_register(weak, bits, MoltObject::none().bits()),
+                MoltObject::from_bool(true).bits(),
+            );
+            let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            let view = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+            assert!(!view.is_null());
+            let node = GcNode::Runtime(PtrSlot(ptr));
+            unsafe {
+                molt_cpython_abi::api::refcount::Py_INCREF(view);
+                dec_ref_bits(_py, bits);
+                pin_node(node);
+                molt_cpython_abi::api::refcount::Py_DECREF(view);
+                let owned = crate::object::weakref::weakref_peek_owned(_py, weak)
+                    .expect("registry upgrades the still-live physical collector owner");
+                assert_eq!(owned, bits);
+                assert_eq!(
+                    header_refcount(ptr),
+                    3,
+                    "stable hold, collector, upgraded owner"
+                );
+                assert_eq!(
+                    (*view).ob_refcnt,
+                    1,
+                    "one runtime-owner bias regardless of owner count"
+                );
+                release_node_pin(_py, node);
+                assert_eq!(header_refcount(ptr), 2);
+                assert!(!bridge.has_finalizing_pin(bits));
+                dec_ref_bits(_py, owned);
+                assert!(!gc_is_tracked(ptr));
+            }
+            assert_eq!(crate::object::weakref::weakref_peek_owned(_py, weak), None);
+            dec_ref_bits(_py, weak);
         });
     }
 

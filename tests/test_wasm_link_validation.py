@@ -4643,7 +4643,7 @@ def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() 
             "molt_exception_pending",
             "molt_object_field_get",
             "molt_object_field_set",
-            "molt_guarded_field_get_ptr",
+            "molt_guarded_field_get",
         ]
     )
 
@@ -4652,7 +4652,7 @@ def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() 
     assert exports == {
         "molt_object_field_get",
         "molt_object_field_set",
-        "molt_guarded_field_get_ptr",
+        "molt_guarded_field_get",
     }
 
 

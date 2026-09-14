@@ -335,6 +335,98 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_property_new",
             crate::molt_property_new as *const (),
         )),
+        "molt_staticmethod_type_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_staticmethod_type_new",
+            crate::molt_staticmethod_type_new as *const (),
+        )),
+        "molt_staticmethod_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_staticmethod_init",
+            crate::molt_staticmethod_init as *const (),
+        )),
+        "molt_staticmethod_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_staticmethod_get",
+            crate::molt_staticmethod_get as *const (),
+        )),
+        "molt_staticmethod_call" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_staticmethod_call",
+            crate::molt_staticmethod_call as *const (),
+        )),
+        "molt_classmethod_type_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_classmethod_type_new",
+            crate::molt_classmethod_type_new as *const (),
+        )),
+        "molt_classmethod_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_classmethod_init",
+            crate::molt_classmethod_init as *const (),
+        )),
+        "molt_classmethod_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_classmethod_get",
+            crate::molt_classmethod_get as *const (),
+        )),
+        "molt_property_type_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_type_new",
+            crate::molt_property_type_new as *const (),
+        )),
+        "molt_property_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_init",
+            crate::molt_property_init as *const (),
+        )),
+        "molt_property_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_get",
+            crate::molt_property_get as *const (),
+        )),
+        "molt_property_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_set",
+            crate::molt_property_set as *const (),
+        )),
+        "molt_property_delete" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_delete",
+            crate::molt_property_delete as *const (),
+        )),
+        "molt_property_set_name" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_property_set_name",
+            crate::molt_property_set_name as *const (),
+        )),
+        "molt_native_descriptor_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_new",
+            crate::molt_native_descriptor_new as *const (),
+        )),
+        "molt_native_descriptor_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_get",
+            crate::molt_native_descriptor_get as *const (),
+        )),
+        "molt_native_descriptor_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_set",
+            crate::molt_native_descriptor_set as *const (),
+        )),
+        "molt_native_descriptor_delete" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_delete",
+            crate::molt_native_descriptor_delete as *const (),
+        )),
+        "molt_native_descriptor_repr" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_repr",
+            crate::molt_native_descriptor_repr as *const (),
+        )),
+        "molt_native_descriptor_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_descriptor_reduce",
+            crate::molt_native_descriptor_reduce as *const (),
+        )),
+        "molt_wrapper_member_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_wrapper_member_get",
+            crate::molt_wrapper_member_get as *const (),
+        )),
+        "molt_wrapper_member_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_wrapper_member_set",
+            crate::molt_wrapper_member_set as *const (),
+        )),
+        "molt_wrapper_member_delete" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_wrapper_member_delete",
+            crate::molt_wrapper_member_delete as *const (),
+        )),
+        "molt_weakref_callback_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakref_callback_get",
+            crate::molt_weakref_callback_get as *const (),
+        )),
         "molt_generic_alias_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_generic_alias_new",
             crate::molt_generic_alias_new as *const (),

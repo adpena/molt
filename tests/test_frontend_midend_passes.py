@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-from molt.frontend.cfg_analysis import BasicBlock, CFGGraph, build_cfg
+from molt.frontend._types import BUILTIN_TYPE_TAGS, _SCCP_OVERDEFINED
+from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
@@ -22,6 +23,713 @@ def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     return gen.map_ops_to_json(ops)
 
 
+_CALLBACK_OPERATOR_CASES = [
+    ("ADD", 2),
+    ("SUB", 2),
+    ("MUL", 2),
+    ("DIV", 2),
+    ("FLOORDIV", 2),
+    ("MOD", 2),
+    ("POW", 2),
+    ("BIT_AND", 2),
+    ("BIT_OR", 2),
+    ("BIT_XOR", 2),
+    ("LSHIFT", 2),
+    ("RSHIFT", 2),
+    ("MATMUL", 2),
+    ("NEG", 1),
+    ("POS", 1),
+    ("INVERT", 1),
+    ("ABS", 1),
+    ("INPLACE_ADD", 2),
+    ("INPLACE_SUB", 2),
+    ("INPLACE_MUL", 2),
+    ("INPLACE_DIV", 2),
+    ("INPLACE_FLOORDIV", 2),
+    ("INPLACE_MOD", 2),
+    ("INPLACE_POW", 2),
+    ("INPLACE_LSHIFT", 2),
+    ("INPLACE_RSHIFT", 2),
+    ("INPLACE_BIT_AND", 2),
+    ("INPLACE_BIT_OR", 2),
+    ("INPLACE_BIT_XOR", 2),
+    ("INPLACE_MATMUL", 2),
+]
+
+
+@pytest.mark.parametrize(("kind", "arity"), _CALLBACK_OPERATOR_CASES)
+def test_operator_callbacks_invalidate_unrelated_heap_read_cse(
+    kind: str, arity: int
+) -> None:
+    # A dunder on lhs/rhs can mutate a different object captured by the callback.
+    # The list read has a specific alias class, not merely a global epoch key.
+    operands = [MoltValue("lhs", "int"), MoltValue("rhs", "int")][:arity]
+    lowered = _lower_ops(
+        [MoltOp(kind="MISSING", args=[], result=value) for value in operands]
+        + [
+            MoltOp(kind="LIST_NEW", args=[], result=MoltValue("observed")),
+            MoltOp(
+                kind="LEN", args=[MoltValue("observed")], result=MoltValue("before")
+            ),
+            MoltOp(
+                kind=kind, args=operands, result=MoltValue("callback_result", "int")
+            ),
+            MoltOp(kind="LEN", args=[MoltValue("observed")], result=MoltValue("after")),
+            MoltOp(kind="RETURN", args=[MoltValue("after")], result=MoltValue("none")),
+        ]
+    )
+    reads = [op for op in lowered if op.get("kind") == "len"]
+    assert len(reads) == 2, (
+        f"{kind} callback must invalidate unrelated list reads: {lowered}"
+    )
+    assert any(op.get("out") == "callback_result" for op in lowered), (
+        f"dead-result {kind} must retain its callback: {lowered}"
+    )
+
+
+@pytest.mark.parametrize(("kind", "arity"), _CALLBACK_OPERATOR_CASES)
+def test_operator_callbacks_invalidate_type_and_shape_guards(
+    kind: str, arity: int
+) -> None:
+    gen = SimpleTIRGenerator()
+    guards = {("GUARD_TYPE", ("v", "captured")), ("GUARD_DICT_SHAPE", ("v", "mapping"))}
+    op = MoltOp(
+        kind=kind,
+        args=[MoltValue("lhs"), MoltValue("rhs")][:arity],
+        result=MoltValue("result"),
+    )
+    gen._clear_invalidated_guard_signatures(guards, op)
+    assert not guards, f"{kind} callbacks can mutate objects beyond their operands"
+
+
+def test_generated_operator_facts_preserve_primitive_guard_and_exception_controls() -> (
+    None
+):
+    gen = SimpleTIRGenerator()
+    left, right = MoltValue("left"), MoltValue("right")
+    gen._op_by_result = {
+        left.name: MoltOp(kind="CONST", args=[7], result=left),
+        right.name: MoltOp(kind="CONST", args=[2], result=right),
+    }
+    op = MoltOp(kind="ADD", args=[left, right], result=MoltValue("result"))
+    guards = {("GUARD_TYPE", ("v", "captured"))}
+    gen._clear_invalidated_guard_signatures(guards, op)
+    assert guards
+    assert gen._op_instance_cannot_raise(op, {})
+    gen._op_by_result[right.name] = MoltOp(kind="CONST_FLOAT", args=[2.0], result=right)
+    assert gen._op_effect_class(op) == "pure"
+    assert not gen._op_instance_cannot_raise(op, {})
+    boolean = MoltValue("boolean")
+    gen._op_by_result[boolean.name] = MoltOp(
+        kind="CONST_BOOL", args=[True], result=boolean
+    )
+    invert = MoltOp(kind="INVERT", args=[boolean], result=MoltValue("inverted"))
+    assert gen._op_effect_class(invert) == "writes_heap"
+    assert not gen._op_instance_cannot_raise(invert, {})
+
+
+@pytest.mark.parametrize("constructor", ["LIST_NEW", "DICT_NEW", "TUPLE_NEW"])
+def test_native_len_cse_uses_exact_constructor_not_annotation(constructor: str) -> None:
+    for producer_kind, expected_reads in ((constructor, 1), ("MISSING", 2)):
+        lowered = _lower_ops(
+            [
+                MoltOp(kind=producer_kind, args=[], result=MoltValue("obj", "list")),
+                MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("first")),
+                MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("second")),
+                MoltOp(
+                    kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")
+                ),
+            ]
+        )
+        assert sum(op["kind"] == "len" for op in lowered) == expected_reads
+
+
+def test_native_index_cse_requires_exact_integer_index() -> None:
+    for index_kind, index_args, expected_reads in (
+        ("CONST", [0], 1),
+        ("MISSING", [], 2),
+    ):
+        lowered = _lower_ops(
+            [
+                MoltOp(kind="CONST", args=[42], result=MoltValue("item")),
+                MoltOp(
+                    kind="LIST_NEW", args=[MoltValue("item")], result=MoltValue("obj")
+                ),
+                MoltOp(
+                    kind=index_kind, args=index_args, result=MoltValue("idx", "int")
+                ),
+                MoltOp(
+                    kind="INDEX",
+                    args=[MoltValue("obj"), MoltValue("idx")],
+                    result=MoltValue("first"),
+                ),
+                MoltOp(
+                    kind="INDEX",
+                    args=[MoltValue("obj"), MoltValue("idx")],
+                    result=MoltValue("second"),
+                ),
+                MoltOp(
+                    kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")
+                ),
+            ]
+        )
+        assert sum(op["kind"] == "index" for op in lowered) == expected_reads
+
+
+@pytest.mark.parametrize(
+    ("producer_kind", "producer_args", "read_effect"),
+    [("MISSING", [], "reads_heap"), ("CONST", [10], "pure")],
+)
+def test_type_of_exact_result_does_not_imply_read_purity(
+    producer_kind: str, producer_args: list, read_effect: str
+) -> None:
+    gen = SimpleTIRGenerator()
+    # An int annotation does not prove the observed object has a fixed class.
+    obj, tag, int_tag = MoltValue("obj", "int"), MoltValue("tag"), MoltValue("int_tag")
+    read = MoltOp(kind="TYPE_OF", args=[obj], result=tag)
+    gen._op_by_result = {
+        obj.name: MoltOp(kind=producer_kind, args=producer_args, result=obj),
+        tag.name: read,
+        int_tag.name: MoltOp(kind="CONST", args=[1], result=int_tag),
+    }
+    comparison = MoltOp(kind="EQ", args=[tag, int_tag], result=MoltValue("matches"))
+    assert gen._op_effect_class(read) == read_effect
+    assert gen._exact_primitive_operand_types(comparison) == ("int", "int")
+    assert gen._op_effect_class(comparison) == "pure"
+    assert gen._op_instance_cannot_raise(comparison, {})
+    guards = {("GUARD_TAG", (("v", "obj"), ("v", "int_tag")))}
+    gen._clear_invalidated_guard_signatures(guards, comparison)
+    assert guards
+
+
+@pytest.mark.parametrize(
+    ("producer_kind", "operand_count"),
+    [("TYPE_OF", 0), ("TYPE_OF", 2), ("MISSING", 0)],
+)
+def test_type_of_result_exactness_requires_valid_producer(
+    producer_kind: str, operand_count: int
+) -> None:
+    gen = SimpleTIRGenerator()
+    tag, int_tag = MoltValue("tag", "int"), MoltValue("int_tag")
+    gen._op_by_result = {
+        tag.name: MoltOp(
+            kind=producer_kind,
+            args=[MoltValue(f"obj_{index}") for index in range(operand_count)],
+            result=tag,
+        ),
+        int_tag.name: MoltOp(kind="CONST", args=[1], result=int_tag),
+    }
+    comparison = MoltOp(kind="EQ", args=[tag, int_tag], result=MoltValue("matches"))
+    assert gen._exact_primitive_operand_types(comparison) == (None, "int")
+    assert gen._op_effect_class(comparison) == "writes_heap"
+
+
+def test_callback_boundary_invalidates_type_of_read_and_guard_tag_fact() -> None:
+    assert SimpleTIRGenerator()._op_effect_class("TYPE_OF") == "reads_heap"
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("callback")),
+            MoltOp(kind="TYPE_OF", args=[MoltValue("obj")], result=MoltValue("first")),
+            MoltOp(
+                kind="NEG", args=[MoltValue("callback")], result=MoltValue("unused")
+            ),
+            MoltOp(kind="TYPE_OF", args=[MoltValue("obj")], result=MoltValue("second")),
+            MoltOp(
+                kind="TUPLE_NEW",
+                args=[MoltValue("first"), MoltValue("second")],
+                result=MoltValue("types"),
+            ),
+            MoltOp(kind="RETURN", args=[MoltValue("types")], result=MoltValue("none")),
+        ]
+    )
+    assert sum(op["kind"] == "type_of" for op in lowered) == 2
+    gen = SimpleTIRGenerator()
+    guards = {("GUARD_TAG", (("v", "obj"), ("v", "tag")))}
+    gen._clear_invalidated_guard_signatures(
+        guards,
+        MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("unused")),
+    )
+    assert not guards
+
+
+def test_native_append_preserves_type_guard_but_generic_mutation_does_not() -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("list")
+    gen._op_by_result[value.name] = MoltOp(kind="LIST_NEW", args=[], result=value)
+    guard = ("GUARD_TYPE", (("v", "captured"),))
+    available = {guard}
+    gen._clear_invalidated_guard_signatures(
+        available,
+        MoltOp(
+            kind="LIST_APPEND",
+            args=[value, MoltValue("element")],
+            result=MoltValue("none"),
+        ),
+    )
+    assert available == {guard}
+    gen._clear_invalidated_guard_signatures(
+        available,
+        MoltOp(kind="LIST_CLEAR", args=[value], result=MoltValue("none")),
+    )
+    assert not available  # Releasing elements may invoke arbitrary finalizers.
+
+
+@pytest.mark.parametrize("from_program_point", [False, True])
+def test_literal_none_is_exact_without_annotation(from_program_point: bool) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("value")
+    gen._op_by_result[value.name] = MoltOp(
+        kind="MISSING" if from_program_point else "CONST",
+        args=[] if from_program_point else [None],
+        result=value,
+    )
+    op = MoltOp(kind="BOOL", args=[value], result=MoltValue("truth"))
+    constants = {value.name: None} if from_program_point else None
+    assert gen._exact_primitive_operand_types(op, constants) == ("None",)
+    assert gen._op_primitive_facts(op, constants) == ("pure", True)
+
+
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [
+        ("LIST_NEW", [1]),
+        ("TUPLE_NEW", [1]),
+        ("DICT_NEW", [MoltValue("unpaired_key")]),
+        ("RANGE_NEW", []),
+        ("RANGE_NEW", [MoltValue("start"), MoltValue("stop")]),
+        ("RANGE_NEW", [MoltValue(f"arg_{index}") for index in range(4)]),
+    ],
+)
+def test_exact_container_provenance_rejects_malformed_shapes(
+    kind: str, args: list
+) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("value", "list")
+    gen._op_by_result[value.name] = MoltOp(kind=kind, args=args, result=value)
+    op = MoltOp(kind="LEN", args=[value], result=MoltValue("length"))
+    assert gen._exact_primitive_operand_types(op) == (None,)
+    assert gen._op_effect_class(op) == "writes_heap"
+
+
+@pytest.mark.parametrize("callback_result", ["unused", "none"])
+@pytest.mark.parametrize("callback_is_primitive", [False, True])
+def test_sccp_callback_kills_current_type_but_keeps_observed_tag(
+    callback_result: str, callback_is_primitive: bool
+) -> None:
+    gen = SimpleTIRGenerator()
+    obj, callback = MoltValue("obj"), MoltValue("callback")
+    expected = MoltValue("expected")
+    old, current = MoltValue("old"), MoltValue("current")
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(
+            kind="CONST" if callback_is_primitive else "MISSING",
+            args=[7] if callback_is_primitive else [],
+            result=callback,
+        ),
+        MoltOp(kind="CONST", args=[1], result=expected),
+        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=old),
+        MoltOp(kind="NEG", args=[callback], result=MoltValue(callback_result)),
+        MoltOp(kind="EQ", args=[old, expected], result=MoltValue("old_matches")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=current),
+        MoltOp(kind="EQ", args=[current, expected], result=MoltValue("now_matches")),
+    ]
+    gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    assert state["old"] == 1
+    assert state["old_matches"] is True
+    if callback_is_primitive:
+        assert state["current"] == 1
+        assert state["now_matches"] is True
+        assert state["__tag__:obj"] == 1
+    else:
+        assert state["current"] is _SCCP_OVERDEFINED
+        assert state["now_matches"] is _SCCP_OVERDEFINED
+        assert "__tag__:obj" not in state
+
+
+def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
+    gen = SimpleTIRGenerator()
+    obj, callback = MoltValue("obj"), MoltValue("callback")
+    expected = MoltValue("expected")
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(kind="MISSING", args=[], result=callback),
+        MoltOp(kind="CONST", args=[1], result=expected),
+        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+        MoltOp(
+            kind="GUARD_DICT_SHAPE",
+            args=[obj, MoltValue("dict_type"), MoltValue("version")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(
+            kind="IS",
+            args=[MoltValue("left"), MoltValue("right")],
+            result=MoltValue("condition"),
+        ),
+        MoltOp(kind="IF", args=[MoltValue("condition")], result=MoltValue("none")),
+        MoltOp(kind="NEG", args=[callback], result=MoltValue("none")),
+        MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[0], result=MoltValue("branch_marker")),
+        MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("current")),
+        MoltOp(kind="RETURN", args=[MoltValue("current")], result=MoltValue("none")),
+    ]
+    gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    assert state["current"] is _SCCP_OVERDEFINED
+    assert "__tag__:obj" not in state
+    assert "__dict_shape__:obj" not in state
+
+
+def test_sccp_try_analysis_invalidates_shape_facts_at_no_result_callback() -> None:
+    gen = SimpleTIRGenerator()
+    obj, dict_type = MoltValue("obj"), MoltValue("dict_type")
+    ops = [
+        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
+        MoltOp(
+            kind="GUARD_DICT_SHAPE",
+            args=[obj, dict_type, MoltValue("old_version")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("none")),
+        MoltOp(
+            kind="GUARD_DICT_SHAPE",
+            args=[obj, dict_type, MoltValue("new_version")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
+    ]
+    sccp = gen._compute_sccp(ops, build_cfg(ops))
+    assert sccp.try_exception_possible_by_start[0] is True
+    assert sccp.try_normal_possible_by_start[0] is True
+
+
+def test_callback_invalidates_all_heap_read_keys_and_current_type_guards() -> None:
+    gen = SimpleTIRGenerator()
+    state = gen._empty_canonicalization_state()
+    state["value_type_tags"]["obj"] = BUILTIN_TYPE_TAGS["int"]
+    state["available_values"] = {
+        ("READ_HEAP", 0, "TYPE_OF", ("ssa", "obj")): MoltValue("tag"),
+        ("RUNTIME_CALLABLE_READ", "runtime_symbol", 0): MoltValue("callable"),
+        ("READ_HEAP_CLASS", "list", 0): MoltValue("length"),
+    }
+    _, after = gen._canonicalize_block_with_state(
+        [MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("none"))],
+        state,
+        induction_steps={},
+    )
+    assert not after["available_values"]
+    assert not after["value_type_tags"]
+
+    obj, expected = MoltValue("obj"), MoltValue("expected")
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="MISSING", args=[], result=obj),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("callback")),
+            MoltOp(kind="CONST", args=[1], result=expected),
+            MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+            MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("none")),
+            MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+            MoltOp(kind="RETURN", args=[obj], result=MoltValue("none")),
+        ]
+    )
+    assert sum(op["kind"] == "guard_tag" for op in lowered) == 2
+
+
+def test_dynamic_abs_calls_are_not_common_subexpressions() -> None:
+    operand = MoltValue("obj", "int")
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="MISSING", args=[], result=operand),
+            MoltOp(kind="ABS", args=[operand], result=MoltValue("first", "int")),
+            MoltOp(kind="ABS", args=[operand], result=MoltValue("second", "int")),
+            MoltOp(kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")),
+        ]
+    )
+    assert len([op for op in lowered if op.get("kind") == "abs"]) == 2, (
+        f"repeated abs may invoke a mutating callback twice: {lowered}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "left", "right"),
+    [
+        ("CONST_STR", "a", "b"),
+        ("CONST_BYTES", b"a", b"b"),
+    ],
+)
+def test_pure_concatenation_cse_preserves_operand_order(kind, left, right) -> None:
+    gen = SimpleTIRGenerator()
+    a, b = MoltValue("a"), MoltValue("b")
+    producers = [
+        MoltOp(kind=kind, args=[left], result=a),
+        MoltOp(kind=kind, args=[right], result=b),
+    ]
+    gen._op_by_result = {op.result.name: op for op in producers}
+    forward = MoltOp(kind="ADD", args=[a, b], result=MoltValue("forward"))
+    reverse = MoltOp(kind="ADD", args=[b, a], result=MoltValue("reverse"))
+    assert gen._op_effect_class(forward) == "pure"
+    lowered = gen.map_ops_to_json(
+        producers
+        + [
+            forward,
+            reverse,
+            MoltOp(
+                kind="TUPLE_NEW",
+                args=[forward.result, reverse.result],
+                result=MoltValue("pair"),
+            ),
+            MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+        ]
+    )
+    assert [op["args"] for op in lowered if op["kind"] == "add"] == [
+        ["a", "b"],
+        ["b", "a"],
+    ]
+
+
+@pytest.mark.parametrize("kind", ["EQ", "NE"])
+@pytest.mark.parametrize("other", ["str", "int", "bool", "float", "None", "bytes"])
+def test_generated_bytes_comparison_warning_effects(kind: str, other: str) -> None:
+    from molt.frontend.lowering.op_kinds_generated import frontend_predicate_facts
+
+    warning = other in {"str", "int", "bool"}
+    for operands in [("bytes", other), (other, "bytes")]:
+        assert frontend_predicate_facts(kind, *operands) == (not warning, not warning)
+
+
+@pytest.mark.parametrize("kind", ["EQ", "NE"])
+@pytest.mark.parametrize(
+    ("other_kind", "other_value"),
+    [("CONST_STR", "text"), ("CONST", 1), ("CONST_BOOL", True)],
+)
+def test_bytes_warning_comparisons_are_observable_heap_barriers(
+    kind: str, other_kind: str, other_value: object
+) -> None:
+    bytes_value = MoltValue("bytes_value")
+    other = MoltValue("other")
+    observed = MoltValue("observed")
+    before = MoltValue("before")
+    after = MoltValue("after")
+    first = MoltOp(
+        kind=kind,
+        args=[bytes_value, other],
+        result=MoltValue("first_comparison", "bool"),
+    )
+    second = MoltOp(
+        kind=kind,
+        args=[bytes_value, other],
+        result=MoltValue("second_comparison", "bool"),
+    )
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="CONST_BYTES", args=[b"value"], result=bytes_value),
+            MoltOp(kind=other_kind, args=[other_value], result=other),
+            MoltOp(kind="LIST_NEW", args=[], result=observed),
+            MoltOp(kind="LEN", args=[observed], result=before),
+            first,
+            MoltOp(kind="LEN", args=[observed], result=after),
+            second,
+            MoltOp(
+                kind="TUPLE_NEW",
+                args=[before, after, first.result, second.result],
+                result=MoltValue("pair"),
+            ),
+            MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+        ]
+    )
+    assert len([op for op in lowered if op.get("kind") == kind.lower()]) == 2, (
+        f"{kind} BytesWarning callbacks must not be commoned: {lowered}"
+    )
+    assert len([op for op in lowered if op.get("kind") == "len"]) == 2, (
+        f"{kind} BytesWarning callbacks must invalidate heap reads: {lowered}"
+    )
+
+
+@pytest.mark.parametrize(("kind", "arity"), _CALLBACK_OPERATOR_CASES)
+def test_dynamic_operators_survive_dce_and_remain_inside_loops(
+    kind: str, arity: int
+) -> None:
+    gen = SimpleTIRGenerator()
+    operands = [MoltValue("lhs", "int"), MoltValue("rhs", "int")][:arity]
+    producers = [MoltOp(kind="MISSING", args=[], result=value) for value in operands]
+    operator = MoltOp(kind=kind, args=operands, result=MoltValue("unused", "int"))
+    assert any(
+        op is operator
+        for op in gen._eliminate_dead_trivial_consts(producers + [operator])
+    ), f"{kind} callback cannot be deleted using operand/result hints"
+    ops = producers + [
+        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
+        operator,
+        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
+    ]
+    rewritten, _ = gen._hoist_loop_invariant_pure_ops(ops)
+    start = next(i for i, op in enumerate(rewritten) if op.kind == "LOOP_START")
+    end = next(i for i, op in enumerate(rewritten) if op.kind == "LOOP_END")
+    assert start < next(i for i, op in enumerate(rewritten) if op is operator) < end, (
+        f"{kind} must not move a callback out of a possibly unexecuted loop"
+    )
+
+
+@pytest.mark.parametrize("overwrite_kind", ["COPY", "CALL", "PHI", "CONST"])
+@pytest.mark.parametrize("reverse_definitions", [False, True])
+@pytest.mark.parametrize("kind", ["BOOL", "NOT"])
+def test_repeated_literal_names_cannot_admit_dead_or_hoisted_callbacks(
+    overwrite_kind: str, reverse_definitions: bool, kind: str
+) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("repeated", "int")
+    literal = MoltOp(kind="CONST", args=[1], result=value)
+    if overwrite_kind == "CONST":
+        args = [2]
+    elif overwrite_kind == "PHI":
+        args = [MoltValue("external"), MoltValue("other")]
+    else:
+        args = [MoltValue("external")]
+    overwrite = MoltOp(kind=overwrite_kind, args=args, result=value)
+    producers = [literal, overwrite]
+    if reverse_definitions:
+        producers.reverse()
+    # The current stream, not the last constant or emitter snapshot, owns facts.
+    emitter_index = {value.name: literal}
+    gen._op_by_result = emitter_index
+    predicate = MoltOp(kind=kind, args=[value], result=MoltValue("unused", "bool"))
+
+    assert gen._primitive_const_value_map(producers) == {}
+    result = gen._eliminate_dead_trivial_consts(producers + [predicate])
+    assert any(op is predicate for op in result)
+    assert gen._op_by_result is emitter_index
+
+    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
+    result, hoists = gen._hoist_loop_invariant_pure_ops(
+        producers + [start, predicate, end]
+    )
+    assert hoists == 0
+    assert result.index(start) < result.index(predicate) < result.index(end)
+    assert gen._op_by_result is emitter_index
+
+
+@pytest.mark.parametrize("kind", ["BOOL", "NOT"])
+def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("external", "int")
+    emitter_index = {
+        value.name: MoltOp(kind="CONST", args=[1], result=value),
+    }
+    gen._op_by_result = emitter_index
+    predicate = MoltOp(kind=kind, args=[value], result=MoltValue("unused", "bool"))
+    assert gen._eliminate_dead_trivial_consts([predicate]) == [predicate]
+    assert gen._op_by_result is emitter_index
+    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
+    ops = [start, predicate, end]
+    assert gen._hoist_loop_invariant_pure_ops(ops) == (ops, 0)
+    assert gen._op_by_result is emitter_index
+
+
+@pytest.mark.parametrize(
+    ("const_kind", "payload", "expected"),
+    [
+        ("CONST", 1, 1),
+        ("CONST_INT", "2", 2),
+        ("CONST_BIGINT", "123456789123456789123456789", 123456789123456789123456789),
+        ("CONST_BOOL", 1, True),
+        ("CONST_FLOAT", 1, 1.0),
+    ],
+)
+def test_unique_current_literal_and_copy_remain_optimizable(
+    const_kind: str, payload: object, expected: object
+) -> None:
+    gen = SimpleTIRGenerator()
+    value, alias = MoltValue("unique"), MoltValue("alias")
+    producer = MoltOp(kind=const_kind, args=[payload], result=value)
+    copy = MoltOp(kind="COPY", args=[value], result=alias)
+    predicate = MoltOp(kind="BOOL", args=[alias], result=MoltValue("unused", "bool"))
+    emitter_index = {
+        value.name: MoltOp(kind="MISSING", args=[], result=value),
+    }
+    gen._op_by_result = emitter_index
+    literals = gen._primitive_const_value_map([producer, copy])
+    assert literals == {value.name: expected}
+    assert type(literals[value.name]) is type(expected)
+    rewritten = gen._eliminate_dead_trivial_consts([producer, copy, predicate])
+    assert all(op is not predicate for op in rewritten)
+    assert gen._op_by_result is emitter_index
+    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
+    result, hoists = gen._hoist_loop_invariant_pure_ops(
+        [producer, copy, start, predicate, end]
+    )
+    assert hoists == 1
+    assert result.index(predicate) < result.index(start)
+    assert gen._op_by_result is emitter_index
+
+
+@pytest.mark.parametrize("args", [[], [1, 2]])
+def test_flow_insensitive_literals_reject_malformed_constant_arity(
+    args: list[object],
+) -> None:
+    gen = SimpleTIRGenerator()
+    producer = MoltOp(kind="CONST", args=args, result=MoltValue("malformed"))
+    assert gen._primitive_const_value_map([producer]) == {}
+
+
+def test_current_definition_scope_restores_nested_and_exceptional_custody() -> None:
+    from molt.frontend.lowering.midend_dataflow import (
+        current_unique_result_definitions,
+    )
+
+    gen = SimpleTIRGenerator()
+    emitter_index = gen._op_by_result
+    producer = MoltOp(kind="CONST", args=[1], result=MoltValue("value"))
+    predicate = MoltOp(
+        kind="BOOL", args=[producer.result], result=MoltValue("predicate")
+    )
+    with current_unique_result_definitions(gen, [producer]) as outer:
+        assert gen._op_by_result is outer
+        assert gen._op_primitive_facts(predicate) == ("pure", True)
+        with pytest.raises(RuntimeError, match="scope failure"):
+            with current_unique_result_definitions(gen, []):
+                assert gen._op_primitive_facts(predicate) == ("writes_heap", False)
+                # A genuine program-point SCCP fact remains a separate authority.
+                assert gen._op_primitive_facts(predicate, {"value": 1}) == (
+                    "pure",
+                    True,
+                )
+                raise RuntimeError("scope failure")
+        assert gen._op_by_result is outer
+    assert gen._op_by_result is emitter_index
+
+
+def test_exact_primitive_predicate_control_remains_optimizable() -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("flag", "bool")
+    producer = MoltOp(kind="CONST_BOOL", args=[True], result=value)
+    gen._op_by_result[value.name] = producer
+    predicate = MoltOp(kind="NOT", args=[value], result=MoltValue("negated", "bool"))
+    assert gen._eliminate_dead_trivial_consts([producer, predicate]) == []
+    rewritten, hoists = gen._hoist_loop_invariant_pure_ops(
+        [
+            producer,
+            MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
+            predicate,
+            MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
+        ]
+    )
+    assert hoists == 1
+    assert rewritten.index(predicate) < next(
+        i for i, op in enumerate(rewritten) if op.kind == "LOOP_START"
+    )
+
+
 @pytest.mark.parametrize("kind", ["EQ", "NE", "LT", "LE", "GT", "GE"])
 def test_rich_comparison_effects_require_exact_producers(kind: str) -> None:
     gen = SimpleTIRGenerator()
@@ -29,13 +737,13 @@ def test_rich_comparison_effects_require_exact_producers(kind: str) -> None:
     right = MoltValue("comparison_right", type_hint="float")
     op = MoltOp(kind=kind, args=[left, right], result=MoltValue("comparison", "bool"))
     assert gen._op_effect_class(op) == "writes_heap"
-    assert gen._predicate_primitive_facts(op) == (False, False)
+    assert gen._op_primitive_facts(op) == ("writes_heap", False)
     gen._op_by_result[left.name] = MoltOp(kind="CONST", args=[1], result=left)
     gen._op_by_result[right.name] = MoltOp(kind="CONST_FLOAT", args=[2.0], result=right)
     assert gen._op_effect_class(op) == "pure"
-    assert gen._predicate_primitive_facts(op) == (True, True)
+    assert gen._op_primitive_facts(op) == ("pure", True)
     gen._op_by_result[left.name] = MoltOp(kind="CONST_NONE", args=[], result=left)
-    assert gen._predicate_primitive_facts(op) == (True, kind in {"EQ", "NE"})
+    assert gen._op_primitive_facts(op) == ("pure", kind in {"EQ", "NE"})
 
 
 @pytest.mark.parametrize("kind", ["BOOL", "NOT", "IN", "NOT_IN"])
@@ -51,7 +759,10 @@ def test_predicate_callbacks_survive_without_exact_operand_provenance(
     for value in (left, right):
         gen._op_by_result[value.name] = MoltOp(kind="CONST", args=[1], result=value)
     expected = kind in {"BOOL", "NOT"}
-    assert gen._predicate_primitive_facts(op) == (expected, expected)
+    assert gen._op_primitive_facts(op) == (
+        "pure" if expected else "writes_heap",
+        expected,
+    )
 
 
 @pytest.mark.parametrize(
@@ -80,7 +791,131 @@ def test_predicate_provenance_rejects_malformed_producer_shapes(defect: str) -> 
         producer.kind, producer.args = "NOT", []
     gen._op_by_result[value.name] = producer
     op = MoltOp(kind="BOOL", args=[value], result=MoltValue("result", "bool"))
-    assert gen._predicate_primitive_facts(op) == (False, False)
+    assert gen._op_primitive_facts(op) == ("writes_heap", False)
+
+
+@pytest.mark.parametrize(
+    ("kind", "arity"),
+    [
+        ("LEN", 1),
+        ("GETATTR", 2),
+        ("HASATTR_NAME", 2),
+        ("ISINSTANCE", 2),
+        ("MODULE_GET_ATTR", 2),
+        ("GETATTR_GENERIC_OBJ", 2),
+        ("GETATTR_GENERIC_PTR", 2),
+        ("GETATTR_NAME", 2),
+        ("GETATTR_NAME_DEFAULT", 3),
+        ("GETATTR_SPECIAL_OBJ", 2),
+        ("GUARDED_GETATTR", 2),
+        ("INDEX", 2),
+    ],
+)
+def test_callback_capable_reads_are_raising_heap_boundaries(
+    kind: str, arity: int
+) -> None:
+    gen = SimpleTIRGenerator()
+    args = [MoltValue(f"arg_{idx}", type_hint="int") for idx in range(arity)]
+    op = MoltOp(kind=kind, args=args, result=MoltValue("result", type_hint="int"))
+
+    assert gen._op_effect_class(op) == "writes_heap"
+    assert not gen._op_instance_cannot_raise(op, {})
+    assert gen._eliminate_dead_trivial_consts([op]) == [op]
+
+
+def test_len_and_index_read_precision_requires_exact_builtin_producers() -> None:
+    gen = SimpleTIRGenerator()
+    receiver = MoltValue("receiver", type_hint="list")
+    index = MoltValue("index", type_hint="int")
+    len_op = MoltOp(kind="LEN", args=[receiver], result=MoltValue("length"))
+    index_op = MoltOp(kind="INDEX", args=[receiver, index], result=MoltValue("item"))
+
+    assert gen._op_effect_class(len_op) == "writes_heap"
+    assert gen._op_effect_class(index_op) == "writes_heap"
+    assert (
+        gen._heap_alias_class_for_read_op(
+            len_op, {receiver.name: BUILTIN_TYPE_TAGS["list"]}
+        )
+        == "indexable"
+    )
+
+    gen._op_by_result[receiver.name] = MoltOp(kind="LIST_NEW", args=[], result=receiver)
+    gen._op_by_result[index.name] = MoltOp(kind="CONST", args=[0], result=index)
+    assert gen._op_primitive_facts(len_op) == ("reads_heap", True)
+    assert gen._op_primitive_facts(index_op) == ("reads_heap", False)
+    assert gen._heap_alias_class_for_read_op(len_op, {}) == "list"
+    assert gen._heap_alias_class_for_read_op(index_op, {}) == "list"
+
+
+def test_dict_index_does_not_recover_callback_free_effects_from_exact_type() -> None:
+    gen = SimpleTIRGenerator()
+    receiver = MoltValue("receiver")
+    key = MoltValue("key")
+    gen._op_by_result[receiver.name] = MoltOp(kind="DICT_NEW", args=[], result=receiver)
+    gen._op_by_result[key.name] = MoltOp(kind="CONST_STR", args=["key"], result=key)
+    op = MoltOp(kind="INDEX", args=[receiver, key], result=MoltValue("item"))
+
+    assert gen._op_effect_class(op) == "writes_heap"
+    assert gen._op_primitive_facts(op) is None
+
+
+def test_exact_range_len_retains_target_size_overflow_observer() -> None:
+    gen = SimpleTIRGenerator()
+    receiver = MoltValue("huge_range")
+    gen._op_by_result[receiver.name] = MoltOp(
+        kind="RANGE_NEW",
+        args=[MoltValue("start"), MoltValue("stop"), MoltValue("step")],
+        result=receiver,
+    )
+    op = MoltOp(kind="LEN", args=[receiver], result=MoltValue("length"))
+    assert gen._op_primitive_facts(op) == ("reads_heap", False)
+    assert not gen._op_instance_cannot_raise(op, {})
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "DICT_SET",
+        "LIST_EXTEND",
+        "LIST_REMOVE",
+        "LIST_CLEAR",
+        "SETATTR_NAME",
+        "SET_INDEX",
+    ],
+)
+def test_mutator_callbacks_do_not_inherit_type_local_write_precision(kind: str) -> None:
+    gen = SimpleTIRGenerator()
+    obj = MoltValue("obj", type_hint="list")
+    gen._op_by_result[obj.name] = MoltOp(kind="LIST_NEW", args=[], result=obj)
+    op = MoltOp(kind=kind, args=[obj, MoltValue("arg")], result=MoltValue("none"))
+    assert gen._heap_alias_classes_for_write_op(op) == set()
+    guards = {("GUARD_TYPE", ("v", "unrelated"), ("v", "class"))}
+    gen._clear_invalidated_guard_signatures(guards, op)
+    assert not guards
+
+
+def test_canonicalization_uses_current_unique_producers_and_restores_emitter_index() -> (
+    None
+):
+    gen = SimpleTIRGenerator()
+    obj = MoltValue("obj")
+    gen._op_by_result[obj.name] = MoltOp(kind="LIST_NEW", args=[], result=obj)
+    emitter_index = gen._op_by_result
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(kind="LEN", args=[obj], result=MoltValue("first")),
+        MoltOp(kind="LEN", args=[obj], result=MoltValue("second")),
+        MoltOp(kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")),
+    ]
+    rewritten = gen._canonicalize_control_aware_ops(ops)
+    assert sum(op.kind == "LEN" for op in rewritten) == 2
+    assert gen._op_by_result is emitter_index
+    # A repeatedly assigned name is not a unique SSA producer, even if one
+    # definition constructs an exact built-in container.
+    repeated = [MoltOp(kind="LIST_NEW", args=[], result=obj), *ops]
+    rewritten = gen._canonicalize_control_aware_ops(repeated)
+    assert sum(op.kind == "LEN" for op in rewritten) == 2
+    assert gen._op_by_result is emitter_index
 
 
 def test_genexpr_outer_iterator_is_eager_and_frame_owned() -> None:
@@ -1099,7 +1934,11 @@ def test_sccp_type_of_eq_chain_prunes_branch() -> None:
 def test_guard_hoist_moves_duplicate_branch_guards_to_dominator() -> None:
     lowered = _lower_ops(
         [
-            MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
+            MoltOp(
+                kind="IS",
+                args=[MoltValue("left"), MoltValue("right")],
+                result=MoltValue("cond"),
+            ),
             MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
             MoltOp(kind="CONST", args=[1], result=MoltValue("int_tag")),
             MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
@@ -1822,7 +2661,11 @@ def test_sccp_uses_type_of_eq_implication_for_branch_fold() -> None:
 def test_branch_tail_merge_collapses_identical_line_suffix() -> None:
     lowered = _lower_ops(
         [
-            MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
+            MoltOp(
+                kind="IS",
+                args=[MoltValue("left"), MoltValue("right")],
+                result=MoltValue("cond"),
+            ),
             MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
             MoltOp(kind="LINE", args=[100], result=MoltValue("none")),
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
@@ -1840,10 +2683,24 @@ def test_branch_tail_merge_collapses_identical_line_suffix() -> None:
     assert len(lines) == 1
 
 
-def test_effect_aware_cse_reuses_heap_read_len_without_writes() -> None:
+def test_dynamic_len_is_not_cse_eligible_without_exact_provenance() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+            MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
+            MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
+            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+        ]
+    )
+
+    lens = [op for op in lowered if op.get("kind") == "len"]
+    assert len(lens) == 2
+
+
+def test_exact_builtin_len_remains_cse_eligible_without_writes() -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="LIST_NEW", args=[], result=MoltValue("obj")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
             MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
@@ -1884,6 +2741,34 @@ def test_effect_aware_cse_invalidates_immutable_len_across_call_boundary() -> No
     assert len(lens) == 2
 
 
+@pytest.mark.parametrize(
+    ("constructor", "expected_reads"),
+    [("LIST_NEW", 1), ("TUPLE_NEW", 1), ("DICT_NEW", 2), ("SET_NEW", 2)],
+)
+def test_constructor_callback_projection_preserves_only_safe_unrelated_reads(
+    constructor: str, expected_reads: int
+) -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="DICT_NEW", args=[], result=MoltValue("observed")),
+            MoltOp(
+                kind="LEN", args=[MoltValue("observed")], result=MoltValue("before")
+            ),
+            MoltOp(kind=constructor, args=[], result=MoltValue("fresh")),
+            MoltOp(kind="LEN", args=[MoltValue("observed")], result=MoltValue("after")),
+            MoltOp(kind="RETURN", args=[MoltValue("after")], result=MoltValue("none")),
+        ]
+    )
+    assert len([op for op in lowered if op.get("kind") == "len"]) == expected_reads
+
+
+def test_unregistered_frontend_effect_does_not_inherit_callback_freedom() -> None:
+    gen = SimpleTIRGenerator()
+    assert gen._op_may_access_arbitrary_heap("FUTURE_UNKNOWN_ALLOCATION")
+    assert not gen._op_may_access_arbitrary_heap("LIST_NEW")
+    assert not gen._is_cse_eligible_op("LIST_NEW"), "fresh identity is not a heap read"
+
+
 def test_effect_alias_classes_keep_dict_len_cse_across_list_write() -> None:
     lowered = _lower_ops(
         [
@@ -1905,7 +2790,7 @@ def test_effect_alias_classes_keep_dict_len_cse_across_list_write() -> None:
     assert len(lens) == 1
 
 
-def test_effect_alias_classes_keep_list_index_cse_across_dict_write() -> None:
+def test_dict_write_does_not_claim_callback_free_list_index_reuse() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="LIST_NEW", args=[], result=MoltValue("lst")),
@@ -1937,10 +2822,31 @@ def test_effect_alias_classes_keep_list_index_cse_across_dict_write() -> None:
     )
 
     indexes = [op for op in lowered if op.get("kind") == "index"]
-    assert len(indexes) == 1
+    assert len(indexes) == 2
 
 
-def test_effect_aware_cse_reuses_module_get_attr_without_writes() -> None:
+def test_callback_read_invalidates_unrelated_exact_heap_read() -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="LIST_NEW", args=[], result=MoltValue("items")),
+            MoltOp(kind="LEN", args=[MoltValue("items")], result=MoltValue("l1")),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+            MoltOp(kind="CONST_STR", args=["x"], result=MoltValue("name")),
+            MoltOp(
+                kind="GETATTR_NAME",
+                args=[MoltValue("obj"), MoltValue("name")],
+                result=MoltValue("ignored"),
+            ),
+            MoltOp(kind="LEN", args=[MoltValue("items")], result=MoltValue("l2")),
+            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+        ]
+    )
+
+    assert len([op for op in lowered if op.get("kind") == "len"]) == 2
+    assert len([op for op in lowered if op.get("kind") == "get_attr_name"]) == 1
+
+
+def test_module_get_attr_is_not_cse_eligible() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("mod")),
@@ -1960,7 +2866,7 @@ def test_effect_aware_cse_reuses_module_get_attr_without_writes() -> None:
     )
 
     reads = [op for op in lowered if op.get("kind") == "module_get_attr"]
-    assert len(reads) == 1
+    assert len(reads) == 2
 
 
 def test_same_module_static_class_call_reuses_current_class_binding() -> None:
@@ -2378,12 +3284,29 @@ def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acq
         for op in acquisitions
     ), (transport, acquisitions)
     if transport == "dynamic-call-moot-at-producer":
-        assert any(op["kind"].startswith("call") for op in function_ops)
-        assert function_ops.index(acquisitions[0]) < next(
-            index
-            for index, op in enumerate(function_ops)
-            if op["kind"].startswith("call")
-        )
+        # Prologue/frame calls can precede acquisition. Follow the acquired
+        # callable through actual SSA copies/local slots to its invocation.
+        acquired: set[str] = set()
+        slots: set[str] = set()
+        target_calls: list[int] = []
+        for index, op in enumerate(function_ops):
+            args = op.get("args", [])
+            if op in acquisitions:
+                acquired.add(op["out"])
+            elif op["kind"] == "store_var":
+                if args and args[0] in acquired:
+                    slots.add(op["var"])
+                else:
+                    slots.discard(op["var"])
+            elif op["kind"] == "load_var" and op.get("var") in slots:
+                acquired.add(op["out"])
+            elif op["kind"] == "copy" and args and args[0] in acquired:
+                acquired.add(op["out"])
+            elif op["kind"] in {"call_bind", "call_indirect", "call_func"}:
+                if args and args[0] in acquired:
+                    target_calls.append(index)
+        assert target_calls, function_ops
+        assert function_ops.index(acquisitions[0]) < min(target_calls)
 
 
 @pytest.mark.parametrize(
@@ -3017,14 +3940,14 @@ overridden = Overridden(4)
     assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
 
 
-def test_guarded_setattr_init_uses_frontend_wire_spelling() -> None:
+def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
     gen = SimpleTIRGenerator()
     gen.classes["Point"] = {"fields": {"x": 24}, "layout_version": 7}
 
     lowered = gen.map_ops_to_json(
         [
             MoltOp(
-                kind="GUARDED_SETATTR_INIT",
+                kind="GUARDED_SETATTR",
                 args=[
                     MoltValue("obj"),
                     MoltValue("cls"),
@@ -3039,10 +3962,10 @@ def test_guarded_setattr_init_uses_frontend_wire_spelling() -> None:
     )
 
     kinds = [op.get("kind") for op in lowered]
-    assert "guarded_field_set_init" not in kinds
-    guarded_init = next(op for op in lowered if op.get("kind") == "guarded_field_init")
-    assert guarded_init == {
-        "kind": "guarded_field_init",
+    assert "guarded_field_init" not in kinds
+    guarded_set = next(op for op in lowered if op.get("kind") == "guarded_field_set")
+    assert guarded_set == {
+        "kind": "guarded_field_set",
         "args": ["obj", "cls", "ver", "val"],
         "s_value": "x",
         "value": 24,
@@ -3444,7 +4367,7 @@ def main():
     assert all(op.get("kind") != "module_get_attr" for op in func_ops[loop_start + 1 :])
 
 
-def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:
+def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
@@ -3463,10 +4386,10 @@ def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:
     )
 
     reads = [op for op in lowered if op.get("kind") == "get_attr_generic_obj"]
-    assert len(reads) == 1
+    assert len(reads) == 2
 
 
-def test_effect_aware_cse_reuses_getattr_name_without_writes() -> None:
+def test_dynamic_getattr_name_cannot_be_reused_without_callback_proof() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
@@ -3486,13 +4409,13 @@ def test_effect_aware_cse_reuses_getattr_name_without_writes() -> None:
     )
 
     reads = [op for op in lowered if op.get("kind") == "get_attr_name"]
-    assert len(reads) == 1
+    assert len(reads) == 2
 
 
 def test_sccp_folds_contains_constant_branch() -> None:
     lowered = _lower_ops(
         [
-            MoltOp(kind="CONST", args=[[1, 2, 3]], result=MoltValue("container")),
+            MoltOp(kind="CONST", args=[(1, 2, 3)], result=MoltValue("container")),
             MoltOp(kind="CONST", args=[2], result=MoltValue("needle")),
             MoltOp(
                 kind="CONTAINS",
@@ -3952,6 +4875,10 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         block_entry_label={2: "delay", 3: "delayed_end", 4: "join"},
         control=build_cfg([]).control,
         successors={0: [1, 2], 1: [4], 2: [3], 3: [4], 4: []},
+        edge_kinds={
+            edge: CFGEdgeKind.NORMAL
+            for edge in ((0, 1), (0, 2), (1, 4), (2, 3), (3, 4))
+        },
         predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
         reachable={0, 1, 2, 3, 4},
         dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 2, 3}, 4: {0, 4}},

@@ -1,14 +1,17 @@
-use crate::tir::analysis::{AnalysisManager, ImmediateDoms, PredMap};
-use crate::tir::blocks::BlockId;
-use crate::tir::dominators::dominates;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::tir::analysis::{AnalysisManager, PredMap};
+use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::dominators::{exception_label_to_block, exception_successors};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::RefcountBalanceRole;
 use crate::tir::passes::alias_analysis::AliasAnalysisResult;
-use crate::tir::values::ValueId;
 
 use super::super::PassStats;
-use super::balance::{is_refcount_balance_op, refcount_balance_role};
+use super::balance::refcount_balance_role;
 
+/// A retain and release execute equally often only on this one-to-one edge.
+/// Conditional successors and implicit exception transfers cannot establish it.
 pub(super) fn eliminate_cross_block_pairs(
     func: &mut TirFunction,
     am: &mut AnalysisManager,
@@ -18,108 +21,76 @@ pub(super) fn eliminate_cross_block_pairs(
     if func.blocks.len() <= 1 {
         return;
     }
-
     let pred_map = am.get::<PredMap>(func).clone();
-    let idoms = am.get::<ImmediateDoms>(func).clone();
-    let mut removals = Vec::new();
-
-    let block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
-    for &succ_bid in &block_ids {
-        let Some(preds) = pred_map.get(&succ_bid) else {
+    let exception_targets = exception_label_to_block(func);
+    let mut removals: BTreeMap<BlockId, BTreeSet<usize>> = BTreeMap::new();
+    for (&pred_id, pred) in &func.blocks {
+        let Terminator::Branch {
+            target: succ_id, ..
+        } = &pred.terminator
+        else {
             continue;
         };
-        if preds.len() != 1 {
-            continue;
-        }
-        let pred_bid = preds[0];
-
-        if !dominates(pred_bid, succ_bid, &idoms) {
-            continue;
-        }
-
-        let trailing = {
-            let pred_block = &func.blocks[&pred_bid];
-            let mut result = None;
-            for (idx, op) in pred_block.ops.iter().enumerate().rev() {
-                if alias.is_rc_barrier(op) {
-                    break;
-                }
-                let role = refcount_balance_role(op.opcode);
-                if role.is_refcount_balance() {
-                    if let Some(&val) = op.operands.first() {
-                        result = Some(TrailingInfo { role, val, idx });
-                    }
-                    break;
-                }
-            }
-            result
-        };
-
-        let Some(trail) = trailing else {
-            continue;
-        };
-
-        let pred_block = &func.blocks[&pred_bid];
-        if pred_block.ops[(trail.idx + 1)..]
-            .iter()
-            .any(|op| alias.is_rc_barrier(op))
+        if *succ_id == pred_id
+            || *succ_id == func.entry_block
+            || !pred_map
+                .get(succ_id)
+                .is_some_and(|preds| preds.as_slice() == [pred_id])
         {
             continue;
         }
-
-        let Some(target_opcode) = trail.role.complementary_opcode() else {
+        // PredMap is a set of predecessor blocks, not incoming execution
+        // points. An exceptional arrival from this same predecessor can skip
+        // the trailing retain. The function entry also has an initial arrival
+        // not represented by PredMap and is excluded above.
+        if exception_successors(pred, &exception_targets).contains(succ_id) {
+            continue;
+        }
+        let Some(succ) = func.blocks.get(succ_id) else {
             continue;
         };
-
-        let leading = {
-            let succ_block = &func.blocks[&succ_bid];
-            let mut result = None;
-            for (idx, op) in succ_block.ops.iter().enumerate() {
-                if alias.is_rc_barrier(op) {
-                    break;
-                }
-                if op.opcode == target_opcode && op.operands.first().copied() == Some(trail.val) {
-                    result = Some(idx);
-                    break;
-                }
-                if is_refcount_balance_op(op.opcode)
-                    && op.operands.first().copied() == Some(trail.val)
+        let mut trailing = None;
+        for (index, op) in pred.ops.iter().enumerate().rev() {
+            let role = refcount_balance_role(op.opcode);
+            if role.is_refcount_balance() {
+                if role == RefcountBalanceRole::Increment
+                    && op.has_valid_shape()
+                    && op.operands.len() == 1
                 {
-                    break;
+                    trailing = Some((index, alias.root(op.operands[0])));
                 }
+                break;
             }
-            result
+            if alias.is_rc_barrier(op) {
+                break;
+            }
+        }
+        let Some((retain_index, root)) = trailing else {
+            continue;
         };
-
-        if let Some(lead_idx) = leading {
-            removals.push((pred_bid, trail.idx, succ_bid, lead_idx));
-        }
-    }
-
-    for (pred_bid, pred_idx, succ_bid, succ_idx) in removals {
-        if let Some(pred_block) = func.blocks.get_mut(&pred_bid)
-            && pred_idx < pred_block.ops.len()
-        {
-            let op = &pred_block.ops[pred_idx];
-            if is_refcount_balance_op(op.opcode) && op.operands.first().copied().is_some() {
-                pred_block.ops.remove(pred_idx);
-                stats.ops_removed += 1;
+        for (release_index, op) in succ.ops.iter().enumerate() {
+            let role = refcount_balance_role(op.opcode);
+            if role == RefcountBalanceRole::Decrement
+                && op.has_valid_shape()
+                && op.operands.len() == 1
+                && alias.root(op.operands[0]) == root
+            {
+                removals.entry(pred_id).or_default().insert(retain_index);
+                removals.entry(*succ_id).or_default().insert(release_index);
+                break;
             }
-        }
-        if let Some(succ_block) = func.blocks.get_mut(&succ_bid)
-            && succ_idx < succ_block.ops.len()
-        {
-            let op = &succ_block.ops[succ_idx];
-            if is_refcount_balance_op(op.opcode) && op.operands.first().copied().is_some() {
-                succ_block.ops.remove(succ_idx);
-                stats.ops_removed += 1;
+            if role.is_refcount_balance() || alias.is_rc_barrier(op) {
+                break;
             }
         }
     }
-}
-
-struct TrailingInfo {
-    role: RefcountBalanceRole,
-    val: ValueId,
-    idx: usize,
+    // Indices were collected against immutable blocks. Remove descending and
+    // deduplicate so a chain cannot shift or consume another pair's endpoint.
+    for (block_id, indices) in removals {
+        let block = func.blocks.get_mut(&block_id).unwrap();
+        for index in indices.into_iter().rev() {
+            block.ops.remove(index);
+            stats.ops_removed += 1;
+        }
+    }
 }

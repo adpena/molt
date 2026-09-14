@@ -1,21 +1,24 @@
 //! TIR to WASM type-specialized lowering.
 //!
 //! Converts a [`TirFunction`] into WASM instructions using the `wasm-encoder` crate.
-//! The key insight: TIR carries refined type information from optimization passes,
-//! so we can emit **native WASM arithmetic** for unboxed scalars instead of falling
-//! back to runtime dispatch calls for every operation.
+//! The backend-neutral, value-keyed representation plan supplies physical carriers
+//! from exact producer facts and integer range/overflow proofs. These carriers
+//! authorize **native WASM arithmetic**; semantic type annotations alone do not.
 //!
-//! ## Type mapping
+//! ## Carrier mapping
 //!
-//! | TirType     | WASM ValType | Notes                          |
-//! |-------------|-------------|--------------------------------|
-//! | I64         | i64         | Native 64-bit integer          |
-//! | F64         | f64         | Native 64-bit float            |
-//! | Bool        | i32         | 0 or 1                         |
-//! | None        | i64         | Sentinel constant              |
-//! | DynBox      | i64         | NaN-boxed runtime value        |
-//! | Ref64       | i64         | Runtime reference word         |
-//! | Str/List/... | i64         | Heap pointer as i64            |
+//! | Repr              | WASM ValType | Notes                              |
+//! |-------------------|--------------|------------------------------------|
+//! | RawI64Safe        | i64          | Proven inline-int47 integer        |
+//! | RawI64FullDeopt    | i64          | Checked full-i64 integer carrier   |
+//! | FloatUnboxed      | f64          | Exact float producer               |
+//! | Bool              | i32          | Exact Boolean producer, 0 or 1     |
+//! | MaybeBigInt       | i64          | Boxed integer, including BigInt    |
+//! | DynBox            | i64          | NaN-boxed runtime value            |
+//!
+//! Annotation-only float/Boolean parameters stay boxed, even beside exact
+//! scalar producers. The boxed-i64 function ABI materializes raw carriers at
+//! its boundaries without changing their internal representation authority.
 //!
 //! ## SSA to stack machine
 //!

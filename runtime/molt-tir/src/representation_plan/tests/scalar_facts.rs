@@ -1,7 +1,7 @@
 //! Scalar/container representation-plan facts derived from `FunctionIR`/`OpIR`.
 //!
-//! Moved verbatim from `representation_plan/tests.rs` during the move-only
-//! split of that god-file; no logic changes.
+//! Semantic annotations do not authorize raw carriers. Exact producer facts
+//! must survive supported native projection, aliases, and storage joins.
 
 use super::super::test_fixtures::{function, op};
 use super::super::*;
@@ -650,7 +650,7 @@ fn primary_int_names_admit_bounded_arithmetic_range_proof() {
     assert!(primary.int.contains("rhs"));
     assert!(primary.int.contains("masked"));
     assert!(primary.int.contains("sum"));
-    assert!(!primary.int.contains("shifted"));
+    assert!(primary.int_inline_safe.contains("shifted"));
 }
 
 #[test]
@@ -763,13 +763,38 @@ fn bool_primary_projection_is_tir_value_owned() {
             op("copy_var", Some("flag_copy"), Some("flag"), &[]),
             op("eq", Some("cmp"), None, &["lhs", "rhs"]),
             op("not", Some("negated"), None, &["cmp"]),
+            op(
+                "checked_add",
+                Some("add_overflow"),
+                Some("sum"),
+                &["lhs", "rhs"],
+            ),
+            op(
+                "checked_mul",
+                Some("mul_overflow"),
+                Some("product"),
+                &["lhs", "rhs"],
+            ),
+            op("and", Some("both"), None, &["flag_copy", "add_overflow"]),
+            op("or", Some("either"), None, &["both", "mul_overflow"]),
+            op("copy", Some("either_copy"), None, &["either"]),
             op("is_truthy", Some("legacy_truthy"), None, &["flag"]),
         ],
     );
 
     let primary = native_representation_plan(&func).primary_name_sets();
 
-    for name in ["flag", "flag_copy", "cmp", "negated"] {
+    for name in [
+        "flag",
+        "flag_copy",
+        "cmp",
+        "negated",
+        "add_overflow",
+        "mul_overflow",
+        "both",
+        "either",
+        "either_copy",
+    ] {
         assert!(
             primary.bool_.contains(name),
             "{name} must be projected through TIR bool ValueId facts; got {:?}",
@@ -780,6 +805,16 @@ fn bool_primary_projection_is_tir_value_owned() {
         !primary.bool_.contains("legacy_truthy"),
         "legacy SimpleIR truthiness must not mint a raw bool carrier"
     );
+    for name in ["sum", "product"] {
+        assert!(
+            primary.int.contains(name),
+            "checked result zero {name} is an integer"
+        );
+        assert!(
+            !primary.bool_.contains(name),
+            "status type must not leak into {name}"
+        );
+    }
 }
 
 #[test]
@@ -1115,7 +1150,10 @@ fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
     assert!(primary.float.contains("sum_copy"));
     assert!(!primary.float.contains("pow_result"));
     assert!(!primary.float.contains("p"));
-    assert!(primary.float.contains("param_copy"));
+    assert!(
+        !primary.float.contains("param_copy"),
+        "copying an annotated parameter cannot create exact float provenance"
+    );
     assert!(!plan.is_float_unboxed("pow_result"));
 }
 
@@ -1237,5 +1275,72 @@ fn annotation_only_comparisons_do_not_mint_raw_bool_carriers() {
             primary.bool_.contains("negated"),
             "truth conversion has an actual Bool result"
         );
+    }
+}
+
+#[test]
+fn annotation_only_scalar_aliases_remain_boxed_beside_exact_producers() {
+    for (annotation, seed) in [
+        ("bool", const_bool("seed", true)),
+        ("float", const_float("seed", 1.25)),
+        ("int", const_int("seed", 7)),
+    ] {
+        let func = function(
+            "annotation_aliases",
+            &["parameter"],
+            Some(vec![annotation]),
+            vec![
+                seed,
+                op("copy", Some("exact_copy"), None, &["seed"]),
+                op("store_var", None, Some("exact_slot"), &["exact_copy"]),
+                op("load_var", Some("exact_load"), Some("exact_slot"), &[]),
+                op("copy", Some("parameter_copy"), None, &["parameter"]),
+                op(
+                    "copy_var",
+                    Some("parameter_alias"),
+                    Some("parameter_copy"),
+                    &[],
+                ),
+                op(
+                    "store_var",
+                    None,
+                    Some("parameter_slot"),
+                    &["parameter_alias"],
+                ),
+                op(
+                    "load_var",
+                    Some("parameter_load"),
+                    Some("parameter_slot"),
+                    &[],
+                ),
+            ],
+        );
+        let primary = native_representation_plan(&func).primary_name_sets();
+        for name in [
+            "parameter",
+            "parameter_copy",
+            "parameter_alias",
+            "parameter_slot",
+            "parameter_load",
+        ] {
+            assert!(
+                !primary.int.contains(name)
+                    && !primary.bool_.contains(name)
+                    && !primary.float.contains(name),
+                "{annotation} annotation must not become a raw carrier through {name}"
+            );
+        }
+        let exact_names = match annotation {
+            "bool" => &primary.bool_,
+            "float" => &primary.float,
+            "int" => &primary.int,
+            _ => unreachable!(),
+        };
+        for name in ["seed", "exact_copy", "exact_slot", "exact_load"] {
+            assert!(
+                exact_names.contains(name),
+                "exact {annotation} producer must retain its carrier through {name}"
+            );
+        }
     }
 }

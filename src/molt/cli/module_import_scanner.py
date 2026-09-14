@@ -10,6 +10,7 @@ from molt.cli import module_resolution as _module_resolution
 from molt.cli.models import (
     ImportScanMode,
     _RuntimeImportScanCustody,
+    _ModuleGraphScanAuthority,
     _RuntimeImportSupportPolicy,
 )
 from molt.target_python import (
@@ -57,7 +58,27 @@ STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(STDLIB_STATIC_IMPORT_HELPER_QUAL
 _IMPORT_SCAN_MODES = frozenset({"full", "module_init", "module_init_static_helpers"})
 
 
+def _module_import_scan_mode(
+    module_name: str,
+    *,
+    full_scan: bool,
+    static_import_helper_modules: Collection[str] | None = None,
+) -> ImportScanMode:
+    """Project scan authority, independent of graph seeding or import admission."""
+    if full_scan:
+        return "full"
+    helpers = (
+        STDLIB_STATIC_IMPORT_HELPER_MODULES
+        if static_import_helper_modules is None
+        else static_import_helper_modules
+    )
+    if module_name in helpers:
+        return "module_init_static_helpers"
+    return "module_init"
+
+
 IMPORTER_MODULE_NAME = "_molt_importer"
+
 
 
 def _sealed_import_modules(
@@ -569,6 +590,8 @@ def _collect_imports(
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     source_path: Path | None = None,
 ) -> list[str]:
+    if runtime_import_custody is not None:
+        runtime_import_custody.validate_scan_mode(module_name, source_path, import_scan_mode)
     source_ast_digest = python_ast_digest(tree)
     _validate_import_scan_mode(import_scan_mode)
     selected_static_helper_qualnames = _static_import_helper_qualnames(
@@ -1452,6 +1475,8 @@ def _collect_import_star_modules(
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     source_path: Path | None = None,
 ) -> tuple[str, ...]:
+    if runtime_import_custody is not None:
+        runtime_import_custody.validate_scan_mode(module_name, source_path, import_scan_mode)
     source_ast_digest = (
         python_ast_digest(tree) if runtime_import_custody is not None else None
     )
@@ -1584,74 +1609,81 @@ def _module_uses_runtime_import_protocol(
     target_python: TargetPythonVersion,
     import_scan_mode: ImportScanMode = "full",
     tree: ast.AST | None = None,
+    is_package: bool | None = None,
 ) -> bool:
     if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
         return False
-    is_package = module_path.name == "__init__.py"
-    if tree is None:
-        try:
-            source = module_resolution_cache.read_module_source(
-                module_path, retain=False
-            )
-        except (OSError, SyntaxError, UnicodeDecodeError):
-            # Keep runtime import support enabled when analysis cannot prove the
-            # graph is fully static.
-            return True
-        if not _source_may_use_runtime_import_protocol(source):
-            return False
-        try:
-            tree = module_resolution_cache.parse_module_ast(
-                module_path,
-                source,
-                filename=str(module_path),
-                retain=False,
-                target_python=target_python,
-            )
-        except SyntaxError:
-            return True
-    scan_nodes = _scan_nodes_for_import_mode(
-        tree, import_scan_mode, module_name=module_name
-    )
-    import_flow = analyze_module_import_flow(
-        tree,
-        ModuleImportContext(
-            module_name, is_package, target_python=target_python.feature_version
-        ),
-    )
-    for node in scan_nodes:
-        if not import_flow.states_for(node):
-            continue
-        if isinstance(node, ast.Import):
-            if any(alias.name != "_intrinsics" for alias in node.names):
+    if is_package is None:
+        is_package = module_path.name == "__init__.py"
+    def produce() -> bool:
+        scan_tree = tree
+        if scan_tree is None:
+            try:
+                source = module_resolution_cache.read_module_source(
+                    module_path, retain=False
+                )
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                # Keep runtime import support enabled when analysis cannot prove the
+                # graph is fully static.
                 return True
-            continue
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
+            if not _source_may_use_runtime_import_protocol(source):
+                return False
+            try:
+                scan_tree = module_resolution_cache.parse_module_ast(
+                    module_path,
+                    source,
+                    filename=str(module_path),
+                    retain=False,
+                    target_python=target_python,
+                )
+            except SyntaxError:
+                return True
+        scan_nodes = _scan_nodes_for_import_mode(
+            scan_tree, import_scan_mode, module_name=module_name
+        )
+        import_flow = analyze_module_import_flow(
+            scan_tree,
+            ModuleImportContext(
+                module_name, is_package, target_python=target_python.feature_version
+            ),
+        )
+        for node in scan_nodes:
+            if not import_flow.states_for(node):
                 continue
-            if node.level == 0 and (
-                node.module == "_intrinsics"
-                or (node.module is not None and node.module.endswith("._intrinsics"))
-            ):
+            if isinstance(node, ast.Import):
+                if any(alias.name != "_intrinsics" for alias in node.names):
+                    return True
                 continue
-            return True
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "__future__":
+                    continue
+                if node.level == 0 and (
+                    node.module == "_intrinsics"
+                    or (node.module is not None and node.module.endswith("._intrinsics"))
+                ):
+                    continue
+                return True
+        return _tree_uses_runtime_import_protocol(
+            scan_tree, module_name=module_name, is_package=is_package,
+            import_scan_mode=import_scan_mode,
+        )
+
     return module_resolution_cache.uses_runtime_import_protocol(
-        module_path,
-        tree,
-        detector=_tree_uses_runtime_import_protocol,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
+        module_path, producer=produce, module_name=module_name,
+        is_package=is_package, import_scan_mode=import_scan_mode,
+        target_python_tag=target_python.tag,
     )
 
 
 def _module_graph_needs_runtime_import_support(
     *,
     module_graph: Mapping[str, Path],
+    scan_authority: _ModuleGraphScanAuthority,
     module_resolution_cache: "_module_resolution._ModuleResolutionCache",
     explicit_imports: Collection[str],
     entry_module: str,
     entry_path: Path,
-    entry_tree: ast.AST,
+    entry_tree: ast.AST | None,
     target_python: TargetPythonVersion,
 ) -> _RuntimeImportSupportPolicy:
     needs_generated_importer = _explicit_imports_reference_generated_importer(
@@ -1668,13 +1700,7 @@ def _module_graph_needs_runtime_import_support(
             if module_name == entry_module and module_path == entry_path
             else None
         )
-        import_scan_mode: ImportScanMode = (
-            "full"
-            if module_name == entry_module and module_path == entry_path
-            else "module_init_static_helpers"
-            if module_name in STDLIB_STATIC_IMPORT_HELPER_MODULES
-            else "module_init"
-        )
+        import_scan_mode = scan_authority.mode_for(module_name, module_path)
         if _module_uses_runtime_import_protocol(
             module_name=module_name,
             module_path=module_path,
@@ -1682,6 +1708,7 @@ def _module_graph_needs_runtime_import_support(
             target_python=target_python,
             import_scan_mode=import_scan_mode,
             tree=tree,
+            is_package=scan_authority.by_module[module_name].is_package,
         ):
             return _RuntimeImportSupportPolicy(
                 needs_generated_importer=False,

@@ -5,9 +5,7 @@
 use std::collections::HashMap;
 
 use super::super::blocks::BlockId;
-use super::super::lir::{LirFunction, LirOp, LirRepr, LirValue};
-use super::super::ops::{AttrValue, OpCode};
-use super::super::types::TirType;
+use super::super::lir::{LirFunction, LirOp, LirRepr};
 use super::super::values::ValueId;
 use super::{LirVerifyError, ValueDef};
 
@@ -95,12 +93,12 @@ pub(super) fn verify_ref64_provenance(func: &LirFunction, errors: &mut Vec<LirVe
         }
         for (op_index, op) in block.ops.iter().enumerate() {
             for value in &op.result_values {
-                if value.repr == LirRepr::Ref64 && !valid_ref64_op_result(op, value) {
+                if value.repr == LirRepr::Ref64 {
                     errors.push(LirVerifyError {
                         block: Some(*bid),
                         op_index: Some(op_index),
                         message: format!(
-                            "Ref64 producer for {} must be ObjectNewBoundStack with matching UserClass type hint and positive payload",
+                            "Ref64 producer for {} has no supported allocation provenance; owned class allocations must use DynBox",
                             value.id
                         ),
                     });
@@ -108,20 +106,4 @@ pub(super) fn verify_ref64_provenance(func: &LirFunction, errors: &mut Vec<LirVe
             }
         }
     }
-}
-
-fn valid_ref64_op_result(op: &LirOp, value: &LirValue) -> bool {
-    if op.tir_op.opcode != OpCode::ObjectNewBoundStack {
-        return false;
-    }
-    let TirType::UserClass(class_name) = &value.ty else {
-        return false;
-    };
-    let Some(AttrValue::Str(type_hint)) = op.tir_op.attrs.get("_type_hint") else {
-        return false;
-    };
-    if type_hint != class_name {
-        return false;
-    }
-    matches!(op.tir_op.attrs.get("value"), Some(AttrValue::Int(size)) if *size > 0)
 }

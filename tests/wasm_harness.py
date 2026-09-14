@@ -8046,10 +8046,10 @@ BASE_IMPORTS = """\
     return boxBool(false);
   },
   guard_type: (val, expected) => val,
-  guard_layout_ptr: (obj, classBits, expected) => {
-    if (obj === 0n) return boxBool(false);
+  guard_layout: (obj, classBits, expected) => {
+    if (!isTag(obj, TAG_PTR)) return boxBool(false);
     if (!getClass(classBits)) return boxBool(false);
-    const addr = expectPtrAddr(obj, 'guard_layout_ptr');
+    const addr = ptrAddr(obj);
     const clsBits = instanceClasses.get(addr);
     if (clsBits === undefined || clsBits !== classBits) return boxBool(false);
     const version = classLayoutVersion(classBits);
@@ -8078,13 +8078,10 @@ BASE_IMPORTS = """\
     const offset = Number(unboxIntLike(offsetBits));
     return offset >= 0 ? offset : null;
   },
-  guarded_field_get_ptr: (obj, classBits, expected, offset, namePtr, nameLen) => {
+  guarded_field_get: (objBits, classBits, expected, offset, namePtr, nameLen) => {
     const name = readUtf8(namePtr, nameLen);
-    if (obj === 0n) {
-      throw new Error('AttributeError: object has no attribute');
-    }
-    const base = expectPtrAddr(obj, 'guarded_field_get_ptr');
-    const objBits = boxPtrAddr(base);
+    if (!isTag(objBits, TAG_PTR)) return getAttrValue(objBits, name);
+    const base = ptrAddr(objBits);
     if (!getClass(classBits)) {
       return getAttrValue(objBits, name);
     }
@@ -8117,8 +8114,8 @@ BASE_IMPORTS = """\
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
-  guarded_field_set_ptr: (
-    obj,
+  guarded_field_set: (
+    objBits,
     classBits,
     expected,
     offset,
@@ -8127,11 +8124,8 @@ BASE_IMPORTS = """\
     nameLen,
   ) => {
     const name = readUtf8(namePtr, nameLen);
-    if (obj === 0n) {
-      throw new Error('AttributeError: object has no attribute');
-    }
-    const base = expectPtrAddr(obj, 'guarded_field_set_ptr');
-    const objBits = boxPtrAddr(base);
+    if (!isTag(objBits, TAG_PTR)) return setAttrValue(objBits, name, val);
+    const base = ptrAddr(objBits);
     if (!getClass(classBits)) {
       return setAttrValue(objBits, name, val);
     }

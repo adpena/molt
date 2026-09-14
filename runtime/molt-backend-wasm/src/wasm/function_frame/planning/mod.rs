@@ -191,7 +191,6 @@ impl WasmFunctionFramePlan {
                 scalar_plan,
                 control_mode,
                 tail_call_eligible,
-                arena_local: requirements.arena_local(),
                 dispatch_locals,
                 const_cache,
                 const_seed_locals,

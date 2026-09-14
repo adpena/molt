@@ -95,9 +95,26 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     //    store_index/index patterns from the SSA output.
     // Rewrite loop_index_start/loop_index_next to store_var/load_var so the
     // SSA pass creates proper phi nodes at loop headers for induction variables.
-    let rewritten_ops = rewrite_loop_index_to_store_load(&ir.ops);
+    // Establish missing durable origins before any rewrite inserts/removes
+    // operations. Existing transported origins are preserved, never reinterpreted
+    // as positions in this current stream.
+    let source_ops: Vec<_> = ir
+        .ops
+        .iter()
+        .enumerate()
+        .map(|(index, op)| {
+            let mut source = op.clone();
+            if source.source_op_idx.is_none() {
+                source.source_op_idx = Some(
+                    i64::try_from(index).expect("SimpleIR source operation index exceeds i64"),
+                );
+            }
+            source
+        })
+        .collect();
+    let rewritten_ops = rewrite_loop_index_to_store_load(&source_ops);
     let mut working_ops = if rewritten_ops.is_empty() {
-        ir.ops.clone()
+        source_ops
     } else {
         rewritten_ops
     };

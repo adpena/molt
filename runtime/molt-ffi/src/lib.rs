@@ -65,19 +65,10 @@ fn runtime_error_sentinel() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-// ── Linker stubs ───────────────────────────────────────────────────
-//
-// `molt-runtime` declares several `extern "C"` symbols that are normally
-// provided by the compiler-generated WASM module (isolate entrypoints and
-// indirect-call trampolines). When building `molt-ffi` as a cdylib/staticlib,
-// the linker needs concrete definitions. These stubs return safe no-op values.
-
-/// Stub: isolate bootstrap is not used in FFI mode.
+// The direct-link FFI image has no compiler-generated application initializer.
+// Entering native isolated mode must fail closed, not report initialized None.
 #[cfg(feature = "runtime_linked")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    molt_obj_model::MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable("molt-ffi"));
 
 // Indirect-call trampolines — the runtime declares these as extern but they
 // are only invoked when calling back into compiler-generated function tables.

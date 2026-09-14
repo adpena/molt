@@ -280,77 +280,8 @@ fn pickle_init_missing_fields(_py: &crate::PyToken<'_>, inst_bits: u64) {
         return;
     };
     let type_id = unsafe { object_type_id(inst_ptr) };
-    let missing = missing_bits(_py);
-
-    if type_id == crate::TYPE_ID_OBJECT {
-        // Initialize typed field offsets to missing.
-        let class_bits = unsafe { object_class_bits(inst_ptr) };
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return;
-        };
-        if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
-            return;
-        }
-        let cd_bits = unsafe { crate::class_dict_bits(class_ptr) };
-        let Some(cd_ptr) = obj_from_bits(cd_bits).as_ptr() else {
-            return;
-        };
-        if unsafe { object_type_id(cd_ptr) } != TYPE_ID_DICT {
-            return;
-        }
-        let Some(offsets_name) = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__") else {
-            return;
-        };
-        let offsets_bits = unsafe { crate::dict_get_in_place(_py, cd_ptr, offsets_name) };
-        dec_ref_bits(_py, offsets_name);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return;
-        }
-        let Some(offsets_bits) = offsets_bits else {
-            return;
-        };
-        let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
-            return;
-        };
-        if unsafe { object_type_id(offsets_ptr) } != TYPE_ID_DICT {
-            return;
-        }
-        let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
-        let mut idx = 0usize;
-        while idx + 1 < pairs.len() {
-            let offset_bits = pairs[idx + 1];
-            idx += 2;
-            if let Some(offset) = to_i64(obj_from_bits(offset_bits)).filter(|&v| v >= 0) {
-                unsafe {
-                    let slot = inst_ptr.add(offset as usize) as *mut u64;
-                    let old = *slot;
-                    if old != missing {
-                        inc_ref_bits(_py, missing);
-                        if obj_from_bits(old).as_ptr().is_some() {
-                            dec_ref_bits(_py, old);
-                        }
-                        *slot = missing;
-                    }
-                }
-            }
-        }
-    } else if type_id == crate::TYPE_ID_DATACLASS {
-        // Initialize dataclass field values to missing.
-        let desc_ptr = unsafe { crate::dataclass_desc_ptr(inst_ptr) };
-        if desc_ptr.is_null() {
-            return;
-        }
-        let fields = unsafe { crate::dataclass_fields_mut(inst_ptr) };
-        for val in fields.iter_mut() {
-            if *val != missing {
-                inc_ref_bits(_py, missing);
-                if obj_from_bits(*val).as_ptr().is_some() {
-                    dec_ref_bits(_py, *val);
-                }
-                *val = missing;
-            }
-        }
+    if crate::object::heap_kind_has_class_shape(type_id) || type_id == crate::TYPE_ID_DATACLASS {
+        unsafe { crate::object::field_storage::reset(_py, inst_ptr) };
     }
 }
 

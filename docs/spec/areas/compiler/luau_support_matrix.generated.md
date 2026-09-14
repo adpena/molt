@@ -7,10 +7,10 @@
 ## Summary
 
 - `compile-error`: `2`
-- `implemented-exact`: `186`
+- `implemented-exact`: `184`
 - `implemented-target-limited`: `12`
 - `not-admitted`: `223`
-- `total`: `423`
+- `total`: `421`
 
 ## Matrix
 
@@ -226,7 +226,6 @@
 | `guard_tag` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `guard_type` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `guarded_field_get` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `guarded_field_init` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `guarded_field_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `guarded_load` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `has_attr_name` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -374,7 +373,6 @@
 | `staticmethod_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `store_index` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `store_init` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `store_local` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `store_subscript` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `store_var` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

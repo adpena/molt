@@ -2422,6 +2422,24 @@ mod tests {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
+    unsafe fn iterator_test_instance(py: &crate::PyToken<'_>, class: u64) -> u64 {
+        let class_ptr = MoltObject::from_bits(class)
+            .as_ptr()
+            .expect("fixture class");
+        // Iterator ownership tests need a published instance of the actual
+        // class layout, not a raw zero-byte allocation with a class annotation.
+        let bits = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+        assert!(
+            !crate::exception_pending(py),
+            "fixture instance construction failed"
+        );
+        let ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("fixture instance");
+        assert!(unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() });
+        bits
+    }
+
     static REENTRANT_WEAK_ITER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static REENTRANT_WEAK_STATE: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
@@ -2471,14 +2489,17 @@ mod tests {
                 let finalizer = MoltObject::from_ptr(finalizer_ptr).bits();
                 let del_name = MoltObject::from_ptr(alloc_string(_py, b"__del__")).bits();
                 crate::molt_set_attr_name(value_class, del_name, finalizer);
-                let key = crate::molt_alloc_class(0, key_class);
-                let value = crate::molt_alloc_class(0, value_class);
+                let key = iterator_test_instance(_py, key_class);
+                let value = iterator_test_instance(_py, value_class);
                 let reference_class = crate::builtin_classes(_py).reference_type;
                 let reference = crate::alloc_instance_for_class(
                     _py,
                     MoltObject::from_bits(reference_class).as_ptr().unwrap(),
                 );
-                crate::molt_weakref_register(reference, key, MoltObject::none().bits());
+                assert_eq!(
+                    crate::molt_weakref_register(reference, key, MoltObject::none().bits()),
+                    MoltObject::from_bool(true).bits(),
+                );
                 let state = crate::molt_weakcontainer_new(MoltObject::from_int(1).bits());
                 crate::molt_weakcontainer_store_commit(
                     state,
@@ -2488,8 +2509,13 @@ mod tests {
                     MoltObject::from_int(1).bits(),
                 );
                 let iter = crate::molt_weakcontainer_iter(state, MoltObject::from_int(1).bits());
+                assert!(
+                    !crate::exception_pending(_py),
+                    "weak iterator fixture admission"
+                );
                 let mut item = MoltObject::none().bits();
                 let first = molt_iter_next_unboxed(iter, (&raw mut item) as usize as u64);
+                assert!(!crate::exception_pending(_py), "first weak iterator step");
                 assert_eq!(MoltObject::from_bits(first).as_bool(), Some(false));
                 dec_ref_bits(_py, item);
                 // WeakKey callback removes this entry logically but defers its
@@ -2558,23 +2584,23 @@ mod tests {
                             "str" => MoltObject::from_ptr(crate::alloc_string(_py, b"a")).bits(),
                             "bytes" => MoltObject::from_ptr(crate::alloc_bytes(_py, b"a")).bits(),
                             "bytearray" => {
-                                MoltObject::from_ptr(crate::object::builders::alloc_bytes_like(
-                                    _py,
-                                    b"a",
-                                    crate::TYPE_ID_BYTEARRAY,
-                                ))
-                                .bits()
+                                MoltObject::from_ptr(crate::alloc_bytearray(_py, b"a")).bits()
                             }
                             _ => super::molt_range_new(MoltObject::from_int(0).bits(), one, one),
                         };
                         let before = refcount(target);
+                        let immortal =
+                            (*header_from_obj_ptr(MoltObject::from_bits(target).as_ptr().unwrap()))
+                                .has_flag(crate::object::HEADER_FLAG_IMMORTAL);
                         let iter = molt_iter(target);
-                        assert_eq!(refcount(target), before + 1, "{family}");
+                        assert!(
+                            !crate::exception_pending(_py),
+                            "{family}: iterator admission"
+                        );
+                        assert_eq!(refcount(target), before + u32::from(!immortal), "{family}");
+                        let iter_ptr = MoltObject::from_bits(iter).as_ptr().expect("iterator");
                         if family == "range-finished" {
-                            super::iter_set_index(
-                                MoltObject::from_bits(iter).as_ptr().unwrap(),
-                                crate::ITER_EXHAUSTED,
-                            );
+                            super::iter_set_index(iter_ptr, crate::ITER_EXHAUSTED);
                         }
                         for step in 0..3 {
                             let exhausted = step != 0 || family == "range-finished";
@@ -2605,8 +2631,27 @@ mod tests {
                             }
                             assert_eq!(
                                 refcount(target),
-                                before + u32::from(!exhausted),
+                                before + u32::from(!immortal && !exhausted),
                                 "{family}: exhaustion must release its target immediately"
+                            );
+                            // Even immortal targets must be retired; their
+                            // saturated refcount cannot demonstrate this edge.
+                            assert_eq!(
+                                super::iter_target_bits(iter_ptr),
+                                if exhausted {
+                                    MoltObject::none().bits()
+                                } else {
+                                    target
+                                },
+                                "{family}: target ownership is published absent on exhaustion",
+                            );
+                            if exhausted {
+                                assert_eq!(super::iter_index(iter_ptr), crate::ITER_EXHAUSTED);
+                                assert!((*super::iter_pair_slot(iter_ptr)).is_null());
+                            }
+                            assert!(
+                                !crate::exception_pending(_py),
+                                "{family}: iterator step {step}"
                             );
                             if step == 1 && family == "list" {
                                 crate::molt_list_append(target, MoltObject::from_int(1).bits());
@@ -2625,54 +2670,114 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                let key = MoltObject::from_int(1).bits();
-                let class_name = MoltObject::from_ptr(alloc_string(_py, b"IterOwnedValue")).bits();
-                let class = crate::molt_class_new(class_name);
-                let value = crate::molt_alloc_class(0, class);
-                let dict = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
-                assert_eq!(refcount(value), 2, "dict owns one value edge");
+                for transport in ["boxed", "value-out", "dict-items-out"] {
+                    let key = MoltObject::from_int(1).bits();
+                    let class_name =
+                        MoltObject::from_ptr(alloc_string(_py, b"IterOwnedValue")).bits();
+                    let class = crate::molt_class_new(class_name);
+                    let value = iterator_test_instance(_py, class);
+                    let dict =
+                        MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
+                    assert_eq!(refcount(value), 2, "dict owns one value edge");
 
-                let view = molt_dict_items(dict);
-                let iter = molt_iter(view);
-                dec_ref_bits(_py, view);
-
-                loop {
-                    let mut pair = MoltObject::none().bits();
-                    let done = molt_iter_next_unboxed(iter, (&raw mut pair) as usize as u64);
-                    if MoltObject::from_bits(done).as_bool() == Some(true) {
-                        break;
-                    }
-                    assert_eq!(MoltObject::from_bits(done).as_bool(), Some(false));
-                    let mut outputs = [MoltObject::none().bits(); 2];
-                    assert_eq!(
-                        molt_unpack_sequence(
-                            pair,
-                            outputs.len() as u64,
-                            outputs.as_mut_ptr() as usize as u64,
-                        ),
-                        0
+                    let view = molt_dict_items(dict);
+                    let iter = molt_iter(view);
+                    assert!(
+                        !crate::exception_pending(_py),
+                        "{transport}: iterator admission"
                     );
-                    dec_ref_bits(_py, pair);
-                    for output in outputs {
-                        dec_ref_bits(_py, output);
-                    }
-                }
+                    let iter_ptr = MoltObject::from_bits(iter).as_ptr().expect("iterator");
+                    dec_ref_bits(_py, view);
 
-                dec_ref_bits(_py, iter);
-                assert_eq!(
-                    refcount(dict),
-                    1,
-                    "iterator teardown must release the items view"
-                );
-                dec_ref_bits(_py, dict);
-                assert_eq!(
-                    refcount(value),
-                    1,
-                    "dict teardown must release the last yielded value"
-                );
-                dec_ref_bits(_py, value);
-                dec_ref_bits(_py, class);
-                dec_ref_bits(_py, class_name);
+                    for step in 0..3 {
+                        let mut outputs = [MoltObject::none().bits(); 2];
+                        let done = if transport == "dict-items-out" {
+                            super::molt_iter_next_dict_items(
+                                iter,
+                                outputs.as_mut_ptr(),
+                                outputs.as_mut_ptr().add(1),
+                            )
+                        } else {
+                            let mut pair = MoltObject::none().bits();
+                            let mut wrapper = MoltObject::none().bits();
+                            let done = if transport == "boxed" {
+                                wrapper = super::molt_iter_next(iter);
+                                assert!(!crate::exception_pending(_py), "boxed iterator step");
+                                let wrapper_ptr =
+                                    MoltObject::from_bits(wrapper).as_ptr().expect("wrapper");
+                                let (borrowed_pair, done) =
+                                    crate::object::seq_access::tuple_pair(wrapper_ptr)
+                                        .expect("wrapper");
+                                // Keep the wrapper owner while consuming this
+                                // borrowed alias; do not invent an extra pair owner.
+                                pair = borrowed_pair;
+                                done
+                            } else {
+                                molt_iter_next_unboxed(iter, (&raw mut pair) as usize as u64)
+                            };
+                            assert!(!crate::exception_pending(_py), "{transport}: iterator step");
+                            if MoltObject::from_bits(done).as_bool() == Some(false) {
+                                assert_eq!(
+                                    molt_unpack_sequence(
+                                        pair,
+                                        outputs.len() as u64,
+                                        outputs.as_mut_ptr() as usize as u64,
+                                    ),
+                                    0,
+                                );
+                            }
+                            if transport == "boxed" {
+                                dec_ref_bits(_py, wrapper);
+                            } else {
+                                dec_ref_bits(_py, pair);
+                            }
+                            done
+                        };
+                        assert!(!crate::exception_pending(_py), "{transport}: step {step}");
+                        assert_eq!(MoltObject::from_bits(done).as_bool(), Some(step != 0));
+                        assert_eq!(
+                            outputs,
+                            if step == 0 {
+                                [key, value]
+                            } else {
+                                [MoltObject::none().bits(); 2]
+                            },
+                            "{transport}: caller-owned output transport",
+                        );
+                        for output in outputs {
+                            dec_ref_bits(_py, output);
+                        }
+                        if step != 0 {
+                            assert_eq!(
+                                super::iter_target_bits(iter_ptr),
+                                MoltObject::none().bits()
+                            );
+                            assert_eq!(super::iter_index(iter_ptr), crate::ITER_EXHAUSTED);
+                            assert!((*super::iter_pair_slot(iter_ptr)).is_null());
+                            assert_eq!(
+                                refcount(dict),
+                                1,
+                                "{transport}: exhaustion releases the view before iterator teardown",
+                            );
+                            assert_eq!(
+                                refcount(value),
+                                2,
+                                "{transport}: only dictionary and test owners remain",
+                            );
+                        }
+                    }
+
+                    dec_ref_bits(_py, iter);
+                    dec_ref_bits(_py, dict);
+                    assert_eq!(
+                        refcount(value),
+                        1,
+                        "dict teardown releases the last yielded value"
+                    );
+                    dec_ref_bits(_py, value);
+                    dec_ref_bits(_py, class);
+                    dec_ref_bits(_py, class_name);
+                }
             }
         });
     }
@@ -2681,6 +2786,8 @@ mod tests {
         std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
     static REENTRANT_PAIR_REPLACE: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
+    static REENTRANT_PAIR_CALLS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     extern "C" fn reenter_pair_cache_on_value_drop(_self: u64) -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -2688,6 +2795,7 @@ mod tests {
             unsafe {
                 let slot = REENTRANT_PAIR_SLOT.load(SeqCst);
                 assert!(!slot.is_null());
+                REENTRANT_PAIR_CALLS.fetch_add(1, SeqCst);
                 if REENTRANT_PAIR_REPLACE.load(SeqCst) {
                     let nested = cached_pair_return(
                         _py,
@@ -2728,11 +2836,12 @@ mod tests {
                     let finalizer = MoltObject::from_ptr(finalizer_ptr).bits();
                     let del_name = MoltObject::from_ptr(alloc_string(_py, b"__del__")).bits();
                     crate::molt_set_attr_name(class, del_name, finalizer);
-                    let value = crate::molt_alloc_class(0, class);
+                    let value = iterator_test_instance(_py, class);
                     let mut cached = std::ptr::null_mut();
                     let slot = &raw mut cached;
                     REENTRANT_PAIR_SLOT.store(slot, SeqCst);
                     REENTRANT_PAIR_REPLACE.store(replace, SeqCst);
+                    REENTRANT_PAIR_CALLS.store(0, SeqCst);
                     let first = cached_pair_return(
                         _py,
                         slot,
@@ -2745,8 +2854,11 @@ mod tests {
                     if abi_view {
                         molt_cpython_abi::bridge::molt_cpython_abi_init();
                         crate::cpython_abi_hooks::register_cpython_hooks();
-                        let borrowed =
-                            molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first);
+                        // The returned owner was dropped above. This identity
+                        // is borrowed from the live cache, not a new item owner.
+                        let cached_bits = MoltObject::from_ptr(cached).bits();
+                        let borrowed = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .handle_to_borrowed_pyobj(cached_bits);
                         assert!(!borrowed.is_null());
                         assert_eq!(refcount(first), 2, "cache plus stable ABI view owner");
                         assert!(
@@ -2765,6 +2877,11 @@ mod tests {
                         false,
                     );
                     let result_ptr = MoltObject::from_bits(result).as_ptr().expect("owned pair");
+                    assert_eq!(
+                        REENTRANT_PAIR_CALLS.load(SeqCst),
+                        1,
+                        "old element finalizer must exercise the reentrant cache transition",
+                    );
                     assert_eq!(
                         crate::object::seq_access::item(result_ptr, 0),
                         Some(next_value)

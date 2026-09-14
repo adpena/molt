@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 5;
+const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 7;
 
 /// Result-level inline cache entry for attribute lookups.
 /// Caches the full lookup result alongside the attribute name to skip
@@ -43,8 +43,11 @@ impl AttrICEntry {
 }
 
 pub(crate) struct AttributesRuntimeState {
-    pub(super) property_docs: Mutex<HashMap<PtrSlot, u64>>,
-    pub(super) property_doc_name: AtomicU64,
+    pub(super) wrapper_member_get: AtomicU64,
+    pub(super) wrapper_member_set: AtomicU64,
+    pub(super) wrapper_member_delete: AtomicU64,
+    /// Publication receipt, not a boxed object or independent version authority.
+    pub(super) wrapper_members_version: AtomicU64,
     pub(super) attr_site_name_cache: Mutex<HashMap<u64, u64>>,
     pub(super) generic_alias_mro_entries: AtomicU64,
     pub(super) attr_ic_result_cache: Mutex<HashMap<u64, AttrICEntry>>,
@@ -56,8 +59,10 @@ pub(crate) struct AttributesRuntimeState {
 impl AttributesRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
-            property_docs: Mutex::new(HashMap::new()),
-            property_doc_name: AtomicU64::new(0),
+            wrapper_member_get: AtomicU64::new(0),
+            wrapper_member_set: AtomicU64::new(0),
+            wrapper_member_delete: AtomicU64::new(0),
+            wrapper_members_version: AtomicU64::new(0),
             attr_site_name_cache: Mutex::new(HashMap::new()),
             generic_alias_mro_entries: AtomicU64::new(0),
             attr_ic_result_cache: Mutex::new(HashMap::new()),
@@ -69,7 +74,9 @@ impl AttributesRuntimeState {
 
     pub(super) fn object_slots(&self) -> [&AtomicU64; ATTRIBUTES_OBJECT_SLOT_COUNT] {
         [
-            &self.property_doc_name,
+            &self.wrapper_member_get,
+            &self.wrapper_member_set,
+            &self.wrapper_member_delete,
             &self.generic_alias_mro_entries,
             &self.bytes_fromhex,
             &self.bytearray_fromhex,
@@ -141,60 +148,45 @@ impl Drop for AttrLookupTraceGuard {
     }
 }
 
-pub(super) fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
-    matches!(
-        attr_name,
-        "__molt_is_generator__" | "__molt_is_coroutine__" | "__molt_is_async_generator__"
-    )
-}
-
-pub(super) fn property_docs(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
-    &attributes_state(_py).property_docs
-}
-
-fn clear_property_docs(_py: &PyToken<'_>, attributes: &AttributesRuntimeState) {
-    let mut guard = attributes.property_docs.lock().unwrap();
-    let old = std::mem::take(&mut *guard);
-    drop(guard);
-    for (_ptr, bits) in old {
-        if bits != 0 {
-            dec_ref_bits(_py, bits);
-        }
-    }
-}
-
 pub(super) fn attr_site_name_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
     &attributes_state(_py).attr_site_name_cache
-}
-
-fn clear_attr_site_name_cache(_py: &PyToken<'_>, attributes: &AttributesRuntimeState) {
-    let mut cache = attributes
-        .attr_site_name_cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    for (_site, bits) in cache.drain() {
-        if bits != 0 {
-            dec_ref_bits(_py, bits);
-        }
-    }
-    // Also clear the result IC cache.
-    let mut rc = attributes
-        .attr_ic_result_cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    for (_site, entry) in rc.drain() {
-        entry.release_owned_refs(_py);
-    }
 }
 
 pub(crate) fn attributes_clear_runtime_state(
     _py: &PyToken<'_>,
     state: &crate::state::RuntimeState,
-) {
+) -> bool {
     crate::gil_assert();
     let attributes = &state.attributes;
-    clear_attr_site_name_cache(_py, attributes);
-    clear_property_docs(_py, attributes);
+    attributes
+        .wrapper_members_version
+        .store(0, Ordering::Release);
+    let names = {
+        let mut cache = attributes
+            .attr_site_name_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *cache)
+    };
+    let results = {
+        let mut cache = attributes
+            .attr_ic_result_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *cache)
+    };
+    // Both maps and every atomic slot are empty before the first release;
+    // callbacks can repopulate them without lock recursion or lost publication.
+    let changed = !names.is_empty() || !results.is_empty();
     let slots = attributes.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
+    let slots_changed = crate::state::cache::clear_atomic_slots(_py, &slots);
+    for bits in names.into_values() {
+        if bits != 0 {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    for entry in results.into_values() {
+        entry.release_owned_refs(_py);
+    }
+    changed | slots_changed
 }

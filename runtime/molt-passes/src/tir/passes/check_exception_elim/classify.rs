@@ -8,68 +8,7 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::super::effects::op_may_throw_with_types;
-
-/// SimpleIR op kinds that fall through to `OpCode::Copy` in the SSA lift
-/// (so they carry `_original_kind`) but are nevertheless provably
-/// non-throwing. Anything not on this list is treated as throwing: the
-/// conservative choice consistent with DCE's safety policy.
-fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
-    matches!(
-        kind,
-        "guard_tag"
-            | "guard_layout"
-            | "guard_int"
-            | "guard_float"
-            | "guard_str"
-            | "guard_bool"
-            | "guard_none"
-            | "store"
-            | "load"
-            | "store_var"
-            | "load_var"
-            | "exception_clear"
-            | "exception_last"
-            | "exception_last_pending"
-            | "exception_finally_pending_observer"
-            | "exception_pop"
-            | "exception_push"
-            | "exception_new_builtin"
-            | "exception_new_builtin_empty"
-            | "exception_new_builtin_one"
-            | "exception_match_builtin"
-            | "exception_stack_enter"
-            | "exception_stack_clear"
-            | "exception_stack_depth"
-            | "exception_context_set"
-            | "try_start"
-            | "try_end"
-            | "context_depth"
-            | "trace_enter_slot"
-            | "trace_exit"
-            | "line"
-            | "code_slots_init"
-            | "code_slot_set"
-            | "code_new"
-            | "is"
-            | "is_not"
-            | "not"
-            | "and"
-            | "or"
-            | "bool"
-            | "loop_start"
-            | "loop_end"
-            | "loop_continue"
-            | "loop_break"
-            | "loop_break_if_false"
-            | "loop_index_start"
-            | "loop_index_next"
-            | "missing"
-            | "phi"
-            | "identity_alias"
-            | "copy_var"
-    )
-}
+use super::super::effects::{guarded_throw_condition_disproven, op_may_throw_with_types};
 
 pub(crate) fn const_int_values(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, i64> {
     let mut values = HashMap::new();
@@ -97,21 +36,11 @@ pub(crate) fn const_int_values(func: &crate::tir::function::TirFunction) -> Hash
     values
 }
 
-fn value_is_i64(value_types: &HashMap<ValueId, TirType>, value: ValueId) -> bool {
-    matches!(value_types.get(&value), Some(TirType::I64))
-}
-
-fn proven_nonzero_i64_divisor(
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
-    op: &TirOp,
-) -> bool {
-    let [lhs, rhs] = op.operands.as_slice() else {
+fn proven_nonzero_i64_divisor(const_ints: &HashMap<ValueId, i64>, op: &TirOp) -> bool {
+    let [_lhs, rhs] = op.operands.as_slice() else {
         return false;
     };
-    value_is_i64(value_types, *lhs)
-        && value_is_i64(value_types, *rhs)
-        && const_ints.get(rhs).is_some_and(|value| *value != 0)
+    const_ints.get(rhs).is_some_and(|value| *value != 0)
 }
 
 pub(crate) fn op_may_raise(
@@ -123,18 +52,17 @@ pub(crate) fn op_may_raise(
         return true;
     }
     if opcode_requires_i64_zero_divisor_guard_table(op.opcode)
-        && proven_nonzero_i64_divisor(value_types, const_ints, op)
+        && guarded_throw_condition_disproven(
+            op,
+            value_types,
+            false,
+            proven_nonzero_i64_divisor(const_ints, op),
+        )
     {
         return false;
     }
     if op_may_throw_with_types(op, value_types) {
         return true;
-    }
-    if op.opcode == OpCode::Copy {
-        if let Some(AttrValue::Str(orig)) = op.attrs.get("_original_kind") {
-            return !original_kind_is_provably_nonthrowing(orig);
-        }
-        return false;
     }
     false
 }

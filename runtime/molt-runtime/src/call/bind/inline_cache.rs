@@ -115,7 +115,8 @@ pub(super) fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, entry: CallBindIcEn
     }
 }
 
-pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) {
+/// Detach this thread's owned call-cache targets and report whether any existed.
+pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) -> bool {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().call,
@@ -134,11 +135,14 @@ pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) {
             ); IC_TLS_SIZE],
         )
     });
+    let mut detached = false;
     for (_, entry) in previous {
         if call_bind_ic_owns_target(entry) {
+            detached = true;
             dec_ref_bits(_py, entry.target_bits);
         }
     }
+    detached
 }
 
 /// Per-site inline cache for fused method / super-method dispatch.
@@ -221,12 +225,13 @@ pub(super) unsafe fn method_ic_call_plan(
             return None;
         }
         let fixed_arity = function_arity(func_ptr).min(u8::MAX as u64) as u8;
-        let needs_binder = function_needs_full_binder(_py, func_ptr);
+        let shape = function_binding_shape(_py, func_ptr);
+        let needs_binder = shape.full_binder;
         let n_pos_defaults = if needs_binder {
             // Irrelevant: a needs-binder method never takes the direct path.
             0
         } else {
-            function_positional_default_count(_py, func_ptr).min(u8::MAX as usize) as u8
+            shape.positional_defaults.min(u8::MAX as usize) as u8
         };
         Some(MethodIcCallPlan {
             fixed_arity,
@@ -275,7 +280,8 @@ fn method_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: MethodIcEntry) {
     }
 }
 
-pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
+/// Detach this thread's owned method-cache edges and report whether any existed.
+pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) -> bool {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().method,
@@ -296,16 +302,20 @@ pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
             ); METHOD_IC_TLS_SIZE],
         )
     });
+    let mut detached = false;
     for (_, entry) in previous {
         if entry.valid {
             if entry.attr_bits != 0 {
+                detached = true;
                 dec_ref_bits(_py, entry.attr_bits);
             }
             if entry.func_bits != 0 {
+                detached = true;
                 dec_ref_bits(_py, entry.func_bits);
             }
         }
     }
+    detached
 }
 
 /// Per-site super dispatch cache. The start class is a live call operand,
@@ -468,16 +478,20 @@ fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, selected: &PinnedSuperIcEntr
     previous.release(_py);
 }
 
-pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) {
+/// Detach this thread's owned super-cache edges and report whether any existed.
+pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) -> bool {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().super_method,
             [(0, EMPTY_SUPER_IC_ENTRY); METHOD_IC_TLS_SIZE],
         )
     });
+    let mut detached = false;
     for (_, entry) in previous {
+        detached |= entry.valid;
         entry.release(_py);
     }
+    detached
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -752,6 +766,26 @@ pub(super) unsafe fn try_call_bind_ic_fast(
 
         let call_obj = obj_from_bits(call_bits);
         let call_ptr = call_obj.as_ptr()?;
+
+        // Class epochs do not change when a function's own metadata changes.
+        // Revalidate the live binder flag before any cached already-bound ABI.
+        let metadata_target = match entry.kind {
+            CALL_BIND_IC_KIND_DIRECT_FUNC => Some(call_ptr),
+            CALL_BIND_IC_KIND_LIST_APPEND | CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC
+                if object_type_id(call_ptr) == TYPE_ID_BOUND_METHOD =>
+            {
+                obj_from_bits(bound_method_func_bits(call_ptr)).as_ptr()
+            }
+            CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC | CALL_BIND_IC_KIND_TYPE_CALL => {
+                obj_from_bits(entry.target_bits).as_ptr()
+            }
+            _ => None,
+        };
+        if metadata_target.is_some_and(|ptr| {
+            object_type_id(ptr) == TYPE_ID_FUNCTION && function_requires_binder_flag(ptr)
+        }) {
+            return None;
+        }
 
         if entry.kind == CALL_BIND_IC_KIND_LIST_APPEND {
             if object_type_id(call_ptr) != TYPE_ID_BOUND_METHOD || args.pos.len() != 1 {
@@ -1124,6 +1158,10 @@ unsafe fn call_method_ic_dispatch(
                 let fixed_arity = fixed_arity as usize;
                 let supplied = args.len() + 1; // including self
                 let mut argv = [0u64; DIRECT_ARGV_MAX];
+                // Call-time task metadata can invoke Python and replace the
+                // defaults tuple. Keep the owner alive through the callee, not
+                // only while copying its borrowed elements into argv.
+                let defaults_owner;
                 argv[0] = recv_bits;
                 for (idx, a) in args.iter().copied().enumerate() {
                     argv[idx + 1] = a;
@@ -1136,7 +1174,8 @@ unsafe fn call_method_ic_dispatch(
                     if object_type_id(def_ptr) != TYPE_ID_TUPLE {
                         return None;
                     }
-                    let def_elems = crate::object::seq_access::pin_tuple(_py, def_ptr)?;
+                    defaults_owner = crate::object::seq_access::pin_tuple(_py, def_ptr)?;
+                    let def_elems = &defaults_owner;
                     let missing = fixed_arity - supplied;
                     if missing > def_elems.len() {
                         // Live defaults cannot cover the gap (e.g. a shrunk
@@ -1207,6 +1246,9 @@ unsafe fn call_method_ic_dispatch(
             // is produced.
             let dispatch = |_py: &PyToken<'_>, func_bits: u64, plan: MethodIcCallPlan| -> u64 {
                 if direct_ok(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder)
+                    && obj_from_bits(func_bits)
+                        .as_ptr()
+                        .is_some_and(|ptr| !function_requires_binder_flag(ptr))
                     && let Some(res) = call_direct(_py, func_bits, plan.fixed_arity)
                 {
                     return res;
@@ -1899,6 +1941,47 @@ pub extern "C" fn molt_invoke_ffi_ic(
 #[cfg(test)]
 mod super_cache_tests {
     use super::*;
+
+    #[test]
+    fn cached_direct_call_rechecks_live_metadata_after_set_and_delete() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let pointer = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "metadata_cache_base_value",
+                        base_value as *const (),
+                    ),
+                    1,
+                );
+                assert!(!pointer.is_null());
+                let function = MoltObject::from_ptr(pointer).bits();
+                let entry = call_bind_ic_entry_for_call(py, function).unwrap();
+                let builder = molt_callargs_new(MoltObject::from_int(1).bits(), 0);
+                molt_callargs_push_pos(builder, MoltObject::from_int(3).bits());
+                let args =
+                    require_callargs_ptr(py, obj_from_bits(builder).as_ptr().unwrap()).unwrap();
+                assert_eq!(
+                    try_call_bind_ic_fast(py, entry, function, args),
+                    Some(MoltObject::from_int(1).bits())
+                );
+                let name = attr_name_bits_from_bytes(py, b"__molt_vararg__").unwrap();
+                crate::molt_set_attr_name(function, name, MoltObject::from_bool(true).bits());
+                assert!(!exception_pending(py));
+                assert!(try_call_bind_ic_fast(py, entry, function, args).is_none());
+                crate::molt_del_attr_name(function, name);
+                assert!(!exception_pending(py));
+                assert_eq!(
+                    try_call_bind_ic_fast(py, entry, function, args),
+                    Some(MoltObject::from_int(1).bits())
+                );
+                for bits in [name, builder, function] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
 
     extern "C" fn base_value(_self_bits: u64) -> u64 {
         MoltObject::from_int(1).bits()

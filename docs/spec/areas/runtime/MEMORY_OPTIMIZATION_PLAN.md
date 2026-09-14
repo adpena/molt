@@ -187,10 +187,14 @@ The current allocator is **system `std::alloc::alloc` / `std::alloc::alloc_zeroe
   - When the TLAB is exhausted, request a new one from the global allocator.
   - No locking on the fast path (thread-local bump pointer).
 
-- **O2.5 — Arena allocation for function-scoped temporaries.** The existing `TempArena` is a good foundation but is not integrated into the compilation pipeline. Extend it:
-  - Compiler emits arena scope entry/exit around function bodies.
-  - All non-escaping allocations use the arena.
-  - Arena reset on scope exit reclaims all memory in one operation.
+- **O2.5 — Proved scoped allocation.** Runtime arenas remain explicit unsafe
+  scopes; every owned boxed object must finish release and cycle collection
+  before reset. The compiler rejects `arena_eligible` because a boolean
+  nonescape hint cannot prove that lifetime. Raw `Alloc` stays heap-owned.
+  Automatic class frame promotion is removed: no compiler producer proves
+  immutable destruction. Explicit frame candidates require caller lifetime
+  proof; runtime admits only immutable nonfinalizing MROs, and both frame and
+  heap realizations retain ordinary RC.
 
 - **O2.6 — Consider mimalloc.** [mimalloc](https://github.com/microsoft/mimalloc) provides size-segregated thread-local free lists, excellent cache behavior, and low fragmentation. Adding `mimalloc = "0.1"` as a Cargo dependency and setting it as the global allocator would provide immediate benefits without custom allocator work:
   ```rust
