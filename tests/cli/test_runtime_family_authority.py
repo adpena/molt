@@ -800,14 +800,147 @@ def test_profile_cli_inheritance_and_overlapping_prefixes_share_authority(
     }
 
 
-def test_unknown_inherited_profile_control_is_diagnosed(plan_root: Path) -> None:
+@pytest.mark.parametrize(
+    ("profile", "ancestry"),
+    [
+        ("release-output", ("release-output", "release")),
+        ("release-size", ("release-size", "release-output", "release")),
+        ("wasm-release", ("wasm-release", "release-size", "release-output", "release")),
+    ],
+)
+def test_workspace_shipping_profile_ancestry_is_consumed_by_runtime_identity(
+    plan_root: Path, profile: str, ancestry: tuple[str, ...]
+) -> None:
+    workspace_manifest = Path(__file__).resolve().parents[2] / "Cargo.toml"
+    (plan_root / "Cargo.toml").write_bytes(workspace_manifest.read_bytes())
+    baseline = _plan(plan_root)
+    inherited = _plan(
+        plan_root,
+        env={
+            "CARGO_PROFILE_RELEASE_OUTPUT_DEBUG": "2",
+            "CARGO_PROFILE_RELEASE_SIZE_LTO": "off",
+        },
+    )
+    assert inherited.profile_ancestry(profile) == ancestry
+    expected = {"CARGO_PROFILE_RELEASE_OUTPUT_DEBUG"}
+    if "release-size" in ancestry:
+        expected.add("CARGO_PROFILE_RELEASE_SIZE_LTO")
+    assert set(inherited.profile_environment(profile)) == expected
+    assert inherited.preserve_debug_for_profile(profile)
+    assert not baseline.preserve_debug_for_profile(profile)
+    assert _runtime_build_environment_identity(inherited, cargo_profile=profile) != (
+        _runtime_build_environment_identity(baseline, cargo_profile=profile)
+    )
+
+
+@pytest.mark.parametrize("source", ["manifest", "config", "cli-file", "cli-inline"])
+def test_unselected_profile_namespace_does_not_pollute_runtime_identity(
+    plan_root: Path, source: str
+) -> None:
+    manifest = plan_root / "Cargo.toml"
+    selected = '[profile.release-output]\ninherits="release"\n'
+    sibling = '[profile.release-size]\ninherits="release-output"\n'
+    manifest.write_text(selected + (sibling if source == "manifest" else ""))
+    args: tuple[str, ...] = ()
+    if source == "config":
+        config = plan_root / ".cargo" / "config.toml"
+        config.parent.mkdir(exist_ok=True)
+        config.write_text(sibling)
+    elif source == "cli-file":
+        config = plan_root / "profiles.toml"
+        config.write_text(sibling)
+        args = ("--config", str(config))
+    elif source == "cli-inline":
+        args = ("--config", 'profile.release-size.inherits="release-output"')
+    selected_env = {
+        "CARGO_PROFILE_RELEASE_OUTPUT_DEBUG": "2",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL": "3",
+    }
+    baseline = _plan(plan_root, args=args, env=selected_env)
+    sibling_env = {
+        "CARGO_PROFILE_RELEASE_SIZE_LTO": "off",
+        "CARGO_PROFILE_RELEASE_SIZE_BUILD_OVERRIDE_DEBUG": "0",
+        "CARGO_PROFILE_RELEASE_SIZE_FUTURE_CONTROL": "1",
+        "CARGO_PROFILE_BENCH_DEBUG": "1",
+    }
+    with_sibling = _plan(plan_root, args=args, env=selected_env | sibling_env)
+    assert with_sibling.profile_environment("release-output") == selected_env
+    assert _runtime_build_environment_identity(
+        baseline, cargo_profile="release-output"
+    ) == _runtime_build_environment_identity(
+        with_sibling, cargo_profile="release-output"
+    )
+    with pytest.raises(ValueError, match="RELEASE_SIZE_FUTURE_CONTROL"):
+        with_sibling.profile_environment("release-size")
+
+
+@pytest.mark.parametrize(
+    "profile", ["release-build-override", "release_build_override"]
+)
+def test_legal_ancestor_controls_survive_profile_namespace_overlap(
+    plan_root: Path, profile: str
+) -> None:
+    (plan_root / "Cargo.toml").write_text(
+        f'[profile.{profile}]\ninherits="dev"\n'
+        '[profile.release-debug]\ninherits="dev"\n'
+    )
+    shared = "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL"
+    assertions = "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS"
+    environment = {shared: "3", assertions: "true"}
+    plan = _plan(plan_root, env=environment)
+    # These are legal release controls even when unrelated longer profile names
+    # exist. The shared key is also the custom profile's own opt-level control.
+    assert plan.profile_environment("release") == environment
+    assert plan.profile_environment(profile) == {shared: "3"}
+    assert plan.profile_environment("dev") == {}
+    assert plan.profile_environment("release-debug") == {}
+    release_identity = _runtime_build_environment_identity(
+        plan, cargo_profile="release"
+    )
+    custom_identity = _runtime_build_environment_identity(plan, cargo_profile=profile)
+    assert release_identity[shared] == custom_identity[shared]
+    changed = _plan(plan_root, env=environment | {shared: "2"})
+    for selected in ("release", profile):
+        assert (
+            _runtime_build_environment_identity(changed, cargo_profile=selected)[shared]
+            != release_identity[shared]
+        )
+
+
+@pytest.mark.parametrize("profile", ["release-output", "release_output"])
+def test_profile_environment_aliases_share_cargo_key(
+    plan_root: Path, profile: str
+) -> None:
+    (plan_root / "Cargo.toml").write_text(
+        '[profile.release-output]\ninherits="release"\n'
+        '[profile.release_output]\ninherits="dev"\n'
+    )
+    environment = {"CARGO_PROFILE_RELEASE_OUTPUT_DEBUG": "2"}
+    plan = _plan(plan_root, env=environment)
+    assert plan.profile_environment(profile) == environment
+    assert plan.preserve_debug_for_profile(profile)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "CARGO_PROFILE_CUSTOM_FUTURE_CONTROL",
+        "CARGO_PROFILE_RELEASE_FUTURE_CONTROL",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_FUTURE_CONTROL",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_BUILD_OVERRIDE_DEBUG",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_PANIC",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_LTO",
+        "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_RPATH",
+    ],
+)
+def test_unknown_inherited_profile_control_is_diagnosed(
+    plan_root: Path, control: str
+) -> None:
     (plan_root / "Cargo.toml").write_text(
         '[profile.custom]\ninherits="release"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="unsupported output-bearing"):
-        _plan(
-            plan_root, env={"CARGO_PROFILE_RELEASE_FUTURE_CONTROL": "1"}
-        ).profile_environment("custom")
+        _plan(plan_root, env={control: "1"}).profile_environment("custom")
 
 
 def test_cli_tool_selectors_are_pinned_after_original_overrides(
