@@ -165,6 +165,43 @@ class PythonLexicalScopeVisitor(ast.NodeVisitor):
         self.variable_annotations = (
             eager_annotations if variable_annotations is None else variable_annotations
         )
+        self._scheduled_conditional: tuple[ast.If, list[ast.AST]] | None = None
+
+    def conditional_children(self, node: ast.If) -> Sequence[ast.AST]:
+        """Ordered lexical children; projections may select a static branch.
+
+        Selection belongs here, not in a recursive visit_If override. Lexical
+        declarations visit both arms, including statically unreachable bindings.
+        """
+        return (node.test, *node.body, *node.orelse)
+
+    def visit_If(self, node: ast.If) -> None:
+        scheduled = self._scheduled_conditional
+        if scheduled is not None and scheduled[0] is node:
+            scheduled[1].extend(self.conditional_children(node))
+            return
+
+        # Suspend only direct conditional expansion, never arbitrary visit calls:
+        # definition/annotation/comprehension visitors must finish their child
+        # traversal before restoring lexical state. Every nested If still enters
+        # self.visit exactly once, retaining consumer counters and stop policies.
+        pending = [iter(self.conditional_children(node))]
+        while pending:
+            child = next(pending[-1], None)
+            if child is None:
+                pending.pop()
+                continue
+            if not isinstance(child, ast.If):
+                self.visit(child)
+                continue
+            children: list[ast.AST] = []
+            previous = self._scheduled_conditional
+            self._scheduled_conditional = (child, children)
+            try:
+                self.visit(child)
+            finally:
+                self._scheduled_conditional = previous
+            pending.append(iter(children))
 
     def _visit_definition_header(
         self,

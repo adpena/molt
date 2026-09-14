@@ -34,6 +34,22 @@ from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
 )
 
+
+def _static_conditional_children(
+    node: ast.If, truth_kwargs: StaticTruthKwargs
+) -> Sequence[ast.AST]:
+    """Select emission-visible children without owning their traversal."""
+    branch = static_if_live_branch(node, **truth_kwargs)
+    if branch is None:
+        return (node.test, *node.body, *node.orelse)
+    test = (
+        (node.test,)
+        if static_expression_result(node.test, **truth_kwargs).evaluation_required
+        else ()
+    )
+    return (*test, *branch)
+
+
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.frontend._protocol import _GeneratorProtocol
@@ -59,7 +75,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
         id_map: dict[int, int] = {}
         outer = self
 
-        class Collector(ast.NodeVisitor):
+        class Collector(PythonLexicalScopeVisitor):
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
 
@@ -72,22 +88,10 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return
 
-            def visit_If(self, node: ast.If) -> None:
+            def conditional_children(self, node: ast.If) -> Sequence[ast.AST]:
                 # CPython does not record annotations from a statically-dead
                 # branch (`if False:`/`if TYPE_CHECKING:`) in `__annotations__`.
-                static_branch = static_if_live_branch(
-                    node,
-                    **outer._static_truth_kwargs(),
-                )
-                if static_branch is not None:
-                    if static_expression_result(
-                        node.test, **outer._static_truth_kwargs()
-                    ).evaluation_required:
-                        self.visit(node.test)
-                    for stmt in static_branch:
-                        self.visit(stmt)
-                    return None
-                self.generic_visit(node)
+                return _static_conditional_children(node, outer._static_truth_kwargs())
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name):
@@ -95,7 +99,9 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     items.append((node.target.id, node.annotation, exec_id))
                     id_map[id(node)] = exec_id
 
-        collector = Collector()
+        collector = Collector(
+            eager_annotations=self.eager_annotations and not self.future_annotations
+        )
         for stmt in node.body:
             collector.visit(stmt)
         return items, id_map
@@ -220,24 +226,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 for stmt in node.orelse:
                     self.visit(stmt)
 
-            def visit_If(self, node: ast.If) -> None:
-                static_branch = static_if_live_branch(
-                    node,
-                    **outer._static_truth_kwargs(),
-                )
-                if static_branch is not None:
-                    if static_expression_result(
-                        node.test, **outer._static_truth_kwargs()
-                    ).evaluation_required:
-                        self.visit(node.test)
-                    for stmt in static_branch:
-                        self.visit(stmt)
-                    return None
-                self.visit(node.test)
-                for stmt in node.body:
-                    self.visit(stmt)
-                for stmt in node.orelse:
-                    self.visit(stmt)
+            def conditional_children(self, node: ast.If) -> Sequence[ast.AST]:
+                return _static_conditional_children(node, outer._static_truth_kwargs())
 
             def visit_With(self, node: ast.With) -> None:
                 for item in node.items:
@@ -506,17 +496,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
                         self._add_targets(item.optional_vars)
                 self.generic_visit(node)
 
-            def visit_If(self, node: ast.If) -> None:
-                # Mirror CPython's symbol table:
-                # a name bound only in a statically-dead branch is still a local,
-                # so this binding walk does NOT apply the static-if fold. The
-                # fold is emission-only (`_emit_static_if_live_branch`).
-                self.visit(node.test)
-                for stmt in node.body:
-                    self.visit(stmt)
-                for stmt in node.orelse:
-                    self.visit(stmt)
-
             def visit_Match(self, node: ast.Match) -> None:
                 self.visit(node.subject)
                 for case in node.cases:
@@ -701,20 +680,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     if module_scope and alias.asname:
                         add(alias.asname)
 
-            def visit_If(self, node: ast.If) -> None:
-                static_branch = static_if_live_branch(
-                    node,
-                    **outer._static_truth_kwargs(),
-                )
-                if static_branch is not None:
-                    if static_expression_result(
-                        node.test, **outer._static_truth_kwargs()
-                    ).evaluation_required:
-                        self.visit(node.test)
-                    for stmt in static_branch:
-                        self.visit(stmt)
-                    return None
-                self.generic_visit(node)
+            def conditional_children(self, node: ast.If) -> Sequence[ast.AST]:
+                return _static_conditional_children(node, outer._static_truth_kwargs())
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 super().visit_FunctionDef(node)

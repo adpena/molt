@@ -22,6 +22,8 @@ from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
     _ImportAdmissionPolicy,
+    _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
 from molt.compiler_analysis.python_binding_flow import python_ast_digest
@@ -429,6 +431,9 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         set(),
         full_scan_roots=True,
         runtime_import_custody=custody,
+        enclosing_scan_authority=_ModuleGraphScanAuthority(
+            (_ModuleSourceScanAuthority("target", target, "full"),)
+        ),
     )
     graph = discovery_result.graph
     assert graph == dict(custody.catalog)

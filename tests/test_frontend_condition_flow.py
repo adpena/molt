@@ -9,6 +9,40 @@ from molt.frontend import MoltOp, SimpleTIRGenerator
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_deep_conditional_collectors_share_traversal_not_branch_policy(
+    target: tuple[int, int],
+) -> None:
+    source = (
+        "".join(
+            f"{'if' if number == 0 else 'elif'} flag == {number}:\n"
+            f"    value_{number}: int = {number}\n"
+            for number in range(384)
+        )
+        + "else:\n    final: int = 0\n"
+    )
+    compile(source, "<collector-depth>", "exec")
+    tree = ast.parse(source)
+    generator = SimpleTIRGenerator(module_name="condition_flow", target_python=target)
+    expected = [*(f"value_{number}" for number in range(384)), "final"]
+    assert generator._collect_assigned_names_ordered(tree.body) == expected
+    counts, functions, _dynamic = generator._collect_module_assignments(tree)
+    assert counts == dict.fromkeys(expected, 1)
+    assert not functions
+    items, _ids = generator._collect_module_annotation_items(tree)
+    assert [name for name, _annotation, _index in items] == expected
+    names = generator._collect_code_names_for_body(
+        tree.body, varnames=(), free_vars=(), module_scope=True
+    )
+    assert [name for name in names if name in counts] == expected
+    dead = ast.parse("if False:\n    hidden: int = 1\nelse:\n    visible: int = 2\n")
+    assert generator._collect_assigned_names_ordered(dead.body) == ["hidden", "visible"]
+    assert generator._collect_module_assignments(dead)[0] == {"visible": 1}
+    assert [
+        name for name, _, _ in generator._collect_module_annotation_items(dead)[0]
+    ] == ["visible"]
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize("future", [False, True])
 @pytest.mark.parametrize("generic", [False, True])
 def test_lexical_header_consumers_share_annotation_and_default_scope(

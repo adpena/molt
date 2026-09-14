@@ -54,6 +54,39 @@ def test_local_python_import_closure_fails_closed_on_malformed_seed(
         local_python_import_closure(tmp_path, (seed,))
 
 
+def test_tooling_import_closure_handles_deep_dynamic_import_dispatch(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "dispatch.py"
+    source = (
+        "import importlib\ndef dispatch(value):\n"
+        + "".join(
+            f"    {'if' if value == 0 else 'elif'} value == {value}:\n"
+            "        return None\n"
+            for value in range(384)
+        )
+        + "    else:\n        return importlib.import_module('payload')\n"
+    )
+    seed.write_text(source, encoding="utf-8")
+    payload = tmp_path / "payload.py"
+    payload.write_text("VALUE = 1\n", encoding="utf-8")
+    assert local_python_import_closure(tmp_path, (seed,)) == (seed, payload)
+
+
+@pytest.mark.slow
+def test_repository_wasm_linker_closure_reaches_binding_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    seed = root / "tools" / "wasm_link.py"
+    # Exercise the real cold consumer, not a prior successful graph projection.
+    monkeypatch.setattr(graph, "_GRAPH_CACHE_RELPATH", tmp_path / "closure.json")
+    closure = local_python_import_closure(root, (seed,))
+    assert seed in closure
+    assert root / "src/molt/compiler_analysis/python_binding_flow.py" in closure
+    assert root / "src/molt/compiler_analysis/python_lexical_scope.py" in closure
+
+
 def _relative_paths(root: Path, paths: tuple[Path, ...]) -> set[str]:
     return {path.relative_to(root).as_posix() for path in paths}
 
