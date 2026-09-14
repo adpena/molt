@@ -7,8 +7,9 @@ import functools
 import os
 from pathlib import Path
 import re
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
+from molt.exact_json import canonical_json_bytes
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 
@@ -17,7 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_IDENTITY_PROBE = _REPO_ROOT / "src" / "molt" / "python_environment_identity.py"
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v4"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -348,6 +349,8 @@ def _proof_command_registry() -> dict[str, object]:
     entrypoints: dict[tuple[str, str], list[str]] = {}
     entrypoint_variants: dict[tuple[str, str], set[tuple[str, ...]]] = {}
     for policy in plan.toolchain_policies:
+        if policy.identity_kind != "executable":
+            continue
         executable = str(policy.data.get("executable") or policy.name)
         if executable == "{python}":
             continue
@@ -412,7 +415,11 @@ def _toolchain_dependency_closure(names: Sequence[str]) -> list[str]:
 
 
 def _command_registration(
-    argv: Sequence[str], *, has_python: bool, has_uv: bool
+    argv: Sequence[str],
+    *,
+    has_python: bool,
+    has_uv: bool,
+    typed_python: Mapping[str, object] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     registry = _proof_command_registry()
     exact = registry["exact"]
@@ -454,6 +461,9 @@ def _command_registration(
 
     if has_python:
         add("python")
+        if typed_python is not None:
+            add("source-extension")
+            return "typed-python-family", _toolchain_dependency_closure(toolchains), []
         if has_uv:
             add("uv")
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
@@ -477,9 +487,10 @@ def _command_registration(
         )
     add(policy_name)
     if policy_name == "cargo":
-        if len(argv) > 1 and argv[1] == "deny":
+        invocation = parse_cargo_invocation(argv)
+        if invocation.subcommand == "deny":
             add("cargo-deny")
-        elif len(argv) > 1 and argv[1] == "audit":
+        elif invocation.subcommand == "audit":
             add("cargo-audit")
     return "toolchain", _toolchain_dependency_closure(toolchains), []
 
@@ -493,12 +504,216 @@ _CARGO_LEAF_SUBCOMMANDS = frozenset(
         "search",
         "tree",
         "version",
-        "--help",
-        "-h",
-        "--version",
-        "-V",
     }
 )
+_CARGO_QUERY_FLAGS = frozenset({"--help", "-h", "--version", "-V"})
+ProofKind = Literal["build", "test-execution", "query", "command"]
+
+
+_CARGO_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "-p",
+        "--package",
+        "--manifest-path",
+        "--target",
+        "--target-dir",
+        "--features",
+        "-F",
+        "--profile",
+        "--jobs",
+        "-j",
+        "--config",
+        "--message-format",
+        "--color",
+        "--bin",
+        "--example",
+        "--test",
+        "--bench",
+        "--exclude",
+        "--lockfile-path",
+        "--artifact-dir",
+        "-C",
+        "-Z",
+    }
+)
+_CARGO_SHORT_VALUE_OPTIONS = {
+    "-p": "--package",
+    "-F": "--features",
+    "-j": "--jobs",
+    "-C": "-C",
+    "-Z": "-Z",
+}
+
+
+_LIBTEST_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "--logfile",
+        "--test-threads",
+        "--skip",
+        "--color",
+        "--format",
+        "-Z",
+        "--shuffle-seed",
+    }
+)
+
+
+def _libtest_is_query(arguments: Sequence[str]) -> bool:
+    """Recognize harness queries without treating filter operands as flags.
+
+    Value-taking options follow Rust 1.96 library/test/src/cli.rs. In
+    particular, --report-time and --ensure-time are flags, not operands.
+    """
+    index = 0
+    while index < len(arguments):
+        value = str(arguments[index])
+        if value == "--":
+            break
+        name, equal, _operand = value.partition("=")
+        if name in _LIBTEST_OPTIONS_WITH_VALUES:
+            index += 1 if equal else 2
+            continue
+        if value.startswith("-Z") and len(value) > 2:
+            index += 1
+            continue
+        if value in {"--help", "--list", "-h"}:
+            return True
+        # getopts accepts combined short flags; libtest defines only h/q.
+        if value.startswith("-") and not value.startswith("--"):
+            short_flags = value[1:]
+            if "h" in short_flags and set(short_flags) <= {"h", "q"}:
+                return True
+        index += 1
+    return False
+
+
+@dataclass(frozen=True)
+class CargoInvocation:
+    """Cargo-owned tokens, distinct from operands and forwarded harness argv."""
+
+    toolchain_selector: str | None
+    subcommand: str | None
+    flags: frozenset[str]
+    option_values: tuple[tuple[str, str], ...]
+    positionals: tuple[str, ...]
+    forwarded: tuple[str, ...]
+
+    @property
+    def requires_documenter(self) -> bool:
+        return self.subcommand in {"test", "doc", "rustdoc"} and not self.is_cargo_query
+
+    @property
+    def is_cargo_query(self) -> bool:
+        if self.subcommand in _CARGO_LEAF_SUBCOMMANDS:
+            return True
+        # External subcommands receive their own options and may spawn tools
+        # even for help; do not give them Cargo's built-in leaf semantics.
+        return self.subcommand in {
+            None,
+            "test",
+            "bench",
+            "build",
+            "check",
+            "rustc",
+            "run",
+            "doc",
+            "rustdoc",
+        } and bool(self.flags & _CARGO_QUERY_FLAGS)
+
+    @property
+    def proof_kind(self) -> ProofKind:
+        if self.is_cargo_query:
+            return "query"
+        # Cargo run_tests/run_benches compile first and return before executing
+        # any harness when their own --no-run option is set (Cargo 1.96).
+        if self.subcommand in {"test", "bench"} and "--no-run" in self.flags:
+            return "build"
+        if self.subcommand in {"test", "bench"} and _libtest_is_query(self.forwarded):
+            return "query"
+        if self.subcommand == "test":
+            return "test-execution"
+        if self.subcommand in {"build", "check", "rustc"}:
+            return "build"
+        return "command"
+
+
+def parse_cargo_invocation(argv: Sequence[str]) -> CargoInvocation:
+    """Parse operation boundaries once for proof admission and test policy.
+
+    Option operands are consumed before flag/positional classification. In
+    particular, a value named test, pytest, or --no-run is never an operation;
+    tokens after -- belong to libtest/rustc, not Cargo's compile-only switch.
+    Only the first argument can select a Rustup toolchain with +toolchain.
+    """
+    if not argv or _basename(str(argv[0])) not in {"cargo", "cargo.exe"}:
+        raise ValueError("Cargo invocation has no Cargo executable")
+    command = [str(value) for value in argv]
+    toolchain_selector = None
+    subcommand = None
+    flags: set[str] = set()
+    values: list[tuple[str, str]] = []
+    positionals: list[str] = []
+    forwarded: tuple[str, ...] = ()
+    index = 1
+    if index < len(command) and command[index].startswith("+"):
+        toolchain_selector = command[index][1:]
+        if not toolchain_selector:
+            raise ValueError("Cargo +toolchain selector requires a non-empty toolchain")
+        index += 1
+    while index < len(command):
+        value = command[index]
+        if value == "--":
+            forwarded = tuple(command[index + 1 :])
+            break
+        name, equal, operand = value.partition("=")
+        if name in _CARGO_OPTIONS_WITH_VALUES:
+            if not equal:
+                index += 1
+                if index >= len(command):
+                    raise ValueError(f"Cargo {name} requires a value")
+                operand = command[index]
+            values.append((_CARGO_SHORT_VALUE_OPTIONS.get(name, name), operand))
+        elif any(
+            value.startswith(short) and len(value) > 2
+            for short in _CARGO_SHORT_VALUE_OPTIONS
+        ):
+            values.append((_CARGO_SHORT_VALUE_OPTIONS[value[:2]], value[2:]))
+        elif value.startswith("-"):
+            flags.add(value)
+        elif subcommand is None:
+            subcommand = {"b": "build", "c": "check", "t": "test", "r": "run"}.get(
+                value, value
+            )
+        else:
+            positionals.append(value)
+        index += 1
+    return CargoInvocation(
+        toolchain_selector,
+        subcommand,
+        frozenset(flags),
+        tuple(values),
+        tuple(positionals),
+        forwarded,
+    )
+
+
+def command_proof_kind(envelope: Mapping[str, object]) -> ProofKind:
+    """Derive evidence obligations from the admitted execution payload."""
+    delegated = envelope.get("delegated")
+    if isinstance(delegated, Mapping):
+        return command_proof_kind(delegated)
+    argv = [str(value) for value in envelope["argv"]]  # type: ignore[index]
+    python = envelope.get("python")
+    if isinstance(python, Mapping):
+        invocation = parse_python_invocation(_python_invocation_argv(argv, python))
+        if invocation.mode == "module" and invocation.target in {"pytest", "py.test"}:
+            return "test-execution"
+        return "command"
+    if argv and _basename(argv[0]) in {"cargo", "cargo.exe"}:
+        return parse_cargo_invocation(argv).proof_kind
+    return "command"
+
+
 _TOOLCHAIN_LEAF_PROBES = frozenset({"--help", "-h", "--version", "-V", "-vV"})
 
 
@@ -509,14 +724,10 @@ def _registered_toolchain_descendants(argv: Sequence[str]) -> str:
         return "forbidden"
     executable = _basename(str(argv[0]))
     if executable in {"cargo", "cargo.exe"}:
-        command_index = 0
-        if arguments[0].startswith("+"):
-            command_index = 1
-        if command_index >= len(arguments):
-            return "forbidden"
+        invocation = parse_cargo_invocation(argv)
         return (
             "forbidden"
-            if arguments[command_index] in _CARGO_LEAF_SUBCOMMANDS
+            if invocation.subcommand is None or invocation.is_cargo_query
             else "declared-toolchains"
         )
     if arguments[0] in _TOOLCHAIN_LEAF_PROBES:
@@ -811,6 +1022,117 @@ def _python_invocation_argv(
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
 
+def _typed_python_command_family(
+    argv: Sequence[str],
+    python: Mapping[str, object],
+    invocation: PythonInvocation,
+) -> dict[str, object] | None:
+    """Admit the registered producer through the shared CLI and target authorities."""
+    if (
+        invocation.mode != "module"
+        or invocation.target not in {"molt", "molt.cli"}
+        or invocation.arguments[:2] != ("extension", "produce-set")
+    ):
+        return None
+    if python.get("kind") != "direct" or invocation.interpreter_options != ("-P",):
+        raise ValueError(
+            "source-extension producer proof requires a direct locked interpreter with -P"
+        )
+    from molt.cli.source_build_environment import (
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        _source_build_custody_root,
+    )
+    from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
+    from molt.cli.source_extension_set_registry import (
+        SourceExtensionVariant,
+        load_source_extension_registry,
+        source_extension_set,
+        source_extension_set_expected_identity,
+    )
+    from molt.cli.source_extension_target import resolve_source_extension_target_plan
+    from molt.dx import _reject_onedrive
+    from molt.target_python import _parse_target_python_version
+
+    producer = SourceExtensionSetInvocation.from_arguments(invocation.arguments)
+    if not producer.prepared:
+        raise ValueError(
+            "source-extension producer proof requires --prepared; provisioning "
+            "and interpreter re-execution must complete before proof custody"
+        )
+    registry = load_source_extension_registry()
+    extension_set = source_extension_set(
+        producer.package,
+        producer.package_version,
+        producer.module_set,
+        registry=registry,
+    )
+    target_plan = resolve_source_extension_target_plan(producer.target)
+    variant = SourceExtensionVariant(
+        target_python=_parse_target_python_version(producer.python_version),
+        abi_tier=producer.abi_tier,
+        target_triple=target_plan.target_triple,
+    )
+    registered_identity = source_extension_set_expected_identity(
+        extension_set,
+        variant=variant,
+        registry=registry,
+    )
+    if (
+        producer.expected_candidate_identity_sha256 is not None
+        and producer.expected_candidate_identity_sha256 != registered_identity
+    ):
+        raise ValueError(
+            "source-extension expected candidate identity differs from the registered target cell"
+        )
+    selected = Path(str(argv[0]))
+    if not selected.is_absolute() or not selected.is_file():
+        raise ValueError(
+            "source-extension producer requires an absolute available locked interpreter"
+        )
+    selected = Path(os.path.abspath(selected))
+    environment_root = selected.parent.parent
+    if (
+        selected.parent.name != ("Scripts" if os.name == "nt" else "bin")
+        or re.fullmatch(r"[0-9a-f]{64}", environment_root.name) is None
+        or environment_root.parent.resolve()
+        != _source_build_custody_root(_REPO_ROOT).resolve()
+        or not (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).is_file()
+    ):
+        raise ValueError(
+            "source-extension producer requires a content-addressed locked source-build interpreter"
+        )
+    _reject_onedrive(selected, "source-extension interpreter")
+    _reject_onedrive(
+        selected.resolve(strict=True), "source-extension interpreter content"
+    )
+    for label, value in (
+        ("source", producer.source),
+        ("build-root", producer.build_root),
+    ):
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError(f"source-extension producer {label} must be absolute")
+        _reject_onedrive(path, f"source-extension {label}")
+        resolved = path.resolve(strict=label == "source")
+        _reject_onedrive(resolved, f"source-extension resolved {label}")
+        if path != resolved:
+            raise ValueError(
+                f"source-extension producer {label} must use its canonical path, not an alias"
+            )
+        if label == "source" and not resolved.is_dir():
+            raise ValueError("source-extension producer source must be a directory")
+    return {
+        "family": "source-extension-producer",
+        "prepared": producer.prepared,
+        "environment_root": str(environment_root),
+        "target": target_plan.requested,
+        "target_triple": target_plan.target_triple,
+        "source": producer.source,
+        "build_root": producer.build_root,
+        "json": producer.json_output,
+    }
+
+
 def _python_bootstrap_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
@@ -960,13 +1282,15 @@ def _envelope_for_command(
             "`python -m pytest` or an exact `uv run ... pytest` envelope"
         )
 
+    typed_python = None
     if python is not None:
-        parse_python_invocation(_python_invocation_argv(argv, python))
-
+        invocation = parse_python_invocation(_python_invocation_argv(argv, python))
+        typed_python = _typed_python_command_family(argv, python, invocation)
     registration_kind, toolchains, proof_plan_command_ids = _command_registration(
         argv,
         has_python=python is not None,
         has_uv=first in {"uv", "uv.exe"},
+        typed_python=typed_python,
     )
     guarded_exec = _guarded_exec_invocation(argv)
     nested_command = (
@@ -998,6 +1322,13 @@ def _envelope_for_command(
     if registration_kind == "proof-plan":
         process_closure = {
             "kind": "proof-plan",
+            "descendants": "declared-toolchains",
+            "toolchains": list(toolchains),
+        }
+    elif typed_python is not None:
+        process_closure = {
+            "kind": "typed-python-family",
+            "family": typed_python["family"],
             "descendants": "declared-toolchains",
             "toolchains": list(toolchains),
         }
@@ -1036,6 +1367,7 @@ def _envelope_for_command(
             else None
         ),
         "delegated": delegated,
+        "typed_command": typed_python,
         "process_closure": process_closure,
     }
 
@@ -1059,6 +1391,7 @@ def admission_envelope(command: Sequence[str]) -> dict[str, object]:
             "proof_plan_command_ids": [],
             "guarded_exec": None,
             "delegated": None,
+            "typed_command": None,
             "process_closure": None,
             "error": str(exc),
         }
@@ -1066,7 +1399,13 @@ def admission_envelope(command: Sequence[str]) -> dict[str, object]:
 
 def validate_envelope(envelope: Mapping[str, object], command: Sequence[str]) -> None:
     expected = envelope_for_command(command)
-    if dict(envelope) != expected:
+    try:
+        matches = canonical_json_bytes(dict(envelope)) == canonical_json_bytes(expected)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("persisted proof command envelope is not exact JSON") from exc
+    # Python mapping equality treats True, 1 and 1.0 as equal. Persisted typed
+    # execution preconditions must retain their exact JSON representation.
+    if not matches:
         raise ValueError(
             "persisted proof command envelope does not match submitted argv"
         )

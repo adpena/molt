@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
+DISK_CAPACITY = importlib.import_module("molt.disk_capacity")
 NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
@@ -477,6 +478,11 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         raise AssertionError("cargo helper used raw subprocess.run")
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
+    monkeypatch.setattr(
+        DISK_CAPACITY,
+        "_default_measure_free_bytes",
+        lambda _path: DISK_CAPACITY.DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
+    )
     monkeypatch.setattr(COMMAND_RUNTIME.subprocess, "run", fail_raw_subprocess_run)
     _patch_memory_guard_loader(
         monkeypatch,
@@ -487,7 +493,11 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     result = CARGO_EXECUTION._run_cargo_with_sccache_retry(
         ["cargo", "build"],
         cwd=ROOT,
-        env={"PATH": "/usr/bin", "RUSTC_WRAPPER": "/usr/bin/sccache"},
+        env={
+            "PATH": "/usr/bin",
+            "RUSTC_WRAPPER": "/usr/bin/sccache",
+            "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
+        },
         timeout=1.0,
         json_output=True,
         label="Runtime build",
@@ -499,11 +509,13 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     assert run_calls[0]["env"] == {
         "PATH": "/usr/bin",
         "RUSTC_WRAPPER": "/usr/bin/sccache",
+        "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
         "CARGO_INCREMENTAL": "0",
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
     assert run_calls[1]["env"] == {
         "PATH": "/usr/bin",
+        "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
 
@@ -594,6 +606,10 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     from molt import cli
 
     calls: list[dict[str, object]] = []
+    rustc = tmp_path / "rustc"
+    rustc.write_bytes(b"fixture selected compiler; never executed")
+    target_libdir = tmp_path / "rust-target" / "lib"
+    target_libdir.mkdir(parents=True)
 
     def fake_run_completed_command(cmd: list[str], **kwargs: object):
         calls.append({"cmd": cmd, **kwargs})
@@ -601,7 +617,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         if executable == "git":
             stdout = "abc123\n"
         elif executable == "rustc":
-            stdout = "/rust/target/lib\n" if "--print" in cmd else "rustc 1.91.0\n"
+            stdout = f"{target_libdir}\n" if "--print" in cmd else "rustc 1.91.0\n"
         elif executable == "xcrun":
             stdout = "/Applications/Xcode.app/SDKs/MacOSX.sdk\n"
         else:
@@ -613,6 +629,16 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
+    )
+    monkeypatch.setattr(
+        wasm_link_inputs,
+        "find_executable",
+        lambda name, *, cwd, environment: rustc if name == "rustc" else None,
+    )
+    monkeypatch.setattr(
+        wasm_link_inputs,
+        "resolve_rustup_proxy",
+        lambda selected, *, role, root, env: selected,
     )
     monkeypatch.setattr(
         COMPILER_METADATA,
@@ -657,13 +683,13 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     obj_path.write_bytes(b"")
 
     COMPILER_METADATA._rustc_version.cache_clear()
-    wasm_link_inputs.rust_target_libdir.cache_clear()
+    wasm_link_inputs.clear_rust_target_libdir_cache()
 
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     assert RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path) is None
-    assert wasm_link_inputs.rust_target_libdir("wasm32-wasip1") == Path(
-        "/rust/target/lib"
+    assert (
+        wasm_link_inputs.rust_target_libdir("wasm32-wasip1") == target_libdir.resolve()
     )
     assert (
         cli._is_valid_cached_backend_artifact(

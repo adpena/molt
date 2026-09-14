@@ -22,6 +22,7 @@ from molt.cli.runtime_build_identity import (
     runtime_build_fingerprint,
 )
 from molt.exact_json import canonical_json_sha256
+from molt.rust_toolchain import cargo_configuration_paths
 from tests.python_environment_test_support import runtime_identity_manifest
 from molt.cli.runtime_cargo_plan import (
     CargoExecutableCustody,
@@ -29,7 +30,6 @@ from molt.cli.runtime_cargo_plan import (
     CargoResourceRoot,
     RuntimeCargoPlan,
     _CargoEnvironment,
-    _config_paths,
     _pin_cargo_command,
     _resolve_rust_flag_resources,
     _resolve_c_build_resources,
@@ -469,7 +469,7 @@ def runtime_cargo_plan(
         MappingProxyType(wrappers),
         flags,
         (),
-        _config_paths(root, environment),
+        cargo_configuration_paths(root, environment),
         MappingProxyType({}),
         MappingProxyType(profiles),
         custody,

@@ -249,7 +249,7 @@ def maybe_dispatch_to_wsl(argv: list[str]) -> "int | None":
     )
     bash = (
         'export CARGO_TARGET_DIR="$1"; '
-        "export MOLT_STALE_ORPHAN_CLEANUP=0 MOLT_DISABLE_AUTO_JANITOR=1; "
+        "export MOLT_STALE_ORPHAN_CLEANUP=0; "
         'source /root/.cargo/env 2>/dev/null; shift; exec "$@"'
     )
     log(f"== dispatching into WSL distro '{WSL_DISTRO}' (repo {target_repo}) ...")
@@ -284,7 +284,6 @@ def repo_root() -> Path:
 def _env_for_drive() -> dict[str, str]:
     env = dict(os.environ)
     env.setdefault("MOLT_STALE_ORPHAN_CLEANUP", "0")
-    env.setdefault("MOLT_DISABLE_AUTO_JANITOR", "1")
     env.setdefault("MOLT_TRACE_CAPI", "1")
     env.setdefault("RUST_BACKTRACE", "1")
     if platform.system() == "Linux":

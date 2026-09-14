@@ -1,37 +1,27 @@
 #!/usr/bin/env python3
 """Deterministic, preemptive, AGENT-SAFE disk guard for the Molt artifact root.
 
-WHY THIS EXISTS (root cause). On 2026-07-11 the canonical NVMe (``C:\\Molt``)
-filled to **0 bytes** mid-session and failed several build lanes. Freeing it was
-ad-hoc and manual -- a dev-velocity killer. Two coupled cracks caused it:
+WHY THIS EXISTS. On 2026-07-11 the canonical NVMe (``C:\\Molt``) filled to
+**0 bytes** mid-session and failed several build lanes. The former generic
+age/LRU janitor could sweep unrelated artifact classes without consumer
+custody, so that authority is retired. This guard owns only its explicit,
+consumer-aware build-artifact allow-set; it is not a replacement generic
+``tmp`` sweeper.
 
-  1. The ONLY automatic disk sweep (``molt_ssd_janitor`` spawned from
-     ``molt.dx._maybe_sweep_stale_artifacts``) is gated by
-     ``MOLT_DISABLE_AUTO_JANITOR``. That flag is set to ``1`` all over the
-     orchestration (``witness_iter.py`` etc.) because operators conflate "the
-     janitor" with the DANGEROUS orphan-process reaper it is culturally bundled
-     with (memory M25/M26 -- the reaper can SIGTERM a live Codex/agent). Turning
-     the flag on to protect agents ALSO turned off disk reclamation. The two
-     roles -- **kill orphan processes (DANGEROUS)** and **reclaim disk (SAFE)**
-     -- were fatally coupled behind one switch.
-
-  2. Even when the janitor DID run it swept only its AUTO_SAFE_CLASSES
-     (tmp/sessions/scratch/worktrees/caches). The orchestration creates one
-     ISOLATED ``CARGO_TARGET_DIR`` per lane under ``C:\\Molt\\target\\codex-*``
-     (build isolation, memory M62); those per-lane dirs match NO janitor class,
-     so ~15 of them (GBs each) accumulated until the volume hit 0.
-
-THIS GUARD decouples disk-protection from process-reaping. It ONLY reclaims
-stale build-artifact directories. It is **provably agent-safe**: it imports no
-process API, spawns nothing, signals nothing, and kills nothing. The paired
+This guard is **provably agent-safe**: it imports no process API, spawns
+nothing, signals nothing, and kills nothing. The paired
 ``tests/tools/test_disk_guard.py::test_agent_safety_source_scan`` asserts this
 module's source contains zero process-actuation tokens (the same discipline as
-pact's ``test_no_actuation_capability``). Disk reclamation is re-enabled under
-its OWN flag ``MOLT_DISABLE_DISK_GUARD`` (defaults OFF == guard ON), INDEPENDENT
-of ``MOLT_DISABLE_AUTO_JANITOR`` -- so protecting agents never again disables
-disk protection.
+pact's ``test_no_actuation_capability``). Explicit disk reclamation is controlled
+by its own ``MOLT_DISABLE_DISK_GUARD`` flag (defaults OFF == guard ON).
 
-DESIGN (deterministic + idempotent + fail-open):
+DESIGN (deterministic + idempotent reclamation, separate from admission):
+
+  * ``molt.disk_capacity`` owns synchronous build admission. This module owns
+    explicit artifact reclamation only. Neither successful planning nor an
+    unsuccessful reclaim authorizes a build; the build consumer measures its
+    actual output filesystem again before launch. Cleanup failure is visible
+    in the result, never converted into build permission.
 
   * ``ensure_free(min_gb)`` -- preemptive high-water reclaim. Reads free space on
     the artifact volume; if it is at/above the HIGH-WATER threshold (default
@@ -84,23 +74,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from tools.fs_delete import delete_path
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.disk_capacity import (  # noqa: E402
+    DISK_GUARD_HIGH_WATER_ENV,
+    minimum_headroom_bytes,
+)
+from molt.file_deletion import delete_path  # noqa: E402
 
 _GB = 1024**3
 
 # --- thresholds (env-overridable; deterministic defaults) -------------------
-DEFAULT_HIGH_WATER_GB = 25.0  # below this free-space, ensure_free fires
 DEFAULT_TARGET_GB = 40.0  # reclaim until free reaches this
 DEFAULT_MIN_IDLE_MIN = 15.0  # never touch a dir modified within this
 DEFAULT_GC_TTL_HOURS = 6.0  # a registered lane dir older than this is GC-able
 DEFAULT_ENSURE_BUDGET_S = 20.0  # wall-clock ceiling on one ensure_free reclaim
 DEFAULT_LANE_GLOBS = ("codex-*", "lane-*", "sess-*")
 
-# Env keys. MOLT_DISABLE_DISK_GUARD is INDEPENDENT of MOLT_DISABLE_AUTO_JANITOR
-# on purpose (see module docstring): disabling the agent-reaper must not disable
-# disk reclamation.
+# Env keys. Reclamation policy is independent of process custody.
 ENV_DISABLE = "MOLT_DISABLE_DISK_GUARD"
-ENV_HIGH_WATER = "MOLT_DISK_GUARD_HIGH_WATER_GB"
 ENV_TARGET = "MOLT_DISK_GUARD_TARGET_GB"
 ENV_MIN_IDLE = "MOLT_DISK_GUARD_MIN_IDLE_MIN"
 ENV_TTL = "MOLT_DISK_GUARD_TTL_HOURS"
@@ -191,10 +188,10 @@ class GuardConfig:
         target_gb: float | None = None,
     ) -> "GuardConfig":
         env = os.environ if env is None else env
-        hw = (
-            high_water_gb
-            if high_water_gb is not None
-            else _env_float(env, ENV_HIGH_WATER, DEFAULT_HIGH_WATER_GB)
+        high_water_bytes = minimum_headroom_bytes(
+            env
+            if high_water_gb is None
+            else {DISK_GUARD_HIGH_WATER_ENV: str(high_water_gb)}
         )
         tgt = (
             target_gb
@@ -202,7 +199,7 @@ class GuardConfig:
             else _env_float(env, ENV_TARGET, DEFAULT_TARGET_GB)
         )
         # Target must be >= high-water or the loop can never satisfy itself.
-        tgt = max(tgt, hw)
+        target_bytes = max(int(tgt * _GB), high_water_bytes)
         min_idle = _env_float(env, ENV_MIN_IDLE, DEFAULT_MIN_IDLE_MIN) * 60.0
         ttl = _env_float(env, ENV_TTL, DEFAULT_GC_TTL_HOURS) * 3600.0
         raw_globs = str(env.get(ENV_LANE_GLOBS, "")).strip()
@@ -211,8 +208,8 @@ class GuardConfig:
             or DEFAULT_LANE_GLOBS
         )
         return cls(
-            high_water_bytes=int(hw * _GB),
-            target_bytes=int(tgt * _GB),
+            high_water_bytes=high_water_bytes,
+            target_bytes=target_bytes,
             min_idle_s=min_idle,
             gc_ttl_s=ttl,
             lane_globs=globs,
@@ -1062,8 +1059,8 @@ def ensure_free(
     trigger is ``max(high_water, min_gb)`` -- a caller can demand more headroom.
 
     Deterministic and idempotent. Does NOT raise on a per-candidate delete
-    error (recorded in ``errors``); a caller that wants strict fail-open wraps
-    the whole call (see ``ensure_free_fail_open``).
+    error (recorded in ``errors``). This result describes reclamation only;
+    build admission belongs to ``molt.disk_capacity.require_build_capacity``.
     """
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
@@ -1142,26 +1139,6 @@ def ensure_free(
     if log:
         _write_log(resolved_root, result)
     return result
-
-
-def ensure_free_fail_open(
-    min_gb: float | None = None,
-    **kwargs: object,
-) -> ReclaimResult | None:
-    """``ensure_free`` that NEVER raises -- the contract for hook/build wiring.
-
-    A guard error must never block a build (task constraint). Any exception is
-    swallowed and logged loudly to stderr; the caller proceeds with the build.
-    Returns the result, or None if the guard itself failed.
-    """
-    try:
-        return ensure_free(min_gb, **kwargs)  # type: ignore[arg-type]
-    except SystemExit as exc:
-        _eprint(f"[disk_guard] fail-open (config): {exc}")
-        return None
-    except BaseException as exc:  # noqa: BLE001 - fail-open is the whole point
-        _eprint(f"[disk_guard] fail-open after error: {type(exc).__name__}: {exc}")
-        return None
 
 
 def gc(

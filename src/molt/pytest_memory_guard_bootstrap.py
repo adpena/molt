@@ -10,13 +10,13 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import sys
-import tempfile
 import time
 import uuid
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.dx import checkout_custody
+from molt.temporary_artifacts import guard_scratch
 from molt.process_spawn import (
     ProcessGroupKwargs,
     hidden_windows_process_group_kwargs,
@@ -31,9 +31,7 @@ from molt.memory_guard_paths import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
 PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
-WINDOWS_PYTEST_TEMP_ROOT_NAME = "pt"
 WINDOWS_PYTEST_CACHE_DIR_NAME = "pytest-cache"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
 TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
@@ -416,15 +414,9 @@ def _windows_pytest_artifact_base() -> Path:
     return ROOT / "tmp"
 
 
-def windows_pytest_temp_root() -> Path:
-    if not _is_windows_process_model():
-        return PYTEST_TEMP_ROOT
-    # Test names and native compiler output names add their own suffixes.
-    # Reserve a short, atomically unique directory rather than spending the
-    # Windows native-tool path budget on a redundant PID plus full UUID.
-    base = _windows_pytest_artifact_base()
-    _ensure_windows_readable_dir(base)
-    return Path(tempfile.mkdtemp(prefix=f"{WINDOWS_PYTEST_TEMP_ROOT_NAME}-", dir=base))
+def guarded_pytest_temp_root() -> Path:
+    """Use the parent guard's short, terminal-owned scratch on every platform."""
+    return guard_scratch(ROOT, os.environ)
 
 
 def windows_pytest_cache_dir() -> Path:
@@ -443,18 +435,19 @@ def _pytest_user_temp_root(temproot: Path) -> Path:
     return temproot / f"pytest-of-{user}"
 
 
-def install_windows_pytest_custody_roots() -> bool:
-    if not _is_windows_process_model():
-        return False
+def install_pytest_custody_roots() -> bool:
     raw_temproot = os.environ.get("PYTEST_DEBUG_TEMPROOT")
     temproot = (
-        Path(raw_temproot).expanduser() if raw_temproot else windows_pytest_temp_root()
+        Path(raw_temproot).expanduser() if raw_temproot else guarded_pytest_temp_root()
     )
     cache_dir = windows_pytest_cache_dir()
-    _ensure_windows_readable_dir(temproot)
-    _ensure_windows_readable_dir(_pytest_user_temp_root(temproot))
-    _ensure_windows_readable_dir(cache_dir)
-    _ensure_windows_readable_dir(cache_dir / "v" / "cache")
+    if _is_windows_process_model():
+        _ensure_windows_readable_dir(temproot)
+        _ensure_windows_readable_dir(_pytest_user_temp_root(temproot))
+        _ensure_windows_readable_dir(cache_dir)
+        _ensure_windows_readable_dir(cache_dir / "v" / "cache")
+    else:
+        temproot.mkdir(parents=True, exist_ok=True)
     if raw_temproot:
         return False
     os.environ["PYTEST_DEBUG_TEMPROOT"] = str(temproot)
@@ -1017,11 +1010,11 @@ def pytest_load_initial_conftests(
     early_config: object, parser: object, args: list[str]
 ) -> None:
     del parser
-    install_windows_pytest_custody_roots()
+    ensure_pytest_memory_guard(pytest_args=tuple(args))
+    install_pytest_custody_roots()
     install_windows_pytest_tempdir_mode_patch()
     install_windows_pytest_cache_dir_config(early_config, args)
     install_windows_pytest_cache_dir_arg(args)
-    ensure_pytest_memory_guard(pytest_args=tuple(args))
 
 
 def _write_pytest_current_test(

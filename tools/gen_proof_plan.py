@@ -264,20 +264,30 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "## Toolchain contracts",
             "",
-            "Receipts record resolved path, version text, and the repository-relative "
-            "probe working directory, bind their identity hash to all three, and fail "
-            "unless the version satisfies this authority.",
+            "Executable identities bind resolved path, version text, and the "
+            "repository-relative probe working directory. Target-derived identities "
+            "use their declared provider to capture the selected target's tool family "
+            "and input custody; they have no single setup executable or probe cwd. "
+            "Both kinds must satisfy their declared version authority.",
             "",
-            "| Toolchain | Required version | Probe cwd | Setup value | Setup evidence |",
-            "|---|---|---|---|---:|",
+            "| Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |",
+            "|---|---|---|---|---|---|---:|",
         ]
     )
     for policy in plan.toolchain_policies:
         data = policy.data
+        if policy.identity_kind == "target-derived":
+            provider = f"`{data['identity_provider']}`"
+            probe_cwd = setup_value = setup_evidence = "—"
+        else:
+            provider = "—"
+            probe_cwd = f"`{data.get('probe_cwd', '.')}`"
+            setup_value = f"`{data['setup_value']}`"
+            setup_evidence = str(len(data["setup_evidence"]))
         lines.append(
-            f"| `{policy.name}` | `{data['version_pattern']}` | "
-            f"`{data.get('probe_cwd', '.')}` | `{data['setup_value']}` | "
-            f"{len(data['setup_evidence'])} |"
+            f"| `{policy.name}` | `{policy.identity_kind}` | {provider} | "
+            f"`{data['version_pattern']}` | {probe_cwd} | {setup_value} | "
+            f"{setup_evidence} |"
         )
     lines.extend(
         [

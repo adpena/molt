@@ -16,6 +16,18 @@ from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
 
 
+def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> None:
+    result = harness_memory_guard.GuardedCompletedProcess(
+        [sys.executable, "-c", "pass"],
+        0,
+        "",
+        "",
+        elapsed_s=0.1,
+    )
+
+    assert result.temporary_artifacts is None
+
+
 @pytest.mark.parametrize("root_kind", ["repo", "external", "external_forest", "queue"])
 def test_harness_default_outputs_follow_guard_state_authority(
     tmp_path: Path,
@@ -729,6 +741,11 @@ def test_guarded_completed_process_writes_command_profile(
     tmp_path: Path,
 ) -> None:
     profile_log = tmp_path / "commands.jsonl"
+    temporary_artifacts = {
+        "state": "cleanup_failed",
+        "path": str(tmp_path / "guard-scratch"),
+        "error": "fixture cleanup failure",
+    }
 
     def fake_run_guarded(command, **kwargs):
         del command, kwargs
@@ -749,6 +766,7 @@ def test_guarded_completed_process_writes_command_profile(
             stdout="ok\n",
             stderr="",
             elapsed_s=0.25,
+            temporary_artifacts=temporary_artifacts,
         )
 
     monkeypatch.setattr(
@@ -773,6 +791,7 @@ def test_guarded_completed_process_writes_command_profile(
     assert result.returncode == 0
     assert result.peak is not None and result.peak.rss_kb == 64 * 1024
     assert result.peak_total is not None and result.peak_total.rss_kb == 96 * 1024
+    assert result.temporary_artifacts == temporary_artifacts
     payload = [
         json.loads(line)
         for line in profile_log.read_text(encoding="utf-8").splitlines()
@@ -788,6 +807,7 @@ def test_guarded_completed_process_writes_command_profile(
     assert event["memory_guard_enabled"] is True
     assert event["peak"]["rss_kb"] == 64 * 1024
     assert event["peak_total"]["scope"] == "process_tree"
+    assert event["temporary_artifacts"] == temporary_artifacts
 
 
 def test_guarded_completed_process_skips_success_profile_by_default(
@@ -1869,6 +1889,10 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
 ) -> None:
     profile_log = tmp_path / "commands.jsonl"
     captured: dict[str, object] = {}
+    temporary_artifacts = {
+        "state": "retained",
+        "path": str(tmp_path / "guard-scratch"),
+    }
     target = tmp_path / "target"
     quarantine = target / ".molt_state" / "quarantine" / "cargo_incremental" / "q"
     receipt = harness_memory_guard.memory_guard.CargoIncrementalQuarantine(
@@ -1899,6 +1923,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
             stderr=b"memory_guard: quarantined Cargo incremental state\n",
             elapsed_s=0.2,
             cargo_incremental_quarantine=receipt,
+            temporary_artifacts=temporary_artifacts,
         )
 
     monkeypatch.setattr(
@@ -1936,6 +1961,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
     assert result.returncode == 143
     assert result.stdout == b"binary-out\n"
     assert result.cargo_incremental_quarantine is receipt
+    assert result.temporary_artifacts == temporary_artifacts
     assert result.stderr.count(b"quarantined Cargo incremental state") == 1
     assert b"memory_guard: repro context:" in result.stderr
     assert captured["command"] == ["cargo", "test"]
@@ -1952,6 +1978,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
     assert event["status"] == "signal_exit"
     assert event["cargo_incremental_quarantine"]["reason"] == "signal_exit"
     assert event["cargo_incremental_quarantine"]["target_dir"] == str(target)
+    assert event["temporary_artifacts"] == temporary_artifacts
 
 
 def test_guarded_completed_process_ignores_legacy_disable_env(monkeypatch) -> None:

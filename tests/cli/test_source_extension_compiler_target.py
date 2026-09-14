@@ -146,8 +146,9 @@ def _mock_native_tools(
         *,
         explicit_commands: dict[llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
+        environment: object,
     ) -> llvm_wasi_tools.LlvmWasiToolFamily:
-        del sibling_directories
+        del sibling_directories, environment
         return llvm_wasi_tools.LlvmWasiToolFamily(
             cc=tool("cc", explicit_commands["cc"]),
             cxx=tool("cxx", explicit_commands.get("cxx", discovered_cpp)),

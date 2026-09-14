@@ -12,6 +12,47 @@ from tools.proof_queue_pkg.diagnostic_evidence import (
 )
 from tools.proof_queue_pkg.diagnostic_model import _diagnostic
 
+DISK_CAPACITY_FAILURE_RE = re.compile(
+    r"(?im)^[^\r\n]*(?:DiskCapacityError:|\[Errno 28\]|\bENOSPC\b|"
+    r"\b(?:os error|WinError) 112\b|No space left on device|"
+    r"LNK1180[^\r\n]*insufficient disk space)[^\r\n]*"
+)
+
+
+def _disk_capacity_diagnostic(row: sqlite3.Row, text: str) -> dict[str, object] | None:
+    if row["status"] in {"passed", "queued"}:
+        return None
+    match = DISK_CAPACITY_FAILURE_RE.search(text)
+    if match is None:
+        return None
+    running = row["status"] == "running"
+    return _diagnostic(
+        signal_id="build-disk-capacity",
+        severity="infra",
+        summary=(
+            "Observed disk-capacity failure while the command remains running."
+            if running
+            else "Build admission or execution failed from disk capacity, not compiler semantics."
+        ),
+        evidence=match.group(0),
+        next_action=(
+            "Preserve custody receipts and reclaim only ownership-verified inactive "
+            "artifacts; require a fresh capacity admission before the same lane runs. "
+            "Do not change compiler code or retry a denied deletion."
+            + (
+                " This observation does not authorize cancellation or a parallel rerun."
+                if running
+                else ""
+            )
+        ),
+        scopes=(
+            "src/molt/disk_capacity.py",
+            "tools/proof_queue_pkg/cargo_cache_custody.py",
+        ),
+        artifacts=(str(row["log_path"]), str(row["summary_json"])),
+    )
+
+
 SOURCE_EXTENSION_NM_MISSING_RE = re.compile(
     r"unable to read global symbol table for compiled extension object "
     r"(?P<object>[^\r\n;]+); canonical LLVM/WASI nm authority is unavailable"

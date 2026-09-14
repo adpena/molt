@@ -21,6 +21,7 @@ from molt.cli.runtime_identity_schema import (
     runtime_build_fingerprint,
 )
 from molt.exact_json import canonical_json_sha256
+from molt import rust_toolchain
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
     runtime_build_identity,
@@ -845,6 +846,8 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
     proxy.write_bytes(b"MZrustup")
     selector.write_bytes(proxy.read_bytes())
     compiler.write_bytes(b"MZcompiler")
+    for path in (proxy, selector, compiler):
+        path.chmod(0o755)
     calls = []
 
     def run(command, **kwargs):
@@ -853,18 +856,22 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
             command, 0, stdout=str(compiler) + "\n", stderr=""
         )
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
     monkeypatch.setattr(
-        plans, "resolve_executable", lambda value, **kwargs: Path(value)
+        rust_toolchain, "resolve_executable", lambda value, **kwargs: Path(value)
     )
     assert (
-        plans._pin_rustup_proxy(selector, role="rustc", root=tmp_path, env={})
+        rust_toolchain.resolve_rustup_proxy(
+            selector, role="rustc", root=tmp_path, env={}
+        )
         == compiler
     )
     assert calls == [[str(proxy), "which", "rustc"]]
     selector.write_bytes(b"MZcustom")
     assert (
-        plans._pin_rustup_proxy(selector, role="rustc", root=tmp_path, env={})
+        rust_toolchain.resolve_rustup_proxy(
+            selector, role="rustc", root=tmp_path, env={}
+        )
         == selector
     )
     assert len(calls) == 1

@@ -697,6 +697,40 @@ def test_rust_link_selection_fails_closed_on_zero_or_multiple_commands(
         toolchain_capture._selected_rust_link_command(stdout, stderr)
 
 
+def _rust_metadata_probe(command, root: Path):
+    print_kinds = [
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--print"
+    ]
+    assert "link-args" not in print_kinds or all(
+        kind in {"link-args", "native-static-libs"} for kind in print_kinds
+    ), "metadata-only print requests stop rustc before linking"
+    if list(command[1:]) == ["-vV"]:
+        host = (
+            "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
+        )
+        return subprocess.CompletedProcess(
+            command, 0, f"rustc fixture\nhost: {host}\n", ""
+        )
+    if list(command[1:]) == ["--print", "sysroot"]:
+        return subprocess.CompletedProcess(command, 0, str(root) + "\n", "")
+    if "sysroot" in print_kinds:
+        selected = (
+            command[command.index("--sysroot") + 1] if "--sysroot" in command else root
+        )
+        selected = next(
+            (
+                value.split("=", 1)[1]
+                for value in command
+                if value.startswith("--sysroot=")
+            ),
+            selected,
+        )
+        return subprocess.CompletedProcess(command, 0, str(selected) + "\n", "")
+    return None
+
+
 def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -712,10 +746,20 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     observed_manifests: list[str] = []
 
     def fake_run(command, **kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
         argv = [str(value) for value in command]
         environment = dict(kwargs["env"])
         observed.append((argv, environment))
         if "--manifest-path" in argv:
+            probe_root = Path(argv[argv.index("--manifest-path") + 1]).parent
+            if "--lib" in argv:
+                assert (probe_root / "host.rs").is_file()
+                assert not (probe_root / "main.rs").exists()
+            else:
+                assert (probe_root / "main.rs").is_file()
+                assert not (probe_root / "host.rs").exists()
             observed_manifests.append(
                 Path(argv[argv.index("--manifest-path") + 1]).read_text(
                     encoding="utf-8"
@@ -740,6 +784,8 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         "frontier-fast",
         "--features",
         "pkg/fast,simd",
+        "--config",
+        "build.incremental=false",
         "--",
         "-C",
         f"linker={linker}",
@@ -766,6 +812,8 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     assert "-Clink-arg=/DEBUG:NONE" in observed[0][0]
     assert observed[0][0][observed[0][0].index("--crate-type") + 1] == "cdylib"
     assert '[profile.frontier-fast]\ninherits="release"' in observed_manifests[0]
+    assert "[[bin]]" in observed_manifests[0] and "[lib]" not in observed_manifests[0]
+    assert "[lib]" in observed_manifests[1] and "[[bin]]" not in observed_manifests[1]
     assert observed[0][1]["CARGO_TARGET_TEST_TRIPLE_LINKER"] == str(linker)
     assert images == [
         {
@@ -778,7 +826,18 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     ]
     assert telemetry["target"] == "test-triple"
     assert telemetry["selected_process_count"] == 1
-    assert telemetry["selection_probe_count"] == 1
+    assert telemetry["selection_probe_count"] == 2
+    assert [unit["unit"] for unit in telemetry["units"]] == [
+        "target",
+        "host-proc-macro",
+    ]
+    assert "--lib" in observed[1][0]
+    assert "-Clink-arg=/DEBUG:NONE" not in observed[1][0]
+    assert "--crate-type" not in observed[1][0]
+    assert all(
+        argv[argv.index("--config") + 1] == "build.incremental=false"
+        for argv, _ in observed
+    )
 
     selected_identity = {
         "process_images": images,
@@ -791,12 +850,466 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     )
     assert revalidated == images
     assert reused_telemetry == telemetry
-    assert len(observed) == 1
+    assert len(observed) == 2
 
     linker.write_bytes(b"substituted-linker")
     with pytest.raises(ValueError, match="changed while live custody armed"):
         toolchain_capture.revalidate_rust_link_process_images(
             selected_identity, target="test-triple", command_argv=command_argv
+        )
+
+
+@pytest.mark.parametrize("cargo_mode", [False, True])
+def test_rust_capture_metadata_and_link_prints_are_disjoint_real_rustc_phases(
+    tmp_path, monkeypatch, cargo_mode
+):
+    linker = tmp_path / ("linker.exe" if os.name == "nt" else "linker")
+    linker.write_bytes(b"linker")
+    linker.chmod(0o755)
+    phases = []
+
+    def run(command, **kwargs):
+        kinds = [
+            command[index + 1]
+            for index, value in enumerate(command[:-1])
+            if value == "--print"
+        ]
+        if "--crate-name" in command or "--manifest-path" in command:
+            phases.append(kinds)
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        assert kinds == ["link-args"], (
+            "rustc links only after metadata early-exit requests are removed"
+        )
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    _, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=tmp_path / "cargo" if cargo_mode else None,
+        cwd=tmp_path,
+        env={"PATH": ""},
+        target="wasm32-wasip1",
+        command_argv=["cargo", "build"] if cargo_mode else ["rustc"],
+    )
+    assert phases == [["sysroot"], ["link-args"]] * (2 if cargo_mode else 1)
+    assert all(
+        unit["metadata_probe_count"] == 1 and unit["selection_probe_count"] == 1
+        for unit in telemetry["units"]
+    )
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["compiler-metadata", "selected-sysroot", "link-selection", "driver-helpers"],
+)
+def test_rust_capture_failure_retains_complete_phase_transcript_without_environment(
+    tmp_path, monkeypatch, phase
+):
+    linker = tmp_path / ("clang.exe" if os.name == "nt" else "clang")
+    linker.write_bytes(b"driver")
+    linker.chmod(0o755)
+    raw_stdout = "raw-start\n" + "x" * 32_768 + "\nraw-end\n"
+    raw_stderr = "stderr-start\n" + "y" * 4096 + "\nstderr-end\n"
+    failed_argv = []
+
+    def run(command, **kwargs):
+        current = (
+            "driver-helpers"
+            if "-###" in command
+            else "link-selection"
+            if "link-args" in command
+            else "selected-sysroot"
+            if "--crate-name" in command
+            else "compiler-metadata"
+        )
+        if current == phase:
+            failed_argv.extend(command)
+            return subprocess.CompletedProcess(
+                command, 0 if phase == "link-selection" else 1, raw_stdout, raw_stderr
+            )
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(toolchain_capture.RustLinkCaptureError) as caught:
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=None,
+            cwd=tmp_path,
+            env={"PATH": "", "PRIVATE_ENV": "do-not-record-this-environment-value"},
+            target=None,
+        )
+    diagnostic = caught.value.diagnostic
+    assert diagnostic["phase"] == phase
+    assert diagnostic["unit"] == (
+        "compiler" if phase == "compiler-metadata" else "target"
+    )
+    failed = diagnostic["probes"][-1]
+    assert failed["argv"] == failed_argv
+    assert failed["cwd"] == str(tmp_path) and failed["compiler_cwd"] == str(tmp_path)
+    assert failed["stdout"] == raw_stdout and failed["stderr"] == raw_stderr
+    assert "do-not-record-this-environment-value" not in json.dumps(diagnostic)
+    assert "raw-start" not in str(caught.value) and len(str(caught.value)) < 300
+
+
+@pytest.mark.parametrize("feature", ["link-args", "sysroot"])
+def test_rust_cargo_legal_feature_names_are_not_print_argument_positions(
+    tmp_path, monkeypatch, feature
+):
+    linker = tmp_path / ("linker.exe" if os.name == "nt" else "linker")
+    linker.write_bytes(b"linker")
+    linker.chmod(0o755)
+    probes = []
+
+    def run(command, **kwargs):
+        if "--manifest-path" in command:
+            probes.append(list(command))
+            assert command[command.index("--features") + 1] == feature
+            manifest = Path(command[command.index("--manifest-path") + 1])
+            assert json.dumps(feature) + "=[]" in manifest.read_text(encoding="utf-8")
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=tmp_path / "cargo",
+        cwd=tmp_path,
+        env={"PATH": ""},
+        target="wasm32-wasip1",
+        command_argv=["cargo", "build", "--features", feature],
+    )
+    assert len(probes) == 4
+    for metadata, selection in zip(probes[::2], probes[1::2], strict=True):
+        assert metadata[:-2] == selection[:-2]
+        assert metadata[-2:] == ["--print", "sysroot"]
+        assert selection[-2:] == ["--print", "link-args"]
+
+
+@pytest.mark.parametrize("cargo_mode", [False, True])
+@pytest.mark.parametrize("relative_sysroot", [False, True])
+@pytest.mark.parametrize("relative_linker", [False, True])
+def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
+    tmp_path, monkeypatch, cargo_mode, relative_sysroot, relative_linker
+):
+    host = "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
+    suffix = ".exe" if os.name == "nt" else ""
+    compiler, override = tmp_path / "compiler", tmp_path / "override"
+    override_arg = "override" if relative_sysroot else str(override)
+    linker = override / "lib" / "rustlib" / host / "bin" / ("rust-lld" + suffix)
+    linker.parent.mkdir(parents=True)
+    linker.write_bytes(b"target linker")
+    linker.chmod(0o755)
+    compiler.mkdir()
+    native = compiler / ("native-linker" + suffix)
+    native.write_bytes(b"host linker")
+    native.chmod(0o755)
+    invocation_cwd = tmp_path / "invocation" if cargo_mode else tmp_path
+    invocation_cwd.mkdir(exist_ok=True)
+    config = invocation_cwd / "link-config.toml"
+    config.write_text("[build]\nincremental=false\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        if command[1] == "metadata":
+            assert kwargs["cwd"] == invocation_cwd
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "workspace_root": str(tmp_path),
+                        "workspace_default_members": ["fixture"],
+                        "packages": [
+                            {
+                                "id": "fixture",
+                                "source": None,
+                                "manifest_path": str(tmp_path / "Cargo.toml"),
+                                "targets": [
+                                    {
+                                        "name": "fixture",
+                                        "kind": ["bin"],
+                                        "src_path": str(tmp_path / "src/main.rs"),
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                "",
+            )
+        metadata = _rust_metadata_probe(command, compiler)
+        if metadata is not None:
+            return metadata
+        calls.append(list(command))
+        assert kwargs["env"].get("PATH", "") == "", "custody must not patch PATH"
+        host_unit = "--lib" in command
+        if host_unit:
+            assert "--sysroot" not in command
+            selected = str(native)
+        else:
+            expected_override = str(override) if cargo_mode else override_arg
+            assert command[command.index("--sysroot") + 1] == expected_override
+            selected = (
+                str(linker)
+                if cargo_mode and relative_linker
+                else str(linker.relative_to(tmp_path))
+                if relative_linker
+                else "rust-lld"
+            )
+            if relative_linker:
+                assert "linker=" + selected in command
+        return subprocess.CompletedProcess(command, 0, json.dumps(selected) + "\n", "")
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=fake_run))
+    argv = (
+        [
+            "cargo",
+            "rustc",
+            "--config=build.incremental=false",
+            "--config",
+            "link-config.toml",
+            "--",
+            "--sysroot",
+            override_arg,
+        ]
+        if cargo_mode
+        else ["rustc", "--sysroot", override_arg]
+    )
+    if relative_linker:
+        argv.extend(("-C", "linker=" + str(linker.relative_to(tmp_path))))
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=compiler / "rustc",
+        cargo=compiler / "cargo" if cargo_mode else None,
+        cwd=invocation_cwd,
+        env={"PATH": ""},
+        target="wasm32-wasip1",
+        command_argv=argv,
+    )
+    assert {row["path"] for row in images} == {
+        str(linker.resolve()),
+        *([str(native.resolve())] if cargo_mode else []),
+    }
+    assert len(calls) == (2 if cargo_mode else 1)
+    target_unit = telemetry["units"][0]
+    assert target_unit["process_resolution"][0]["origin"] == (
+        "explicit-path" if relative_linker else "rust-sysroot-host-tool"
+    )
+    assert target_unit["process_resolution"][0]["selected_sysroot"] == str(override)
+    if cargo_mode:
+        assert all(
+            command[command.index("--config") + 1] == "build.incremental=false"
+            for command in calls
+        )
+        assert telemetry["units"][1]["unit"] == "host-proc-macro"
+        assert all(str(config) in command for command in calls)
+        assert target_unit["configuration_files"][0]["path"] == str(config)
+        if relative_sysroot or relative_linker:
+            assert target_unit["forwarded_compiler_context"]["compiler_cwd"] == str(
+                tmp_path
+            )
+        if relative_sysroot:
+            assert target_unit["path_projections"][0]["original"] == "override"
+    selected, reused = toolchain_capture.revalidate_rust_link_process_images(
+        {"process_images": images, "link_selection": telemetry},
+        target="wasm32-wasip1",
+        command_argv=argv,
+    )
+    assert selected == images and reused == telemetry
+    assert len(calls) == (2 if cargo_mode else 1), (
+        "armed custody must not reselect tools"
+    )
+    if cargo_mode:
+        config.write_text("[build]\nincremental=true\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="--config file changed"):
+            toolchain_capture.revalidate_rust_link_process_images(
+                {"process_images": images, "link_selection": telemetry},
+                target="wasm32-wasip1",
+                command_argv=argv,
+            )
+
+
+def test_rust_cargo_configuration_relative_sysroot_reports_executor_boundary(
+    tmp_path, monkeypatch
+):
+    def run(command, **kwargs):
+        if "--manifest-path" in command:
+            assert "link-args" not in command, "reject before synthetic linking"
+            return subprocess.CompletedProcess(
+                command, 0, "../per-package-sysroot\n", ""
+            )
+        return _rust_metadata_probe(command, tmp_path)
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(
+        ValueError,
+        match="configuration-selected relative sysroot.*compiler-execution context hook",
+    ):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=tmp_path / "cargo",
+            cwd=tmp_path,
+            env={"PATH": ""},
+            target="wasm32-wasip1",
+            command_argv=["cargo", "build"],
+        )
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_rust_cargo_compiler_cwd_follows_selected_source_not_invocation(
+    tmp_path, monkeypatch, external
+):
+    workspace, package, invocation = (
+        tmp_path / "workspace",
+        tmp_path / "package",
+        tmp_path / "invocation",
+    )
+    for directory in (workspace, package, invocation):
+        directory.mkdir()
+    source = (package if external else workspace) / "src/main.rs"
+    metadata = {
+        "workspace_root": str(workspace),
+        "workspace_default_members": ["different"],
+        "packages": [
+            {
+                "id": "selected-package",
+                "source": None,
+                "manifest_path": str(package / "Cargo.toml"),
+                "targets": [
+                    {"name": "selected", "kind": ["bin"], "src_path": str(source)},
+                    {
+                        "name": "irrelevant",
+                        "kind": ["example"],
+                        "src_path": str(tmp_path / "external.rs"),
+                    },
+                ],
+            },
+        ],
+    }
+    queries = []
+
+    def run(command, **kwargs):
+        queries.append(command)
+        assert kwargs["cwd"] == invocation
+        assert "--offline" in command and "--locked" in command
+        output = "selected-package\n" if command[1] == "pkgid" else json.dumps(metadata)
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    context = toolchain_capture._cargo_forwarded_compiler_context(
+        tmp_path / "cargo",
+        [
+            "cargo",
+            "rustc",
+            "--manifest-path",
+            "../workspace/Cargo.toml",
+            "--package",
+            "selected@1",
+            "--bin",
+            "selected",
+            "--",
+            "--sysroot=relative",
+        ],
+        cwd=invocation,
+        env={"PATH": ""},
+    )
+    assert context["compiler_cwd"] == str(package if external else workspace)
+    assert len(context["sources"]) == 1
+    assert queries[1][queries[1].index("--package") + 1] == "selected@1"
+
+
+def test_rust_cargo_configuration_relative_linker_reports_executor_boundary(
+    tmp_path, monkeypatch
+):
+    def run(command, **kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            '"tools/linker"\n',
+            "linker tools/linker not found",
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(
+        ValueError,
+        match="configuration-selected relative linker.*compiler-execution context hook",
+    ):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=tmp_path / "cargo",
+            cwd=tmp_path,
+            env={"PATH": ""},
+            target=None,
+            command_argv=["cargo", "build"],
+        )
+
+
+def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
+    tmp_path, monkeypatch
+):
+    suffix = ".exe" if os.name == "nt" else ""
+    driver = tmp_path / ("llvm-driver" + suffix)
+    alias = tmp_path / ("clang++" + suffix)
+    helper = tmp_path / ("ld" + suffix)
+    for path in (driver, helper):
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    try:
+        alias.symlink_to(driver)
+    except OSError as exc:
+        pytest.skip(f"executable symlinks unavailable: {exc}")
+    dry_runs = []
+
+    def run(command, **kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        if "-###" in command:
+            assert command[0] == str(alias), "driver role must not become llvm-driver"
+            assert kwargs["cwd"] == tmp_path
+            dry_runs.append(command)
+            return subprocess.CompletedProcess(
+                command, 0, "", json.dumps(str(helper)) + "\n"
+            )
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(alias)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=None,
+        cwd=tmp_path,
+        env={"PATH": ""},
+        target=None,
+    )
+    assert len(dry_runs) == 1
+    assert {row["path"] for row in images} == {str(alias), str(driver), str(helper)}
+    assert (
+        next(row for row in images if row["path"] == str(alias))["path_kind"]
+        == "selection"
+    )
+    alias.unlink()
+    alias.symlink_to(helper)
+    with pytest.raises(ValueError, match="changed while live custody armed"):
+        toolchain_capture.revalidate_rust_link_process_images(
+            {"process_images": images, "link_selection": telemetry},
+            target=None,
         )
 
 
@@ -884,6 +1397,9 @@ def test_rust_link_capture_declares_exact_platform_linker_helper_family(
         path.chmod(0o755)
 
     def fake_run(command, **_kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
         return subprocess.CompletedProcess(
             command, 0, json.dumps(str(linker)) + "\n", ""
         )
@@ -904,8 +1420,8 @@ def test_rust_link_capture_declares_exact_platform_linker_helper_family(
         "link.exe",
         "vctip.exe",
     ]
-    assert telemetry["declared_helper_count"] == 1
-    assert telemetry["selected_helper_count"] == 1
+    assert all(unit["declared_helper_count"] == 1 for unit in telemetry["units"])
+    assert all(unit["selected_helper_count"] == 1 for unit in telemetry["units"])
     revalidated, reused = toolchain_capture.revalidate_rust_link_process_images(
         {"process_images": images, "link_selection": telemetry},
         target=None,
@@ -928,6 +1444,9 @@ def test_rust_link_capture_declares_exact_msvc_build_tool_family(
         path.chmod(0o755)
 
     def fake_run(command, **_kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
         return subprocess.CompletedProcess(
             command, 0, json.dumps(str(linker)) + "\n", ""
         )
@@ -957,8 +1476,8 @@ def test_rust_link_capture_declares_exact_msvc_build_tool_family(
         row.get("root_exit_disposition", "require-exit") == "require-exit"
         for row in images
     )
-    assert telemetry["declared_build_tool_count"] == 2
-    assert telemetry["selected_build_tool_count"] == 2
+    assert all(unit["declared_build_tool_count"] == 2 for unit in telemetry["units"])
+    assert all(unit["selected_build_tool_count"] == 2 for unit in telemetry["units"])
 
     revalidated, reused = toolchain_capture.revalidate_rust_link_process_images(
         {"process_images": images, "link_selection": telemetry},

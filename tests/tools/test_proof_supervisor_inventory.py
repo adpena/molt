@@ -17,6 +17,44 @@ from tools.proof_queue_pkg import (
 )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"root_exit_code":1,"root_exit_code":0}',
+        '{"value":NaN}',
+        '{"value":1e999}',
+        "{",
+    ],
+)
+def test_verified_supervisor_receipt_still_requires_exact_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(
+        supervisor_custody.command_identity,
+        "_run_captured",
+        lambda *a, **kw: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    with pytest.raises(ValueError, match="no readable receipt"):
+        supervisor_custody._validated_supervisor_receipt(
+            binary=tmp_path / "never-executed",
+            policy_path=tmp_path / "policy.json",
+            receipt_path=receipt,
+            cwd=tmp_path,
+            env={},
+        )
+
+
+def test_supervisor_policy_cannot_publish_nonfinite_json(tmp_path: Path) -> None:
+    policy = tmp_path / "policy.json"
+    with pytest.raises(ValueError):
+        supervisor_custody._atomic_json(policy, {"timeout": float("inf")})
+    assert not policy.exists()
+
+
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
     build = (

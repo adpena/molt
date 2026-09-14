@@ -29,6 +29,9 @@
     "src/sitecustomize.py",
     "src/molt/_host_exit.py",
     "src/molt/pytest_memory_guard_bootstrap.py",
+    "src/molt/temporary_artifacts.py",
+    "src/molt/file_deletion.py",
+    "src/molt/file_locks.py",
     "src/molt/path_custody.py",
     "src/molt/toolchain_identity.py",
     "src/molt/file_hashing.py",
@@ -82,6 +85,10 @@
     "tools/proof_queue_pkg/policy.py",
     "tools/proof_queue_pkg/python_child_custody.py",
     "tools/proof_queue_pkg/python_custody_bootstrap.py",
+    "tools/proof_queue_pkg/target_derived_toolchains.py",
+    "src/molt/cli/source_extension_invocation.py",
+    "src/molt/cli/source_extension_compiler_inputs.py",
+    "src/molt/cli/source_extension_link_inputs.py",
     "src/molt/python_environment_identity.py",
     "src/molt/python_environment_location.py",
     "src/molt/python_environment_custody.py",
@@ -113,6 +120,7 @@
     "tools/proof_supervisor/src/platform/windows.rs",
     "tools/proof_supervisor/tests/kernel_closure.rs",
     "tools/proof_supervisor/tests/verification.rs",
+    "tools/proof_supervisor/tests/required_environment.rs",
     "tools/check_subprocess_guard_coverage.py",
     "tools/command_execution.py",
     "tools/cargo_test_binary_runner.py",
@@ -155,6 +163,7 @@
     "tests/tools/test_proof_queue.py",
     "tests/tools/test_proof_queue_execution_receipt_details.py",
     "tests/tools/test_proof_queue_cargo_cache_custody.py",
+    "tests/tools/test_proof_supervisor_environment.py",
     "tests/tools/test_proof_supervisor_inventory.py",
     "tests/tools/test_memory_guard_spawn_callback.py",
     "tests/tools/test_pytest_truth_plugin.py",
@@ -162,7 +171,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "029c73539a040bfd91e3c45cb70ac79164a89bd37ae6ecd3a47810b4f96dee4f",
+  "authority_sha256": "5ebcdb53112cac07394381b89a5c7b4296104f9d0d85c50ca7905a60da59626d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -594,11 +603,13 @@
         "tests/cli/test_python_module_names.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_*.py",
+        "tests/cli/test_source_build_environment_probe.py",
         "tests/tools/test_guarded_exec.py",
         "tests/tools/test_memory_guard_spawn_callback.py",
         "tests/tools/test_native_link_benchmark.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/tools/test_proof_queue.py",
+        "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_win_job.py",
         "tests/tools/test_win_job_contract.py",
@@ -1091,6 +1102,7 @@
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
+        "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
@@ -1099,6 +1111,7 @@
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py",
+        "tests/cli/test_source_build_environment_probe.py",
         "tests/cli/test_source_extension_candidate_attestation.py",
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
@@ -1147,6 +1160,7 @@
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
+        "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
@@ -1155,6 +1169,7 @@
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py",
+        "tests/cli/test_source_build_environment_probe.py",
         "tests/cli/test_source_extension_candidate_attestation.py",
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
@@ -1203,6 +1218,7 @@
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
+        "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
@@ -1211,6 +1227,7 @@
         "tests/cli/test_source_extension_manifest_authority.py",
         "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py",
+        "tests/cli/test_source_build_environment_probe.py",
         "tests/cli/test_source_extension_candidate_attestation.py",
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
@@ -4228,8 +4245,9 @@
       "local.rust-ffi-blocks.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
       "local.rust-toolchain.0": "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.source-extension-package-sets.0": "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
-      "local.source-extension-package-sets.1": "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
+      "local.source-extension-package-sets.0": "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+      "local.source-extension-package-sets.1": "uv run python -m pytest -q tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py",
+      "local.source-extension-package-sets.2": "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python3 tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.1": "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
@@ -4754,11 +4772,13 @@
       {
         "command_ids": [
           "local.source-extension-package-sets.0",
-          "local.source-extension-package-sets.1"
+          "local.source-extension-package-sets.1",
+          "local.source-extension-package-sets.2"
         ],
         "description": "Versioned source-extension package sets: one typed registry owns variant identity, manifests, toolchain custody, link requirements, seal validation, profiling, and Pact roots; shared codecs and retained-input custody bind eager-import facts across publication and admission.",
         "gates": [
-          "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+          "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
+          "uv run python -m pytest -q tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py",
           "uv run python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'"
         ],
         "globs": [
@@ -4785,6 +4805,15 @@
           "src/molt/cli/source_extensions.py",
           "tools/native_link_benchmark.py",
           "tools/profile_source_extension_set.py",
+          "tools/proof_queue_pkg/target_derived_toolchains.py",
+          "tools/proof_queue_pkg/command_admission.py",
+          "tools/proof_queue_pkg/execution_environment.py",
+          "tools/proof_queue_pkg/python_custody_bootstrap.py",
+          "tests/tools/test_source_extension_proof_family.py",
+          "tests/tools/test_target_derived_toolchains.py",
+          "tests/tools/test_python_custody_bootstrap.py",
+          "tools/proof_plan.py",
+          "tools/proof_plan.toml",
           "tools/proof_queue_pkg/pact.py",
           "tests/cli/test_atomic_io_authority.py",
           "tests/cli/test_source_package_seal.py",
@@ -4795,6 +4824,7 @@
           "tests/cli/test_extension_wheel_retained_inputs.py",
           "tests/cli/test_python_module_names.py",
           "tests/cli/test_source_extension_*.py",
+          "tests/test_proof_plan.py",
           "tests/tools/test_native_link_benchmark.py",
           "tests/tools/test_scientific_stack_versions.py"
         ],
@@ -5449,6 +5479,17 @@
         "--version"
       ],
       "version_pattern": "^Python 3\\.12\\."
+    },
+    {
+      "dependencies": [
+        "git"
+      ],
+      "identity_provider": "source-extension",
+      "name": "source-extension",
+      "setup_evidence": [
+        "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain"
+      ],
+      "version_pattern": "^molt-source-extension-toolchain-v2$"
     },
     {
       "executable": "uv",

@@ -644,7 +644,7 @@ def verify_source_extension_checkout(
         extension_set, registry=registry
     )
     result = run_completed_command(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        ["git", "--no-optional-locks", "-C", str(root), "rev-parse", "HEAD"],
         memory_guard_prefix=None,
         capture_output=True,
         text=True,
@@ -662,6 +662,7 @@ def verify_source_extension_checkout(
     status = run_completed_command(
         [
             "git",
+            "--no-optional-locks",
             "-C",
             str(root),
             "status",

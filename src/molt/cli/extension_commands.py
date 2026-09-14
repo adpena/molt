@@ -78,8 +78,8 @@ from molt.target_python import (
     _resolve_target_python_version,
 )
 from molt.cli.setup_readiness import _ensure_rustup_target
+from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
 from molt.cli.source_extension_toolchain import (
-    _compiler_sysroot_arg_value,
     _materialize_source_extension_target_metadata,
     _normalize_source_extension_abi_tier,
     _normalize_source_extension_python_version,
@@ -799,7 +799,7 @@ def extension_build(
             command="extension-build",
         )
     if wasm_static_link:
-        explicit_sysroot = _compiler_sysroot_arg_value([*cc_cmd, *compile_args])
+        explicit_sysroot = compiler_sysroot_arg_value([*cc_cmd, *compile_args])
         if explicit_sysroot is not None:
             wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
         if wasi_sysroot is None and target_plan.target_triple == "wasm32-wasip1":

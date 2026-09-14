@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from tools import disk_guard, fs_delete, molt_ssd_janitor
+from molt import file_deletion
+from tools import disk_guard
 
 
 def test_cleanup_authorities_share_one_deletion_primitive() -> None:
-    assert disk_guard.delete_path is fs_delete.delete_path
-    assert molt_ssd_janitor.delete_path is fs_delete.delete_path
+    assert disk_guard.delete_path is file_deletion.delete_path
 
 
 def test_delete_path_removes_nested_readonly_artifacts(tmp_path: Path) -> None:
@@ -23,7 +23,7 @@ def test_delete_path_removes_nested_readonly_artifacts(tmp_path: Path) -> None:
     readonly.write_bytes(b"artifact")
     readonly.chmod(stat.S_IREAD)
 
-    ok, error = fs_delete.delete_path(tree)
+    ok, error = file_deletion.delete_path(tree)
 
     assert ok, error
     assert not tree.exists()
@@ -34,7 +34,7 @@ def test_delete_path_removes_readonly_file(tmp_path: Path) -> None:
     readonly.write_text("{}", encoding="utf-8")
     readonly.chmod(stat.S_IREAD)
 
-    ok, error = fs_delete.delete_path(readonly)
+    ok, error = file_deletion.delete_path(readonly)
 
     assert ok, error
     assert not readonly.exists()
@@ -52,7 +52,7 @@ def test_retry_readonly_clears_owner_write_bit_before_retry(tmp_path: Path) -> N
         retried.append(path)
         path.unlink()
 
-    fs_delete._retry_readonly(remove, str(readonly), PermissionError("read-only"))
+    file_deletion._retry_readonly(remove, str(readonly), PermissionError("read-only"))
 
     assert retried == [readonly]
     assert not readonly.exists()
@@ -61,5 +61,5 @@ def test_retry_readonly_clears_owner_write_bit_before_retry(tmp_path: Path) -> N
 def test_retry_readonly_does_not_mask_non_permission_failures(tmp_path: Path) -> None:
     error = OSError("invalid filesystem operation")
     with pytest.raises(OSError) as raised:
-        fs_delete._retry_readonly(lambda _path: None, str(tmp_path), error)
+        file_deletion._retry_readonly(lambda _path: None, str(tmp_path), error)
     assert raised.value is error

@@ -7,9 +7,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from io import BufferedReader
+import ntpath
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 
@@ -205,6 +207,63 @@ def executable_environment_value(
     return next(iter(values), default)
 
 
+def expand_user_path(
+    path: str | Path, *, environment: Mapping[str, str] | None = None
+) -> Path:
+    """Expand a user selector using the selected environment, never ambient keys.
+
+    With no explicit mapping, retain pathlib's host behavior. POSIX named users
+    (and a missing HOME) use the system account database, as pathlib does;
+    Windows uses USERPROFILE or HOMEDRIVE/HOMEPATH and captured USERNAME.
+    """
+    raw = os.fspath(path)
+    if not raw.startswith("~"):
+        return Path(raw)
+    if environment is None:
+        return Path(raw).expanduser()
+    separators = "/\\" if os.name == "nt" else "/"
+    end = next(
+        (index for index, char in enumerate(raw) if char in separators), len(raw)
+    )
+    user, suffix = raw[1:end], raw[end:]
+    if os.name == "nt":
+        home = executable_environment_value(environment, "USERPROFILE")
+        if not home:
+            homepath = executable_environment_value(environment, "HOMEPATH")
+            if not homepath:
+                raise ValueError("selected environment has no user home for tilde path")
+            home = ntpath.join(
+                executable_environment_value(environment, "HOMEDRIVE"), homepath
+            )
+        if user:
+            current_user = executable_environment_value(environment, "USERNAME")
+            if user != current_user:
+                if ntpath.basename(home.rstrip("\\/")) != current_user:
+                    raise ValueError(
+                        "selected environment cannot resolve named user home"
+                    )
+                home = ntpath.join(ntpath.dirname(home.rstrip("\\/")), user)
+    else:
+        home = environment.get("HOME") if not user else None
+        if home is None:
+            import pwd
+
+            try:
+                home = (
+                    pwd.getpwnam(user) if user else pwd.getpwuid(os.getuid())
+                ).pw_dir
+            except KeyError as exc:
+                raise ValueError(
+                    "cannot resolve system account for tilde path"
+                ) from exc
+    if "\0" in home:
+        raise ValueError("selected user home contains a NUL byte")
+    expanded = home + suffix if os.name == "nt" else home.rstrip(separators) + suffix
+    if expanded.startswith("~"):
+        raise ValueError("selected user home did not resolve tilde path")
+    return Path(expanded or os.sep)
+
+
 def executable_name_candidates(
     command: str, *, environment: Mapping[str, str], windows: bool | None = None
 ) -> tuple[str, ...]:
@@ -258,7 +317,7 @@ def find_executable(
     if not command or "\x00" in command:
         return None
     cwd = Path.cwd() if cwd is None else cwd
-    candidate = Path(command).expanduser()
+    candidate = expand_user_path(command, environment=environment)
     if candidate.is_absolute() or any(separator in command for separator in "/\\"):
         candidate = candidate if candidate.is_absolute() else cwd / candidate
         directories = (candidate.parent,)
@@ -284,7 +343,7 @@ def resolve_executable(
 
     if not command or "\x00" in command:
         raise ValueError(f"{label} command is invalid")
-    candidate = Path(command).expanduser()
+    candidate = expand_user_path(command, environment=environment)
     if not candidate.is_absolute() and not any(
         separator in command for separator in "/\\"
     ):
@@ -293,6 +352,61 @@ def resolve_executable(
             raise ValueError(f"{label} is unavailable: {command}")
         candidate = Path(selected)
     return _executable_paths(candidate, label=label)[0]
+
+
+def resolve_explicit_tool_command(
+    raw_command: str,
+    *,
+    label: str,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> tuple[str, ...]:
+    """Resolve an exact tool path or an explicitly configured command.
+
+    Existing pathnames take precedence over command-word parsing, including
+    unquoted paths containing spaces. Preserve the lexical driver entrypoint;
+    content identity is captured separately and must not rewrite argv[0].
+    """
+    environment = os.environ if environment is None else environment
+    cwd = Path.cwd() if cwd is None else cwd
+    if not raw_command or "\x00" in raw_command:
+        raise ValueError(f"{label} is empty or contains a NUL byte")
+
+    def path_like(value: str) -> bool:
+        return Path(value).is_absolute() or "/" in value or "\\" in value
+
+    def absolute(value: str) -> Path:
+        path = expand_user_path(value, environment=environment)
+        return Path(os.path.abspath(path if path.is_absolute() else cwd / path))
+
+    if path_like(raw_command):
+        direct_path = absolute(raw_command)
+        if direct_path.is_file():
+            return (str(direct_path),)
+    try:
+        argv = shlex.split(raw_command, posix=os.name != "nt")
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a valid shell command: {exc}") from exc
+    if os.name == "nt":
+        argv = [
+            argument[1:-1]
+            if len(argument) >= 2 and argument[0] == argument[-1] == '"'
+            else argument
+            for argument in argv
+        ]
+    if not argv or not argv[0]:
+        raise ValueError(f"{label} is empty")
+    executable = argv[0]
+    if path_like(executable):
+        path = absolute(executable)
+        if not path.is_file():
+            raise ValueError(f"{label} executable not found: {executable}")
+    else:
+        selected = find_executable(executable, environment=environment, cwd=cwd)
+        if selected is None:
+            raise ValueError(f"{label} executable not found on PATH: {executable}")
+        path = absolute(str(selected))
+    return (str(path), *argv[1:])
 
 
 def _stable_file_content(

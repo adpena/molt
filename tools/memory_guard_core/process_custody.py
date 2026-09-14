@@ -106,6 +106,7 @@ class GuardResult:
     sampling_telemetry: GuardSamplingTelemetry | None = None
     peak_job_commit_bytes: int | None = None
     windows_job_cleanup: WindowsJobCleanup | None = None
+    temporary_artifacts: Mapping[str, object] | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage

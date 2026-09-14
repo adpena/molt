@@ -7,7 +7,7 @@ custody digests remain real. These inputs are never product/native proof receipt
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import partial
 import hashlib
 import json
@@ -103,6 +103,7 @@ def synthetic_receipt_custody(
     """No launch/build: fake only exact native verification of issued fixtures."""
     binary = tmp_path / "synthetic-supervisor.bin"
     binary.write_bytes(b"synthetic supervisor image; never executed\n")
+    required_environment = {"MOLT_TEST_SUPERVISOR_REQUIRED": "1"}
     issued: dict[str, tuple[tuple[str, ...], bytes, bytes]] = {}
 
     def issue(command: list[str]) -> None:
@@ -145,11 +146,33 @@ def synthetic_receipt_custody(
             policy_bytes,
             receipt_bytes,
         )
-        return subprocess.CompletedProcess(command, 0 if unchanged else 1, "", "")
+        policy = json.loads(policy_bytes)
+        capability = {
+            "schema": "molt.proof-supervisor-capability.v2",
+            "platform": {"win32": "windows", "darwin": "macos"}.get(
+                sys.platform, sys.platform
+            ),
+            "mode": policy["mode"],
+            "backend": "synthetic-test-backend",
+            "available": True,
+            "pre_entry_exec_authority": True,
+            "recursive_descendant_authority": True,
+            "reason": None,
+            "required_environment": required_environment,
+        }
+        return subprocess.CompletedProcess(
+            command,
+            0 if unchanged else 1,
+            json.dumps({"capability": capability}),
+            "",
+        )
 
     monkeypatch.setattr(runner, "_COMMANDS", SimpleNamespace(run=verify))
     return partial(
-        publish_receipt_custody, supervisor_binary=binary, execute_supervisor=issue
+        publish_receipt_custody,
+        supervisor_binary=binary,
+        execute_supervisor=issue,
+        required_environment=required_environment,
     )
 
 
@@ -159,6 +182,7 @@ def publish_receipt_custody(
     *,
     supervisor_binary: Path,
     execute_supervisor: Callable[[list[str]], None],
+    required_environment: Mapping[str, str] | None = None,
     nonce: str = "a" * 64,
     descendants: str = "forbidden",
     environment: dict[str, str] | None = None,
@@ -188,7 +212,9 @@ def publish_receipt_custody(
         "mode": "leaf" if descendants == "forbidden" else "declared-tree",
         "cwd": str(directory.resolve()),
         "command": command,
-        "environment": dict(environment or {}),
+        "environment": supervisor_custody.bind_required_environment(
+            environment or {}, required_environment or {}
+        ),
         "root_role": root_role,
         "fixed_images": fixed_images,
         "derived_roots": [],
@@ -232,6 +258,7 @@ def publish_receipt_custody(
         "receipt_file": command_identity._file_identity(receipt_path),
         "event_artifact": event_artifact,
         "supervisor_returncode": 0,
+        "required_environment": dict(required_environment or {}),
     }
     return summaries, toolchain_custody, {"capture": capture, "supervisor": supervisor}
 
@@ -283,6 +310,8 @@ def assert_execution_context_rejects_substitutions(
     )
     supervisor_policy_path = Path(str(v3["supervisor"]["policy"]["path"]))
     supervisor_policy = json.loads(supervisor_policy_path.read_text(encoding="utf-8"))
+    required_environment = v3["supervisor"]["required_environment"]
+    assert isinstance(required_environment, dict)
     context: dict[str, object] = {
         "run_id": "run-one",
         "execution_nonce_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
@@ -302,11 +331,22 @@ def assert_execution_context_rejects_substitutions(
         ).hexdigest(),
         "execution_environment": {
             "prelaunch": {
-                "passed_names": ["MOLT_TEST_VALUE"],
+                "passed_names": sorted(
+                    supervisor_policy["environment"], key=str.casefold
+                ),
+                **(
+                    {
+                        "supervisor_owned_names": sorted(
+                            required_environment or {}, key=str.casefold
+                        )
+                    }
+                    if required_environment
+                    else {}
+                ),
                 "identity_sha256": "e" * 64,
                 "canonical_values_sha256": (
                     execution_environment._canonical_environment_sha256(
-                        {"MOLT_TEST_VALUE": "alpha"}
+                        supervisor_policy["environment"]
                     )
                 ),
             },
@@ -343,7 +383,55 @@ def assert_execution_context_rejects_substitutions(
         returncode=0,
     )
     supervisor_record = v3["supervisor"]
+    original_required_environment = supervisor_record["required_environment"]
+    supervisor_record["required_environment"] = {
+        "MOLT_SUBSTITUTED_SUPERVISOR_REQUIRED": "1"
+    }
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
+    with pytest.raises(ValueError, match="required-environment metadata mismatch"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    supervisor_record["required_environment"] = original_required_environment
+    environment_prelaunch = context["execution_environment"]["prelaunch"]
+    assert isinstance(environment_prelaunch, dict)
+    original_supervisor_owned_names = environment_prelaunch.get(
+        "supervisor_owned_names"
+    )
+    environment_prelaunch["supervisor_owned_names"] = [
+        "MOLT_SUBSTITUTED_SUPERVISOR_REQUIRED"
+    ]
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
+    with pytest.raises(ValueError, match="environment ownership metadata mismatch"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    if original_supervisor_owned_names is None:
+        environment_prelaunch.pop("supervisor_owned_names")
+    else:
+        environment_prelaunch["supervisor_owned_names"] = (
+            original_supervisor_owned_names
+        )
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
     receipt_path = Path(str(supervisor_record["receipt_file"]["path"]))
+    original_receipt_bytes = receipt_path.read_bytes()
+    original_policy_bytes = supervisor_policy_path.read_bytes()
     receipt = supervisor_record["receipt"]
     original_exit = receipt["root_exit_code"]
     receipt["root_exit_code"] = 73
@@ -359,7 +447,10 @@ def assert_execution_context_rejects_substitutions(
             returncode=0,
         )
     receipt["root_exit_code"] = original_exit
-    supervisor_custody._atomic_json(receipt_path, receipt)
+    # Native publication and Python JSON formatting need not use identical
+    # bytes. Restore the issued artifacts, not equivalent reserializations;
+    # later substitutions must start from the same content-bound authority.
+    custody_cas.atomic_write_bytes(receipt_path, original_receipt_bytes)
     supervisor_record["receipt_file"] = command_identity._file_identity(receipt_path)
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "substituted"
     supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
@@ -374,7 +465,7 @@ def assert_execution_context_rejects_substitutions(
             returncode=0,
         )
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "alpha"
-    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
+    custody_cas.atomic_write_bytes(supervisor_policy_path, original_policy_bytes)
     v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
     event_artifact = v3["supervisor"]["event_artifact"]
     event_artifact["count"] = int(event_artifact["count"]) + 1

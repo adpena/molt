@@ -14,6 +14,10 @@ import types
 import zipfile
 
 
+_SOURCE_ROOT_ENV = "MOLT_PROOF_SOURCE_ROOT"
+_MOLT_MODULE_TARGETS = frozenset({"molt", "molt.cli"})
+
+
 def _install_custody() -> None:
     authority = Path(__file__).with_name("python_child_custody.py").resolve(strict=True)
     spec = importlib.util.spec_from_file_location(
@@ -55,6 +59,48 @@ def _reset_import_path(mode: str, target: str | None) -> Path | None:
             sys.path.insert(0, str(resolved.parent))
         return resolved
     raise RuntimeError(f"unknown Python bootstrap mode {mode!r}")
+
+
+def _install_source_extension_import_root(mode: str, target: str | None) -> None:
+    """Expose this checkout's source only to the typed Molt module payload."""
+
+    if mode != "module" or target not in _MOLT_MODULE_TARGETS:
+        return
+    raw_root = os.environ.get(_SOURCE_ROOT_ENV)
+    if raw_root is None:
+        return
+    declared_root = Path(raw_root)
+    if not declared_root.is_absolute():
+        raise RuntimeError("proof source root must be absolute")
+    try:
+        source_root = declared_root.resolve(strict=True)
+        bootstrap_root = Path(__file__).resolve(strict=True).parents[2]
+    except OSError as exc:
+        raise RuntimeError("proof source root is unavailable") from exc
+    if raw_root != str(source_root):
+        raise RuntimeError("proof source root must be canonical")
+    if source_root != bootstrap_root:
+        raise RuntimeError("proof source root does not match bootstrap repository")
+    source_import_root = source_root / "src"
+    try:
+        source_import_root = source_import_root.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("proof source root has no source package directory") from exc
+    try:
+        source_import_root.relative_to(bootstrap_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "proof source package directory escapes bootstrap repository"
+        ) from exc
+    if not source_import_root.is_dir():
+        raise RuntimeError("proof source root has no source package directory")
+    source_norm = os.path.normcase(str(source_import_root))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry)) != source_norm
+    ]
+    sys.path.insert(0, str(source_import_root))
 
 
 def _fresh_main(*, filename: str | None, package: str | None) -> dict[str, object]:
@@ -137,6 +183,7 @@ def main() -> None:
 
     _install_custody()
     _reset_import_path(mode, target)
+    _install_source_extension_import_root(mode, target)
     if mode == "command" and target is not None:
         _run_command(target, arguments)
     elif mode == "module" and target is not None:

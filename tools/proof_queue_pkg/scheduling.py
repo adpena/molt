@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from molt.exact_json import dumps_exact
 from tools import lane_maturity
 from tools.proof_queue_pkg import command_admission, evidence, state
 
@@ -310,7 +311,7 @@ def _insert_run(
             logical_id,
             reason,
             json.dumps(command),
-            json.dumps(command_admission.admission_envelope(command), sort_keys=True),
+            dumps_exact(command_admission.admission_envelope(command)),
             json.dumps(
                 state._unattested_receipt_context(
                     status="not-executed",
@@ -383,9 +384,7 @@ def _admit_run(
                 logical_id,
                 reason,
                 json.dumps(command),
-                json.dumps(
-                    command_admission.admission_envelope(command), sort_keys=True
-                ),
+                dumps_exact(command_admission.admission_envelope(command)),
                 json.dumps(
                     state._unattested_receipt_context(
                         status="not-executed",

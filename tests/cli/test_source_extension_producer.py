@@ -23,6 +23,7 @@ from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli import source_extension_publication as publication
+from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.extension_seal import (
@@ -528,6 +529,7 @@ def test_produce_set_dispatches_complete_set(
             "expected_identity_sha256": None,
             "expected_candidate_identity_sha256": None,
             "json_output": False,
+            "prepared": False,
         }
     ]
 
@@ -1071,6 +1073,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = _locked_environment_spec(tmp_path, monkeypatch)
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "unrelated-launcher"))
     calls = 0
     monkeypatch.setattr(
         build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
@@ -1090,6 +1093,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
         if calls == 1:
             return subprocess.CompletedProcess(argv, 7)
         environment_root = Path(kwargs["environment"]["UV_PROJECT_ENVIRONMENT"])
+        assert "VIRTUAL_ENV" not in kwargs["environment"]
         assert environment_root == spec[0]
         environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
@@ -1613,19 +1617,22 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
 
     result = producer._run_locked_source_extension_producer(
         environment,
-        package="numpy",
-        package_version="2.5.1",
-        module_set="pact-witness",
-        python_version="3.12",
-        source="source-root",
-        build_root="build-root",
-        target="wasm",
-        abi_tier="cpython-abi",
-        json_output=True,
+        invocation=SourceExtensionSetInvocation(
+            command="produce-set",
+            package="numpy",
+            package_version="2.5.1",
+            module_set="pact-witness",
+            python_version="3.12",
+            source="source-root",
+            build_root="build-root",
+            target="wasm",
+            abi_tier="cpython-abi",
+            json_output=True,
+        ),
     )
 
     assert result == 19
-    assert observed["argv"] == [
+    assert list(observed["argv"]) == [
         str(spec[1]),
         "-P",
         "-m",
@@ -1649,6 +1656,7 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
         "--abi-tier",
         "cpython-abi",
         "--json",
+        "--prepared",
     ]
     assert observed["check"] is False
     assert "capture_output" not in observed
@@ -1704,30 +1712,86 @@ def test_locked_console_tool_path_handles_absent_host_path(tmp_path: Path) -> No
     assert producer._locked_console_tool_path(scripts, None) == str(scripts.resolve())
 
 
-def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    spec = _locked_environment_spec(tmp_path, monkeypatch)
-    inactive = build_environment.LockedSourceBuildEnvironment(
-        root=spec[0],
-        python_executable=spec[1],
-        manifest_path=spec[2],
-        custody=spec[3],
-        active=False,
+def _producer_boundary_environment(tmp_path: Path, *, active: bool):
+    root = tmp_path / "environment"
+    python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"fixture interpreter; never executed")
+    return build_environment.LockedSourceBuildEnvironment(
+        root=root,
+        python_executable=python,
+        manifest_path=root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        custody={},
+        active=active,
     )
-    provision_calls: list[bool] = []
+
+
+def _invoke_producer_mode(tmp_path: Path, *, candidate: bool, prepared: bool) -> int:
+    arguments: dict[str, Any] = {
+        "package": "numpy",
+        "package_version": "2.5.1",
+        "module_set": "pact-witness",
+        "python_version": "3.12",
+        "source": str(tmp_path / "source"),
+        "build_root": str(tmp_path / "build"),
+        "target": "wasm",
+        "prepared": prepared,
+    }
+    if candidate:
+        return producer.attest_source_extension_set_candidate(
+            **arguments,
+            output=str(tmp_path / "destination/candidate"),
+        )
+    return producer.produce_source_extension_set(**arguments)
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize("active", [False, True])
+def test_producer_prepares_once_before_prepared_reexec_without_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate: bool, active: bool
+) -> None:
+    (tmp_path / "source").mkdir()
+    environment = _producer_boundary_environment(tmp_path, active=active)
+    events: list[object] = []
+    monkeypatch.setattr(
+        producer,
+        "resolve_source_extension_candidate_custody_path",
+        lambda value: Path(value).resolve(),
+    )
 
     def source_environment(*_args, provision: bool = False):
-        provision_calls.append(provision)
-        return inactive
+        events.append(("environment", provision))
+        return environment
+
+    def reexec(realized, *, invocation):
+        assert realized == environment
+        assert invocation.prepared is True
+        assert invocation.command == (
+            "attest-set-candidate" if candidate else "produce-set"
+        )
+        events.append("reexec")
+        return 23
 
     monkeypatch.setattr(producer, "source_build_environment", source_environment)
     monkeypatch.setattr(
         producer,
+        "verify_source_extension_checkout",
+        lambda *a, **kw: events.append("source"),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_provision_recursive_submodules",
+        lambda *a: events.append("provision-submodules"),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_verify_recursive_submodules",
+        lambda *a: events.append("verify-submodules"),
+    )
+    monkeypatch.setattr(
+        producer,
         "_run_locked_source_extension_producer",
-        lambda *_args, **_kwargs: 23,
+        reexec,
     )
     monkeypatch.setattr(
         producer,
@@ -1737,18 +1801,302 @@ def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
         ),
     )
 
-    assert (
-        producer.produce_source_extension_set(
-            package="numpy",
-            package_version="2.5.1",
-            module_set="pact-witness",
-            python_version="3.12",
-            source=str(source),
-            build_root=str(tmp_path / "build"),
+    assert _invoke_producer_mode(tmp_path, candidate=candidate, prepared=False) == 23
+    assert events == [
+        ("environment", False),
+        "source",
+        "provision-submodules",
+        "verify-submodules",
+        ("environment", True),
+        "reexec",
+    ]
+    assert not (tmp_path / "destination").exists()
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "build-file",
+        "build-nonempty",
+        "build-parent-file",
+        "overlap-source",
+        "overlap-build",
+        "build-in-source",
+        "source-in-build",
+    ],
+)
+def test_invalid_output_topology_rejected_before_standalone_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    candidate: bool,
+    prepared: bool,
+    invalid: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    build = tmp_path / "build"
+    destination = tmp_path / "destination" / "output"
+    if invalid == "build-file":
+        build.write_bytes(b"retain")
+    elif invalid == "build-nonempty":
+        build.mkdir()
+        (build / "retain").write_bytes(b"retain")
+    elif invalid == "build-parent-file":
+        build.write_bytes(b"retain")
+        build = build / "child"
+    elif invalid == "overlap-source":
+        destination = source / "output"
+    elif invalid == "overlap-build":
+        destination = build / "output"
+    elif invalid == "build-in-source":
+        build = source / "build"
+    else:
+        build = tmp_path
+    if prepared:
+        environment = _producer_boundary_environment(tmp_path, active=True)
+
+        def current_environment(*args, provision: bool):
+            assert provision is False
+            return environment
+
+        monkeypatch.setattr(producer, "source_build_environment", current_environment)
+        monkeypatch.setattr(
+            producer, "verify_source_extension_checkout", lambda *a, **kw: None
         )
-        == 23
+        monkeypatch.setattr(producer, "_verify_recursive_submodules", lambda *a: ())
+        monkeypatch.setattr(
+            producer, "verify_source_extension_abi_headers", lambda *a, **kw: None
+        )
+    before = tuple(sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid output topology reached environment/setup/output mutation")
+
+    if not prepared:
+        monkeypatch.setattr(producer, "source_build_environment", forbidden)
+    for name in (
+        "prepare_source_extension_prerequisites",
+        "_run_locked_source_extension_producer",
+        "_acquire_file_lock",
+    ):
+        monkeypatch.setattr(producer, name, forbidden)
+    monkeypatch.setattr(
+        producer, "source_extension_set_root", lambda *a, **kw: destination
     )
-    assert provision_calls == [True]
+    monkeypatch.setattr(
+        producer,
+        "resolve_source_extension_candidate_custody_path",
+        lambda value: Path(value).resolve(),
+    )
+    arguments = dict(
+        package="numpy",
+        package_version="2.5.1",
+        module_set="pact-witness",
+        python_version="3.12",
+        source=str(source),
+        build_root=str(build),
+        target="wasm",
+        prepared=prepared,
+    )
+    result = (
+        producer.attest_source_extension_set_candidate(
+            **arguments, output=str(destination)
+        )
+        if candidate
+        else producer.produce_source_extension_set(**arguments)
+    )
+    assert result != 0
+    error = capsys.readouterr().err
+    assert (
+        "disjoint" in error
+        or "not a directory" in error
+        or "prior configuration" in error
+    )
+    assert (
+        tuple(sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")))
+        == before
+    )
+
+
+def test_fresh_build_root_validation_does_not_create_parent(tmp_path: Path) -> None:
+    build = tmp_path / "absent" / "build"
+    producer._require_fresh_build_root(build)
+    assert not build.parent.exists()
+
+
+def test_candidate_custody_rejected_before_standalone_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    (tmp_path / "source").mkdir()
+    monkeypatch.setattr(
+        producer,
+        "source_build_environment",
+        lambda *a, **kw: pytest.fail(
+            "invalid candidate custody reached environment setup"
+        ),
+    )
+    assert _invoke_producer_mode(tmp_path, candidate=True, prepared=False) != 0
+    assert "canonical candidate custody" in capsys.readouterr().err
+    assert not (tmp_path / "destination").exists()
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize("failure", ["inactive", "stale", "source", "submodules"])
+def test_prepared_producer_rejects_prerequisite_drift_without_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    candidate: bool,
+    failure: str,
+) -> None:
+    (tmp_path / "source").mkdir()
+    environment = _producer_boundary_environment(tmp_path, active=failure != "inactive")
+    events = []
+
+    def source_environment(*_args, provision: bool):
+        assert provision is False
+        events.append("environment")
+        if failure == "stale":
+            raise build_environment.SourceBuildEnvironmentError(
+                "stale fixture attestation"
+            )
+        return environment
+
+    def verify_source(*args, **kwargs):
+        events.append("source")
+        if failure == "source":
+            raise ValueError("source fixture drift")
+
+    def verify_submodules(*args):
+        events.append("submodules")
+        raise producer.SourceExtensionProducerError("submodule fixture drift")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(
+            "prepared prerequisite failure must not repair, restart or touch output"
+        )
+
+    monkeypatch.setattr(producer, "source_build_environment", source_environment)
+    monkeypatch.setattr(producer, "verify_source_extension_checkout", verify_source)
+    monkeypatch.setattr(producer, "_verify_recursive_submodules", verify_submodules)
+    for name in (
+        "prepare_source_extension_prerequisites",
+        "_provision_recursive_submodules",
+        "_run_locked_source_extension_producer",
+        "_acquire_file_lock",
+        "source_extension_set_root",
+        "resolve_source_extension_candidate_custody_path",
+    ):
+        monkeypatch.setattr(producer, name, forbidden)
+    assert _invoke_producer_mode(tmp_path, candidate=candidate, prepared=True) != 0
+    assert events == (
+        ["environment"]
+        if failure in {"inactive", "stale"}
+        else ["environment", "source"]
+        if failure == "source"
+        else ["environment", "source", "submodules"]
+    )
+    expected = (
+        "active locked"
+        if failure == "inactive"
+        else (
+            "submodule fixture drift"
+            if failure == "submodules"
+            else f"{failure} fixture"
+        )
+    )
+    assert expected in capsys.readouterr().err
+    assert not (tmp_path / "build").exists()
+    assert not (tmp_path / "destination").exists()
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+def test_prepared_producer_verifies_before_destination_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate: bool,
+) -> None:
+    (tmp_path / "source").mkdir()
+    environment = _producer_boundary_environment(tmp_path, active=True)
+    events = []
+
+    class VerifiedBeforeOutput(Exception):
+        pass
+
+    def source_environment(*_args, provision: bool):
+        assert provision is False
+        events.append("environment")
+        return environment
+
+    def destination(*args, **kwargs):
+        assert events == ["environment", "source", "submodules", "headers"]
+        raise VerifiedBeforeOutput
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("prepared execution must never prepare or restart")
+
+    monkeypatch.setattr(producer, "source_build_environment", source_environment)
+    monkeypatch.setattr(
+        producer,
+        "verify_source_extension_checkout",
+        lambda *a, **kw: events.append("source"),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_verify_recursive_submodules",
+        lambda *a: events.append("submodules") or (),
+    )
+    monkeypatch.setattr(
+        producer,
+        "verify_source_extension_abi_headers",
+        lambda *a, **kw: events.append("headers"),
+    )
+    monkeypatch.setattr(producer, "source_extension_set_root", destination)
+    monkeypatch.setattr(
+        producer, "resolve_source_extension_candidate_custody_path", destination
+    )
+    for name in (
+        "prepare_source_extension_prerequisites",
+        "_provision_recursive_submodules",
+        "_run_locked_source_extension_producer",
+    ):
+        monkeypatch.setattr(producer, name, forbidden)
+    with pytest.raises(VerifiedBeforeOutput):
+        _invoke_producer_mode(tmp_path, candidate=candidate, prepared=True)
+    assert not (tmp_path / "destination").exists()
+
+
+@pytest.mark.parametrize("field", ["root", "python_executable", "manifest_path"])
+def test_shared_preparation_rejects_changed_environment_address(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    from dataclasses import replace
+
+    environment = _producer_boundary_environment(tmp_path, active=False)
+    changed = replace(environment, **{field: tmp_path / "substituted"})
+    monkeypatch.setattr(producer, "source_build_environment", lambda *a, **kw: changed)
+    monkeypatch.setattr(
+        producer, "verify_source_extension_checkout", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(producer, "_provision_recursive_submodules", lambda *a: None)
+    monkeypatch.setattr(producer, "_verify_recursive_submodules", lambda *a: ())
+    extension_set = producer.source_extension_set("numpy", "2.5.1", "pact-witness")
+    with pytest.raises(
+        producer.SourceExtensionProducerError, match=f"environment {field}"
+    ):
+        producer.prepare_source_extension_prerequisites(
+            extension_set,
+            tmp_path,
+            repo_root=tmp_path,
+            planned_environment=environment,
+        )
 
 
 def test_meson_setup_uses_typed_driver(
@@ -2173,7 +2521,9 @@ def test_recursive_submodule_attestation_is_canonical_path_order(
 
     def run_process(argv, *, cwd):
         assert cwd == tmp_path
+        assert argv[:2] == ("git", "--no-optional-locks")
         if "foreach" in argv:
+            assert "git --no-optional-locks rev-parse HEAD" in argv[-1]
             return subprocess.CompletedProcess(
                 args=list(argv),
                 returncode=0,
@@ -2203,6 +2553,31 @@ def test_recursive_submodule_attestation_is_canonical_path_order(
         {"path": "a/submodule", "commit": "f" * 40},
         {"path": "z/submodule", "commit": "0" * 40},
     )
+
+
+def test_source_checkout_verification_disables_optional_index_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import source_extension_set_registry
+
+    extension_set = producer.source_extension_set("numpy", "2.5.1", "pact-witness")
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        assert argv[:2] == ["git", "--no-optional-locks"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=extension_set.source.commit if "rev-parse" in argv else "",
+            stderr="",
+        )
+
+    monkeypatch.setattr(source_extension_set_registry, "run_completed_command", run)
+    producer.verify_source_extension_checkout(extension_set, tmp_path)
+    assert len(commands) == 2
+    assert commands[-1][-3:] == ["status", "--porcelain=v1", "--untracked-files=all"]
 
 
 def test_recursive_submodules_are_provisioned_from_pinned_checkout(

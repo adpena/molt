@@ -14,6 +14,7 @@ from typing import cast
 
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.python_file_node_custody import (
+    PYTHON_RUNTIME_PRUNED_COMPONENTS,
     PythonFileCaptureContext,
     _FileNodePool,
     _is_file_entry,
@@ -282,6 +283,13 @@ def _base_runtime_paths() -> dict[str, Path]:
     return result
 
 
+def _is_runtime_import_path(path: Path, base_prefix: Path) -> bool:
+    return path.is_relative_to(base_prefix) and not (
+        {part.casefold() for part in path.relative_to(base_prefix).parts}
+        & PYTHON_RUNTIME_PRUNED_COMPONENTS
+    )
+
+
 def _runtime_import_candidates(
     base_prefix: Path,
 ) -> tuple[list[tuple[str, Path, int]], list[tuple[str, Path | None, int]]]:
@@ -298,7 +306,9 @@ def _runtime_import_candidates(
         lexical = Path(os.path.abspath(raw))
         if lexical.is_dir():
             resolved = lexical.resolve(strict=True)
-            if not resolved.is_relative_to(base_prefix):
+            if not _is_runtime_import_path(resolved, base_prefix):
+                # Distribution import roots belong to the environment capture.
+                # They are intentionally absent from the runtime tree inventory.
                 continue
             key = os.path.normcase(str(resolved))
             if key not in seen_directories:
@@ -307,7 +317,7 @@ def _runtime_import_candidates(
             continue
         if lexical.is_file() and lexical.suffix.casefold() in {".zip", ".pyz"}:
             resolved = lexical.resolve(strict=True)
-            if not resolved.is_relative_to(base_prefix):
+            if not _is_runtime_import_path(resolved, base_prefix):
                 continue
             key = os.path.normcase(str(resolved))
             if key not in seen_archives:
@@ -319,7 +329,7 @@ def _runtime_import_candidates(
                 parent = lexical.parent.resolve(strict=True)
             except OSError:
                 continue
-            if not parent.is_relative_to(base_prefix):
+            if not _is_runtime_import_path(parent, base_prefix):
                 continue
             key = lexical.name.casefold()
             if key not in seen_archives:
@@ -400,7 +410,7 @@ def _capture_runtime_with_context(
             root_id=root_id,
             label="Python runtime",
             pool=pool,
-            pruned_components=frozenset({"site-packages", "dist-packages"}),
+            pruned_components=PYTHON_RUNTIME_PRUNED_COMPONENTS,
             external_symlink_roles=explicit_paths,
         )
         runtime_roots.append(inventory)

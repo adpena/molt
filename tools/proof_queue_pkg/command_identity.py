@@ -13,8 +13,10 @@ import subprocess
 from typing import Any, BinaryIO, Mapping, Sequence, cast
 
 from molt.dx import _reject_onedrive
+from molt.cli.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from molt import file_publication
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
+from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
     PYTHON_CAPTURE_SCHEMA,
     PythonEnvironmentIdentityError,
@@ -698,20 +700,21 @@ def _replay_transcript(path: Path, stream: object) -> None:
 
 
 def _requires_structured_test_counts(envelope: Mapping[str, object]) -> bool:
-    argv = [str(value) for value in envelope["argv"]]  # type: ignore[index]
-    nested = admission._nested_command(argv)
-    payload = nested if nested is not None else argv
-    lowered = [admission._basename(value) for value in payload]
-    if any(value in admission._PYTHON_CONSOLE_SCRIPTS for value in lowered):
-        return True
-    for index, value in enumerate(payload[:-1]):
-        if value == "-m" and payload[index + 1] in {"pytest", "py.test"}:
-            return True
-    return bool(
-        payload
-        and admission._basename(payload[0]) in {"cargo", "cargo.exe"}
-        and "test" in payload[1:]
-    )
+    return admission.command_proof_kind(envelope) == "test-execution"
+
+
+def validate_structured_test_counts(
+    envelope: Mapping[str, object], transcript: Mapping[str, object], *, returncode: int
+) -> None:
+    """Require execution counts only for commands that actually run tests."""
+    if returncode == 0 and _requires_structured_test_counts(envelope):
+        if not any(
+            isinstance(value, Mapping) and value.get("structured_test_output") is True
+            for value in (transcript.get("stdout"), transcript.get("stderr"))
+        ):
+            raise ValueError(
+                "successful test command produced no structured test-count authority"
+            )
 
 
 def _in_python_environment(
@@ -755,19 +758,16 @@ def _which_in_command_environment(
 
 
 def _tool_configuration_identities(
-    name: str, *, cwd: Path, env: Mapping[str, str]
+    name: str, *, cwd: Path, env: Mapping[str, str], command_argv: Sequence[str] = ()
 ) -> list[dict[str, object]]:
     candidates: list[Path] = []
-    if name in {"cargo", "rustc", "rustfmt", "cargo-deny", "cargo-audit"}:
-        for parent in (cwd, *cwd.parents):
-            candidates.extend(
-                (parent / ".cargo" / "config.toml", parent / ".cargo" / "config")
-            )
-        cargo_home = env.get("CARGO_HOME")
-        if cargo_home:
-            candidates.extend(
-                (Path(cargo_home) / "config.toml", Path(cargo_home) / "config")
-            )
+    if name in {"cargo", "rustc", "rustdoc", "rustfmt", "cargo-deny", "cargo-audit"}:
+        candidates.extend(
+            Path(value)
+            for value in cargo_config_arguments(command_argv, cwd=cwd)[1::2]
+            if "=" not in value
+        )
+        candidates.extend(cargo_configuration_paths(cwd, env))
     if name == "lean":
         candidates.append(cwd / "formal" / "lean" / "lean-toolchain")
     identities: list[dict[str, object]] = []
@@ -828,6 +828,10 @@ def _tool_identity(
         policy = policies[name]
     except KeyError as exc:
         raise ValueError(f"proof plan has no {name!r} toolchain policy") from exc
+    if policy.identity_kind == "target-derived":
+        from tools.proof_queue_pkg.target_derived_toolchains import capture_identity
+
+        return capture_identity(policy, envelope, environment=env)
     requested = str(policy.data.get("executable") or name)
     if requested == "{python}":
         raise ValueError("Python toolchain identity must use the runtime-closure probe")
@@ -916,7 +920,12 @@ def _tool_identity(
         "policy_sha256": hashlib.sha256(
             json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
-        "configuration_files": _tool_configuration_identities(name, cwd=cwd, env=env),
+        "configuration_files": _tool_configuration_identities(
+            name,
+            cwd=cwd,
+            env=env,
+            command_argv=admission._nested_command(exact) or exact,
+        ),
     }
     if content_resolver_identity is not None:
         material["content_resolver"] = content_resolver_identity
@@ -930,6 +939,7 @@ def _tool_identity(
         linker_images, linker_telemetry = (
             toolchain_capture.capture_rust_link_process_images(
                 rustc=content_path,
+                rustc_version=str(material["version"]),
                 cargo=cargo_path,
                 cwd=probe_cwd,
                 env=env,
@@ -1039,6 +1049,11 @@ def _validate_toolchain_identity(
         policy = policies[name]
     except KeyError as exc:
         raise ValueError(f"proof plan has no {name!r} toolchain policy") from exc
+    if policy.identity_kind == "target-derived":
+        from tools.proof_queue_pkg.target_derived_toolchains import validate_identity
+
+        validate_identity(policy, identity)
+        return
     if name == "python":
         environment = identity.get("environment")
         location = identity.get("location")
@@ -1201,6 +1216,7 @@ _ENVIRONMENT_PREFIXES = (
     "CMAKE_",
     "CXX_",
     "GITHUB_",
+    "BINDGEN_EXTRA_CLANG_ARGS_",
     "LC_",
     "LLVM_",
     "MOLT_",
@@ -1215,10 +1231,12 @@ _ENVIRONMENT_PREFIXES = (
 _ENVIRONMENT_BUILD_NAMES = frozenset(
     {
         "AR",
+        "BINDGEN_EXTRA_CLANG_ARGS",
         "CC",
         "CFLAGS",
         "CL",
         "CLANG",
+        "CLANG_PATH",
         "CMAKE",
         "CXX",
         "CXXFLAGS",
@@ -1226,6 +1244,8 @@ _ENVIRONMENT_BUILD_NAMES = frozenset(
         "INCLUDE",
         "LDFLAGS",
         "LIB",
+        "LIBCLANG_PATH",
+        "LIBCLANG_STATIC_PATH",
         "LINK",
         "LLVM_CONFIG",
         "MAKE",
@@ -1272,7 +1292,14 @@ _CANONICAL_EXECUTION_ENV = {
 _QUEUE_CUSTODY_ENV_NAMES = frozenset(
     {
         "MOLT_MEMORY_GUARD_STATE_ROOT",
+        "MOLT_MEMORY_GUARD_ACTIVE",
+        "MOLT_MEMORY_GUARD_PID",
+        "MOLT_MEMORY_GUARD_TOKEN",
+        "MOLT_MEMORY_GUARD_MARKER",
+        "MOLT_GUARD_SCRATCH_ROOT",
         "MOLT_PROOF_QUEUE_RUN_ID",
+        "MOLT_PROOF_SOURCE_ROOT",
+        SOURCE_EXTENSION_LINK_INPUTS_ENV,
         "MOLT_PYTEST_CURRENT_TEST_FILE",
         "MOLT_PROOF_CHILD_CUSTODY_JSON",
         "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT",
@@ -1299,13 +1326,18 @@ _EXECUTABLE_ENV_NAMES = frozenset(
         "RC",
         "RUSTC",
         "RUSTC_WRAPPER",
+        "RUSTDOC",
+        "RUSTFMT",
         "RUSTC_WORKSPACE_WRAPPER",
         "CARGO_BUILD_RUSTC",
+        "CARGO_BUILD_RUSTDOC",
         "CARGO_BUILD_RUSTC_WRAPPER",
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
         "CARGO_BUILD_RUNNER",
         "CLANG",
+        "CLANG_PATH",
         "LLVM_CONFIG",
+        "LLVM_CONFIG_PATH",
         "STRIP",
         "WASM_BINDGEN",
         "WASM_OPT",

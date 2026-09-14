@@ -441,7 +441,7 @@ def test_retirement_rejects_windows_reparse_attribute_before_rename(
 def test_retirement_refuses_root_junction_and_preserves_nested_junction_target(
     tmp_path: Path,
 ) -> None:
-    import subprocess
+    from tests.process_guard_common import run_guarded_test_process
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -449,8 +449,9 @@ def test_retirement_refuses_root_junction_and_preserves_nested_junction_target(
     source = tmp_path / "transaction"
     source.mkdir()
     junction = source / "junction"
-    subprocess.run(
+    run_guarded_test_process(
         ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        prefix="MOLT_TEST_FILE_PUBLICATION",
         check=True,
         capture_output=True,
     )

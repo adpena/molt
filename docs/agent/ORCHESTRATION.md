@@ -26,7 +26,7 @@ drift/slowness. **STOP using it — cwd, venv, worktrees, `.pth`, PYTHONPATH, an
 |---|---|
 | **checkout / all git work + landings** | `C:\Molt\molt-src` (NVMe, off OneDrive, own `.git`) |
 | **python env** | `C:\Molt\molt-src\.venv` (run `uv sync` there once) |
-| **build artifacts** | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`, NVMe, auto-janitored) |
+| **build artifacts** | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`, NVMe, consumer-owned retention) |
 
 `D:\Molt` is **POISON for canonical authority**, not a capacity fallback.
 Canonical source inputs, package seals, worktrees, toolchains, custody records,
@@ -127,7 +127,7 @@ before/after — machine-checkable):**
 The orchestrator landed a full dev-velocity overhaul on origin/main. **Every Codex
 agent + worktree MUST (1) `git fetch origin && git rebase origin/main`, AND (2)
 RE-READ `AGENTS.md` + `docs/agent/AGENTS.full.md` before the next arc — your
-contract CHANGED (artifact volume → `C:\Molt` NVMe, auto-janitor default, this
+contract CHANGED (artifact volume → `C:\Molt` NVMe, consumer-owned retention, this
 protocol). A cached/stale understanding of AGENTS.md will fight the new setup
 (e.g. routing artifacts back to the slow D:/E: exFAT).** A stale base also runs the
 OLD slow CLI (the editable install was 477 commits stale — 2 jobs, incremental off,
@@ -140,21 +140,23 @@ LANDED — all active in the current CLI (rebase to get them):
   `bdd42535e` — warm rebuilds reuse cache ACROSS sessions.
 - **lld-link auto-detect** `858c6a306` (fast Windows linker) + **release-fast
   debug=0** `f21cf71aa`.
-- **Auto-janitor** `25e4d7c2b` — stale per-session targets/tmp/scratch are cleaned
-  BY DEFAULT (throttled, detached, keeps ≥80 GB free, protects live builds). Do NOT
-  hand-manage artifacts or fight it. Opt out only via `MOLT_DISABLE_AUTO_JANITOR=1`.
+- **Generic auto-janitor retired** — there is no detached age/LRU sweep of
+  `tmp`, sessions, scratch, worktrees, or caches. Reclamation must come from a
+  consumer-owned custody policy; `tools/disk_guard.py` retains only its narrow,
+  explicit build-artifact allow-set.
 
 **ARTIFACT ROOT MOVED TO NVMe (this workstation):** artifacts now resolve to
 **`C:\Molt`** (internal NVMe), NOT D:/E: (USB exFAT — metadata-slow, no hard links).
 The persistent machine env (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt`,
 `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`) is set. **Do NOT override `MOLT_EXT_ROOT` /
 `MOLT_EXTERNAL_ARTIFACT_ROOTS` back to D:/E:** — that reverts to the slow volume.
-The auto-janitor floor keeps C: respectful; the persistent target keeps it bounded.
+Capacity admission rejects insufficient headroom; consumer-owned retention
+governs reclamation. See `PROOF_QUEUE.md` for the scratch/storage contract.
 
 **DRIFT is now RECURRING DISCIPLINE, not a crisis** (was ~176 worktrees → pruned).
 Bank WIP to `wip/<lane>-<date>` + push; LAND your signal + DELETE your worktree when
 a lane finishes; run `tools/drift_harvest.py` every session (rule 5). ENFORCEMENT:
-the orchestrator runs drift_harvest + the janitor regularly as a backstop, and a
+the orchestrator runs drift_harvest with ownership review as a backstop, and a
 worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
 
 ## 📋 NEW PROTOCOL (binding for every agent, 2026-07-08)
@@ -170,7 +172,7 @@ worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
    into a cold per-session target dir); leave it unset to reuse the persistent
    target (`C:\Molt\target` on the NVMe workstation root). Set it ONLY for
    perf/bench/test-shard isolation. Do NOT override the artifact root back to D:/E:.
-   Do NOT hand-clean artifacts — the auto-janitor does it by default.
+   Do NOT hand-clean artifacts; use the owning consumer's custody policy.
 4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
    before/after delta for any perf/build change (tools/dx_build_timer.py,
    tools/build_graph_audit.py). No optimizing by feel.

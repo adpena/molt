@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Sequence
 
 from molt.dx import checkout_custody
+from molt.exact_json import dumps_exact
 from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
@@ -404,7 +405,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             )
             conn.execute(
                 "UPDATE proof_runs SET command_envelope_json = ? WHERE run_id = ?",
-                (json.dumps(authority, sort_keys=True), run_id),
+                (dumps_exact(authority), run_id),
             )
     conn.execute(
         """

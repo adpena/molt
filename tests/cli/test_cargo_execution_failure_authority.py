@@ -9,14 +9,29 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt import disk_capacity as DISK_CAPACITY
 from molt.cli.models import _RuntimeArtifactState
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
+from molt.disk_capacity import DEFAULT_MINIMUM_HEADROOM_BYTES, DiskCapacityError
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
 
 CARGO = importlib.import_module("molt.cli.cargo_execution")
 RUNTIME = importlib.import_module("molt.cli.runtime_native_build")
 RUNTIME_WASM_SUPPORT = importlib.import_module("molt.cli.runtime_wasm_build_support")
+
+
+@pytest.fixture(autouse=True)
+def _admit_test_cargo_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        DISK_CAPACITY,
+        "_default_measure_free_bytes",
+        lambda _path: DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
+    )
+
+
+def _cargo_env(target_root: Path, **values: str) -> dict[str, str]:
+    return {"CARGO_TARGET_DIR": str(target_root), **values}
 
 
 def _completed(
@@ -113,6 +128,7 @@ def test_every_cargo_wrapper_alias_disables_incremental(
 
 
 def test_real_rustc_failure_with_sccache_command_is_never_retry_authority(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     command = ["cargo", "rustc"]
@@ -134,7 +150,10 @@ def test_real_rustc_failure_with_sccache_command_is_never_retry_authority(
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
-        env={"RUSTC_WRAPPER": "/usr/bin/sccache"},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            RUSTC_WRAPPER="/usr/bin/sccache",
+        ),
         timeout=1.0,
         json_output=True,
         label="Runtime build",
@@ -185,6 +204,7 @@ def test_empty_or_untyped_attempts_fall_back_to_one_typed_terminal_record() -> N
     ],
 )
 def test_explicit_wrapper_failure_retries_once_and_retains_both_attempts(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stderr: str,
     reason: str,
@@ -216,7 +236,10 @@ def test_explicit_wrapper_failure_retries_once_and_retains_both_attempts(
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
-        env={"RUSTC_WRAPPER": "C:/tools/sccache.exe"},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            RUSTC_WRAPPER="C:/tools/sccache.exe",
+        ),
         timeout=1.0,
         json_output=True,
         label="Runtime build",
@@ -238,6 +261,7 @@ def test_explicit_wrapper_failure_retries_once_and_retains_both_attempts(
 
 
 def test_sccache_retry_removes_every_sccache_wrapper_alias(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     command = ["cargo", "build"]
@@ -253,7 +277,10 @@ def test_sccache_retry_removes_every_sccache_wrapper_alias(
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
-        env={name: "sccache" for name in CARGO_WRAPPER_ENV_NAMES},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            **{name: "sccache" for name in CARGO_WRAPPER_ENV_NAMES},
+        ),
         timeout=1.0,
         json_output=True,
         label="Runtime build",
@@ -265,6 +292,7 @@ def test_sccache_retry_removes_every_sccache_wrapper_alias(
 
 
 def test_tempfile_cargo_path_uses_same_retry_and_evidence_authority(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     command = ["cargo", "rustc"]
@@ -287,7 +315,10 @@ def test_tempfile_cargo_path_uses_same_retry_and_evidence_authority(
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
-        env={"RUSTC_WRAPPER": "/usr/bin/sccache"},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            RUSTC_WRAPPER="/usr/bin/sccache",
+        ),
         timeout=1.0,
         json_output=True,
         label="Runtime wasm build",
@@ -301,6 +332,7 @@ def test_tempfile_cargo_path_uses_same_retry_and_evidence_authority(
 
 
 def test_guard_timeout_is_preserved_in_execution_evidence(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     command = ["cargo", "build"]
@@ -313,7 +345,7 @@ def test_guard_timeout_is_preserved_in_execution_evidence(
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
-        env={},
+        env=_cargo_env(tmp_path / "cargo-target"),
         timeout=1.0,
         json_output=True,
         label="Runtime build",
@@ -322,6 +354,144 @@ def test_guard_timeout_is_preserved_in_execution_evidence(
     evidence = CARGO.cargo_execution_evidence(result)
     assert evidence["timed_out"] is True
     assert evidence["attempts"][0]["timed_out"] is True
+
+
+def test_cargo_capacity_rejection_has_probe_evidence_and_never_spawns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[list[str]] = []
+    target = tmp_path / "cargo-target"
+    monkeypatch.setattr(
+        DISK_CAPACITY,
+        "_default_measure_free_bytes",
+        lambda _path: DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+    )
+    monkeypatch.setattr(
+        CARGO,
+        "_run_completed_command",
+        lambda command, **_kwargs: executed.append(command),
+    )
+
+    with pytest.raises(DiskCapacityError) as caught:
+        CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build"],
+            cwd=tmp_path,
+            env=_cargo_env(target),
+            timeout=1.0,
+            json_output=True,
+            label="Capacity rejection",
+        )
+
+    assert executed == []
+    assert caught.value.diagnostic["status"] == "rejected"
+    assert caught.value.diagnostic["probes"] == [
+        {
+            "requested_path": str(target.resolve()),
+            "measured_path": str(tmp_path.resolve()),
+            "free_bytes": DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+            "required_bytes": DEFAULT_MINIMUM_HEADROOM_BYTES,
+            "error": None,
+        }
+    ]
+    assert not target.exists()
+
+
+def test_cargo_requires_explicit_target_declaration_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[list[str]] = []
+    monkeypatch.setattr(
+        CARGO,
+        "_run_completed_command",
+        lambda command, **_kwargs: executed.append(command),
+    )
+
+    with pytest.raises(ValueError, match="explicit CARGO_TARGET_DIR"):
+        CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build", "--target-dir", "command-only-target"],
+            cwd=tmp_path,
+            env={},
+            timeout=1.0,
+            json_output=True,
+            label="Missing target declaration",
+        )
+
+    assert executed == []
+
+
+def test_cargo_rejects_conflicting_command_target_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[list[str]] = []
+    monkeypatch.setattr(
+        CARGO,
+        "_run_completed_command",
+        lambda command, **_kwargs: executed.append(command),
+    )
+
+    with pytest.raises(ValueError, match="--target-dir conflicts"):
+        CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build", "--target-dir=other-target"],
+            cwd=tmp_path,
+            env=_cargo_env(tmp_path / "cargo-target"),
+            timeout=1.0,
+            json_output=True,
+            label="Conflicting target declaration",
+        )
+
+    assert executed == []
+
+
+def test_cargo_admits_explicit_build_dir_as_a_second_output_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "a-target"
+    build_dir = tmp_path / "z-build-dir"
+    target.mkdir()
+    build_dir.mkdir()
+    free_by_path = {
+        target.resolve(): DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
+        build_dir.resolve(): DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+    }
+    executed: list[list[str]] = []
+    monkeypatch.setattr(
+        DISK_CAPACITY,
+        "_default_measure_free_bytes",
+        lambda path: free_by_path[path],
+    )
+    monkeypatch.setattr(
+        CARGO,
+        "_run_completed_command",
+        lambda command, **_kwargs: executed.append(command),
+    )
+
+    with pytest.raises(DiskCapacityError) as caught:
+        CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build"],
+            cwd=tmp_path,
+            env=_cargo_env(
+                target,
+                CARGO_BUILD_BUILD_DIR=str(build_dir),
+            ),
+            timeout=1.0,
+            json_output=True,
+            label="Build directory capacity rejection",
+        )
+
+    assert executed == []
+    probes = caught.value.diagnostic["probes"]
+    assert [probe["requested_path"] for probe in probes] == [
+        str(target.resolve()),
+        str(build_dir.resolve()),
+    ]
+    assert [probe["free_bytes"] for probe in probes] == [
+        DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
+        DEFAULT_MINIMUM_HEADROOM_BYTES - 1,
+    ]
 
 
 def test_terminal_cargo_summary_preserves_signal_after_long_command() -> None:
@@ -374,7 +544,10 @@ def test_native_failure_receipt_carries_attempts_signal_timing_and_rss(
     cargo_result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=tmp_path,
-        env={"RUSTC_WRAPPER": "/usr/bin/sccache"},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            RUSTC_WRAPPER="/usr/bin/sccache",
+        ),
         timeout=10.0,
         json_output=True,
         label="Runtime build",
@@ -420,7 +593,11 @@ def test_resolved_runtime_plan_never_changes_environment_or_retries(
     plan = runtime_cargo_plan(
         tmp_path,
         fixture_root=runtime_fixture_root,
-        env={"RUSTC_WRAPPER": "sccache", "CARGO_INCREMENTAL": "0"},
+        env=_cargo_env(
+            tmp_path / "cargo-target",
+            RUSTC_WRAPPER="sccache",
+            CARGO_INCREMENTAL="0",
+        ),
         cargo_command=("cargo", "rustc"),
     )
     calls: list[dict[str, object]] = []
@@ -457,7 +634,7 @@ def test_resolved_plan_drift_preserves_guarded_execution_evidence(
     plan = runtime_cargo_plan(
         tmp_path,
         fixture_root=runtime_fixture_root,
-        env={},
+        env=_cargo_env(tmp_path / "cargo-target"),
         cargo_command=("cargo", "rustc"),
     )
 
