@@ -4,30 +4,14 @@ use std::path::{Path, PathBuf};
 
 use cc::Build;
 
+#[path = "../build_support/build_python.rs"]
+mod build_python;
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
 mod wasi_sysroot;
-
-fn resolve_build_python() -> String {
-    println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
-    println!("cargo:rerun-if-env-changed=PYTHON");
-    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
-        if let Ok(value) = env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-    if cfg!(windows) {
-        "python".to_string()
-    } else {
-        "python3".to_string()
-    }
-}
 
 fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -37,7 +21,7 @@ fn main() {
     let target_ptr_width = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let build_python = resolve_build_python();
+    let build_python = build_python::resolve();
     emit_cpython_abi_variadic_export_anchors(&manifest_dir, &out_dir);
 
     // The manifest owns only the dependency rlib. Final native/WASM producers
@@ -76,7 +60,6 @@ fn main() {
     emit_wasm_long_double_link_policy(&out_dir, &target_arch);
 
     unicode_tables::emit_runtime_unicode_tables(&out_dir, &build_python);
-    println!("cargo:rerun-if-env-changed=PYTHONPATH");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=../build_support/wasi_sysroot.rs");
     println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");

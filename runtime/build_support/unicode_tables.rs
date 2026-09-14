@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 struct UnicodeTables {
     version: String,
@@ -40,37 +39,11 @@ pub(crate) fn emit_runtime_unicode_tables(out_dir: &Path, build_python: &str) {
 }
 
 fn collect_unicode_tables(build_python: &str, consumer: &str) -> UnicodeTables {
-    let output = Command::new(build_python)
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            let Some(mut stdin) = child.stdin.take() else {
-                panic!("failed to open build Python `{build_python}` stdin for {consumer} unicode tables");
-            };
-            stdin.write_all(UNICODE_TABLE_SCRIPT.as_bytes())?;
-            drop(stdin);
-            child.wait_with_output()
-        });
-    let output = match output {
-        Ok(out) => out,
-        Err(err) => {
-            panic!(
-                "failed to run build Python `{build_python}` for {consumer} unicode tables: {err}"
-            );
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "build Python `{build_python}` {consumer} unicode table generation failed: {stderr}"
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = crate::build_python::run_script(
+        build_python,
+        UNICODE_TABLE_SCRIPT,
+        &format!("{consumer} unicode tables"),
+    );
     let mut lines = stdout.lines();
     let version = lines.next().unwrap_or_default().trim().to_string();
     if version.is_empty() {

@@ -164,8 +164,8 @@ def _validated_build_script_environment(
     if value is None:
         raise ValueError("runtime build-script environment must be an object")
     schema = value.get("schema")
-    fields = {"schema", "build_python", "PYTHONPATH"}
-    runtime = schema == "molt.runtime-build-script-environment.v1"
+    fields = {"schema", "build_python", "python_import_policy"}
+    runtime = schema == "molt.runtime-build-script-environment.v2"
     if runtime:
         fields |= {
             "MOLT_WASM_CPYTHON_ABI_EXPORTS",
@@ -173,7 +173,7 @@ def _validated_build_script_environment(
             "MOLT_WASM_LONGDOUBLE_ARCHIVE",
             "MOLT_WASM_BUILTINS_ARCHIVE",
         }
-    elif schema != "molt.cpython-abi-build-script-environment.v1":
+    elif schema != "molt.cpython-abi-build-script-environment.v2":
         raise ValueError("runtime build-script schema is invalid")
     if set(value) != fields:
         raise ValueError("runtime build-script environment shape is invalid")
@@ -200,25 +200,8 @@ def _validated_build_script_environment(
         raise ValueError("runtime build-script selected interpreter is inconsistent")
     if python["content_digest"] != _digest(build_python):
         raise ValueError("runtime build-script Python differs from toolchain custody")
-    pythonpath = _json_object_mapping(value["PYTHONPATH"])
-    if pythonpath is None:
-        raise ValueError("runtime build-script PYTHONPATH is invalid")
-    state = pythonpath.get("state")
-    if state in ("unset", "empty"):
-        if set(pythonpath) != {"state"}:
-            raise ValueError("runtime empty PYTHONPATH has content")
-    elif state == "set":
-        if (
-            set(pythonpath) != {"state", "entry_count", "content"}
-            or type(pythonpath["entry_count"]) is not int
-            or pythonpath["entry_count"] <= 0
-        ):
-            raise ValueError("runtime PYTHONPATH entry count is invalid")
-        tree = _validated_tree_summary(pythonpath["content"], label="PYTHONPATH")
-        if len(cast(Sequence[object], tree["roots"])) != pythonpath["entry_count"]:
-            raise ValueError("runtime PYTHONPATH root count is inconsistent")
-    else:
-        raise ValueError("runtime PYTHONPATH state is invalid")
+    if value["python_import_policy"] != "isolated-no-site-v1":
+        raise ValueError("runtime build-script Python import policy is invalid")
     if not runtime:
         return
     wasm = target.startswith("wasm32-")

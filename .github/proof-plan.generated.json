@@ -171,7 +171,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "6ebc01397ace9d67a580c5847b8bbb330116e53eabd70794f2cdf6d98e290bd8",
+  "authority_sha256": "e6a6a7417dae952b248bdaf384cb379c704ae5c1f602506209689114a3806d6e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3203,7 +3203,8 @@
         "-m",
         "pytest",
         "-q",
-        "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe"
+        "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe",
+        "tests/test_runtime_build_python.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
@@ -3218,7 +3219,8 @@
       "timeout_seconds": 120,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc"
       ]
     },
     {

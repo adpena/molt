@@ -592,35 +592,6 @@ def _build_script_path(
     return path
 
 
-def _pythonpath_content_identity(
-    project_root: Path,
-    env: Mapping[str, str],
-) -> dict[str, object]:
-    """Capture PYTHONPATH by ordered content, never by host pathname."""
-
-    raw = env.get("PYTHONPATH")
-    if raw is None:
-        return {"state": "unset"}
-    if not raw:
-        return {"state": "empty"}
-    build_script_root = project_root / "runtime" / "molt-runtime"
-    roots: list[tuple[str, Path]] = []
-    for index, entry in enumerate(raw.split(os.pathsep)):
-        # Python interprets an empty PYTHONPATH component as the child process
-        # working directory. Cargo runs this build script from the package root.
-        path = (
-            build_script_root
-            if not entry
-            else _build_script_path(entry, build_script_root=build_script_root)
-        )
-        roots.append((f"pythonpath/{index}", path))
-    return {
-        "state": "set",
-        "entry_count": len(roots),
-        "content": _tree_identity(roots, require_all=False),
-    }
-
-
 def _build_script_file_environment_identity(
     name: str,
     env: Mapping[str, str],
@@ -665,7 +636,6 @@ def _build_script_symbol_environment_value(
 
 
 def _build_python_script_environment_identity(
-    project_root: Path,
     env: Mapping[str, str],
     *,
     build_python_identity: Mapping[str, object],
@@ -689,7 +659,10 @@ def _build_python_script_environment_identity(
             "selectors": python_selectors,
             "content_digest": _digest(build_python_identity),
         },
-        "PYTHONPATH": _pythonpath_content_identity(project_root, env),
+        # Every Rust table generator uses build_support/build_python.rs.
+        # Its import isolation matches the attested -B -I -S interpreter probe;
+        # ambient project trees are not runtime build inputs.
+        "python_import_policy": "isolated-no-site-v1",
     }
 
 
@@ -716,9 +689,8 @@ def _runtime_build_script_environment_identity(
     build_script_root = project_root / "runtime" / "molt-runtime"
     wasm_target = target_triple.startswith("wasm32-")
     return {
-        "schema": "molt.runtime-build-script-environment.v1",
+        "schema": "molt.runtime-build-script-environment.v2",
         **_build_python_script_environment_identity(
-            project_root,
             env,
             build_python_identity=build_python_identity,
         ),
@@ -1489,9 +1461,8 @@ def resolve_wasm_cpython_abi_build_identity(
                 cargo_profile=cargo_profile,
             ),
             "build_script_environment": {
-                "schema": "molt.cpython-abi-build-script-environment.v1",
+                "schema": "molt.cpython-abi-build-script-environment.v2",
                 **_build_python_script_environment_identity(
-                    root,
                     env,
                     build_python_identity=build_python_identity,
                 ),
