@@ -52,7 +52,7 @@ using Buffa for native-speed wire serialization.
 - [x] MOL-XX: WASM codegen resource_check_op_size before pow/lshift
 - [x] MOL-XX: contains_refs container optimization
 - [x] MOL-XX: ASCII character interning (128 immortal strings)
-- [x] MOL-XX: molt-snapshot crate (execution state serialization)
+- [x] MOL-XX: retire orphan molt-snapshot serializer; executable snapshots require full-state custody
 - [x] MOL-XX: molt-embed SDK crate
 - [x] MOL-XX: molt repl command
 - [x] MOL-XX: Fuzz targets (NaN-boxing, WASM types, TIR passes)

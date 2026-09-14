@@ -537,9 +537,7 @@ def _locate_toolchain_watch_roots(
         command = command_identity._python_auxiliary_command(
             python_envelope,
             python_exact,
-            authority=admission._PYTHON_IDENTITY_PROBE,
             arguments=("--locate-active-environment",),
-            isolated=True,
             no_site=True,
         )
         if command is None:

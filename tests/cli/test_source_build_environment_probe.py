@@ -18,6 +18,7 @@ def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path
     monkeypatch.setattr(authority.sys, "_base_executable", str(base))
     monkeypatch.setenv("PYTHONHOME", "unowned-home")
     monkeypatch.setenv("PYTHONPATH", "unowned-imports")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "0")
     expected = runtime_identity_manifest()
     calls = []
 
@@ -31,6 +32,7 @@ def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path
     assert not calls
     assert argv == [
         str(base.resolve()),
+        "-B",
         "-I",
         "-S",
         str(Path(authority.python_environment_identity.__file__).resolve()),
@@ -39,8 +41,37 @@ def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path
     assert options["timeout"] == 120
     assert "PYTHONPATH" not in options["env"]
     assert "PYTHONHOME" not in options["env"]
-    assert options["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert options["env"]["PYTHONDONTWRITEBYTECODE"] == "0"
     assert options["env"]["PYTHONNOUSERSITE"] == "1"
+
+
+def test_realized_environment_probe_preserves_mode_with_no_bytecode(
+    monkeypatch, tmp_path
+):
+    expected = {"realized": "environment"}
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(expected), "")
+
+    monkeypatch.setattr(authority.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(
+        authority, "validate_python_environment_identity", lambda value: value
+    )
+    executable = Path("selected-python")
+    assert authority._probe_environment_identity(executable, tmp_path) == expected
+    assert calls == [
+        [
+            str(executable),
+            "-B",
+            "-I",
+            str(Path(authority.python_environment_identity.__file__).resolve()),
+            "--capture-environment",
+            str(tmp_path.resolve()),
+            "--admit-virtualenv-bootstrap",
+        ]
+    ]
 
 
 @pytest.mark.parametrize("output", ["not json", '{"schema":1,"schema":2}', "{}"])

@@ -711,7 +711,7 @@ dependencies = []
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -2004,7 +2004,7 @@ dependencies = ["rust.test.ir-wasm-runtime-authorities"]
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
 # Pass and WASM libtests are owned by the prerequisite, not repeated here.
-argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--test-threads=1"]
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--test-threads=1"]
 toolchains = ["cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
@@ -2253,10 +2253,12 @@ require_fresh_toolchain = true
 globs = [
   "runtime/molt-backend/**/*.rs",
   "runtime/molt-backend/**/Cargo.toml",
+  "runtime/molt-artifact-publish/**/*.rs",
+  "runtime/molt-artifact-publish/Cargo.toml",
 ]
 gates = [
-  "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
-  "cargo test --locked --profile release-fast -p molt-backend --features native-backend --lib",
+  "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+  "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib",
 ]
 
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
@@ -2304,6 +2306,8 @@ globs = [
   "runtime/molt-wasm-host/**/*.rs",
   "runtime/molt-wasm-host/**/*.toml",
   "runtime/molt-wasm-host/Cargo.toml",
+  "runtime/molt-artifact-publish/**/*.rs",
+  "runtime/molt-artifact-publish/Cargo.toml",
 ]
 gates = [
   "cargo clippy --locked -p molt-wasm-host -- -D warnings",

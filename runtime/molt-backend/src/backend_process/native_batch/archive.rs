@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use ar_archive_writer::{ArchiveKind, DEFAULT_OBJECT_READER, NewArchiveMember};
 use object::{Architecture, BinaryFormat, Endianness, Object, ObjectKind, SubArchitecture};
 
-use crate::backend_process::atomic_publish::write_atomically;
+use molt_artifact_publish::write_atomically;
 
 /// Package ordered ordinary objects without resolving relocations or changing
 /// symbol inclusion. The final link must whole-load these compiler archives.

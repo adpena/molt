@@ -161,6 +161,19 @@ poll table itself becomes reachability-sliced. If an ordinary callable is not
 observed, it must be absent from the app import section, absent from any
 app-local resolver table, and unavailable as a fake fallback symbol.
 
+The Rust host admits the complete `molt_call_indirectN` import family across
+both application and runtime modules before either core start section runs.
+Application wrapper exports must match the imported ABI and publish together,
+once, into an immutable registry. A missing or malformed sibling must not leave
+a partially usable family. Standalone WASIp1 commands instead dispatch through
+their exported wasm32 function table: each selected function's parameter and
+result types must be compatible before it executes, including after table
+mutation. Checking returned values after execution is too late to prevent guest
+side effects. Compatible Wasm function subtypes retain their normal semantics.
+These host contracts are exercised in `molt-wasm-host`'s indirect-dispatch tests;
+the actual WASI lifecycle integration shares one module compilation across
+multiple exact libtest filters while checking every named result individually.
+
 ### 5.1 Required imports
 - `molt_alloc(size: i64) -> i64`
 - `molt_free(ptr: i32, len: i32) -> void`

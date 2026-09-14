@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.dx import development_artifact_env, generated_session_id
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
@@ -172,41 +173,9 @@ def _select_node_binary() -> str | None:
     return best_path
 
 
-def _molt_wasm_host_exe_name() -> str:
-    return "molt-wasm-host.exe" if os.name == "nt" else "molt-wasm-host"
-
-
-def _molt_wasm_host_candidate_dirs(root: Path) -> list[Path]:
-    dirs: list[Path] = []
-    seen: set[str] = set()
-    for env_name in ("MOLT_WASM_TEST_CARGO_TARGET_DIR", "CARGO_TARGET_DIR"):
-        configured = os.environ.get(env_name, "").strip()
-        if not configured:
-            continue
-        path = Path(configured).expanduser()
-        key = os.path.normcase(os.fspath(path.resolve(strict=False)))
-        if key not in seen:
-            seen.add(key)
-            dirs.append(path)
-    repo_target = root / "target"
-    key = os.path.normcase(os.fspath(repo_target.resolve(strict=False)))
-    if key not in seen:
-        dirs.append(repo_target)
-    return dirs
-
-
-def _resolve_molt_wasm_host_binary(root: Path) -> str | None:
-    requested = os.environ.get("MOLT_WASM_HOST_BIN", "").strip()
-    if requested:
-        path = Path(requested).expanduser()
-        return os.fspath(path) if path.exists() else None
-
-    exe_name = _molt_wasm_host_exe_name()
-    for target_dir in _molt_wasm_host_candidate_dirs(root):
-        candidate = target_dir / "dev-fast" / exe_name
-        if candidate.exists():
-            return os.fspath(candidate)
-    return None
+def _wasm_test_host_target_dir() -> Path | None:
+    configured = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
+    return Path(configured).expanduser() if configured else None
 
 
 def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Path:
@@ -236,7 +205,9 @@ def require_wasm_build_toolchain() -> None:
 
 def require_wasm_toolchain() -> None:
     root = Path(__file__).resolve().parents[1]
-    host_bin = _resolve_molt_wasm_host_binary(root)
+    host_bin = resolve_molt_wasm_host_binary(
+        root, cargo_profile="dev-fast", target_dir=_wasm_test_host_target_dir()
+    )
     if host_bin is None:
         pytest.skip(
             "prebuilt molt-wasm-host dev-fast binary is required for linked wasm "
@@ -348,7 +319,9 @@ def build_wasm_linked(
 def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    host_bin = _resolve_molt_wasm_host_binary(root)
+    host_bin = resolve_molt_wasm_host_binary(
+        root, cargo_profile="dev-fast", target_dir=_wasm_test_host_target_dir()
+    )
     if host_bin is None:
         raise AssertionError(
             "prebuilt molt-wasm-host dev-fast binary is required for linked wasm "

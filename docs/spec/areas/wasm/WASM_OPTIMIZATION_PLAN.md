@@ -83,7 +83,7 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | Instruction combining | d468918f | Const propagation through box/unbox, reduces 5 insns to 2 for known-const unbox; 3-8% speed improvement |
 | `local.tee` introduction | fef9990c | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
 | Constant caching (`ConstantCache`) | ffd95a5d | Cache for `INT_SHIFT`/`INT_MIN`/`INT_MAX` materialization in helper functions |
-| Precompiled `.cwasm` artifacts | e4b4d9b8 | `--precompile` flag with `wasmtime compile`; 10-50x faster startup |
+| Precompiled `.molt.cwasm` containers | Host-owned producer migration | `--precompile` removes startup compilation; consumer proof and current startup measurements required |
 | `br_table` O(1) state dispatch | c1ae684a | Generator/coroutine state machines use `br_table`; 2-5x faster resume |
 | Dead local elimination (`__dead_sink`) | 0b9c39ad | Unused locals routed to single sink; 2-5% binary size reduction |
 | `memory.fill` for generator zero-init | 2bff6165 | Bulk zero-init replaces N individual stores; code size + throughput |
@@ -235,7 +235,10 @@ buffer, import, or callable-closure work.
 - **Phase 3**: Relaxed SIMD for floating-point reductions where nondeterminism is acceptable (capability-gated per Molt's determinism policy).
 
 **Constraints**:
-- Deterministic mode (`MOLT_DETERMINISTIC=1`) must not use relaxed SIMD.
+- Deterministic mode must not use platform-dependent relaxed SIMD lowerings.
+  The Wasmtime host selects deterministic relaxed SIMD semantics alongside
+  arithmetic NaN canonicalization when `MOLT_DETERMINISTIC=1`; instruction
+  admission is preserved. Other hosts must establish their own matching policy.
 - Browser compatibility is good (Chrome 91+, Firefox 89+, Safari 16.4+).
 
 **UPDATE 2026-03-20:** SIMD instructions fully supported in the WASI stub rewriter (0eb06e6c), enabling freestanding builds with +simd128.
@@ -306,7 +309,7 @@ ship the artifact.
 | Shared-everything threads | Future route for sharing WasmGC references and module fields across threads. | Track only as design input while proposal is unstable; no shipping dependency. |
 | WASI 0.3 async streams/futures | Native component async, stream forwarding/splicing, caller-supplied buffers, and eventual threads reduce host glue for edge/server. | Component-model ABI row with P1/P2 parity; no broad migration until host runners are version-gated. |
 | JS string builtins/reference strings | Potentially avoids copying external JS strings through linear memory for browser embeds. | Browser-only profile; exact Unicode/CPython string semantics gate before use. |
-| Relaxed SIMD and future flexible vectors | More hardware throughput for reductions and vector kernels. | Off by default in deterministic mode; enabled only with an explicit reproducibility/perf scoreboard row. |
+| Relaxed SIMD and future flexible vectors | More hardware throughput for reductions and vector kernels. | Platform-dependent results forbidden in deterministic mode; Wasmtime uses deterministic relaxed-SIMD lowering. Other engines and future vectors require explicit reproducibility/perf proof. |
 | Wide arithmetic and half precision | Better lowering for numeric extension code and ML kernels. | IR dtype/range facts own narrowing/widening; no silent precision loss. |
 | Compilation hints and memory control | Faster startup and more predictable memory pressure in browsers/edge hosts. | Measured startup/memory row; no semantic dependency on hints. |
 
@@ -362,7 +365,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |
-| **Precompiled .cwasm artifacts** | 10-50x faster startup | DONE (e4b4d9b8) — --precompile flag |
+| **Precompiled `.molt.cwasm` containers** | Eliminate startup compilation; measure end-to-end benefit | Host-owned `--precompile` implementation; integration acceptance pending |
 | **Constant deduplication** in data segments | 3-5% | Partially implemented (`data_segment_cache`) |
 | **Function deduplication** (identical code merging) | 2-5% | Not implemented |
 | **Type section deduplication** | 1-2% | Not implemented (30+ types currently defined) |
@@ -404,18 +407,75 @@ cache identity instead of requiring a documentation recipe to stay in sync.
 
 The wasmtime host (`molt-wasm-host`) supports three compilation strategies:
 - **JIT compilation** (default): Compile WASM to native code at load time.
-- **Precompiled modules** (`MOLT_WASM_PRECOMPILED=1`): Deserialize pre-compiled `.cwasm` files, skipping compilation entirely.
+- **Precompiled modules** (`MOLT_WASM_PRECOMPILED=1`): Deserialize host-produced `.molt.cwasm` containers, skipping compilation entirely.
 - **Fast compilation** (`MOLT_WASM_COMPILE_FAST=1`): Use `OptLevel::None` for faster compilation at the cost of runtime performance.
+
+Compiler scheduling is independent of numeric semantics. Parallel compilation
+remains enabled in deterministic mode; `MOLT_WASM_COMPILE_SERIAL=1` explicitly
+selects serial compilation as a resource policy. Wasmtime collects compiler
+results and errors in input order. Host engine flags accept only `0` or `1`;
+invalid values fail early. `MOLT_WASM_MAX_STACK` must be a positive byte count
+with representable async-stack headroom, rather than silently using a default.
+
+`MOLT_WASM_HOST_DEBUG` (presence-based) enables host stage diagnostics on stderr.
+`MOLT_WASM_HOST_LOG` supplies standard module/level filters and takes precedence;
+for upstream pass timings use
+`off,molt_wasm_host=debug,wasmtime_internal_cranelift::compiler=trace`.
+Logging is off by default. Capture verbose profiling output to an evidence file;
+upstream per-function timings are nested CPU/work durations, not additive
+wall-clock times when compilation is parallel.
+
+Each native precompiled module is one source-bound
+`<artifact>.molt.cwasm` container. `molt-wasm-host --precompile` is the sole
+producer and publication authority; its version-1 receipt records the source
+and container paths, sizes, and SHA-256 digests. The host verifies container
+integrity before unsafe deserialization, including explicit override paths;
+missing or drifting source binding fails closed.
+
+These containers are native code tied to the host's Wasmtime version, engine
+configuration, OS and architecture; they are not portable browser/edge WASM.
+Cloudflare and Fastly profiles therefore do not enable precompilation by
+default. Digests detect corruption and stale source, not malicious authorship:
+only enable `MOLT_WASM_PRECOMPILED=1` for trusted artifacts.
+
+The container stores `MOLTAOT` plus version byte 1, a little-endian u64 source
+length, a 32-byte source SHA-256, a little-endian u64 payload length, and a
+32-byte payload SHA-256, followed by the exact Wasmtime serialization.
+One shared `molt-artifact-publish` commit publishes header and payload together.
+Split applications stage both members before any commit; each container is
+crash-atomic, but the pair is not a filesystem transaction. Failure reports
+prior committed paths and preserves replacement/durability error state.
+There are no sidecars or rollback backups. The retired
+`MOLT_WASM_PRECOMPILED_WRITE` setting fails with an explicit migration error.
+Source/manifest/output aliases are rejected by filesystem identity; two new
+outputs in the same physical directory must also have distinct Unicode-normalized,
+case-folded names. The producer never instantiates a guest or executes a start.
+It uses the engine's direct precompile API rather than loading and copying an
+executable module or populating a second JIT cache. Each immutable admitted source
+owns one lazy SHA-256 shared by manifest validation, container binding, and receipt
+encoding. For bounded stage profiling, use
+`MOLT_WASM_HOST_LOG=off,molt_wasm_host::precompiled=debug`: it records codegen,
+identity, staging, publication, admission, and deserialization timings and sizes
+without per-function compiler traces.
+
+Changing the deterministic relaxed-SIMD policy intentionally invalidates
+previous serialized modules: Wasmtime checks the semantic tunable before
+deserialization. Recompile affected `.molt.cwasm` containers through the host.
+Do not retry with weaker engine options or fall back silently.
+Serial/parallel scheduling alone does not change the artifact policy. Local
+unit coverage compares serialized bytes, cross-loads them, and executes NaN and
+out-of-range relaxed-swizzle cases in both optimization modes; this is not a
+claim that all OS/architecture or browser conformance cells are closed.
 
 ### 5.2 Optimization Opportunities
 
 | Optimization | Impact | Effort |
 |---|---|---|
-| **Precompiled `.cwasm` artifacts** as default for production | DONE (e4b4d9b8) — --precompile flag with wasmtime compile | Low (infrastructure) |
+| **Precompiled `.molt.cwasm` containers** for explicit production builds | Host-owned `--precompile`; integration acceptance pending | Low (infrastructure) |
 | **Streaming compilation** for browser targets | Progressive loading; first-byte-to-execution | Medium |
 | **Lazy compilation** (compile functions on first call) | Faster startup for large modules | Low (wasmtime config) |
 | **Module splitting** (separate hot/cold code) | Faster initial load; lazy-load cold paths | High |
-| **Snapshot artifacts** (`molt.snapshot`) | Skip init phase entirely | High (see spec 0968) |
+| **Executable snapshot artifacts** (`molt.snapshot`) | FUTURE — full pause/resume state custody; v2 currently emits non-restorable metadata only (see spec 0968) | High |
 | **Parallel compilation** (default on) | 2-4x faster compile on multi-core | Already supported |
 
 ### 5.3 Startup Time Targets
@@ -424,7 +484,7 @@ The wasmtime host (`molt-wasm-host`) supports three compilation strategies:
 |---|---|---|
 | Cold start (JIT compile + init) | 200-500 ms | < 100 ms |
 | Warm start (precompiled + init) | 20-50 ms | < 10 ms |
-| Snapshot restore | N/A | < 5 ms |
+| Future executable snapshot restore | Not implemented | < 5 ms after full-state correctness exists |
 | Browser (streaming compile) | N/A | < 50 ms (time to first interaction) |
 
 ---
@@ -535,8 +595,8 @@ Measured overhead: approximately 50-100 ns per host call (empty function). With 
 | Technique | Rationale |
 |---|---|
 | Speed optimization (`wasm-opt -O3`) | Throughput matters more than size |
-| Precompiled `.cwasm` artifacts | Eliminate compilation overhead |
-| Snapshot artifacts (`molt.snapshot`) | Skip init phase for edge workers |
+| Precompiled `.molt.cwasm` containers | Eliminate compilation overhead |
+| Executable snapshot artifacts (`molt.snapshot`) | Future pause/resume optimization; current v2 metadata template is not restorable |
 | `InstancePre` for pooled instantiation | Amortize linking across requests |
 | Fuel-based CPU budgets | Multi-tenant fairness |
 | Memory limits per instance | Prevent OOM from rogue tenants |
@@ -545,7 +605,8 @@ Measured overhead: approximately 50-100 ns per host call (empty function). With 
 ### 8.3 Edge/Workers Optimization Strategy
 
 Per spec 0965 and 0968:
-- Deploy-time init + WASM linear memory snapshot.
+- Current: verified execution metadata plus host-owned precompiled containers.
+- Future: deploy-time init snapshot only with full continuation and runtime-state custody.
 - Strict resource limits (CPU, memory, output size).
 - Capability-gated I/O (no ambient authority).
 - Schema-first boundary for all host interactions.
@@ -605,7 +666,7 @@ Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT defi
 2. **Implement `--wasm-profile pure`** -- conditional import registration in `wasm.rs` for pure-compute modules.
 3. **Inline integer arithmetic fast paths** -- emit WASM-native `i64.add/sub/mul` with tag-check guards, host-call fallback.
 4. **Name/debug section stripping** -- `wasm-tools strip` in production builds.
-5. **Precompiled `.cwasm` as default** -- generate and cache precompiled artifacts.
+5. **Precompiled `.molt.cwasm` containers** -- generate explicitly through the host and cache them.
 
 ### Phase 2: Proposal Adoption (P1/P2, 2-4 months)
 

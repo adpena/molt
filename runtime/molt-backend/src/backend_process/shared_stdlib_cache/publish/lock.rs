@@ -140,7 +140,7 @@ impl std::error::Error for PublicationLockReleaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend_process::atomic_publish::{AtomicPublicationError, PublicationState};
+    use molt_artifact_publish::{AtomicPublicationError, PublicationState};
 
     #[test]
     fn successful_unlock_preserves_body_value_or_typed_failure() {

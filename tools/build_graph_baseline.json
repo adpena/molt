@@ -1,5 +1,6 @@
 {
   "blast_radius": {
+    "molt-artifact-publish": 2,
     "molt-backend": 0,
     "molt-backend-luau": 1,
     "molt-backend-native": 1,
@@ -43,7 +44,6 @@
     "molt-runtime-vfs": 5,
     "molt-runtime-xml": 5,
     "molt-runtime-zoneinfo": 5,
-    "molt-snapshot": 0,
     "molt-stdlib-difflib": 5,
     "molt-stdlib-graphlib": 5,
     "molt-stdlib-text": 5,

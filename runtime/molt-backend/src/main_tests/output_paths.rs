@@ -1,4 +1,5 @@
 use super::*;
+use molt_artifact_publish::write_bytes_atomically;
 
 #[test]
 fn write_cached_output_can_skip_disk_write_when_synced() {

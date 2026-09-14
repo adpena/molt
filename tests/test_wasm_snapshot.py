@@ -1,195 +1,164 @@
-"""Tests for the molt.snapshot artifact (Plan D -- edge cold-start)."""
+"""Snapshot metadata-template and execution-identity regressions."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
+
+import pytest
 
 from molt.capability_manifest import CapabilityManifest
+from molt.cli.non_native_output import (
+    _generate_snapshot_header,
+    _snapshot_execution_identity,
+)
 
 
-def test_snapshot_header_valid_json(tmp_path):
-    """Snapshot header should be valid JSON with required fields."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_worker_cloudflare",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [
-            {"path": "/bundle", "mount_type": "bundle", "hash": "sha256:def456"},
-            {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
-        ],
-        "capability_manifest": ["fs.bundle.read", "fs.tmp.read", "fs.tmp.write"],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 0,
+def _asset(path: Path) -> dict[str, object]:
+    payload = path.read_bytes()
+    return {
+        "path": path.name,
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
     }
-    path = tmp_path / "molt.snapshot.json"
-    path.write_text(json.dumps(header))
-    loaded = json.loads(path.read_text())
-    assert loaded["snapshot_version"] == 1
-    assert len(loaded["mount_plan"]) == 2
-    assert loaded["capability_manifest"][0] == "fs.bundle.read"
 
 
-def test_snapshot_header_required_fields():
-    """All required fields must be present in a valid snapshot header."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_worker_cloudflare",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [],
-        "capability_manifest": [],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 0,
-    }
-    required_keys = {
-        "snapshot_version",
-        "abi_version",
-        "target_profile",
-        "module_hash",
-        "mount_plan",
-        "capability_manifest",
-        "determinism_stamp",
-        "init_state_size",
-    }
-    assert required_keys.issubset(header.keys())
-
-
-def test_snapshot_mount_plan_structure():
-    """Each mount plan entry should have path and mount_type."""
-    mount_plan = [
-        {"path": "/bundle", "mount_type": "bundle", "hash": "sha256:def456"},
-        {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
-        {"path": "/dev", "mount_type": "dev"},
-    ]
-    for entry in mount_plan:
-        assert "path" in entry
-        assert "mount_type" in entry
-        assert entry["mount_type"] in {"bundle", "tmp", "dev"}
-
-
-def test_snapshot_rejects_hash_mismatch():
-    """Snapshot should reject when module hash doesn't match."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_worker_cloudflare",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [],
-        "capability_manifest": [],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 0,
-    }
-    expected_hash = "sha256:different"
-    assert header["module_hash"] != expected_hash, (
-        "Stale snapshot: module hash mismatch"
+def _write_manifest(root: Path, *, mode: str) -> tuple[str, ...]:
+    if mode == "linked":
+        linked = root / "program.wasm"
+        linked.write_bytes(b"linked module")
+        assets = (_asset(linked),)
+        modules = {"linked": assets[0]}
+    else:
+        app = root / "app.wasm"
+        runtime = root / "molt_runtime.wasm"
+        app.write_bytes(b"app module")
+        runtime.write_bytes(b"runtime module")
+        assets = (_asset(app), _asset(runtime))
+        modules = {"app": assets[0], "runtime": assets[1]}
+    (root / "manifest.json").write_text(
+        json.dumps({"version": 2, "mode": mode, "modules": modules}),
+        encoding="utf-8",
     )
+    return tuple(f"sha256:{asset['sha256']}" for asset in assets)
 
 
-def test_snapshot_rejects_abi_mismatch():
-    """Snapshot should reject when ABI version doesn't match."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_worker_cloudflare",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [],
-        "capability_manifest": [],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 0,
-    }
-    expected_abi = "0.2.0"
-    assert header["abi_version"] != expected_abi, "Stale snapshot: ABI version mismatch"
-
-
-def test_snapshot_round_trip(tmp_path):
-    """Snapshot header should survive write-read round trip."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_worker_cloudflare",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [
-            {"path": "/bundle", "mount_type": "bundle", "hash": "sha256:def456"},
-            {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
-            {"path": "/dev", "mount_type": "dev"},
-        ],
-        "capability_manifest": [
-            "fs.bundle.read",
-            "fs.tmp.read",
-            "fs.tmp.write",
-            "http.fetch",
-        ],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 524288,
-    }
-    path = tmp_path / "molt.snapshot.json"
-    path.write_text(json.dumps(header, indent=2))
-    loaded = json.loads(path.read_text())
-    assert loaded == header
-
-
-def test_snapshot_capabilities_empty_allowed():
-    """A snapshot with no capabilities is valid (restrictive sandbox)."""
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": "wasm_wasi",
-        "module_hash": "sha256:abc123",
-        "mount_plan": [],
-        "capability_manifest": [],
-        "determinism_stamp": "2026-03-20T00:00:00Z",
-        "init_state_size": 0,
-    }
-    assert isinstance(header["capability_manifest"], list)
-    assert len(header["capability_manifest"]) == 0
-
-
-def test_generate_snapshot_header_function(tmp_path):
-    """The CLI helper _generate_snapshot_header should produce valid JSON."""
-    # Create a dummy wasm file so the hash can be computed.
-    wasm_path = tmp_path / "output.wasm"
-    wasm_path.write_bytes(b"\x00asm" + b"\x00" * 100)
-
-    from molt.cli.non_native_output import _generate_snapshot_header
-
+def _generate(
+    root: Path, *, capabilities: list[str] | None = None
+) -> dict[str, object]:
+    output = root / "output.wasm"
+    output.write_bytes(b"\0asm")
     _generate_snapshot_header(
-        output_wasm=wasm_path,
+        output_wasm=output,
         target_profile="cloudflare",
         resolved_capability_policy=CapabilityManifest(
-            allow=["fs.bundle.read", "fs.tmp.read"]
+            allow=capabilities if capabilities is not None else []
         ).resolve(),
         verbose=False,
     )
+    return json.loads((root / "molt.snapshot.json").read_text(encoding="utf-8"))
 
-    snapshot_path = tmp_path / "molt.snapshot.json"
-    assert snapshot_path.exists()
-    loaded = json.loads(snapshot_path.read_text())
-    assert loaded["snapshot_version"] == 1
-    assert loaded["abi_version"] == "0.1.0"
-    assert loaded["target_profile"] == "cloudflare"
-    assert loaded["module_hash"].startswith("sha256:")
-    assert loaded["mount_plan"] == []
-    assert loaded["capability_manifest"] == ["fs.bundle.read", "fs.tmp.read"]
-    assert loaded["capability_policy_digest"].startswith("sha256:")
-    assert loaded["determinism_stamp"] == "1980-01-01T00:00:00Z"
-    assert loaded["init_state_size"] == 0
+
+def test_metadata_template_never_claims_restorable_state(tmp_path: Path) -> None:
+    header = _generate(tmp_path, capabilities=["fs.bundle.read", "fs.tmp.read"])
+
+    assert header["snapshot_version"] == 2
+    assert header["artifact_kind"] == "metadata-template"
+    assert header["restorable"] is False
+    assert header["state_scope"] is None
+    assert header["execution_identity"] is None
+    assert header["init_state_size"] == 0
+    assert header["payload_hash"] is None
+    assert header["integrity_hash"] is None
+    assert header["capability_manifest"] == ["fs.bundle.read", "fs.tmp.read"]
+    assert header["capability_policy_digest"].startswith("sha256:")
+    assert header["determinism_stamp"] == "1980-01-01T00:00:00Z"
+
+
+def test_execution_identity_uses_shared_linked_golden_encoding(tmp_path: Path) -> None:
+    (linked_digest,) = _write_manifest(tmp_path, mode="linked")
+    assert _snapshot_execution_identity(tmp_path / "output.wasm") == (
+        f"molt.snapshot.execution.v2|linked|linked={linked_digest}"
+    )
+    assert _generate(tmp_path)["execution_identity"] == (
+        f"molt.snapshot.execution.v2|linked|linked={linked_digest}"
+    )
+
+
+def test_execution_identity_binds_both_split_runtime_modules(tmp_path: Path) -> None:
+    app_digest, runtime_digest = _write_manifest(tmp_path, mode="split-runtime")
+    first = _snapshot_execution_identity(tmp_path / "output.wasm")
+    assert first == (
+        "molt.snapshot.execution.v2|split-runtime|"
+        f"app={app_digest}|runtime={runtime_digest}"
+    )
+
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(b"different runtime module")
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    manifest["modules"]["runtime"] = _asset(runtime)
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    second = _snapshot_execution_identity(tmp_path / "output.wasm")
+    assert second != first
+    assert second.startswith(
+        f"molt.snapshot.execution.v2|split-runtime|app={app_digest}|runtime=sha256:"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["legacy", "malformed", "digest-drift", "path-escape"]
+)
+def test_existing_execution_manifest_fails_closed(
+    tmp_path: Path, mutation: str
+) -> None:
+    _write_manifest(tmp_path, mode="linked")
+    manifest_path = tmp_path / "manifest.json"
+    if mutation == "legacy":
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif mutation == "malformed":
+        manifest_path.write_text("{", encoding="utf-8")
+    elif mutation == "digest-drift":
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["modules"]["linked"]["sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["modules"]["linked"]["path"] = "../program.wasm"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        _generate(tmp_path)
 
 
 def test_explicit_empty_snapshot_capabilities_do_not_regain_defaults(
-    tmp_path, monkeypatch
-):
-    from molt.cli.non_native_output import _generate_snapshot_header
-
-    wasm_path = tmp_path / "output.wasm"
-    wasm_path.write_bytes(b"\x00asm" + b"\x00" * 100)
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
-    _generate_snapshot_header(
-        output_wasm=wasm_path,
-        target_profile="cloudflare",
-        resolved_capability_policy=CapabilityManifest(allow=[]).resolve(),
-        verbose=False,
-    )
-    loaded = json.loads((tmp_path / "molt.snapshot.json").read_text())
-    assert loaded["capability_manifest"] == []
-    assert loaded["determinism_stamp"] == "1970-01-01T00:00:00Z"
+    header = _generate(tmp_path, capabilities=[])
+    assert header["capability_manifest"] == []
+    assert header["determinism_stamp"] == "1970-01-01T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "asset_path",
+    [
+        "/program.wasm",
+        "dir/program.wasm",
+        "dir\\program.wasm",
+        "C:program.wasm",
+        "program.wasm:stream",
+    ],
+)
+def test_manifest_assets_are_portable_adjacent_names(
+    tmp_path: Path, asset_path: str
+) -> None:
+    _write_manifest(tmp_path, mode="linked")
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["modules"]["linked"]["path"] = asset_path
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="adjacent file"):
+        _generate(tmp_path)

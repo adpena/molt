@@ -1,13 +1,12 @@
-use anyhow::{Context, Result, bail};
 use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
-use molt_runtime::vfs::snapshot::SnapshotHeader;
+#[cfg(test)]
+use molt_wasm_host::sha256_hex;
 use num_format::{Grouping, SystemLocale};
 use rmpv::Value as MsgpackValue;
 use rmpv::encode::write_value;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use sha2::{Digest, Sha256};
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, socklen_t};
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -24,23 +23,25 @@ use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, connect};
 use url::Url;
+use wasmtime::error::{Context, bail};
 use wasmtime::{
     Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Instance, Linker, Memory,
-    MemoryType, Module, OptLevel, Ref, Store, Table, TableType, Val, ValType,
+    MemoryType, Module, OptLevel, Ref, Result, Store, Table, TableType, Val, ValType,
 };
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder, p1};
 
 mod db_host;
 mod engine;
+mod entrypoint;
 mod indexed;
 mod isolate_host;
 #[cfg(test)]
 mod main_tests;
 mod path_resolver;
+mod precompiled;
 mod process_host;
 mod runtime_bridge;
-mod snapshot;
 mod socket_host;
 mod stream_bridge;
 mod time_host;
@@ -50,12 +51,13 @@ mod websocket_host;
 
 use db_host::{DbWorker, PendingDbRequest, define_db_host};
 use engine::*;
+use entrypoint::*;
 use indexed::*;
 use isolate_host::*;
 use path_resolver::*;
+use precompiled::{ModuleRole, load_or_compile_module, precompile_execution};
 use process_host::{ProcessManager, define_process_host};
 use runtime_bridge::*;
-use snapshot::*;
 use socket_host::define_socket_host;
 use stream_bridge::*;
 use time_host::define_time_host;
@@ -91,16 +93,6 @@ const CANCEL_POLL_BATCH: usize = 256;
 const IO_EVENT_READ: u32 = 1;
 const IO_EVENT_WRITE: u32 = 1 << 1;
 const IO_EVENT_ERROR: u32 = 1 << 2;
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    molt_obj_model::MoltObject::none().bits()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    molt_obj_model::MoltObject::none().bits()
-}
-
 #[cfg(unix)]
 const HOST_AF_INET: i32 = libc::AF_INET;
 #[cfg(windows)]
@@ -144,16 +136,10 @@ const HOST_POLLNVAL: i16 = libc::POLLNVAL as i16;
 #[cfg(windows)]
 const HOST_POLLNVAL: i16 = winsock::POLLNVAL;
 
-fn debug_log<F: FnOnce() -> String>(message: F) {
-    if env::var("MOLT_WASM_HOST_DEBUG").is_ok() {
-        eprintln!("[molt-wasm-host] {}", message());
-    }
-}
-
 struct HostState {
     wasi: WasiP1Ctx,
     memory: Option<Memory>,
-    call_indirect: Arc<Mutex<HashMap<String, Option<Func>>>>,
+    call_indirect: IndirectRegistry,
     isolate_bootstrap_export: Option<Func>,
     isolate_import_export: Option<Func>,
     db_worker: Option<DbWorker>,
@@ -196,23 +182,36 @@ impl SocketManager {
     }
 }
 
-fn main() -> Result<()> {
-    debug_log(|| "starting".to_string());
-    let mut args = env::args().skip(1);
+#[derive(Debug)]
+struct HostOptions {
+    bundle_path: Option<String>,
+    vfs_tmp_quota: Option<u64>,
+    execution: ExecutionRequest,
+    guest_args: Vec<String>,
+}
+
+#[derive(Debug)]
+enum ParsedHostArgs {
+    Help,
+    Run(HostOptions),
+    Precompile(ExecutionRequest),
+}
+
+fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostArgs> {
+    let mut args = args.into_iter();
     let mut bundle_path: Option<String> = None;
     let mut vfs_tmp_quota: Option<u64> = None;
-    let mut snapshot_capture_path: Option<PathBuf> = None;
-    let mut snapshot_restore_path: Option<PathBuf> = None;
-    let mut positional: Option<String> = None;
+    let mut execution: Option<ExecutionRequest> = None;
+    let mut precompile = false;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "-h" | "--help" => {
-                eprintln!(
-                    "usage: molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] \
-                     [--snapshot-capture <path>] [--snapshot-restore <path>] [output.wasm]"
-                );
-                return Ok(());
+            "-h" | "--help" => return Ok(ParsedHostArgs::Help),
+            "--precompile" => {
+                if precompile {
+                    bail!("--precompile may only be specified once");
+                }
+                precompile = true;
             }
             "--bundle" => {
                 bundle_path = Some(args.next().context("--bundle requires a path argument")?);
@@ -226,92 +225,135 @@ fn main() -> Result<()> {
                         .context("--vfs-tmp-quota must be a positive integer (MB)")?,
                 );
             }
-            "--snapshot-capture" => {
-                snapshot_capture_path = Some(PathBuf::from(
-                    args.next()
-                        .context("--snapshot-capture requires a path argument")?,
-                ));
+            "--snapshot-capture" | "--snapshot-restore" => {
+                bail!(
+                    "molt-wasm-host does not support executable snapshots: the current v2 artifact is metadata-only until full continuation, mutable-global, table, and host-resource state have one restore authority"
+                );
             }
-            "--snapshot-restore" => {
-                snapshot_restore_path = Some(PathBuf::from(
-                    args.next()
-                        .context("--snapshot-restore requires a path argument")?,
-                ));
+            "--wasi-command" => {
+                let module = args
+                    .next()
+                    .context("--wasi-command requires a module path argument")?;
+                execution = Some(ExecutionRequest::WasiCommand { module });
+                break;
             }
             _ => {
-                positional = Some(flag);
+                execution = Some(ExecutionRequest::MoltApplication {
+                    manifest: Some(flag),
+                });
                 break;
             }
         }
     }
-    let arg = positional;
-    // Collect remaining positional args as guest argv (route, query, etc.)
-    let guest_args: Vec<String> = args.collect();
 
-    // Build extra env vars for VFS configuration.
-    let mut vfs_envs: Vec<(String, String)> = Vec::new();
-    if let Some(ref bp) = bundle_path {
-        // Resolve to absolute so the WASM guest can find it via preopened dirs.
-        let abs =
-            std::fs::canonicalize(bp).with_context(|| format!("--bundle path not found: {bp}"))?;
-        vfs_envs.push((
-            "MOLT_VFS_BUNDLE".to_string(),
-            abs.to_string_lossy().to_string(),
-        ));
+    let execution = execution.unwrap_or(ExecutionRequest::MoltApplication { manifest: None });
+    // The execution selector ends host option parsing. Accept one conventional
+    // separator, but otherwise preserve the guest tail byte-for-byte as argv.
+    let mut guest_args = args.collect::<Vec<_>>();
+    if guest_args.first().is_some_and(|arg| arg == "--") {
+        guest_args.remove(0);
     }
-    vfs_envs.push((
-        "MOLT_VFS_TMP_QUOTA_MB".to_string(),
-        vfs_tmp_quota.unwrap_or(64).to_string(),
-    ));
-
-    let ResolvedExecutionModules {
-        manifest_path,
-        main_path,
-        runtime_path,
-        linked: use_linked,
-    } = resolve_execution_modules(arg)?;
-    let wasm_table_base = detect_wasm_table_base(&main_path)?;
-    if let Some(base) = wasm_table_base
-        && env::var_os("MOLT_WASM_TABLE_BASE").is_none()
-    {
-        upsert_extra_env(&mut vfs_envs, "MOLT_WASM_TABLE_BASE", base.to_string());
+    if precompile {
+        if bundle_path.is_some() || vfs_tmp_quota.is_some() || !guest_args.is_empty() {
+            bail!(
+                "--precompile accepts an execution selector only, not guest arguments or VFS options"
+            );
+        }
+        return Ok(ParsedHostArgs::Precompile(execution));
     }
+    Ok(ParsedHostArgs::Run(HostOptions {
+        bundle_path,
+        vfs_tmp_quota,
+        execution,
+        guest_args,
+    }))
+}
 
-    let engine = build_engine()?;
-    let output_module =
-        load_or_compile_module(&engine, &main_path, "main", "MOLT_WASM_PRECOMPILED_PATH")?;
-    let needs_runtime = has_runtime_imports(&output_module);
-    if use_linked && needs_runtime {
+fn validate_execution_imports(
+    is_wasi_command: bool,
+    use_linked: bool,
+    needs_runtime: bool,
+) -> Result<()> {
+    if is_wasi_command && needs_runtime {
+        bail!("WASI command module must not import molt_runtime");
+    }
+    if !is_wasi_command && use_linked && needs_runtime {
         bail!("linked wasm still imports molt_runtime; link step incomplete");
     }
-    if !use_linked && !needs_runtime {
+    if !is_wasi_command && !use_linked && !needs_runtime {
         bail!("split-runtime app does not import molt_runtime");
     }
-    debug_log(|| {
-        format!(
-            "runtime manifest: {:?}; main wasm: {main_path:?} (linked={use_linked})",
-            manifest_path
-        )
-    });
+    Ok(())
+}
 
-    let runtime_module = if needs_runtime {
-        let runtime_path = runtime_path
-            .as_ref()
-            .context("split-runtime manifest is missing its runtime module")?;
-        Some(load_or_compile_module(
-            &engine,
-            runtime_path,
-            "runtime",
-            "MOLT_WASM_PRECOMPILED_RUNTIME_PATH",
-        )?)
-    } else {
-        None
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoadedGuestKind {
+    MoltApplication { linked: bool },
+    WasiCommand,
+}
+
+struct LoadedGuestOptions<'a> {
+    kind: LoadedGuestKind,
+    vfs_envs: &'a [(String, String)],
+    guest_args: &'a [String],
+    wasm_table_base: Option<u64>,
+}
+
+fn execute_loaded_guest(
+    engine: &Engine,
+    output_module: &Module,
+    runtime_module: Option<&Module>,
+    options: LoadedGuestOptions<'_>,
+) -> Result<GuestTermination> {
+    let LoadedGuestOptions {
+        kind,
+        vfs_envs,
+        guest_args,
+        wasm_table_base,
+    } = options;
+    let (is_wasi_command, use_linked) = match kind {
+        LoadedGuestKind::MoltApplication { linked } => (false, linked),
+        LoadedGuestKind::WasiCommand => (true, true),
     };
+    let needs_runtime = has_runtime_imports(output_module);
+    validate_execution_imports(is_wasi_command, use_linked, needs_runtime)?;
 
-    let output_mem = memory_limits(&output_module);
-    let output_table = table_limits(&output_module);
-    let runtime_mem = runtime_module.as_ref().and_then(memory_limits);
-    let runtime_table = runtime_module.as_ref().and_then(table_limits);
+    match kind {
+        LoadedGuestKind::WasiCommand => {
+            if runtime_module.is_some() {
+                bail!("WASI command mode must not provide a Molt runtime module");
+            }
+            validate_guest_module_entrypoint(GuestModuleEntrypoint::WasiCommand {
+                command: output_module,
+            })?;
+        }
+        LoadedGuestKind::MoltApplication { linked: true } => {
+            if runtime_module.is_some() {
+                bail!("linked wasm must not provide a separate runtime module");
+            }
+            validate_guest_module_entrypoint(GuestModuleEntrypoint::MoltApplication {
+                application: output_module,
+                runtime: output_module,
+            })?;
+        }
+        LoadedGuestKind::MoltApplication { linked: false } => {
+            let runtime =
+                runtime_module.context("split-runtime app is missing its loaded runtime module")?;
+            validate_guest_module_entrypoint(GuestModuleEntrypoint::MoltApplication {
+                application: output_module,
+                runtime,
+            })?;
+        }
+    }
+    let runtime_imports = RuntimeImportPlan::new(output_module, runtime_module)?;
+    // Admit the complete Molt indirect-call family before either core start.
+    // Other imports are checked against the real host linker below.
+    let indirect_calls =
+        plan_call_indirect_imports(output_module, runtime_module, is_wasi_command)?;
+    let output_mem = memory_limits(output_module);
+    let output_table = table_limits(output_module);
+    let runtime_mem = runtime_module.and_then(memory_limits);
+    let runtime_table = runtime_module.and_then(table_limits);
 
     let memory_limits = merge_limits(
         output_mem.as_ref().map(|mem| Limits {
@@ -337,11 +379,11 @@ fn main() -> Result<()> {
     )?;
 
     let mut store = Store::new(
-        &engine,
+        engine,
         HostState {
-            wasi: build_wasi_ctx(&vfs_envs, &guest_args)?,
+            wasi: build_wasi_ctx(vfs_envs, guest_args)?,
             memory: None,
-            call_indirect: Arc::new(Mutex::new(HashMap::new())),
+            call_indirect: Arc::default(),
             isolate_bootstrap_export: None,
             isolate_import_export: None,
             db_worker: None,
@@ -356,7 +398,7 @@ fn main() -> Result<()> {
         },
     );
 
-    let mut linker = Linker::new(&engine);
+    let mut linker = Linker::new(engine);
     p1::add_to_linker_sync(&mut linker, |state: &mut HostState| &mut state.wasi)?;
 
     if let Some(limits) = memory_limits {
@@ -393,7 +435,7 @@ fn main() -> Result<()> {
     define_process_host(&mut linker, &mut store)?;
     define_time_host(&mut linker, &mut store)?;
     define_resource_host(&mut linker, &mut store)?;
-    define_isolate_host_imports(&mut linker, &mut store, &engine)?;
+    define_isolate_host_imports(&mut linker, &mut store, engine)?;
     let getpid = Func::wrap(&mut store, || -> i64 { std::process::id() as i64 });
     linker.define(&mut store, "env", "molt_getpid_host", getpid)?;
 
@@ -421,142 +463,202 @@ fn main() -> Result<()> {
     )?;
 
     let registry = store.data().call_indirect.clone();
-    let call_imports = if let Some(runtime_module) = runtime_module.as_ref() {
-        collect_call_indirect_imports(runtime_module)
-    } else {
-        collect_call_indirect_imports(&output_module)
-    };
-    let call_names = call_imports
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    for (name, ty) in call_imports {
-        let func = make_call_indirect_func(&mut store, name.clone(), ty, registry.clone());
-        linker.define(&mut store, "env", &name, func)?;
-    }
+    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, is_wasi_command)?;
 
-    // Compute module hash for snapshot validation.
-    let module_hash = if snapshot_capture_path.is_some() || snapshot_restore_path.is_some() {
-        Some(compute_module_hash(&main_path)?)
+    let runtime_instance = if let Some(runtime_module) = runtime_module {
+        let runtime_pre = linker
+            .instantiate_pre(runtime_module)
+            .context("admit runtime host imports before guest start")?;
+        admit_application_host_imports(&linker, &mut store, output_module)?;
+        log::debug!("instantiating runtime");
+        let runtime_instance = runtime_pre
+            .instantiate(&mut store)
+            .context("instantiate runtime")?;
+        log::debug!("runtime instantiated");
+        configure_wasm_table_base(&mut store, &runtime_instance, wasm_table_base)?;
+        runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
+        Some(runtime_instance)
     } else {
         None
     };
 
-    if let Some(runtime_module) = runtime_module {
-        debug_log(|| "instantiating runtime".to_string());
-        let runtime_instance = linker
-            .instantiate(&mut store, &runtime_module)
-            .map_err(|err| err.context("instantiate runtime"))?;
-        debug_log(|| "runtime instantiated".to_string());
-        configure_wasm_table_base(&mut store, &runtime_instance, wasm_table_base)?;
-        for import in output_module.imports() {
-            if import.module() != "molt_runtime" {
-                continue;
-            }
-            let name = import.name();
-            let export_name = format!("molt_{name}");
-            let export = runtime_instance
-                .get_export(&mut store, &export_name)
-                .with_context(|| format!("missing runtime export {export_name}"))?;
-            linker.define(&mut store, "molt_runtime", name, export)?;
-        }
-        debug_log(|| "instantiating output module".to_string());
-        let output_instance = linker
-            .instantiate(&mut store, &output_module)
-            .map_err(|err| err.context("instantiate output"))?;
-        debug_log(|| "output module instantiated".to_string());
-        register_isolate_exports(&mut store, &output_instance)?;
-        register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
-        set_memory_from_exports(&mut store, &output_instance);
-
-        // Snapshot restore: if valid, skip molt_main.
-        let restored = if let Some(ref restore_path) = snapshot_restore_path {
-            restore_snapshot(
-                &mut store,
-                &output_instance,
-                restore_path,
-                module_hash.as_deref().unwrap(),
-            )?
-        } else {
-            false
-        };
-
-        if !restored {
-            call_app_startup_entries(&mut store, &output_instance)?;
-        } else {
-            debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
-        }
-
-        // Snapshot capture: after molt_main returns (or after restore).
-        if let Some(ref capture_path) = snapshot_capture_path {
-            let memory = store
-                .data()
-                .memory
-                .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
-            let mem_size = memory.data_size(&store) as u64;
-            let header = SnapshotHeader {
-                snapshot_version: 1,
-                abi_version: "0.1.0".into(),
-                target_profile: "wasm_host".into(),
-                module_hash: module_hash.as_deref().unwrap().to_string(),
-                mount_plan: Vec::new(),
-                capability_manifest: Vec::new(),
-                determinism_stamp: String::new(),
-                init_state_size: mem_size,
-                integrity_hash: None,
-            };
-            capture_snapshot(&mut store, &output_instance, &header, capture_path)?;
+    let output_label = if is_wasi_command {
+        "WASI command"
+    } else if runtime_instance.is_some() {
+        "output"
+    } else {
+        "linked output"
+    };
+    log::debug!("instantiating {output_label}");
+    let output_instance = if is_wasi_command {
+        match classify_wasi_command_result(
+            linker.instantiate(&mut store, output_module),
+            "instantiate WASI command",
+        )? {
+            WasiCommandResult::Value(instance) => instance,
+            WasiCommandResult::Exit(termination) => return Ok(termination),
         }
     } else {
-        debug_log(|| "instantiating linked output".to_string());
-        let output_instance = linker
-            .instantiate(&mut store, &output_module)
-            .map_err(|err| err.context("instantiate linked output"))?;
-        debug_log(|| "linked output instantiated".to_string());
+        linker
+            .instantiate(&mut store, output_module)
+            .with_context(|| format!("instantiate {output_label}"))?
+    };
+    log::debug!("{output_label} instantiated");
+    if !is_wasi_command {
         register_isolate_exports(&mut store, &output_instance)?;
-        register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
-        set_memory_from_exports(&mut store, &output_instance);
+    }
+    if !is_wasi_command {
+        register_call_indirect_exports(&mut store, &output_instance, &registry, &indirect_calls)?;
+    }
+    set_memory_from_exports(&mut store, &output_instance);
+    if !is_wasi_command && runtime_instance.is_none() {
         configure_wasm_table_base(&mut store, &output_instance, wasm_table_base)?;
-
-        // Snapshot restore: if valid, skip molt_main.
-        let restored = if let Some(ref restore_path) = snapshot_restore_path {
-            restore_snapshot(
-                &mut store,
-                &output_instance,
-                restore_path,
-                module_hash.as_deref().unwrap(),
-            )?
-        } else {
-            false
-        };
-
-        if !restored {
-            call_app_startup_entries(&mut store, &output_instance)?;
-        } else {
-            debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
-        }
-
-        // Snapshot capture: after molt_main returns (or after restore).
-        if let Some(ref capture_path) = snapshot_capture_path {
-            let memory = store
-                .data()
-                .memory
-                .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
-            let mem_size = memory.data_size(&store) as u64;
-            let header = SnapshotHeader {
-                snapshot_version: 1,
-                abi_version: "0.1.0".into(),
-                target_profile: "wasm_host".into(),
-                module_hash: module_hash.as_deref().unwrap().to_string(),
-                mount_plan: Vec::new(),
-                capability_manifest: Vec::new(),
-                determinism_stamp: String::new(),
-                init_state_size: mem_size,
-                integrity_hash: None,
-            };
-            capture_snapshot(&mut store, &output_instance, &header, capture_path)?;
-        }
     }
 
+    if is_wasi_command {
+        return call_guest_entrypoint(
+            &mut store,
+            GuestEntrypoint::WasiCommand {
+                command: &output_instance,
+            },
+        );
+    }
+
+    call_guest_entrypoint(
+        &mut store,
+        GuestEntrypoint::MoltApplication {
+            application: &output_instance,
+            runtime: runtime_instance.as_ref().unwrap_or(&output_instance),
+        },
+    )
+}
+
+fn main() -> Result<()> {
+    let default_filter = if env::var_os("MOLT_WASM_HOST_DEBUG").is_some() {
+        "off,molt_wasm_host=debug"
+    } else {
+        "off"
+    };
+    env_logger::Builder::from_env(
+        env_logger::Env::new().filter_or("MOLT_WASM_HOST_LOG", default_filter),
+    )
+    .target(env_logger::Target::Stderr)
+    .try_init()
+    .context("initialize host diagnostics")?;
+    let termination = run()?;
+    if let GuestTermination::WasiExit(status) = termination
+        && status != 0
+    {
+        std::process::exit(status);
+    }
     Ok(())
+}
+
+fn run() -> Result<GuestTermination> {
+    log::debug!("starting");
+    let HostOptions {
+        bundle_path,
+        vfs_tmp_quota,
+        execution,
+        guest_args,
+    } = match parse_host_args(env::args().skip(1))? {
+        ParsedHostArgs::Help => {
+            eprintln!(
+                "usage: molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] [manifest.json] \
+                 | molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] \
+                 --wasi-command <module.wasm> [guest args...] \
+                 | molt-wasm-host --precompile [manifest.json] \
+                 | molt-wasm-host --precompile --wasi-command <module.wasm>"
+            );
+            return Ok(GuestTermination::Returned);
+        }
+        ParsedHostArgs::Run(options) => options,
+        ParsedHostArgs::Precompile(request) => {
+            let resolved = resolve_execution(request)?;
+            let engine = build_engine()?;
+            let receipt = precompile_execution(&engine, &resolved)?;
+            let mut stdout = std::io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &receipt).context("encode precompile receipt")?;
+            writeln!(stdout).context("write precompile receipt")?;
+            return Ok(GuestTermination::Returned);
+        }
+    };
+    // Build extra env vars for VFS configuration.
+    let mut vfs_envs: Vec<(String, String)> = Vec::new();
+    if let Some(ref bp) = bundle_path {
+        // Resolve to absolute so the WASM guest can find it via preopened dirs.
+        let abs =
+            std::fs::canonicalize(bp).with_context(|| format!("--bundle path not found: {bp}"))?;
+        vfs_envs.push((
+            "MOLT_VFS_BUNDLE".to_string(),
+            abs.to_string_lossy().to_string(),
+        ));
+    }
+    vfs_envs.push((
+        "MOLT_VFS_TMP_QUOTA_MB".to_string(),
+        vfs_tmp_quota.unwrap_or(64).to_string(),
+    ));
+
+    let resolved = resolve_execution(execution)?;
+    let (manifest_path, main_source, runtime_source, use_linked, is_wasi_command) = match resolved {
+        ResolvedExecution::MoltApplication(ResolvedExecutionModules {
+            manifest_path,
+            main,
+            runtime,
+            linked,
+        }) => (Some(manifest_path), main, runtime, linked, false),
+        ResolvedExecution::WasiCommand { module } => (None, module, None, true, true),
+    };
+    let wasm_table_base = if is_wasi_command {
+        None
+    } else {
+        detect_wasm_table_base(&main_source)?
+    };
+    if let Some(base) = wasm_table_base
+        && env::var_os("MOLT_WASM_TABLE_BASE").is_none()
+    {
+        upsert_extra_env(&mut vfs_envs, "MOLT_WASM_TABLE_BASE", base.to_string());
+    }
+
+    let engine = build_engine()?;
+    let output_module = load_or_compile_module(&engine, &main_source, ModuleRole::Main)?;
+    let main_path = main_source.path();
+    if is_wasi_command {
+        log::debug!("WASI command wasm: {main_path:?}");
+    } else {
+        log::debug!(
+            "runtime manifest: {manifest_path:?}; main wasm: {main_path:?} (linked={use_linked})"
+        );
+    }
+    drop(main_source);
+
+    let runtime_module = if let Some(runtime_source) = runtime_source.as_ref() {
+        Some(load_or_compile_module(
+            &engine,
+            runtime_source,
+            ModuleRole::Runtime,
+        )?)
+    } else {
+        None
+    };
+
+    // Wasmtime now owns compiled modules; do not retain source buffers during
+    // guest execution or keep a second disk-backed source authority alive.
+    drop(runtime_source);
+
+    execute_loaded_guest(
+        &engine,
+        &output_module,
+        runtime_module.as_ref(),
+        LoadedGuestOptions {
+            kind: if is_wasi_command {
+                LoadedGuestKind::WasiCommand
+            } else {
+                LoadedGuestKind::MoltApplication { linked: use_linked }
+            },
+            vfs_envs: &vfs_envs,
+            guest_args: &guest_args,
+            wasm_table_base,
+        },
+    )
 }

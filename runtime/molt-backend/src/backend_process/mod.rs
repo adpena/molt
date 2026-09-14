@@ -1,11 +1,3 @@
-#[cfg(any(
-    feature = "native-backend",
-    feature = "luau-backend",
-    feature = "rust-backend",
-    feature = "wasm-backend",
-    test
-))]
-mod atomic_publish;
 mod cli_args;
 mod config;
 mod daemon;
@@ -19,10 +11,6 @@ mod native_batch;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;
 
-#[cfg(feature = "wasm-backend")]
-pub(crate) use atomic_publish::AtomicFilePublication;
-#[cfg(test)]
-pub(crate) use atomic_publish::write_bytes_atomically;
 pub(crate) use cli_args::*;
 #[cfg(test)]
 pub(crate) use config::*;

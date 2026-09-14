@@ -1125,10 +1125,6 @@ def test_execution_custody_failed_capture_drains_without_claiming_payload_ran(
 
 
 def test_python_probe_uses_shared_environment_authority() -> None:
-    assert (
-        command_admission._PYTHON_IDENTITY_PROBE
-        == Path(python_environment_identity.__file__).resolve()
-    )
     for legacy_name in ("python_identity_probe.py", "python_toolchain_locator.py"):
         assert not (state.ROOT / "tools" / "proof_queue_pkg" / legacy_name).exists()
     exact = [sys.executable, "-c", "pass"]
@@ -1136,16 +1132,51 @@ def test_python_probe_uses_shared_environment_authority() -> None:
     assert command_identity._python_auxiliary_command(
         envelope,
         exact,
-        authority=command_admission._PYTHON_IDENTITY_PROBE,
         arguments=("--locate-active-environment",),
-        isolated=True,
         no_site=True,
     ) == [
         sys.executable,
+        "-B",
         "-I",
         "-S",
-        str(command_admission._PYTHON_IDENTITY_PROBE),
+        str(Path(python_environment_identity.__file__).resolve()),
         "--locate-active-environment",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("python", "exact", "prefix"),
+    [
+        ({"kind": "direct"}, ["selected-python", "-c", "pass"], ["selected-python"]),
+        (
+            {"kind": "py-launcher", "selector": "-3.12"},
+            ["py.exe", "-3.12", "-c", "pass"],
+            ["py.exe", "-3.12"],
+        ),
+        *(
+            (
+                {"kind": kind, "prefix": ["uv", "run", "--python", "3.12"]},
+                ["selected-uv", "run", "--python", "3.12", "python", "-c", "pass"],
+                ["selected-uv", "run", "--python", "3.12", "python"],
+            )
+            for kind in ("uv", "uv-console-script")
+        ),
+    ],
+)
+@pytest.mark.parametrize("no_site", [False, True])
+def test_python_probe_launchers_preserve_shared_no_write_suffix(
+    python, exact, prefix, no_site
+):
+    arguments = ("--capture-runtime", "--hash-workers", "4")
+    assert command_identity._python_auxiliary_command(
+        {"python": python}, exact, arguments=arguments, no_site=no_site
+    ) == [
+        *prefix,
+        "-B",
+        "-I",
+        *(["-S"] if no_site else []),
+        str(Path(python_environment_identity.__file__).resolve()),
+        *arguments,
     ]
 
 
@@ -1234,8 +1265,9 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     assert probe[: len(prefix)] == exact[: len(prefix)]
     assert probe[len(prefix) :] == [
         "python",
+        "-B",
         "-I",
-        str(command_admission._PYTHON_IDENTITY_PROBE),
+        str(Path(python_environment_identity.__file__).resolve()),
         "--capture-active-environment",
         "--with-custody",
         "--hash-workers",

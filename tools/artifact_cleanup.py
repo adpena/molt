@@ -43,7 +43,7 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "molt_runtime.*.rcgu.o",
     "output.o",
     "output.wasm",
-    "output_linked.cwasm",
+    "output_linked.molt.cwasm",
     "output_linked.wasm",
     "output_optimized.wasm",
     "output_treeshaken.wasm",
