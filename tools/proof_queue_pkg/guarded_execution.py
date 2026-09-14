@@ -381,15 +381,8 @@ def execute_guarded_request(request_path: Path) -> int:
         ]
         if any(name in envelope.get("toolchains", []) for name in ("python", "cargo")):
             custody_authority_paths.extend(python_capture_authority_paths())
-        supervisor_source = admission._REPO_ROOT / "tools" / "proof_supervisor"
         custody_authority_paths.extend(
-            path.resolve(strict=True)
-            for path in (
-                supervisor_source / "build.py",
-                supervisor_source / "Cargo.toml",
-                supervisor_source / "Cargo.lock",
-                *sorted((supervisor_source / "src").rglob("*.rs")),
-            )
+            supervisor.source_authority_paths(admission._REPO_ROOT)
         )
         if python_has_payload:
             custody_authority_paths.extend(

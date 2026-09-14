@@ -452,34 +452,23 @@ fn sync_parent_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn windows_api_path(path: &Path) -> Result<PathBuf, String> {
-    if path.exists() {
-        return fs::canonicalize(path)
-            .map_err(|error| format!("cannot canonicalize {}: {error}", path.display()));
-    }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
-        format!(
-            "cannot canonicalize evidence directory {}: {error}",
-            parent.display()
-        )
-    })?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| "evidence path must name a file".to_owned())?;
-    Ok(canonical_parent.join(name))
-}
-
-#[cfg(windows)]
 fn durable_replace(temporary: &Path, final_path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
+    use molt_artifact_publish::windows_namespace_path_wide;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
-    let old_path = windows_api_path(temporary)?;
-    let new_path = windows_api_path(final_path)?;
-    let old: Vec<u16> = old_path.as_os_str().encode_wide().chain([0]).collect();
-    let new: Vec<u16> = new_path.as_os_str().encode_wide().chain([0]).collect();
+    let old = windows_namespace_path_wide(temporary).map_err(|error| {
+        format!(
+            "cannot encode evidence path {}: {error}",
+            temporary.display()
+        )
+    })?;
+    let new = windows_namespace_path_wide(final_path).map_err(|error| {
+        format!(
+            "cannot encode evidence path {}: {error}",
+            final_path.display()
+        )
+    })?;
     if unsafe {
         MoveFileExW(
             old.as_ptr(),
