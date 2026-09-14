@@ -16,7 +16,7 @@ Sections 1-5 were originally marked "DONE (2026-03-20)" but this was based on Cr
 | 4 | Instruction Selection | **Done (defaults)** | Cranelift's ISLE rules; no custom patterns |
 | 5 | Branch Optimization | **Done (defaults)** | Cranelift's egraph optimizer; no custom branch opts |
 | 6 | Inline Caching | **Not started** | No `InlineCache` code in backend |
-| 7 | Escape Analysis | **Done (TIR pass)** | `tir/escape_analysis.rs` (510 lines) — NoEscape/ArgEscape/GlobalEscape lattice, stack promotion |
+| 7 | Escape Analysis | **Shared TIR analysis** | `tir/passes/escape_analysis/` — capture/identity facts; no automatic placement transform |
 | 8 | Specialization | **Done (TIR pass)** | `tir/monomorphize.rs` (653 lines) — type-specialized function copies |
 | 9 | Memory Access Patterns | **Partial (TIR pass)** | `tir/deforestation.rs` (27.8KB) — iterator fusion eliminates intermediates |
 | 10 | WASM-Specific Optimizations | **Done** | Tail call optimization, WASM feature flags |
@@ -32,7 +32,7 @@ Sections 1-5 were originally marked "DONE (2026-03-20)" but this was based on Cr
 4. [Instruction Selection](#4-instruction-selection)
 5. [Branch Optimization](#5-branch-optimization)
 6. [Inline Caching](#6-inline-caching)
-7. [Escape Analysis](#7-escape-analysis) — implemented as TIR pass
+7. [Escape Analysis](#7-escape-analysis) — shared analysis, not a placement pass
 8. [Specialization](#8-specialization) — implemented as TIR pass
 9. [Memory Access Patterns](#9-memory-access-patterns) — partially via deforestation
 10. [WASM-Specific Optimizations](#10-wasm-specific-optimizations)
@@ -259,33 +259,22 @@ Molt implements monomorphic inline caches (ICs) for method dispatch. The IC syst
 
 ## 7. Escape Analysis
 
-### Current State
+Capture and identity facts live in `tir/passes/escape_analysis/analysis.rs`
+and are consumed by alias analysis and whole-object SROA. Nonescape is not a
+destruction-stability proof. Automatic class frame promotion has been removed:
+ordinary mutable Python classes necessarily heap-realize under the runtime's
+immutable, nonfinalizing MRO admission, so reserving a native frame slot for
+them adds work without removing heap allocation.
 
-The backend has a rudimentary form of escape analysis: `elide_dead_struct_allocs` (lib.rs:480-543). This pass removes canonical `alloc_class` operations where the allocated object is only used for `store`/`store_init`/`guarded_field_set`/`guarded_field_init`/`object_set_class` — i.e., it is initialized but never read or passed to another function.
+The explicit class-frame opcode is also retired: no producer/verifier establishes
+that every owner dies before caller storage expires. Its native frame and
+LLVM/WASM heap realizations were not a shared lifetime contract. The standalone
+unsafe runtime API retains its separate caller-proved lifetime requirement.
 
-This is a dead-allocation elimination, not true escape analysis. It only removes allocations whose fields are written but never read. Objects that are read but don't escape the function are still heap-allocated.
-
-### Proposed Improvements
-
-**P1: Stack allocation for non-escaping objects.** When an object is allocated, initialized, read, and then goes dead within the same function (no store to heap, no pass to callee, no return), allocate it on the stack instead of the heap. This eliminates `molt_alloc_class` call overhead and avoids reference counting.
-
-Implementation sketch:
-1. In a pre-pass, compute the set of variables that receive `alloc_class` results.
-2. Track all uses: `store`/`load`/`guarded_field_get`/`guarded_field_set` are local uses. `call`, `ret`, `store` to another object's field are escapes.
-3. For non-escaping objects, emit `stack_slot` instead of `molt_alloc_class`, and lower field access to direct stack loads/stores.
-
-- **Expected impact**: 20-40% improvement on object-heavy code (list comprehensions creating temporary tuples, named-tuple-style dataclasses). Eliminates heap allocation, reference counting, and GC pressure.
-- **Effort**: High (2 weeks). Requires tracking object size at compile time, handling field offsets consistently with the runtime object layout.
-
-**P2: Scalar replacement of aggregates (SRA).** After stack allocation, if an object's fields are independently accessed, replace the object with individual SSA variables for each field. This exposes fields to register allocation and enables further optimizations (CSE, constant propagation through fields).
-
-- **Expected impact**: Additional 10-20% on top of stack allocation for objects with few fields.
-- **Effort**: High (2 weeks). Requires field-level alias analysis.
-
-**P3: Extend `elide_dead_struct_allocs` to handle reads.** Currently, if any use is not in `allowed_use_kinds`, the allocation is preserved. Extend the pass to allow reads (`load`, `guarded_field_get`) when the read result is also dead.
-
-- **Expected impact**: 2-5% improvement (catches more dead allocations).
-- **Effort**: Low (2 days). Extend the use-kind whitelist and add transitive dead-use tracking.
+SROA can remove complete callback-free raw allocations whose only surviving
+uses are boxed-neutral typed stores and ownership operations. Class construction,
+class ownership, and finalizer behavior remain observable; DSE preserves final
+stores and only eliminates proven-neutral overwrites.
 
 ---
 

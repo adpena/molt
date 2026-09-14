@@ -162,26 +162,12 @@ pub extern "C" fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+        let bits = crate::builtins::methods::alloc_builtin_function(_py, fn_ptr, arity);
+        if bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            bits
         }
-        unsafe {
-            let builtins = builtin_classes(_py);
-            let old_bits = object_class_bits(ptr);
-            if old_bits != builtins.builtin_function_or_method
-                && !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    ptr,
-                    builtins.builtin_function_or_method,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            }
-        }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -193,38 +179,25 @@ pub extern "C" fn molt_itertools_alloc_function_with_defaults(
     defaults_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-            let defaults = std::slice::from_raw_parts(defaults_ptr, defaults_len);
-            let defaults_tuple_ptr = alloc_tuple(_py, defaults);
-            if !defaults_tuple_ptr.is_null() {
-                let defaults_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.defaults_name,
-                    b"__defaults__",
-                );
-                let defaults_bits = MoltObject::from_ptr(defaults_tuple_ptr).bits();
-                function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
-            }
-            let builtins = builtin_classes(_py);
-            let old_bits = object_class_bits(ptr);
-            if old_bits != builtins.builtin_function_or_method
-                && !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    ptr,
-                    builtins.builtin_function_or_method,
-                    ClassEdgeOwnership::Owned,
-                )
+        let defaults = if defaults_len == 0 {
+            &[]
+        } else {
+            if defaults_ptr.is_null()
+                || !defaults_ptr.is_aligned()
+                || defaults_len > isize::MAX as usize / std::mem::size_of::<u64>()
             {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
+                return raise_exception::<_>(_py, "SystemError", "invalid itertools defaults span");
             }
+            unsafe { std::slice::from_raw_parts(defaults_ptr, defaults_len) }
+        };
+        let bits = crate::builtins::methods::alloc_builtin_function_with_defaults(
+            _py, fn_ptr, arity, defaults,
+        );
+        if bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            bits
         }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 

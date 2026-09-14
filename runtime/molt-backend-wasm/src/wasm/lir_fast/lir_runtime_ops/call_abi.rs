@@ -156,10 +156,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_source_op_index(
         .unwrap_or_else(|| panic!("{op_name} requires source op index"))
 }
 
-pub(in crate::wasm::lir_fast::lir_runtime_ops) fn emit_lir_runtime_result(
-    ctx: &mut LirLowerCtx,
-    op: &LirOp,
-) {
+pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(ctx: &mut LirLowerCtx, op: &LirOp) {
     let Some(result) = op.result_values.first() else {
         ctx.instructions.push(Instruction::Drop);
         return;

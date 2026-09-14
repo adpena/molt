@@ -15,7 +15,7 @@ from molt.compiler_analysis.schema import (
 from molt.frontend.lowering import op_kinds_generated as op_kind_facts
 
 BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA = (
-    "backend-ir-binary-image-analysis-cache-key-v1"
+    "backend-ir-binary-image-analysis-cache-key-v2"
 )
 
 
@@ -65,10 +65,12 @@ def backend_ir_allocation_categories(op: Mapping[str, Any]) -> list[str]:
         categories.append("ref_retain")
     if kind in op_kind_facts.BINARY_IMAGE_REF_RELEASE_KINDS:
         categories.append("ref_release")
-    if kind in op_kind_facts.BINARY_IMAGE_HEAP_EXPOSURE_KINDS:
+    # This is a conservative possible-capture event, not an escape-state or
+    # lifetime-erasure proof. New/unclassified operand consumers fail closed;
+    # the TIR fact graph carries the precise CFG/alias-aware analysis result.
+    operands = op.get("args")
+    if operands and kind not in op_kind_facts.BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS:
         categories.append("heap_exposure")
-    if op.get("arena_eligible") is True:
-        categories.append("arena_eligible")
     if op.get("defines_del") is True:
         categories.append("finalizer_sensitive")
     return categories
@@ -297,8 +299,8 @@ def backend_ir_binary_image_analysis_authority_hash() -> str:
             "ref_release_kinds": _sorted_strings(
                 op_kind_facts.BINARY_IMAGE_REF_RELEASE_KINDS
             ),
-            "heap_exposure_kinds": _sorted_strings(
-                op_kind_facts.BINARY_IMAGE_HEAP_EXPOSURE_KINDS
+            "local_only_operand_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS
             ),
         }
     )

@@ -4,6 +4,15 @@ from __future__ import annotations
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
+# Only audited container builders and the legacy transport carrier have
+# variable operand shapes. BuildDict carries alternating key/value operands.
+_VARIABLE_OPERAND_ARITIES = {
+    "BuildList": "variable",
+    "BuildTuple": "variable",
+    "BuildSet": "variable",
+    "BuildDict": "variable_pairs",
+    "Copy": "variable",
+}
 _OPERAND_INDEPENDENT_RESULT_TYPES = {
     "operand",
     "i64",
@@ -109,6 +118,27 @@ _TYPE_REFINE_OPERAND_TYPE_RULES = {
     "box_val": "BoxVal",
     "unbox_val": "UnboxVal",
 }
+# Semantic rule signatures (not opcode membership): every registered operation
+# must declare a shape coherent with the operand rule consuming its facts.
+_TYPE_REFINE_OPERAND_RULE_ARITIES = {
+    "add": 2,
+    "mul": 2,
+    "numeric_arithmetic": 2,
+    "true_division": 2,
+    "power": 2,
+    "unary_numeric": 1,
+    "bool_select": 2,
+    "integer_bitwise": 2,
+    "integer_shift": 2,
+    "integer_invert": 1,
+    "build_tuple": "variable",
+    "get_iter": 1,
+    "iter_next": 1,
+    "index": 2,
+    "copy": "variable",
+    "box_val": 1,
+    "unbox_val": 1,
+}
 _SCCP_CONSTANT_SEED_RULES = {
     "int_attr": "IntAttr",
     "float_attr": "FloatAttr",
@@ -132,6 +162,7 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "ge": "Ge",
     "neg": "Neg",
     "not": "Not",
+    "bool": "Bool",
     "build_tuple": "BuildTuple",
 }
 _VALUE_RANGE_TRANSFER_RULES = {
@@ -230,7 +261,6 @@ _MODULE_SLOT_ACCESS_ROLES = {
 _TIR_VERIFY_ATTR_RULES = {
     "call_callee": "CallCallee",
     "call_method": "CallMethod",
-    "positive_payload_bytes": "PositivePayloadBytes",
     "unpack_sequence_shape": "UnpackSequenceShape",
 }
 _STRENGTH_REDUCTION_RULES = {
@@ -420,7 +450,6 @@ _OPCODE_FACT_SETS = (
     "boxed_runtime_inplace_dispatch_opcodes",
     "drop_insertion_suspension_point_opcodes",
     "drop_insertion_return_deferral_barrier_opcodes",
-    "fusion_barrier_opcodes",
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
     "state_machine_opcodes",
@@ -441,10 +470,6 @@ _OPCODE_FACT_SETS = (
     "exception_label_attr_opcodes",
     "exception_transfer_edge_opcodes",
     *(key for key, _field in _PASS_DELTA_FACT_FIELDS),
-)
-_ALIAS_TYPED_SLOT_ROLE_SETS = (
-    "alias_typed_slot_load_opcodes",
-    "alias_typed_slot_store_opcodes",
 )
 _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS = (
     "alias_transparent_type_guard_opcodes",
@@ -483,7 +508,6 @@ __all__ = (
     "_ALIAS_MEMORY_REGION_SETS",
     "_ALIAS_SLOT_OBSERVATION_SETS",
     "_ALIAS_TRANSPARENT_ALIAS_ROLE_SETS",
-    "_ALIAS_TYPED_SLOT_ROLE_SETS",
     "_CALL_OPCODE_ROLES",
     "_CANONICALIZE_BINARY_ACTIONS",
     "_CANONICALIZE_BINARY_PREDICATES",
@@ -532,11 +556,13 @@ __all__ = (
     "_TIR_VERIFY_ATTR_RULES",
     "_TYPE_REFINE_ATTR_RESULT_TYPE_RULES",
     "_TYPE_REFINE_OPERAND_TYPE_RULES",
+    "_TYPE_REFINE_OPERAND_RULE_ARITIES",
     "_VALUE_RANGE_COND_NARROW_RULES",
     "_VALUE_RANGE_CONST_FOLD_RULES",
     "_VALUE_RANGE_CONTAINER_LENGTH_RULES",
     "_VALUE_RANGE_TRANSFER_RULES",
     "_VARIABLE_RESULT_ARITY_OPCODES",
+    "_VARIABLE_OPERAND_ARITIES",
     "_VECTORIZE_BODY_ACTIONS",
     "_VECTOR_REDUCTION_RULES",
 )

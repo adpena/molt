@@ -22,7 +22,7 @@ impl BranchlessFacts {
         for block in func.blocks.values() {
             for op in &block.ops {
                 if op.opcode == OpCode::ConstInt
-                    && op.has_valid_result_arity()
+                    && op.has_valid_shape()
                     && op.operands.is_empty()
                     && let Some(AttrValue::Int(v)) = op.attrs.get("value")
                 {

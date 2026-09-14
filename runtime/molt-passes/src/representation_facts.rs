@@ -7,42 +7,26 @@ use crate::tir::op_kinds_generated::{
     ReprProjectableBoolResultRule, ReprProjectableFloatResultRule, ReprRawI64FullDeoptSeedRule,
     opcode_repr_projectable_bool_result_rule_table,
     opcode_repr_projectable_float_result_rule_table,
-    opcode_repr_raw_i64_full_deopt_seed_rule_table,
+    opcode_repr_raw_i64_full_deopt_seed_rule_table, opcode_requires_i64_shift_count_guard_table,
 };
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-/// Enumerate every TIR `ValueId` with a carrier representation slot: every op
-/// result and every block argument in the function being lowered.
-fn value_ids_for(tir_func: &TirFunction) -> Vec<ValueId> {
-    let mut ids = Vec::new();
-    for block in tir_func.blocks.values() {
-        ids.extend(block.args.iter().map(|arg| arg.id));
-        for op in &block.ops {
-            ids.extend(op.results.iter().copied());
-        }
-    }
-    ids
-}
-
 fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
     let mut types = tir_func.value_types.clone();
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(tir_func);
     for block in tir_func.blocks.values() {
         for arg in &block.args {
             types.entry(arg.id).or_insert_with(|| arg.ty.clone());
         }
-        for op in &block.ops {
-            if let Some(comparison) =
-                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
-            {
-                for &result in &op.results {
-                    types.insert(result, comparison.result_type.clone());
-                }
-            }
-        }
     }
+    // An annotation or refinement describes Python semantics, not an exact
+    // scalar producer. Preserve structural types, but rebuild every scalar
+    // fact from the same provenance solver used by optimization effects. This
+    // covers result slots, copies and executable phis without a predicate-only
+    // exception or an annotation-based fallback into an unboxed lane.
+    types.retain(|_, ty| crate::tir::op_kinds_generated::comparison_scalar_domain(ty).is_none());
+    types.extend(crate::tir::type_refine::extract_exact_scalar_map(tir_func));
     types
 }
 
@@ -51,16 +35,16 @@ fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// classification, consumed identically by the LLVM backend and the WASM/LIR
 /// backend.
 ///
-/// Every value we know a `ValueId` for floors to [`Repr::default_for`] of its
-/// refined `TirType`; bool and f64 therefore enter the value map as
-/// [`Repr::Bool`] / [`Repr::FloatUnboxed`], while proven integer raw carriers
-/// are raised into one of two explicit tiers. The floor makes this a complete
-/// value->Repr map.
+/// Every defined `ValueId` has a conservative carrier. Only exact scalar
+/// provenance raises bool/f64 into [`Repr::Bool`] / [`Repr::FloatUnboxed`];
+/// annotations and guards cannot authorize this raise. Exact integers need
+/// additional range or checked-overflow proof for either raw integer tier.
 ///
 /// The `RawI64Safe` raise is sourced from the **value-range analysis** (S6)
 /// when a [`ValueRangeResult`] is supplied (`vr` = `Some`): a `ValueId` is
-/// `RawI64Safe` exactly when [`ValueRangeResult::fits_inline_int47`] proves its
-/// entire range lies in `[-2^46, 2^46 - 1]`. The `RawI64FullDeopt` raise is
+/// eligible for `RawI64Safe` only when exact integer provenance and
+/// [`ValueRangeResult::fits_inline_int47`] prove its entire range lies in
+/// `[-2^46, 2^46 - 1]`. The `RawI64FullDeopt` raise is
 /// sourced from checked-overflow arithmetic and propagates only across identity
 /// edges whose carrier remains in the checked full-i64 lane. This split keeps
 /// box-site discipline structural: inline-safe values may use inline int
@@ -73,7 +57,7 @@ fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// codegen.
 ///
 /// When no value-range is supplied (`vr` = `None`) — a pre-TIR / unanalysed
-/// path — NO value is raised: every int floors to `MaybeBigInt` (conservative,
+/// path — NO integer value is raised: every int floors to `MaybeBigInt` (conservative,
 /// boxed, BigInt-correct; never a miscompile, at worst a perf bail).
 ///
 /// `tir_func` is the post-pipeline TIR the backend is lowering, and `vr` (when
@@ -85,16 +69,37 @@ pub fn repr_by_value_for(
     vr: Option<&crate::tir::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
     let value_types = value_type_by_id_for(tir_func);
-    let mut repr_by_value: HashMap<ValueId, Repr> = value_ids_for(tir_func)
-        .into_iter()
-        .map(|id| {
-            let repr = value_types
-                .get(&id)
-                .map(Repr::default_for)
-                .unwrap_or(Repr::DynBox);
-            (id, repr)
-        })
-        .collect();
+    repr_by_value_with_types(tir_func, vr, &value_types)
+}
+
+fn repr_by_value_with_types(
+    tir_func: &TirFunction,
+    vr: Option<&crate::tir::ValueRangeResult>,
+    value_types: &HashMap<ValueId, TirType>,
+) -> HashMap<ValueId, Repr> {
+    // Initialize each carrier once. Only the producer-proven map may mint
+    // exact bool/float carriers; declarations retain their conservative floor.
+    let representation = |value: ValueId, declared: Option<&TirType>| match value_types.get(&value)
+    {
+        Some(TirType::Bool) => Repr::Bool,
+        Some(TirType::F64) => Repr::FloatUnboxed,
+        Some(ty) => Repr::default_for(ty),
+        None => declared.map(Repr::default_for).unwrap_or(Repr::DynBox),
+    };
+    let mut repr_by_value = HashMap::new();
+    for block in tir_func.blocks.values() {
+        for arg in &block.args {
+            repr_by_value.insert(arg.id, representation(arg.id, Some(&arg.ty)));
+        }
+        for op in &block.ops {
+            for &result in &op.results {
+                repr_by_value.insert(
+                    result,
+                    representation(result, tir_func.value_types.get(&result)),
+                );
+            }
+        }
+    }
     // No value-range supplied → the conservative floor stands. Every int is
     // `MaybeBigInt` (boxed, BigInt-safe); no raw-i64 carrier is minted.
     let Some(vr) = vr else {
@@ -104,14 +109,14 @@ pub fn repr_by_value_for(
     // pre-seed, then propagate it across value-preserving SSA edges (`Copy`
     // chains and phis) so loop-carried induction variables — whose phi has no
     // direct `fits_inline_int47` fact but whose every incoming value is proven —
-    // inherit the carrier. Shared with the RC drop-insertion raw-scalar filter
-    // (`raw_i64_safe_values_for`) — single source of truth.
-    let overflow_safe_values = raw_i64_safe_values_for_with_types(tir_func, vr, &value_types);
+    // inherit the carrier. RC drop-insertion's non-heap filter consumes this
+    // same map — single source of truth.
+    let overflow_safe_values = raw_i64_safe_values_for_with_types(tir_func, vr, value_types);
     for &id in &overflow_safe_values {
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
     let full_deopt_values =
-        raw_i64_full_deopt_values_for_with_types(tir_func, &overflow_safe_values, &value_types);
+        raw_i64_full_deopt_values_for_with_types(tir_func, &overflow_safe_values, value_types);
     for &id in &full_deopt_values {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
@@ -250,19 +255,49 @@ fn raw_i64_full_deopt_values_for_with_types(
     propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed, value_types)
 }
 
-/// All bare-i64 carriers, independent of box-site tier.
-pub(crate) fn raw_i64_carrier_values_for(
+/// Values without a refcounted heap obligation, derived from the same exact
+/// producer and physical-carrier facts as lowering. A float annotation may
+/// admit a heap-owning subclass and must never suppress its drop. `Never` is
+/// the representation lattice's join bottom, not a defined-value non-heap
+/// proof, so it is deliberately absent from this set.
+pub(crate) fn non_heap_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> std::collections::HashSet<ValueId> {
+    non_heap_values_in_domain(tir_func, vr, RefcountDomain::Carrier)
+}
+
+/// Values that remain non-owning after boxing into an object field. A checked
+/// full-i64 carrier has no local RC obligation but may box to a heap BigInt;
+/// only the inline-safe integer tier discharges a boxed storage obligation.
+/// Store elimination must use this projection, not [`non_heap_values_for`].
+pub(crate) fn non_heap_boxed_values_for(
+    tir_func: &TirFunction,
+    vr: &crate::tir::ValueRangeResult,
+) -> std::collections::HashSet<ValueId> {
+    non_heap_values_in_domain(tir_func, vr, RefcountDomain::Boxed)
+}
+
+enum RefcountDomain {
+    Carrier,
+    Boxed,
+}
+
+fn non_heap_values_in_domain(
+    tir_func: &TirFunction,
+    vr: &crate::tir::ValueRangeResult,
+    domain: RefcountDomain,
+) -> std::collections::HashSet<ValueId> {
     let value_types = value_type_by_id_for(tir_func);
-    let mut raw = raw_i64_safe_values_for_with_types(tir_func, vr, &value_types);
-    raw.extend(raw_i64_full_deopt_values_for_with_types(
-        tir_func,
-        &raw,
-        &value_types,
-    ));
-    raw
+    repr_by_value_with_types(tir_func, Some(vr), &value_types)
+        .into_iter()
+        .filter_map(|(value, repr)| {
+            (matches!(repr, Repr::RawI64Safe | Repr::Bool | Repr::FloatUnboxed)
+                || (matches!(domain, RefcountDomain::Carrier) && repr == Repr::RawI64FullDeopt)
+                || value_types.get(&value) == Some(&TirType::None))
+            .then_some(value)
+        })
+        .collect()
 }
 
 /// Seed the raw-i64-safe set from the value-range proof: an **op-result**
@@ -319,7 +354,7 @@ fn raw_i64_safe_value_seed(
             // each backend's lowering. The proven-`[0, 63]` count case — a
             // literal `<< 1` (the peel / hot-loop shape) or a bounded variable
             // `<< (i & 63)` — keeps the raw lane and its perf.
-            if matches!(op.opcode, OpCode::Shl | OpCode::Shr) {
+            if opcode_requires_i64_shift_count_guard_table(op.opcode) {
                 let count_in_range = op
                     .operands
                     .get(1)
@@ -448,8 +483,9 @@ fn native_projectable_bool_result(
     };
     match opcode_repr_projectable_bool_result_rule_table(op.opcode) {
         ReprProjectableBoolResultRule::ComparisonOperands
-            if crate::tir::predicate_semantics::predicate_facts_for_op(op, value_types)
-                .is_some_and(|facts| facts.result_type == TirType::Bool) =>
+            if crate::tir::op_semantics::op_instance_facts_for_op(op, value_types)
+                .and_then(|facts| facts.result_type)
+                .is_some_and(|ty| ty == TirType::Bool) =>
         {
             Some(Repr::Bool)
         }
@@ -675,21 +711,7 @@ fn gpu_intrinsic_raw_i64_values(
     let mut values = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
-            if op.opcode != OpCode::Call {
-                continue;
-            }
-            let is_gpu_index_intrinsic = matches!(
-                op.attrs.get("s_value"),
-                Some(AttrValue::Str(name))
-                    if matches!(
-                        name.as_str(),
-                        "molt_gpu_thread_id"
-                            | "molt_gpu_block_id"
-                            | "molt_gpu_block_dim"
-                            | "molt_gpu_grid_dim"
-                    )
-            );
-            if is_gpu_index_intrinsic {
+            if crate::tir::call_targets::gpu_runtime_result_type_for_op(op) == Some(TirType::I64) {
                 for &result in &op.results {
                     if is_raw_i64_semantic_candidate(value_types, result) {
                         values.insert(result);

@@ -6,7 +6,7 @@ use crate::PyToken;
 use crate::*;
 
 pub(crate) fn type_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__getattribute__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.type_getattribute,
@@ -58,11 +58,11 @@ pub(crate) fn type_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__dir__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.object_dir,
@@ -223,11 +223,11 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "_from_flags" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.memoryview_from_flags,
@@ -295,11 +295,11 @@ pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u6
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn range_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "count" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.range_count,
@@ -313,5 +313,5 @@ pub(crate) fn range_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             2,
         )),
         _ => None,
-    }
+    })
 }

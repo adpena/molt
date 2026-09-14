@@ -80,31 +80,35 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
         entry,
         LirBlock {
             id: entry,
-            args: vec![],
+            args: vec![LirValue {
+                id: ValueId(0),
+                ty: TirType::DynBox,
+                repr: LirRepr::DynBox,
+            }],
             ops: vec![LirOp {
                 tir_op: TirOp {
                     dialect: Dialect::Molt,
-                    opcode: OpCode::ObjectNewBoundStack,
-                    operands: vec![],
-                    results: vec![ValueId(0)],
+                    opcode: OpCode::ObjectNewBound,
+                    operands: vec![ValueId(0)],
+                    results: vec![ValueId(1)],
                     attrs,
                     source_span: None,
                 },
                 result_values: vec![LirValue {
-                    id: ValueId(0),
+                    id: ValueId(1),
                     ty: TirType::UserClass("Point".into()),
                     repr: LirRepr::Ref64,
                 }],
             }],
             terminator: LirTerminator::Return {
-                values: vec![ValueId(0)],
+                values: vec![ValueId(1)],
             },
         },
     );
     let lir_func = LirFunction {
         name: "alloc_point".into(),
-        param_names: vec![],
-        param_types: vec![],
+        param_names: vec!["class".into()],
+        param_types: vec![TirType::DynBox],
         return_types: vec![TirType::UserClass("Point".into())],
         blocks,
         entry_block: entry,
@@ -114,11 +118,12 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
     let stats = collect_function_stats(&lir_func);
 
     assert_eq!(stats.scalar_values, 0);
-    assert_eq!(stats.reference_values, 1);
-    assert_eq!(stats.boxed_values, 0);
+    assert_eq!(stats.reference_values, 2);
+    assert_eq!(stats.boxed_values, 1);
     assert_eq!(stats.values_by_repr.get("ref64").copied(), Some(1));
+    assert_eq!(stats.opcodes["ObjectNewBound"].result_reprs["ref64"], 1);
     assert_eq!(
-        stats.opcodes["ObjectNewBoundStack"].result_reprs["ref64"],
+        stats.opcodes["ObjectNewBound"].operand_repr_tuples["dynbox"],
         1
     );
 }

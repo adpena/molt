@@ -122,7 +122,10 @@ the legacy transport surface has already been normalized into SSA values.
 - `bce_safe=true` is valid only on `index` / `store_index`, and only when paired
   with an indexable `container_type`: `list`, `list_bool`, `list_float`,
   `list_int`, or `tuple`.
-- `arena_eligible=true` is valid only on allocation operations.
+- `arena_eligible` is rejected whenever present: compiler arena placement has no
+  proved owner lifetime. Explicit raw `stack_alloc` is also rejected by target
+  admission. `object_new_bound_stack` is retired and rejected before emission;
+  class allocation uses the owned heap contract on every supported target.
 - Native callable export fields are valid only on `invoke_ffi`. A native
   callable export must carry `native_callable_export`,
   `native_callable_binding`, and `native_callable_abi`; binding must be either
@@ -333,11 +336,14 @@ Comparisons accept optional `fast_int` / `fast_float`.
 
 ### Attribute Access
 
+Field writes always have assignment semantics. `store_init` and
+`guarded_field_init` are retired and rejected: initialization specialization
+requires the shared compiler's exact-site pristine-slot proof, never a wire hint.
+
 | kind                     | Fields used                                    | Description                        |
 |--------------------------|------------------------------------------------|------------------------------------|
 | `load`                   | `args` [obj], `value` (offset), `out`          | Load field at known offset         |
 | `store`                  | `args` [obj, val], `value` (offset)            | Store field at known offset        |
-| `store_init`             | `args` [obj, val], `value` (offset)            | Store field (init, no old decref)  |
 | `get_attr_generic_ptr`   | `args` [obj], `s_value` (attr), `out`, `metadata.ic_index` | Generic attr get (ptr-based) |
 | `get_attr_generic_obj`   | `args` [obj], `s_value` (attr), `out`          | Generic attr get (obj-based)       |
 | `get_attr_name`          | `args`, `out`                                  | Get attr by runtime name value     |
@@ -352,7 +358,6 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `has_attr_name`          | `args`, `out`                                  | hasattr() by runtime name          |
 | `guarded_field_get`      | `args` [obj, cls, ver], `s_value`, `value` (offset), `out` | Guarded field load  |
 | `guarded_field_set`      | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field store |
-| `guarded_field_init`     | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field init store |
 
 ### Indexing
 
@@ -627,7 +632,7 @@ same internal opcode. These aliases are accepted in the JSON:
 | `call`, `call_func`, `call_internal`, `call_indirect`, `call_bind`, `call_function`, `call_guarded`, `invoke_ffi` | Call |
 | `call_builtin`, `builtin_print`, `print`                                | CallBuiltin          |
 | `get_attr`, `get_attr_generic_ptr`, `get_attr_generic_obj`, `get_attr_name`, `guarded_field_get`, `load`, `load_attr` | LoadAttr |
-| `set_attr`, `store_attr`, `set_attr_name`, `set_attr_generic_ptr`, `set_attr_generic_obj`, `guarded_field_set`, `guarded_field_init`, `store`, `store_init` | StoreAttr |
+| `set_attr`, `store_attr`, `set_attr_name`, `set_attr_generic_ptr`, `set_attr_generic_obj`, `guarded_field_set`, `store` | StoreAttr |
 | `del_attr`, `del_attr_generic_ptr`, `del_attr_generic_obj`              | DelAttr              |
 | `store_index`, `index_set`                                              | StoreIndex           |
 | `box`, `box_from_raw_int`                                               | BoxVal               |

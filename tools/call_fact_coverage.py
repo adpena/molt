@@ -102,8 +102,8 @@ CALL_FACTS: list[CallFact] = [
         status=ATTACHED,
         evidence_file="runtime/molt-passes/src/tir/call_facts.rs",
         evidence_symbol="no_throw",
-        how_to_read="CallFacts.no_throw (Proven iff opcode-static-no-throw ∨ "
-        "resolved-callee-no-handlers ∨ allowlisted-builtin; else Unknown)",
+        how_to_read="CallFacts.no_throw (Proven only from the generated operation "
+        "effect contract; handler absence and builtin names are not proofs)",
         missing_primitive="(attached, CallFacts Phase 1a) — consumer: exception "
         "normal-edge fast path (ties doc 45) is the deferred 1b",
     ),
@@ -137,19 +137,19 @@ CALL_FACTS: list[CallFact] = [
         evidence_symbol="EscapeState",
         how_to_read="escape_analysis::analyze() yields per-ValueId EscapeState; "
         "the call's arg-escape summary is not attached to the call",
-        missing_primitive="CallFacts.args_noescape mask — enables stack-promotion "
-        "of arg temporaries + borrow-not-own arg passing",
+        missing_primitive="CallFacts.args_noescape mask — enables local identity "
+        "and borrow-not-own arg passing; placement also requires lifetime proof",
     ),
     CallFact(
         key="no_alloc",
         label="call performs no heap allocation",
         status=TRANSIENT,
-        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis/apply.rs",
-        evidence_symbol="StackAlloc",
-        how_to_read="escape pass rewrites NoEscape Alloc→StackAlloc per value; "
+        evidence_file="runtime/molt-passes/src/tir/passes/sroa/engine.rs",
+        evidence_symbol="candidate_roots",
+        how_to_read="SROA removes complete callback-free unobserved allocations; "
         "there is no per-call 'callee allocates?' summary on the call",
-        missing_primitive="CallFacts.no_alloc bit (callee alloc-free ∨ all results "
-        "stack-promotable) — enables alloc-free call fast paths",
+        missing_primitive="CallFacts.no_alloc proof over the callee's realized "
+        "allocations, never inferred from nonescape or placement preference",
     ),
 ]
 

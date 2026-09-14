@@ -73,8 +73,6 @@ fn main() {
         println!("cargo:rustc-cfg=molt_has_mpdec");
     }
 
-    emit_native_test_isolate_stubs(&out_dir, &target_arch, &target_env);
-
     emit_wasm_long_double_link_policy(&out_dir, &target_arch);
 
     unicode_tables::emit_runtime_unicode_tables(&out_dir, &build_python);
@@ -287,79 +285,6 @@ fn resolve_wasm_link_archive(env_key: &str, file_name: &str) -> Option<PathBuf> 
     } else {
         None
     }
-}
-
-fn emit_native_test_isolate_stubs(out_dir: &Path, target_arch: &str, target_env: &str) {
-    if target_arch == "wasm32" {
-        return;
-    }
-
-    let source = out_dir.join("molt_test_isolate_stubs.c");
-    // Provide unresolved-symbol fallbacks that yield to strong definitions from
-    // downstream crates, integration tests, or production app code. GNU/Clang
-    // targets can use weak definitions directly. MSVC needs `/alternatename`
-    // aliases so linking the fallback object into every test binary does not
-    // collide with tests that provide their own isolate symbols.
-    fs::write(
-        &source,
-        r#"#include <stdint.h>
-
-#if defined(_MSC_VER)
-uint64_t molt_isolate_bootstrap_stub(void) {
-    return 0;
-}
-
-uint64_t molt_isolate_import_stub(uint64_t name_bits) {
-    (void)name_bits;
-    return 0;
-}
-
-#pragma comment(linker, "/alternatename:molt_isolate_bootstrap=molt_isolate_bootstrap_stub")
-#pragma comment(linker, "/alternatename:molt_isolate_import=molt_isolate_import_stub")
-#elif defined(__GNUC__) || defined(__clang__)
-#define MOLT_WEAK __attribute__((weak))
-
-MOLT_WEAK uint64_t molt_isolate_bootstrap(void) {
-    return 0;
-}
-
-MOLT_WEAK uint64_t molt_isolate_import(uint64_t name_bits) {
-    (void)name_bits;
-    return 0;
-}
-#else
-uint64_t molt_isolate_bootstrap(void) {
-    return 0;
-}
-
-uint64_t molt_isolate_import(uint64_t name_bits) {
-    (void)name_bits;
-    return 0;
-}
-#endif
-"#,
-    )
-    .expect("failed to write native cdylib isolate stubs");
-
-    let object_ext = if target_env == "msvc" { "obj" } else { "o" };
-    let object = out_dir.join(format!("molt_test_isolate_stubs.{object_ext}"));
-    let compiler = Build::new().cargo_metadata(false).get_compiler();
-    let mut cmd = compiler.to_command();
-    if compiler.is_like_msvc() {
-        cmd.arg("/nologo")
-            .arg("/c")
-            .arg(&source)
-            .arg(format!("/Fo{}", object.display()));
-    } else {
-        cmd.arg("-c").arg(&source).arg("-o").arg(&object);
-    }
-    let status = cmd
-        .status()
-        .unwrap_or_else(|err| panic!("failed to compile native cdylib isolate stubs: {err}"));
-    if !status.success() {
-        panic!("compiling native cdylib isolate stubs failed: {status}");
-    }
-    println!("cargo:rustc-link-arg-tests={}", object.display());
 }
 
 fn build_libmpdec(

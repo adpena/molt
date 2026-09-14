@@ -15,7 +15,7 @@ pub struct TirLivenessResult {
     /// live-in, minus successor block args supplied by this block's edges).
     pub live_out: HashMap<BlockId, HashSet<ValueId>>,
     /// Values whose physical carrier holds no refcounted heap obligation
-    /// (RawI64Safe / Bool / FloatUnboxed / None / Never). Excluded from
+    /// (RawI64Safe / RawI64FullDeopt / Bool / FloatUnboxed / exact None / Never). Excluded from
     /// `live_in`/`live_out`; exposed so the
     /// drop pass can apply the identical filter to last-use candidates without
     /// recomputing the value-range proof.

@@ -4,6 +4,7 @@ import ast
 
 from .errors import OpKindTableError
 from .schema import _FRONTEND_EFFECT_VALUES
+from .primitive_effects import PRIMITIVE_FRONTEND_TYPES, frontend_operator_map
 
 
 def _frontend_wire_spelling_to_op_kind(spelling: str) -> str:
@@ -24,16 +25,6 @@ def _frontend_effect_from_opcode(row: dict) -> str:
     if row["purity"] == "impure":
         return "reads_heap"
     return "pure"
-
-
-def _frontend_raising_nothrow_on_primitives(data: dict) -> set[str]:
-    """Return raising kinds whose raise is disproved by primitive constants."""
-
-    out: set[str] = set()
-    for row in data.get("frontend_raising_kind", []):
-        if row.get("nothrow_on_primitives", False):
-            out.add(row["kind"])
-    return out
 
 
 def _simpleir_registered_runtime_kinds(data: dict) -> set[str]:
@@ -155,11 +146,9 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 raise OpKindTableError(
                     f"frontend_raising_kind {kind}: 'reason' must be a non-empty string"
                 )
-        if "nothrow_on_primitives" in row and not isinstance(
-            row["nothrow_on_primitives"], bool
-        ):
+        if "nothrow_on_primitives" in row:
             raise OpKindTableError(
-                f"frontend_raising_kind {kind}: 'nothrow_on_primitives' must be a bool"
+                f"frontend_raising_kind {kind}: blanket nothrow_on_primitives is retired; use primitive_operator_effect_cases"
             )
 
     # -- [[frontend_check_exception_skip]] ----------------------------------
@@ -256,6 +245,11 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 raise OpKindTableError(
                     f"binary_op {ast_op}: {col!r} must be a non-empty string"
                 )
+            if row[col] not in seen_raising or row[col] in seen_skip:
+                raise OpKindTableError(
+                    f"binary operator frontend kind {row[col]} requires a raising "
+                    "observer and cannot skip CHECK_EXCEPTION"
+                )
     ast_operator_names = {cls.__name__ for cls in ast.operator.__subclasses__()}
     if seen_binary != ast_operator_names:
         raise OpKindTableError(
@@ -271,6 +265,12 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     if not isinstance(frontend_effect_rows, list) or not frontend_effect_rows:
         raise OpKindTableError("table has no [[frontend_effect_kind]] rows")
     seen_effect: set[str] = set()
+    mapped_kinds = {
+        spelling.upper()
+        for row in data.get("kind", [])
+        if row.get("mapper_opcode")
+        for spelling in (row["canonical"], *row.get("aliases", []))
+    }
     for row in frontend_effect_rows:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
@@ -280,6 +280,24 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         if kind in seen_effect:
             raise OpKindTableError(f"duplicate frontend_effect_kind: {kind}")
         seen_effect.add(kind)
+        exact = row.get("exact_scalar_result_type")
+        arity = row.get("frontend_intrinsic_scalar_arity")
+        if exact is not None or arity is not None:
+            if (
+                not isinstance(exact, str)
+                or exact not in PRIMITIVE_FRONTEND_TYPES
+                or type(arity) is not int
+                or arity < 0
+            ):
+                raise OpKindTableError(
+                    f"frontend_effect_kind {kind}: exact scalar requires a known "
+                    "scalar type and nonnegative frontend_intrinsic_scalar_arity"
+                )
+            if kind in mapped_kinds:
+                raise OpKindTableError(
+                    f"frontend_effect_kind {kind}: mapped exact scalar facts "
+                    "must be declared on the opcode"
+                )
         effect = row.get("effect")
         if effect not in _FRONTEND_EFFECT_VALUES:
             raise OpKindTableError(
@@ -295,25 +313,27 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     raising_kinds = {row["kind"] for row in raising}
 
     required_effects = {
-        "ADD": "pure",
-        "SUB": "pure",
-        "MUL": "pure",
         "EQ": "writes_heap",
         "NE": "writes_heap",
         "LT": "writes_heap",
         "LE": "writes_heap",
         "GT": "writes_heap",
         "GE": "writes_heap",
-        "NEG": "pure",
-        "POS": "pure",
-        "INVERT": "pure",
-        "ABS": "pure",
         "CONST_STR": "pure",
-        "INDEX": "reads_heap",
-        "GET_ATTR": "reads_heap",
-        "MODULE_GET_ATTR": "reads_heap",
-        "GETATTR_GENERIC_OBJ": "reads_heap",
-        "GUARDED_GETATTR": "reads_heap",
+        "INDEX": "writes_heap",
+        "GET_ATTR": "writes_heap",
+        "LOAD_ATTR": "writes_heap",
+        "GETATTR": "writes_heap",
+        "HASATTR_NAME": "writes_heap",
+        "ISINSTANCE": "writes_heap",
+        "LEN": "writes_heap",
+        "MODULE_GET_ATTR": "writes_heap",
+        "GETATTR_GENERIC_OBJ": "writes_heap",
+        "GETATTR_GENERIC_PTR": "writes_heap",
+        "GETATTR_NAME": "writes_heap",
+        "GETATTR_NAME_DEFAULT": "writes_heap",
+        "GETATTR_SPECIAL_OBJ": "writes_heap",
+        "GUARDED_GETATTR": "writes_heap",
         "LOAD_VAR": "reads_heap",
         "STORE_VAR": "writes_heap",
         "SETATTR_GENERIC_OBJ": "writes_heap",
@@ -321,6 +341,8 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "STATE_TRANSITION": "control",
         "EXCEPTION_MATCH_BUILTIN": "reads_heap",
     }
+    operators = frontend_operator_map(data)
+    required_effects.update({kind: "writes_heap" for kind in operators})
     for kind, expected in required_effects.items():
         actual = effect_map.get(kind)
         if actual != expected:
@@ -336,6 +358,11 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "ABS": True,
         "INVERT": True,
         "GET_ATTR": True,
+        "GETATTR": True,
+        "HASATTR_NAME": True,
+        "ISINSTANCE": True,
+        "LEN": True,
+        "LOAD_ATTR": True,
         "INDEX": True,
         "MODULE_GET_ATTR": True,
         "SETATTR_GENERIC_OBJ": True,
@@ -350,16 +377,4 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             raise OpKindTableError(
                 f"frontend raising-axis invariant {kind}: expected {should_raise}, "
                 f"got {actual}"
-            )
-
-    nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
-    for kind in ("ADD", "SUB", "MUL", "NEG", "ABS", "INVERT"):
-        if kind not in nothrow_on_primitives:
-            raise OpKindTableError(
-                f"frontend primitive-nothrow invariant {kind}: missing opt-in"
-            )
-    for kind in ("DIV", "FLOORDIV", "MOD", "POW", "LSHIFT", "RSHIFT", "IN", "NOT_IN"):
-        if kind in nothrow_on_primitives:
-            raise OpKindTableError(
-                f"frontend primitive-nothrow invariant {kind}: unsafe opt-in"
             )

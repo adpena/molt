@@ -131,6 +131,86 @@ fn opaque_target_for_extern_callee() {
     assert_eq!(facts.target.static_callee(), None);
 }
 
+#[test]
+fn opaque_spellings_do_not_gain_module_facts_from_incidental_symbols() {
+    for kind in [
+        "call_func",
+        "call_function",
+        "call_indirect",
+        "call_bind",
+        "call_guarded",
+        "invoke_ffi",
+    ] {
+        for symbol in ["molt_gpu_thread_id", "module_function"] {
+            let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
+            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                .attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            let m = module(vec![caller, leaf_callee(symbol, TirType::None)]);
+            let table = module_table_for(&m, "caller");
+            let facts = table.get(result.unwrap()).unwrap();
+            assert_eq!(facts.target, CallTargetFact::Opaque, "{kind}: {symbol}");
+            assert_eq!(facts.leaf, FactValue::Unknown, "{kind}: {symbol}");
+            assert_eq!(
+                facts.inlinable,
+                InlineEligibility::Unknown,
+                "{kind}: {symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gpu_named_module_calls_keep_direct_call_facts_without_gpu_provenance() {
+    for symbol in [
+        "molt_gpu_thread_id",
+        "molt_gpu_block_id",
+        "molt_gpu_block_dim",
+        "molt_gpu_grid_dim",
+        "molt_gpu_barrier",
+    ] {
+        for original in [None, Some("call"), Some("call_internal")] {
+            let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
+            if let Some(kind) = original {
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                    .attrs
+                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            }
+            let m = module(vec![caller, leaf_callee(symbol, TirType::DynBox)]);
+            let table = module_table_for(&m, "caller");
+            let facts = table.get(result.unwrap()).unwrap();
+            assert_eq!(
+                facts.target,
+                CallTargetFact::StaticDirect {
+                    callee: symbol.into()
+                },
+                "{symbol}: {original:?}"
+            );
+            assert_eq!(facts.leaf, FactValue::Proven, "{symbol}: {original:?}");
+        }
+    }
+}
+
+#[test]
+fn genuine_gpu_calls_remain_opaque_runtime_facts() {
+    for (kind, symbol) in [
+        ("gpu_thread_id", "molt_gpu_thread_id"),
+        ("gpu_block_id", "molt_gpu_block_id"),
+        ("gpu_block_dim", "molt_gpu_block_dim"),
+        ("gpu_grid_dim", "molt_gpu_grid_dim"),
+        ("gpu_barrier", "molt_gpu_barrier"),
+    ] {
+        let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
+        caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        let m = module(vec![caller]);
+        let table = module_table_for(&m, "caller");
+        let facts = table.get(result.unwrap()).unwrap();
+        assert_eq!(facts.target, CallTargetFact::Opaque, "{kind}");
+    }
+}
+
 // -- leaf ----------------------------------------------------------------
 
 #[test]
@@ -225,13 +305,89 @@ fn inlinable_why_not_recursive() {
 // -- no_throw ------------------------------------------------------------
 
 #[test]
-fn no_throw_proven_for_handlerless_callee() {
-    // `b` is a plain leaf with no handlers → calling it is no_throw = Proven.
+fn handlerless_leaf_does_not_prove_call_admission_nothrow() {
+    // Even a harmless body cannot establish that call admission never raises.
     let (caller, res) = func_calling("a", TirType::None, &["b"], 0);
     let res = res.unwrap();
     let m = module(vec![caller, leaf_callee("b", TirType::None)]);
     let table = module_table_for(&m, "a");
-    assert_eq!(table.get(res).unwrap().no_throw, FactValue::Proven);
+    assert_eq!(table.get(res).unwrap().no_throw, FactValue::Unknown);
+}
+
+#[test]
+fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
+    let mut raising = leaf_callee("b", TirType::None);
+    let value = raising.blocks[&raising.entry_block].ops[0].results[0];
+    raising
+        .blocks
+        .get_mut(&raising.entry_block)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Raise,
+            operands: vec![value],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+    let (transitive, _) = func_calling("b", TirType::None, &["external"], 0);
+    for callee in [raising, transitive] {
+        assert!(!callee.has_exception_handlers());
+        let (caller, result) = func_calling("a", TirType::None, &["b"], 0);
+        let result = result.unwrap();
+        let local = CallFactsTable::build_local(&caller);
+        let table = module_table_for(&module(vec![caller, callee]), "a");
+        assert_eq!(local.get(result).unwrap().no_throw, FactValue::Unknown);
+        assert_eq!(table.get(result).unwrap().no_throw, FactValue::Unknown);
+    }
+}
+
+#[test]
+fn builtin_names_do_not_prove_argument_admission_or_effects() {
+    for name in ["id", "type", "is", "isinstance_fast", "len"] {
+        for arity in [0, 1, 3] {
+            let mut caller = TirFunction::new("caller".into(), vec![], TirType::DynBox);
+            let operands: Vec<_> = (0..arity).map(|_| caller.fresh_value()).collect();
+            let result = caller.fresh_value();
+            let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
+            for &operand in &operands {
+                block.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstNone,
+                    operands: vec![],
+                    results: vec![operand],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                });
+            }
+            let mut attrs = AttrDict::new();
+            attrs.insert("name".into(), AttrValue::Str(name.into()));
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CallBuiltin,
+                operands,
+                results: vec![result],
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return {
+                values: vec![result],
+            };
+            let local = CallFactsTable::build_local(&caller);
+            let table = module_table_for(&module(vec![caller]), "caller");
+            assert_eq!(
+                local.get(result).unwrap().no_throw,
+                FactValue::Unknown,
+                "{name}/{arity}"
+            );
+            assert_eq!(
+                table.get(result).unwrap().no_throw,
+                FactValue::Unknown,
+                "{name}/{arity}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -272,6 +428,23 @@ fn typed_return_some_for_typed_result() {
 }
 
 // -- intraprocedural floor (Analysis::compute) is fail-closed -------------
+
+#[test]
+fn scalar_return_hints_never_authorize_unboxed_call_results() {
+    for ty in [TirType::Bool, TirType::F64] {
+        let (mut caller, result) = func_calling("a", TirType::None, &["b"], 0);
+        let result = result.unwrap();
+        caller.value_types.insert(result, ty);
+        let local = CallFactsTable::build_local(&caller);
+        let m = module(vec![caller, leaf_callee("b", TirType::None)]);
+        let interprocedural = module_table_for(&m, "a");
+        assert_eq!(local.get(result).unwrap().typed_return, Some(Repr::DynBox));
+        assert_eq!(
+            interprocedural.get(result).unwrap().typed_return,
+            Some(Repr::DynBox)
+        );
+    }
+}
 
 #[test]
 fn local_floor_is_fail_closed() {

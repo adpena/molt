@@ -137,7 +137,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::CallSuperMethodIc
         | OpCode::CallBuiltin
         | OpCode::StackAlloc
-        | OpCode::ObjectNewBoundStack
         | OpCode::Free
         | OpCode::IterNextUnboxed
         | OpCode::ForIter

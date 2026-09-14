@@ -37,7 +37,6 @@ pub(super) struct WasmFunctionFrame {
     scalar_plan: ScalarRepresentationPlan,
     control_mode: WasmFrameControlMode,
     tail_call_eligible: bool,
-    arena_local: Option<u32>,
     dispatch_locals: Option<WasmDispatchFrameLocals>,
     const_cache: ConstantCache,
     const_seed_locals: Vec<(u32, i64)>,
@@ -84,9 +83,5 @@ impl WasmFunctionFrame {
 
     pub(super) fn tail_call_eligible(&self) -> bool {
         self.tail_call_eligible
-    }
-
-    pub(super) fn arena_local(&self) -> Option<u32> {
-        self.arena_local
     }
 }

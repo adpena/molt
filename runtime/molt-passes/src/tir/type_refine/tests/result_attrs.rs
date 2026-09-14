@@ -1,5 +1,51 @@
 use super::*;
 
+#[test]
+fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
+    use crate::tir::op_kinds_generated::opcode_accepts_shape;
+
+    for (opcode, key, value) in [
+        (OpCode::TypeGuard, "expected_type", "int"),
+        (OpCode::ObjectNewBound, "_type_hint", "Point"),
+        (OpCode::Call, "return_type", "int"),
+        (OpCode::CallMethod, "return_type", "float"),
+        (OpCode::CallMethodIc, "return_type", "int"),
+        (OpCode::CallSuperMethodIc, "return_type", "float"),
+        (OpCode::CallBuiltin, "name", "len"),
+        (OpCode::Copy, "_original_kind", "len"),
+    ] {
+        for operand_count in 0..=3 {
+            for result_count in 1..=2 {
+                if opcode_accepts_shape(opcode, operand_count, result_count) {
+                    continue;
+                }
+                let operands: Vec<_> = (0..operand_count)
+                    .map(|index| ValueId(index as u32))
+                    .collect();
+                let results: Vec<_> = (0..result_count)
+                    .map(|index| ValueId(8 + index as u32))
+                    .collect();
+                let attrs = [(key.into(), AttrValue::Str(value.into()))].into();
+                let mut func = single_block_func(
+                    vec![make_op(opcode, operands.clone(), results.clone(), attrs)],
+                    8 + result_count as u32,
+                );
+                for operand in operands {
+                    func.value_types.insert(operand, TirType::DynBox);
+                }
+                refine_types(&mut func);
+                for result in results {
+                    assert_eq!(
+                        func.value_types[&result],
+                        TirType::DynBox,
+                        "{opcode:?}: {operand_count} operands, {result_count} results"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---- Test: parse_return_type_str routes through TirType::from_type_hint ----
 /// Pin the contract that `parse_return_type_str` uses the
 /// centralized `TirType::from_type_hint` helper, so any future

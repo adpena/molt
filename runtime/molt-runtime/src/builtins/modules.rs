@@ -366,10 +366,13 @@ fn modules_state(_py: &PyToken<'_>) -> &'static ModulesRuntimeState {
     &runtime_state(_py).modules
 }
 
-pub(crate) fn modules_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+pub(crate) fn modules_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
     crate::gil_assert();
     let slots = state.modules.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
+    crate::state::cache::clear_atomic_slots(_py, &slots)
 }
 
 static TRACE_LAST_OP: AtomicU64 = AtomicU64::new(0);

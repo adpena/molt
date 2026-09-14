@@ -144,7 +144,8 @@ impl InlineEligibility {
 pub struct CallFacts {
     /// The typed call target. Never a raw marker bit.
     pub target: CallTargetFact,
-    /// The result `Repr` when precise, else `None`.
+    /// Conservative carrier for a known semantic result type, else `None`.
+    /// `Some(DynBox)` is a known type requiring a boxed carrier, not raw proof.
     pub typed_return: Option<Repr>,
     /// The callee makes no further call of any kind.
     pub leaf: FactValue,

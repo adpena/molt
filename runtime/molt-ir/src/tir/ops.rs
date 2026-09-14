@@ -121,12 +121,6 @@ pub enum OpCode {
     /// allocation size and finalizer are derived from the class layout
     /// rather than a fixed heap-block descriptor.
     ObjectNewBound,
-    /// Stack-allocated instance (escape analysis NoEscape variant of
-    /// `ObjectNewBound`).  Only valid when the class has a fixed,
-    /// non-extensible layout and the result does not escape the
-    /// enclosing function.  Lowers to a Cranelift `StackSlot` of the
-    /// class's slot count.
-    ObjectNewBoundStack,
     Free,
     LoadAttr,
     StoreAttr,
@@ -148,6 +142,8 @@ pub enum OpCode {
     CallMethod,
     CallMethodIc,
     CallSuperMethodIc,
+    /// Named lookup carries arguments only; metadata-free lookup carries
+    /// [name, arguments...]. Use builtin_call() for the executable contract.
     CallBuiltin,
     /// Fused `ord(container[index])`.
     ///
@@ -431,16 +427,162 @@ pub struct TirOp {
 /// pending calls and the eval breaker at a Python asynchronous-work boundary.
 pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 
+/// Executable builtin identity, separate from positional arguments. A name
+/// selects runtime builtin lookup; it does not prove a fixed callable, purity,
+/// argument admission, or the result type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinCallTarget<'a, T> {
+    Named(&'a str),
+    Dynamic(&'a T),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BuiltinCallView<'a, T> {
+    pub target: BuiltinCallTarget<'a, T>,
+    pub arguments: &'a [T],
+    /// Specialized source operations retain their backend-supported spelling.
+    /// In particular, range_new is a primitive, unlike mutable builtin range.
+    pub wire_kind: &'a str,
+}
+
+impl<'a, T> BuiltinCallView<'a, T> {
+    pub fn named_target(&self) -> Option<&'a str> {
+        match &self.target {
+            BuiltinCallTarget::Named(name) => Some(*name),
+            BuiltinCallTarget::Dynamic(_) => None,
+        }
+    }
+}
+
+/// The sole CallBuiltin identity/operand convention. Named metadata carries
+/// every positional argument in operands; a name is NEVER duplicated in slot
+/// zero. Only metadata-free dynamic lookup takes its name from operand zero.
+/// This generic projection also serves analyses over operand facts.
+pub fn builtin_call_view<'a, T>(
+    opcode: OpCode,
+    attrs: &'a AttrDict,
+    operands: &'a [T],
+) -> Option<BuiltinCallView<'a, T>> {
+    if opcode != OpCode::CallBuiltin
+        || [
+            "callee",
+            "runtime_symbol",
+            "native_callable_symbol",
+            "native_callable_export",
+        ]
+        .iter()
+        .any(|key| attrs.contains_key(*key))
+    {
+        return None;
+    }
+    let string = |key: &str| -> Option<Option<&'a str>> {
+        match attrs.get(key) {
+            None => Some(None),
+            Some(AttrValue::Str(value)) if !value.is_empty() => Some(Some(value.as_str())),
+            _ => None,
+        }
+    };
+    let (name, spelling, original) = (
+        string("name")?,
+        string("s_value")?,
+        string("_original_kind")?,
+    );
+    if name
+        .zip(spelling)
+        .is_some_and(|(name, spelling)| name != spelling)
+    {
+        return None;
+    }
+    let name = name.or(spelling);
+    let (target, arguments, wire_kind) = match original {
+        Some("range_new") if name.is_none_or(|name| name == "range") && operands.len() == 3 => {
+            (BuiltinCallTarget::Named("range"), operands, "range_new")
+        }
+        Some(kind @ ("print" | "builtin_print"))
+            if name.is_none_or(|name| name == kind || name == "print") =>
+        {
+            (BuiltinCallTarget::Named("print"), operands, kind)
+        }
+        Some(_) => return None,
+        None => match name {
+            Some(name) => (BuiltinCallTarget::Named(name), operands, "call_builtin"),
+            None => {
+                let (name, arguments) = operands.split_first()?;
+                (BuiltinCallTarget::Dynamic(name), arguments, "call_builtin")
+            }
+        },
+    };
+    Some(BuiltinCallView {
+        target,
+        arguments,
+        wire_kind,
+    })
+}
+
 impl TirOp {
-    /// A direct fixed-offset field store: `[object, value]`, nonnegative byte
-    /// offset, and no Python attribute dispatch. Guarded/generic stores have
-    /// different operand contracts and are not admitted by this projection.
-    pub fn plain_typed_slot_store(&self) -> Option<(ValueId, i64)> {
-        if self.opcode != OpCode::StoreAttr || self.operands.len() != 2 {
+    pub fn builtin_call(&self) -> Option<BuiltinCallView<'_, ValueId>> {
+        (self.has_valid_shape() && self.results.len() <= 1)
+            .then(|| builtin_call_view(self.opcode, &self.attrs, &self.operands))
+            .flatten()
+    }
+
+    /// The operand observed by the existing length primitive or fixed builtin
+    /// len function. Call metadata and argument roles come from builtin_call.
+    pub fn length_argument(&self) -> Option<ValueId> {
+        if !self.has_valid_shape() || self.results.len() != 1 {
+            return None;
+        }
+        if self.opcode == OpCode::Copy
+            && matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "len")
+            && let [argument] = self.operands.as_slice()
+        {
+            return Some(*argument);
+        }
+        let call = self.builtin_call()?;
+        match (call.wire_kind, call.named_target(), call.arguments) {
+            ("call_builtin", Some("len"), [argument]) => Some(*argument),
+            _ => None,
+        }
+    }
+
+    /// A direct fixed-offset field load: one object operand, one result,
+    /// nonnegative byte offset, and no Python attribute dispatch. Guarded and
+    /// generic forms may fall back to the full attribute protocol and are not
+    /// admitted by this projection. A fused async-work poll is also excluded.
+    pub fn plain_typed_slot_load(&self) -> Option<(ValueId, i64)> {
+        if self.opcode != OpCode::LoadAttr
+            || self.operands.len() != 1
+            || self.results.len() != 1
+            || self.is_async_work_poll()
+        {
             return None;
         }
         if !matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-            if matches!(kind.as_str(), "store" | "store_init"))
+            if kind == "load")
+        {
+            return None;
+        }
+        match self.attrs.get("value") {
+            Some(AttrValue::Int(offset)) if *offset >= 0 => Some((self.operands[0], *offset)),
+            _ => None,
+        }
+    }
+
+    /// A direct fixed-offset field store: `[object, value]`, nonnegative byte
+    /// offset, and no Python attribute dispatch. Guarded/generic stores have
+    /// different operand contracts and are not admitted by this projection.
+    /// Fused async-work polls are not plain stores: eliminating or forwarding
+    /// through them would discard an operand-independent callback boundary.
+    pub fn plain_typed_slot_store(&self) -> Option<(ValueId, i64)> {
+        if self.opcode != OpCode::StoreAttr
+            || self.operands.len() != 2
+            || !self.results.is_empty()
+            || self.is_async_work_poll()
+        {
+            return None;
+        }
+        if !matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+            if kind == "store")
         {
             return None;
         }
@@ -545,12 +687,16 @@ impl TirOp {
             && self.attrs.is_empty()
     }
 
-    /// Admit fixed result shapes using the same generated schema as verification.
-    /// Variable-result opcodes still require their instance-specific checks.
+    /// Admit operand and result counts using the same generated schema as
+    /// verification and exact result inference. Payload-dependent shapes still
+    /// require their instance-specific checks.
     #[inline]
-    pub fn has_valid_result_arity(&self) -> bool {
-        super::op_kinds_generated::opcode_fixed_result_count_table(self.opcode)
-            .is_none_or(|expected| self.results.len() == expected)
+    pub fn has_valid_shape(&self) -> bool {
+        super::op_kinds_generated::opcode_accepts_shape(
+            self.opcode,
+            self.operands.len(),
+            self.results.len(),
+        )
     }
 }
 
@@ -593,6 +739,92 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_call_has_one_identity_and_argument_authority() {
+        let values = [ValueId(0), ValueId(1), ValueId(2)];
+        let mut attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        for count in 0..=3 {
+            let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values[..count]).unwrap();
+            assert_eq!(call.named_target(), Some("len"));
+            assert_eq!(
+                call.arguments,
+                &values[..count],
+                "named calls never discard operand zero"
+            );
+            assert_eq!(call.wire_kind, "call_builtin");
+        }
+        attrs.clear();
+        let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values).unwrap();
+        assert_eq!(call.target, BuiltinCallTarget::Dynamic(&values[0]));
+        assert_eq!(call.arguments, &values[1..]);
+        assert!(builtin_call_view::<ValueId>(OpCode::CallBuiltin, &attrs, &[]).is_none());
+        assert!(builtin_call_view(OpCode::Call, &attrs, &values).is_none());
+        for kind in ["range_new", "print", "builtin_print"] {
+            let name = if kind == "range_new" {
+                "range"
+            } else {
+                "print"
+            };
+            attrs = AttrDict::from([
+                ("_original_kind".into(), AttrValue::Str(kind.into())),
+                ("name".into(), AttrValue::Str(name.into())),
+                ("s_value".into(), AttrValue::Str(name.into())),
+            ]);
+            let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values).unwrap();
+            assert_eq!(call.named_target(), Some(name));
+            assert_eq!(call.wire_kind, kind);
+            assert_eq!(call.arguments, values);
+        }
+        attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]);
+        for count in 0..3 {
+            assert!(builtin_call_view(OpCode::CallBuiltin, &attrs, &values[..count]).is_none());
+        }
+    }
+
+    #[test]
+    fn builtin_call_rejects_conflicting_or_foreign_dispatch_metadata() {
+        let operands = [ValueId(1)];
+        for attrs in [
+            AttrDict::from([("name".into(), AttrValue::Int(1))]),
+            AttrDict::from([("name".into(), AttrValue::Str(String::new()))]),
+            AttrDict::from([("_original_kind".into(), AttrValue::Str("unknown".into()))]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("s_value".into(), AttrValue::Str("print".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("_original_kind".into(), AttrValue::Str("print".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("callee".into(), AttrValue::Str("evil".into())),
+            ]),
+        ] {
+            assert!(
+                builtin_call_view(OpCode::CallBuiltin, &attrs, &operands).is_none(),
+                "{attrs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn length_projection_uses_identity_not_an_annotation() {
+        let mut op = dead_placeholder_const_for_type(&TirType::I64, ValueId(2));
+        op.opcode = OpCode::CallBuiltin;
+        op.operands = vec![ValueId(1)];
+        op.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        assert_eq!(op.length_argument(), Some(ValueId(1)));
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("print".into()));
+        assert_eq!(op.length_argument(), None);
+        op.opcode = OpCode::Copy;
+        op.attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str("len".into()))]);
+        assert_eq!(op.length_argument(), Some(ValueId(1)));
+        op.results.push(ValueId(3));
+        assert_eq!(op.length_argument(), None);
+    }
 
     #[test]
     fn retiring_poll_role_preserves_exception_payload_and_source() {
@@ -655,16 +887,14 @@ mod tests {
         op.opcode = OpCode::StoreAttr;
         op.operands = vec![ValueId(0), ValueId(1)];
         op.results.clear();
-        for kind in ["store", "store_init"] {
-            op.attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
-            op.attrs.insert("value".into(), AttrValue::Int(8));
-            assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
-            op.attrs.remove("value");
-            assert_eq!(op.plain_typed_slot_store(), None);
-            op.attrs.insert("value".into(), AttrValue::Int(-1));
-            assert_eq!(op.plain_typed_slot_store(), None);
-        }
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        op.attrs.insert("value".into(), AttrValue::Int(8));
+        assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
+        op.attrs.remove("value");
+        assert_eq!(op.plain_typed_slot_store(), None);
+        op.attrs.insert("value".into(), AttrValue::Int(-1));
+        assert_eq!(op.plain_typed_slot_store(), None);
         op.attrs.insert("value".into(), AttrValue::Int(0));
         for kind in ["guarded_field_set", "set_attr_generic_ptr", "unknown"] {
             op.attrs
@@ -675,5 +905,61 @@ mod tests {
             .insert("_original_kind".into(), AttrValue::Str("store".into()));
         op.operands.push(ValueId(3));
         assert_eq!(op.plain_typed_slot_store(), None);
+        op.operands.pop();
+        op.results.push(ValueId(4));
+        assert_eq!(
+            op.plain_typed_slot_store(),
+            None,
+            "a result-producing StoreAttr is not the statement-only slot store"
+        );
+    }
+
+    #[test]
+    fn plain_slot_store_rejects_retired_and_generic_spellings() {
+        let mut op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(2));
+        op.opcode = OpCode::StoreAttr;
+        op.operands = vec![ValueId(0), ValueId(1)];
+        op.results.clear();
+        op.attrs.insert("value".into(), AttrValue::Int(8));
+
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
+        for kind in ["store_init", "guarded_field_set", "guarded_field_init"] {
+            op.attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            assert_eq!(op.plain_typed_slot_store(), None);
+        }
+    }
+
+    #[test]
+    fn plain_slot_load_requires_complete_direct_offset_contract() {
+        let mut op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(1));
+        op.opcode = OpCode::LoadAttr;
+        op.operands = vec![ValueId(0)];
+        op.results = vec![ValueId(1)];
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        op.attrs.insert("value".into(), AttrValue::Int(8));
+        assert_eq!(op.plain_typed_slot_load(), Some((ValueId(0), 8)));
+
+        op.attrs.remove("value");
+        assert_eq!(op.plain_typed_slot_load(), None);
+        op.attrs.insert("value".into(), AttrValue::Int(-1));
+        assert_eq!(op.plain_typed_slot_load(), None);
+        op.attrs.insert("value".into(), AttrValue::Int(0));
+        for kind in ["guarded_field_get", "get_attr", "unknown"] {
+            op.attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            assert_eq!(op.plain_typed_slot_load(), None);
+        }
+
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        op.operands.push(ValueId(2));
+        assert_eq!(op.plain_typed_slot_load(), None);
+        op.operands.pop();
+        op.results.clear();
+        assert_eq!(op.plain_typed_slot_load(), None);
     }
 }

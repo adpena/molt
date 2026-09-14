@@ -194,7 +194,7 @@ installed.
 
 | Criterion | Threshold | Measurement |
 |-----------|-----------|-------------|
-| Compilation | 0 errors, 0 warnings on molt-authored crates (molt-runtime, molt-backend, molt-snapshot, molt-embed, molt-harness) | `cargo check` + `cargo clippy -D warnings` |
+| Compilation | 0 errors, 0 warnings on molt-authored crates (molt-runtime, molt-backend, molt-embed, molt-harness) | `cargo check` + `cargo clippy -D warnings` |
 | Rust unit tests | 0 failures, 0 ignored | `cargo nextest` (no `#[ignore]` permitted) |
 | Python unit tests | 0 failures | pytest + inline test runners |
 | Test count floor | >= baseline count per crate | Compared to `baselines/baseline.json` |

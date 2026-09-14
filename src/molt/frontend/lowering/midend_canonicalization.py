@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from molt.compiler_analysis.literal_identity import literal_identity_key
+
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     CFGGraph,
@@ -17,11 +19,33 @@ from molt.frontend._types import (
 )
 from molt.frontend.lowering.op_kinds_generated import (
     FRONTEND_EFFECT_CLASS,
+    FRONTEND_ARBITRARY_HEAP_EFFECT,
     FRONTEND_INTRINSIC_SCALAR_ARITIES,
     FRONTEND_INTRINSIC_SCALAR_RESULTS,
+    FRONTEND_OPERATOR_OPCODE,
     FRONTEND_PREDICATE_SEMANTICS,
+    FRONTEND_TRUTHINESS_CONTROL_KINDS,
+    frontend_can_reorder_commutative,
+    frontend_operator_facts,
     frontend_predicate_facts,
 )
+
+_EXACT_BUILTIN_CONTAINER_PRODUCERS = {
+    "DICT_NEW": "dict",
+    "LIST_NEW": "list",
+    "TUPLE_NEW": "tuple",
+    "SET_NEW": "set",
+    "FROZENSET_NEW": "frozenset",
+    "RANGE_NEW": "range",
+}
+_EXACT_LEN_RECEIVER_TYPES = frozenset(
+    {"str", "bytes", "tuple", "list", "dict", "set", "frozenset", "range"}
+)
+_EXACT_SEQUENCE_INDEX_RECEIVER_TYPES = frozenset(
+    {"str", "bytes", "tuple", "list", "range"}
+)
+_EXACT_SEQUENCE_INDEX_KEY_TYPES = frozenset({"int", "bool"})
+
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -131,40 +155,53 @@ class MidendCanonicalizationMixin(_MixinBase):
             return ("CONST_BYTES", bytes(op.args[0]))
         if op.kind in {"CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_STR"}:
             value = op.args[0]
-            try:
-                hash(value)
-                normalized = value
-            except TypeError:
-                normalized = repr(value)
-            return (op.kind, normalized)
+            identity = literal_identity_key(value)
+            return (op.kind, identity) if identity is not None else None
         if op.kind == "CONST":
             value = op.args[0]
-            try:
-                hash(value)
-                normalized = value
-            except TypeError:
-                normalized = repr(value)
-            return ("CONST", type(value).__name__, normalized)
+            identity = literal_identity_key(value)
+            return ("CONST", identity) if identity is not None else None
         return None
 
-    def _predicate_primitive_facts(self, op: MoltOp) -> tuple[bool, bool] | None:
-        category = FRONTEND_PREDICATE_SEMANTICS.get(op.kind)
-        if category is None:
-            return None
+    def _exact_primitive_operand_types(
+        self, op: MoltOp, const_by_name: dict[str, Any] | None = None
+    ) -> tuple[str | None, ...]:
         if (
             not isinstance(op.result, MoltValue)
             or not op.result.name
-            or len(op.args) != (1 if category == "truth" else 2)
             or not all(isinstance(arg, MoltValue) for arg in op.args)
         ):
-            return (False, False)
+            return ()
         definitions = getattr(self, "_op_by_result", {})
         visiting: set[str] = set()
 
+        def literal_type(value: Any) -> str | None:
+            if value is None:
+                return "None"
+            return (
+                type(value).__name__
+                if type(value)
+                in (
+                    int,
+                    float,
+                    bool,
+                    str,
+                    bytes,
+                    list,
+                    tuple,
+                    dict,
+                    set,
+                    frozenset,
+                    range,
+                )
+                else None
+            )
+
         def exact_type(value: MoltValue) -> str | None:
-            # A type_hint can come from an annotation and admit subclasses.
-            # Only producer semantics prove an exact primitive. SSA rewrite
-            # passes retain producer identity; absent facts stay conservative.
+            # An annotation admits subclasses. Only current producer semantics
+            # or a program-point constant fact establishes an exact builtin.
+            if const_by_name is not None and value.name in const_by_name:
+                return literal_type(const_by_name[value.name])
             if value.name in visiting:
                 return None
             producer = definitions.get(value.name)
@@ -174,11 +211,23 @@ class MidendCanonicalizationMixin(_MixinBase):
                 or producer.result.name != value.name
             ):
                 return None
+            if producer.kind == "CONST" and len(producer.args) == 1:
+                return literal_type(producer.args[0])
+            exact_builtin = _EXACT_BUILTIN_CONTAINER_PRODUCERS.get(producer.kind)
+            if exact_builtin is not None and all(
+                isinstance(arg, MoltValue) for arg in producer.args
+            ):
+                if exact_builtin == "dict" and len(producer.args) % 2:
+                    return None
+                if exact_builtin == "range" and len(producer.args) != 3:
+                    return None
+                return exact_builtin
             intrinsic = FRONTEND_INTRINSIC_SCALAR_RESULTS.get(producer.kind)
             if intrinsic is not None:
                 return (
                     intrinsic
-                    if len(producer.args) == FRONTEND_INTRINSIC_SCALAR_ARITIES[producer.kind]
+                    if len(producer.args)
+                    == FRONTEND_INTRINSIC_SCALAR_ARITIES[producer.kind]
                     and (
                         producer.kind not in FRONTEND_PREDICATE_SEMANTICS
                         or all(isinstance(arg, MoltValue) for arg in producer.args)
@@ -187,7 +236,11 @@ class MidendCanonicalizationMixin(_MixinBase):
                 )
             visiting.add(value.name)
             try:
-                if producer.kind == "COPY" and len(producer.args) == 1 and not producer.metadata:
+                if (
+                    producer.kind == "COPY"
+                    and len(producer.args) == 1
+                    and not producer.metadata
+                ):
                     source = producer.args[0]
                     return exact_type(source) if isinstance(source, MoltValue) else None
                 if producer.kind in FRONTEND_PREDICATE_SEMANTICS:
@@ -200,17 +253,80 @@ class MidendCanonicalizationMixin(_MixinBase):
             finally:
                 visiting.remove(value.name)
 
-        return frontend_predicate_facts(op.kind, *(exact_type(arg) for arg in op.args))
+        return tuple(exact_type(arg) for arg in op.args)
 
-    def _op_effect_class(self, op: MoltOp | str) -> str:
+    def _op_primitive_facts(
+        self, op: MoltOp, const_by_name: dict[str, Any] | None = None
+    ) -> tuple[str, bool] | None:
+        operands = self._exact_primitive_operand_types(op, const_by_name)
+        if op.kind == "TYPE_OF" and len(operands) == 1:
+            # The returned tag is always an exact integer, but an arbitrary
+            # object's __class__ can change between observations.
+            return ("pure" if operands[0] is not None else "reads_heap", True)
+        if op.kind in FRONTEND_TRUTHINESS_CONTROL_KINDS:
+            condition_type = operands[0] if operands else None
+            _, nothrow = frontend_predicate_facts("BOOL", condition_type)
+            return ("control", nothrow)
+        if op.kind == "LEN":
+            if len(operands) == 1 and operands[0] in _EXACT_LEN_RECEIVER_TYPES:
+                # Exact ranges can represent more than Py_ssize_t elements;
+                # len(range(...)) then raises OverflowError on the target.
+                return ("reads_heap", operands[0] != "range")
+            return None
+        if op.kind == "INDEX":
+            if (
+                len(operands) == 2
+                and operands[0] in _EXACT_SEQUENCE_INDEX_RECEIVER_TYPES
+                and operands[1] in _EXACT_SEQUENCE_INDEX_KEY_TYPES
+            ):
+                # Callback-free for exact built-in sequences, but bounds and
+                # representation checks can still raise.
+                return ("reads_heap", False)
+            return None
+        category = FRONTEND_PREDICATE_SEMANTICS.get(op.kind)
+        if category is None and op.kind not in FRONTEND_OPERATOR_OPCODE:
+            return None
+        if category is not None:
+            predicate = frontend_predicate_facts(op.kind, *operands)
+            if predicate is None:
+                return None
+            return ("pure" if predicate[0] else "writes_heap", predicate[1])
+        return frontend_operator_facts(op.kind, *operands)
+
+    def _op_effect_class(
+        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = None
+    ) -> str:
         if isinstance(op, MoltOp):
-            predicate = self._predicate_primitive_facts(op)
-            if predicate is not None:
-                return "pure" if predicate[0] else "writes_heap"
+            facts = self._op_primitive_facts(op, const_by_name)
+            if facts is not None:
+                return facts[0]
             op_kind = op.kind
         else:
             op_kind = op
         return FRONTEND_EFFECT_CLASS.get(op_kind, "unknown")
+
+    def _op_may_access_arbitrary_heap(
+        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = None
+    ) -> bool:
+        if isinstance(op, MoltOp):
+            # Reuse the single write-alias authority for the exact-list
+            # mutations whose runtime path cannot dispatch user callbacks.
+            # Do not let their coarse generated ``writes_heap`` class advance
+            # the arbitrary-heap epoch and discard unrelated guards/caches.
+            if self._heap_alias_classes_for_write_op(op):
+                return False
+            if op.kind in FRONTEND_TRUTHINESS_CONTROL_KINDS:
+                operands = self._exact_primitive_operand_types(op, const_by_name)
+                condition_type = operands[0] if operands else None
+                callback_free, _ = frontend_predicate_facts("BOOL", condition_type)
+                return not callback_free
+            facts = self._op_primitive_facts(op, const_by_name)
+            if facts is not None:
+                return facts[0] == "writes_heap"
+            op_kind = op.kind
+        else:
+            op_kind = op
+        return FRONTEND_ARBITRARY_HEAP_EFFECT.get(op_kind, True)
 
     def _is_pure_op_for_global_cse(self, op: MoltOp | str) -> bool:
         return self._op_effect_class(op) == "pure"
@@ -233,11 +349,8 @@ class MidendCanonicalizationMixin(_MixinBase):
     ) -> tuple[str, Any] | None:
         if isinstance(value, MoltValue):
             return self._normalize_value_operand_key(value, const_int_values)
-        try:
-            hash(value)
-            return ("const", value)
-        except TypeError:
-            return ("const_repr", repr(value))
+        identity = literal_identity_key(value)
+        return ("const", identity) if identity is not None else None
 
     def _const_type_tag_for_lattice_value(self, value: Any) -> int | None:
         if isinstance(value, bool):
@@ -265,41 +378,34 @@ class MidendCanonicalizationMixin(_MixinBase):
         return None
 
     def _heap_alias_class_for_read_op(
-        self, op: MoltOp, value_type_tags: dict[str, int]
+        self,
+        op: MoltOp,
+        value_type_tags: dict[str, int],
+        const_by_name: dict[str, Any] | None = None,
     ) -> str | None:
         if not op.args:
             return None
+        exact_types = self._exact_primitive_operand_types(op, const_by_name)
+        if op.kind == "LEN":
+            receiver_type = exact_types[0] if len(exact_types) == 1 else None
+            if receiver_type == "dict":
+                return "dict"
+            if receiver_type == "list":
+                return "list"
+            if receiver_type in _EXACT_LEN_RECEIVER_TYPES:
+                return "immutable_len"
+            return "indexable"
+        if op.kind == "INDEX":
+            receiver_type = exact_types[0] if len(exact_types) == 2 else None
+            if receiver_type == "list":
+                return "list"
+            if receiver_type in _EXACT_SEQUENCE_INDEX_RECEIVER_TYPES:
+                return "immutable_len"
+            return "indexable"
         primary = op.args[0]
         if not isinstance(primary, MoltValue):
             return "indexable"
         type_tag = value_type_tags.get(primary.name)
-        if op.kind == "LEN":
-            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
-                return "dict"
-            if type_tag == BUILTIN_TYPE_TAGS["list"]:
-                return "list"
-            if type_tag in {
-                BUILTIN_TYPE_TAGS["str"],
-                BUILTIN_TYPE_TAGS["bytes"],
-                BUILTIN_TYPE_TAGS["tuple"],
-                BUILTIN_TYPE_TAGS["frozenset"],
-                BUILTIN_TYPE_TAGS["range"],
-            }:
-                return "immutable_len"
-            return "indexable"
-        if op.kind == "INDEX":
-            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
-                return "dict"
-            if type_tag == BUILTIN_TYPE_TAGS["list"]:
-                return "list"
-            if type_tag in {
-                BUILTIN_TYPE_TAGS["str"],
-                BUILTIN_TYPE_TAGS["bytes"],
-                BUILTIN_TYPE_TAGS["tuple"],
-                BUILTIN_TYPE_TAGS["range"],
-            }:
-                return "immutable_len"
-            return "indexable"
         if op.kind == "CONTAINS":
             if type_tag in {
                 BUILTIN_TYPE_TAGS["str"],
@@ -330,70 +436,37 @@ class MidendCanonicalizationMixin(_MixinBase):
             return "attr"
         return "indexable"
 
-    def _is_uncertain_heap_boundary(self, op_kind: str) -> bool:
-        return op_kind in {
-            "CALL",
-            "CALL_INDIRECT",
-            "CALL_INTERNAL",
-            "INVOKE_FFI",
-        }
-
-    def _heap_alias_classes_for_write_op(
-        self, op: MoltOp, value_type_tags: dict[str, int]
-    ) -> set[str]:
-        if op.kind in {
-            "DICT_SET",
-            "DICT_STR_INT_INC",
-            "DICT_SPLIT_COUNT_INT_INC",
-            "DICT_SETDEFAULT",
-            "DICT_POP",
-            "DICT_POPITEM",
-            "DICT_CLEAR",
-            "DICT_UPDATE",
-            "DICT_UPDATE_KWSTAR",
-        }:
-            return {"dict", "indexable"}
-        if op.kind in {
-            "LIST_APPEND",
-            "LIST_EXTEND",
-            "LIST_POP",
-            "LIST_REMOVE",
-            "LIST_INSERT",
-            "LIST_CLEAR",
-            "LIST_REVERSE",
-        }:
+    def _heap_alias_classes_for_write_op(self, op: MoltOp) -> set[str]:
+        # Only exact built-in mutations with no lookup, iteration, equality,
+        # attribute, or overwritten-value destruction callbacks are local.
+        # Every unproved mutation advances the global heap epoch.
+        exact_types = self._exact_primitive_operand_types(op)
+        if (
+            (
+                op.kind == "LIST_APPEND"
+                and len(exact_types) == 2
+                and exact_types[0] == "list"
+            )
+            or (op.kind == "LIST_REVERSE" and exact_types == ("list",))
+            or (
+                op.kind == "LIST_INSERT"
+                and len(exact_types) == 3
+                and exact_types[0] == "list"
+                and exact_types[1] in {"int", "bool"}
+            )
+        ):
             return {"list", "indexable"}
-        if op.kind in {
-            "STORE_ATTR",
-            "SET_ATTR",
-            "SETATTR",
-            "SETATTR_INIT",
-            "SETATTR_GENERIC_OBJ",
-            "SETATTR_GENERIC_PTR",
-            "GUARDED_SETATTR",
-            "GUARDED_SETATTR_INIT",
-            "DEL_ATTR",
-            "DELATTR",
-            "SETATTR_NAME",
-            "DELATTR_NAME",
-        }:
-            return {"attr"}
-        if op.kind in {"STORE_INDEX", "SET_INDEX", "DEL_INDEX"}:
-            if not op.args or not isinstance(op.args[0], MoltValue):
-                return {"dict", "list", "indexable"}
-            type_tag = value_type_tags.get(op.args[0].name)
-            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
-                return {"dict", "indexable"}
-            if type_tag == BUILTIN_TYPE_TAGS["list"]:
-                return {"list", "indexable"}
-            return {"dict", "list", "indexable"}
-        return {"dict", "list", "indexable", "attr"}
+        return set()
 
     def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool:
-        return bool(key) and key[0] == "READ_HEAP_CLASS"
+        return bool(key) and key[0] in {
+            "READ_HEAP_CLASS",
+            "READ_HEAP",
+            "RUNTIME_CALLABLE_READ",
+        }
 
     def _heap_read_key_class(self, key: tuple[Any, ...]) -> str | None:
-        if not self._is_heap_read_key(key):
+        if not key or key[0] != "READ_HEAP_CLASS":
             return None
         if len(key) < 2:
             return None
@@ -870,17 +943,15 @@ class MidendCanonicalizationMixin(_MixinBase):
         object_epochs: dict[str, int],
         memory_epoch: int,
     ) -> tuple[Any, ...] | None:
-        if not self._is_cse_eligible_op(op):
+        effect_class = self._op_effect_class(op, const_by_name=const_int_values)
+        if effect_class not in {"pure", "reads_heap"}:
             return None
-        effect_class = self._op_effect_class(op)
         runtime_symbol = (
             op.metadata.get("runtime_symbol") if op.metadata is not None else None
         )
         if isinstance(runtime_symbol, str) and runtime_symbol:
             normalized_args = [
-                self._normalize_operand_key_for_value_numbering(
-                    arg, const_int_values
-                )
+                self._normalize_operand_key_for_value_numbering(arg, const_int_values)
                 for arg in op.args
             ]
             if all(arg is not None for arg in normalized_args):
@@ -948,7 +1019,9 @@ class MidendCanonicalizationMixin(_MixinBase):
             if lhs_key is None or rhs_key is None:
                 return None
 
-            if op.kind in {"ADD", "MUL"} and rhs_key < lhs_key:
+            if rhs_key < lhs_key and frontend_can_reorder_commutative(
+                op.kind, *self._exact_primitive_operand_types(op, const_int_values)
+            ):
                 lhs_key, rhs_key = rhs_key, lhs_key
 
             lhs = op.args[0]
@@ -978,7 +1051,11 @@ class MidendCanonicalizationMixin(_MixinBase):
                 if key is None:
                     return None
                 normalized_args.append(key)
-            read_alias_class = self._heap_alias_class_for_read_op(op, value_type_tags)
+            read_alias_class = self._heap_alias_class_for_read_op(
+                op,
+                value_type_tags,
+                const_int_values,
+            )
             if read_alias_class is None:
                 return None
             object_epoch = 0
@@ -1277,7 +1354,9 @@ class MidendCanonicalizationMixin(_MixinBase):
                 object_epochs=object_epochs,
                 memory_epoch=memory_epoch,
             )
-            effect_class = self._op_effect_class(canonical_op)
+            effect_class = self._op_effect_class(
+                canonical_op, const_by_name=const_int_values
+            )
             if (
                 effect_class == "reads_heap"
                 and value_key is not None
@@ -1473,18 +1552,10 @@ class MidendCanonicalizationMixin(_MixinBase):
                             BUILTIN_TYPE_TAGS["float"],
                         }:
                             type_tag = abs_arg_tag
-                elif canonical_op.kind == "DICT_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["dict"]
-                elif canonical_op.kind == "LIST_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["list"]
-                elif canonical_op.kind == "TUPLE_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["tuple"]
-                elif canonical_op.kind == "SET_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["set"]
-                elif canonical_op.kind == "FROZENSET_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["frozenset"]
-                elif canonical_op.kind == "RANGE_NEW":
-                    type_tag = BUILTIN_TYPE_TAGS["range"]
+                elif canonical_op.kind in _EXACT_BUILTIN_CONTAINER_PRODUCERS:
+                    type_tag = BUILTIN_TYPE_TAGS[
+                        _EXACT_BUILTIN_CONTAINER_PRODUCERS[canonical_op.kind]
+                    ]
             if type_tag is not None and result_name != "none":
                 value_type_tags[result_name] = type_tag
                 state_dirty = True
@@ -1503,25 +1574,13 @@ class MidendCanonicalizationMixin(_MixinBase):
                 guard_dict_shapes.clear()
                 state_dirty = True
 
-            if effect_class == "writes_heap":
-                write_alias_classes = self._heap_alias_classes_for_write_op(
-                    canonical_op, value_type_tags
+            arbitrary_heap = self._op_may_access_arbitrary_heap(canonical_op)
+            if effect_class == "writes_heap" or arbitrary_heap:
+                write_alias_classes = (
+                    set()
+                    if arbitrary_heap
+                    else self._heap_alias_classes_for_write_op(canonical_op)
                 )
-                if self._is_uncertain_heap_boundary(canonical_op.kind):
-                    memory_epoch += 1
-                    state_dirty = True
-                    stale_read_keys = [
-                        key
-                        for key in list(available_values.keys())
-                        if self._is_heap_read_key(key)
-                    ]
-                    for key in stale_read_keys:
-                        available_values.pop(key, None)
-                    for alias_class in sorted(alias_epochs):
-                        alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
-                    guard_dict_shapes.clear()
-                    state_dirty = True
-                    continue
                 if canonical_op.args and isinstance(canonical_op.args[0], MoltValue):
                     obj_name = canonical_op.args[0].name
                     object_epochs[obj_name] = object_epochs.get(obj_name, 0) + 1
@@ -1549,6 +1608,12 @@ class MidendCanonicalizationMixin(_MixinBase):
                     ]
                     for key in stale_read_keys:
                         available_values.pop(key, None)
+                    if arbitrary_heap:
+                        # Callbacks can mutate captured objects independently
+                        # of the explicit operands, including their classes.
+                        value_type_tags.clear()
+                        for alias_class in sorted(alias_epochs):
+                            alias_epochs[alias_class] += 1
                 guard_dict_shapes.clear()
                 state_dirty = True
 

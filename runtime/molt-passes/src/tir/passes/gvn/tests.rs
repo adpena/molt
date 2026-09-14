@@ -81,13 +81,15 @@ fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> Ti
 
 #[test]
 fn redundant_add_eliminated() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
-    let p0 = ValueId(0);
-    let p1 = ValueId(1);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let p0 = func.fresh_value();
+    let p1 = func.fresh_value();
     let sum1 = func.fresh_value();
     let sum2 = func.fresh_value(); // same computation as sum1
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(make_const_int(2, p0));
+    entry.ops.push(make_const_int(3, p1));
     entry.ops.push(make_binop(OpCode::Add, p0, p1, sum1));
     entry.ops.push(make_binop(OpCode::Add, p0, p1, sum2));
     entry.terminator = Terminator::Return { values: vec![sum2] };
@@ -97,8 +99,34 @@ fn redundant_add_eliminated() {
 
     // sum2's definition should now be a Copy from sum1.
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[1].opcode, OpCode::Copy);
-    assert_eq!(ops[1].operands[0], sum1);
+    assert_eq!(ops[3].opcode, OpCode::Copy);
+    assert_eq!(ops[3].operands[0], sum1);
+}
+
+#[test]
+fn bytes_addition_keeps_operand_order() {
+    let mut func = TirFunction::new("f".into(), vec![], TirType::Bytes);
+    let left = func.fresh_value();
+    let right = func.fresh_value();
+    let forward = func.fresh_value();
+    let reversed = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(make_const_bytes(b"left", left));
+    entry.ops.push(make_const_bytes(b"right", right));
+    entry
+        .ops
+        .push(make_binop(OpCode::Add, left, right, forward));
+    entry
+        .ops
+        .push(make_binop(OpCode::Add, right, left, reversed));
+    entry.terminator = Terminator::Return {
+        values: vec![reversed],
+    };
+
+    let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+    assert_eq!(stats.values_changed, 0);
+    assert_eq!(func.blocks[&func.entry_block].ops[3].opcode, OpCode::Add);
 }
 
 #[test]
@@ -311,15 +339,17 @@ fn cross_block_redundant_constant_not_folded() {
 /// → s2 should become Copy(s1).
 #[test]
 fn cross_block_redundant_arithmetic() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
-    let p0 = ValueId(0);
-    let p1 = ValueId(1);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let p0 = func.fresh_value();
+    let p1 = func.fresh_value();
     let body = func.fresh_block();
     let s1 = func.fresh_value();
     let s2 = func.fresh_value();
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(2, p0));
+        entry.ops.push(make_const_int(3, p1));
         entry.ops.push(make_binop(OpCode::Add, p0, p1, s1));
         entry.terminator = Terminator::Branch {
             target: body,
@@ -446,14 +476,10 @@ fn non_dominating_no_dedup() {
 /// `p0 + p1`.  Both must dedup against `e` (entry dominates both).
 #[test]
 fn dominator_value_propagates_to_both_branches() {
-    let mut func = TirFunction::new(
-        "f".into(),
-        vec![TirType::I64, TirType::I64, TirType::Bool],
-        TirType::I64,
-    );
-    let p0 = ValueId(0);
-    let p1 = ValueId(1);
-    let cond = ValueId(2);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let p0 = func.fresh_value();
+    let p1 = func.fresh_value();
+    let cond = func.fresh_value();
     let then_b = func.fresh_block();
     let else_b = func.fresh_block();
     let merge_b = func.fresh_block();
@@ -464,6 +490,9 @@ fn dominator_value_propagates_to_both_branches() {
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(2, p0));
+        entry.ops.push(make_const_int(3, p1));
+        entry.ops.push(make_const_bool(true, cond));
         entry.ops.push(make_binop(OpCode::Add, p0, p1, e));
         entry.terminator = Terminator::CondBranch {
             cond,
@@ -633,8 +662,8 @@ fn loop_header_back_edge_not_deduped() {
 /// folding across blocks.
 #[test]
 fn redundant_add_in_loop_body_dedups() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-    let p0 = ValueId(0);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let p0 = func.fresh_value();
     let header = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -647,6 +676,7 @@ fn redundant_add_in_loop_body_dedups() {
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(0, p0));
         entry.terminator = Terminator::Branch {
             target: header,
             args: vec![p0],

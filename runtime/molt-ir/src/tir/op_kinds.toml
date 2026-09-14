@@ -22,14 +22,15 @@ comparison_warning_pairs = [
 # frontend. I64 denotes semantic unbounded int, not a physical carrier. Missing
 # operand combinations remain impure; in particular ~Bool retains warnings.
 # Resource-exhaustion failures are outside this semantic exception lattice.
+# Sequence length OverflowError is not resource exhaustion and remains throwing.
 primitive_operator_effect_cases = [
     { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt","Bool"],["I64","BigInt","Bool"]], purity = "pure" },
     { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["F64","Bool"]], purity = "pure" },
     { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["Bool"],["F64"]], purity = "pure" },
     { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["I64","BigInt"],["F64"]], purity = "pure_may_throw" },
     { opcodes = ["Add","Sub","Mul","InplaceAdd","InplaceSub","InplaceMul"], operands = [["F64"],["I64","BigInt"]], purity = "pure_may_throw" },
-    { opcodes = ["Add","InplaceAdd"], operands = [["Str"],["Str"]], purity = "pure" },
-    { opcodes = ["Add","InplaceAdd"], operands = [["Bytes"],["Bytes"]], purity = "pure" },
+    { opcodes = ["Add","InplaceAdd"], operands = [["Str"],["Str"]], purity = "pure_may_throw" },
+    { opcodes = ["Add","InplaceAdd"], operands = [["Bytes"],["Bytes"]], purity = "pure_may_throw" },
     { opcodes = ["Mul","InplaceMul"], operands = [["Str","Bytes"],["I64","BigInt","Bool"]], purity = "pure_may_throw" },
     { opcodes = ["Mul","InplaceMul"], operands = [["I64","BigInt","Bool"],["Str","Bytes"]], purity = "pure_may_throw" },
     { opcodes = ["Div","FloorDiv","Mod","Pow"], operands = [["I64","BigInt","Bool","F64"],["I64","BigInt","Bool","F64"]], purity = "pure_may_throw" },
@@ -105,6 +106,12 @@ primitive_operator_effect_cases = [
 #                  facts, one per fixed result slot. "operand" leaves a slot
 #                  to operand inference; facts do not imply purity or validity
 #                  on every outgoing edge. Omitted slots are never broadcast.
+#   - operand_arity - canonical operand shape for result/operator semantics:
+#                  a fixed nonnegative integer, "variable" for audited builders
+#                  and Copy transport, or "variable_pairs" for dict key/value
+#                  builders. Fuzz SSA operand counts must agree with it.
+#                  frontend_intrinsic_scalar_arity owns the distinct frontend
+#                  argument domain, whose payloads may lower into TIR attrs.
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
@@ -223,10 +230,6 @@ primitive_operator_effect_cases = [
 #   - drop_insertion_return_deferral_barrier_opcodes - opcode-only fact for
 #                  explicit RC/free rails that disqualify return-boundary
 #                  finalizer-sensitive deferral for touched roots.
-#   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
-#                  fact: ops that make a comprehension/generator body ineligible
-#                  for iterator-chain fusion. A DISTINCT fact from side_effecting
-#                  (see its own comment below). Rendered exhaustively over OpCode.
 #   - generator_fusion_poll_required_yield_opcodes /
 #                  generator_fusion_poll_reject_opcodes - opcode-role facts for
 #                  generator_fusion.rs poll-body eligibility. Required-yield,
@@ -321,7 +324,7 @@ pass_delta_exception_event_opcodes = [
     "StateBlockEnd",
 ]
 pass_delta_type_guard_opcodes = ["TypeGuard"]
-pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack"]
+pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound"]
 
 # SimpleIR Python-integer semantic roles. String-dispatch backends consume the
 # generated role table instead of maintaining target-local op-name families.
@@ -480,9 +483,9 @@ simpleir_runtime_symbol_carrier_kinds = [
 # local-name metadata spelling used only when args already carries the source.
 simpleir_out_metadata_kinds = [
     "set_attr", "store_attr", "set_attr_name", "set_attr_generic_ptr",
-    "set_attr_generic_obj", "guarded_field_set", "guarded_field_init",
+    "set_attr_generic_obj", "guarded_field_set",
     "module_cache_set", "module_cache_del", "module_set_attr",
-    "module_del_global", "module_del_global_if_present", "store", "store_init",
+    "module_del_global", "module_del_global_if_present", "store",
     "store_index", "index_set", "del_attr", "del_attr_name",
     "del_attr_generic_ptr", "del_attr_generic_obj", "del_index", "raise",
     "raise_from", "inc_ref", "dec_ref",
@@ -499,7 +502,7 @@ simpleir_iterable_protocol_semantics_kinds = [
 simpleir_object_model_semantics_kinds = [
     "const_none", "const_bytes",
     "closure_load", "closure_store",
-    "guarded_field_get", "guarded_field_init", "guarded_field_set",
+    "guarded_field_get", "guarded_field_set",
     "module_del_global", "module_del_global_if_present",
     "build_list", "list_new", "alloc", "alloc_task", "build_dict", "dict_new",
     "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
@@ -642,9 +645,7 @@ ssa_original_kind_preserving_kinds = [
     "set_attr_generic_ptr",
     "set_attr_generic_obj",
     "guarded_field_set",
-    "guarded_field_init",
     "store",
-    "store_init",
     "del_attr_name",
     "del_attr_generic_ptr",
     "del_attr_generic_obj",
@@ -707,7 +708,8 @@ range_devirt_roles = [
 #
 # This is a tooling-only opcode palette for fuzz_tir_passes.rs. The operand
 # count and attr payload rule are byte-to-TIR generation shape, not general
-# semantic arity or payload tables; result counts stay owned by
+# semantic arity or payload tables; operand counts must agree with canonical
+# [[opcode]].operand_arity, and result counts stay owned by
 # [[opcode]].result_arity / opcode_fixed_result_count_table.
 # ===========================================================================
 
@@ -963,7 +965,6 @@ escape_alloc_site_opcodes = [
     "Alloc",
     "StackAlloc",
     "ObjectNewBound",
-    "ObjectNewBoundStack",
     "BuildList",
     "BuildDict",
     "BuildTuple",
@@ -1018,44 +1019,6 @@ drop_insertion_return_deferral_barrier_opcodes = [
     "DecRef",
     "Free",
     "IncRef",
-]
-
-# fusion_barrier_opcodes: deforestation.rs's loop/genexpr fusion barrier set.
-# An op in this set makes a candidate comprehension/generator body INELIGIBLE
-# for iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/`all`/`min`/`max`
-# over a `for` loop). This is a DISTINCT fact from `side_effecting`, not a
-# duplicate of it: fusion preserves per-element evaluation order and count, so
-# allocation/attribute-read/may-throw ops (`ObjectNewBound`, `LoadAttr`,
-# `Index`, `Div`, ...) are SAFE to fuse and are deliberately NOT barriers, even
-# though several of them are side-effecting/may-throw for DCE's purposes.
-# The barriers are exactly the ops that change cross-iteration/control state or
-# suspend: opaque calls, attribute/index mutation+deletion, the async
-# state/channel suspend ops, closure load/store, `raise`, `yield`/`yield from`,
-# and `import`. Rendered EXHAUSTIVELY over OpCode by gen_op_kinds.py, so a new
-# OpCode variant must be classified here before the backend compiles — closing
-# the prior default-false drift trap in the hand-written `is_impure` matches!.
-fusion_barrier_opcodes = [
-    "Call",
-    "CallBuiltin",
-    "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
-    "ChanRecvYield",
-    "ChanSendYield",
-    "ClosureLoad",
-    "ClosureStore",
-    "DelAttr",
-    "DelIndex",
-    "Import",
-    "ImportFrom",
-    "Raise",
-    "StateSwitch",
-    "StateTransition",
-    "StateYield",
-    "StoreAttr",
-    "StoreIndex",
-    "Yield",
-    "YieldFrom",
 ]
 
 # generator_fusion_poll_*_opcodes: Phase-1 generator poll eligibility roles.
@@ -1164,7 +1127,6 @@ tir_verify_attr_rules = [
     { opcode = "CallMethod", rule = "call_method" },
     { opcode = "CallMethodIc", rule = "call_method" },
     { opcode = "CallSuperMethodIc", rule = "call_method" },
-    { opcode = "ObjectNewBoundStack", rule = "positive_payload_bytes" },
     { opcode = "UnpackSequence", rule = "unpack_sequence_shape" },
 ]
 
@@ -1353,7 +1315,6 @@ proven_result_type_seed_opcodes = [
 
 type_refine_attr_result_type_rules = [
     { opcode = "ObjectNewBound", rule = "object_type_hint" },
-    { opcode = "ObjectNewBoundStack", rule = "object_type_hint" },
     { opcode = "Call", rule = "call_return_type" },
     { opcode = "CallMethod", rule = "call_return_type" },
     { opcode = "CallMethodIc", rule = "call_return_type" },
@@ -1420,6 +1381,7 @@ sccp_constant_eval_rules = [
     { opcode = "Ge", rule = "ge" },
     { opcode = "Neg", rule = "neg" },
     { opcode = "Not", rule = "not" },
+    { opcode = "Bool", rule = "bool" },
     { opcode = "BuildTuple", rule = "build_tuple" },
 ]
 
@@ -1466,6 +1428,7 @@ value_range_container_length_rules = [
     { opcode = "BuildTuple", rule = "fixed_literal" },
     { opcode = "Mul", rule = "list_repeat" },
     { opcode = "CallBuiltin", rule = "len_call" },
+    { opcode = "Copy", rule = "len_call" },
 ]
 
 # vectorize_opcode_facts: all opcode-level facts consumed by vectorize.rs. This
@@ -1520,7 +1483,7 @@ lir_verify_rules = [
     { opcode = "Add", rule = "checked_i64_arithmetic" },
     { opcode = "Sub", rule = "checked_i64_arithmetic" },
     { opcode = "Mul", rule = "checked_i64_arithmetic" },
-    { opcode = "CallBuiltin", rule = "truthy_materialization" },
+    { opcode = "Bool", rule = "truthy_materialization" },
 ]
 
 # repr_projectable_*_result_rules: opcode roles consumed by
@@ -1712,7 +1675,6 @@ classifier_inert_marker = [
     "guard_float",
     "guard_int",
     "guard_layout",
-    "guard_layout_ptr",
     "guard_none",
     "guard_str",
     "line",
@@ -2694,6 +2656,10 @@ operand = "all"
 #                     "pure"           (consistent+effect_free+nothrow),
 #                     "pure_may_throw" (consistent+effect_free, may raise),
 #                     "impure"         (not a pure computation).
+#   may_access_arbitrary_heap : callback/global-memory floor used by alias and
+#                     MemorySSA. Defaults true for impure opcodes and false for
+#                     exact pure classes; only positive runtime evidence may
+#                     clear it on an impure opcode.
 #   result_arity    : fixed verifier result count ("zero" / "one" / "two") or
 #                     "variable" when the result count is context-dependent.
 #                     This drives opcode_fixed_result_count_table and replaces
@@ -2702,6 +2668,7 @@ operand = "all"
 
 [[opcode]]
 name = "Add"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2711,6 +2678,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Sub"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2720,6 +2688,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Mul"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2729,26 +2698,31 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedAdd"
+operand_arity = 2
 operand_independent_result_types = ["i64", "bool"]
 may_throw = false
 side_effecting = false
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedMul"
+operand_arity = 2
 operand_independent_result_types = ["i64", "bool"]
 may_throw = false
 side_effecting = false
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceAdd"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2758,6 +2732,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceSub"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2767,6 +2742,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceMul"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2776,6 +2752,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Div"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2785,6 +2762,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "FloorDiv"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2794,6 +2772,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Mod"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2803,6 +2782,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Pow"
+operand_arity = 2
 # `0 ** -1` / `0.0 ** -1.0` raise ZeroDivisionError; a negative base with a
 # non-integer exponent returns complex (NOT a float) — both are observable and
 # must never be const-folded away or hoisted above a guard. `pure_may_throw`.
@@ -2819,6 +2799,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Neg"
+operand_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2828,6 +2809,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Pos"
+operand_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2837,6 +2819,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Eq"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2847,6 +2830,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Ne"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2857,6 +2841,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Lt"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2867,6 +2852,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Le"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2877,6 +2863,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Gt"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2887,6 +2874,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Ge"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2897,6 +2885,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Is"
+operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
@@ -2908,6 +2897,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IsNot"
+operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
@@ -2919,6 +2909,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "In"
+operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
@@ -2931,6 +2922,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "NotIn"
+operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
@@ -2943,6 +2935,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitAnd"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2952,6 +2945,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitOr"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2961,6 +2955,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitXor"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2970,6 +2965,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BitNot"
+operand_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -2979,6 +2975,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Shl"
+operand_arity = 2
 # `1 << -1` raises ValueError("negative shift count"); the exception is
 # observable even when the result is dead, so DCE must keep it and SCCP must not
 # fold it inside a try region. CSE-safe under dominance but NOT hoistable above a
@@ -2993,6 +2990,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Shr"
+operand_arity = 2
 # `1 >> -1` raises ValueError("negative shift count") — same contract as `Shl`.
 may_throw = true
 side_effecting = true
@@ -3003,6 +3001,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "And"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3013,6 +3012,7 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Or"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3023,6 +3023,7 @@ result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Not"
+operand_arity = 1
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
@@ -3035,6 +3036,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Bool"
+operand_arity = 1
 frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
@@ -3050,6 +3052,9 @@ name = "Alloc"
 may_throw = false
 side_effecting = true
 purity = "impure"
+# Raw heap/arena allocation initializes fresh storage and does not inspect,
+# replace, or release any preexisting Python value.
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3059,24 +3064,21 @@ name = "StackAlloc"
 may_throw = false
 side_effecting = false
 purity = "impure"
+# Raw boxed frame storage has no conforming target realization yet. Target
+# admission rejects explicit stack_alloc; escape analysis leaves Alloc owned.
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ObjectNewBound"
-may_throw = false
+may_throw = true
 side_effecting = true
 purity = "impure"
-result_arity = "one"
-operand_ownership = "all_borrowed"
-result_absorbs_operands = false
-
-[[opcode]]
-name = "ObjectNewBoundStack"
-may_throw = false
-side_effecting = false
-purity = "impure"
+# Layout recomputation may replace Python-visible class metadata, whose old
+# value can have a finalizer. This is not a callback-free allocation primitive.
+may_access_arbitrary_heap = true
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3129,6 +3131,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Index"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3222,6 +3225,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "OrdAt"
+operand_arity = 2
 frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = false
@@ -3233,6 +3237,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BoxVal"
+operand_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3242,6 +3247,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "UnboxVal"
+operand_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3251,6 +3257,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "TypeGuard"
+operand_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3260,6 +3267,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IncRef"
+operand_arity = 1
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3269,6 +3277,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "DecRef"
+operand_arity = 1
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3290,9 +3299,12 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "BuildList"
+operand_arity = "variable"
 may_throw = false
 side_effecting = false
 purity = "impure"
+# Exact list builders only allocate fresh storage and retain their operands.
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_independent_result_types = ["list_dynbox"]
 operand_ownership = "all_borrowed"
@@ -3300,9 +3312,12 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildDict"
+operand_arity = "variable_pairs"
 may_throw = false
 side_effecting = false
 purity = "impure"
+# Inserting user keys can synchronously invoke hashing and equality.
+may_access_arbitrary_heap = true
 result_arity = "one"
 operand_independent_result_types = ["dict_dynbox_dynbox"]
 operand_ownership = "all_borrowed"
@@ -3310,18 +3325,24 @@ result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildTuple"
+operand_arity = "variable"
 may_throw = false
 side_effecting = false
 purity = "impure"
+# Exact tuple builders only allocate fresh storage and retain their operands.
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildSet"
+operand_arity = "variable"
 may_throw = false
 side_effecting = false
 purity = "impure"
+# Inserting user elements can synchronously invoke hashing and equality.
+may_access_arbitrary_heap = true
 result_arity = "one"
 operand_independent_result_types = ["set_dynbox"]
 operand_ownership = "all_borrowed"
@@ -3332,12 +3353,15 @@ name = "BuildSlice"
 may_throw = false
 side_effecting = false
 purity = "pure"
+# Slice construction only allocates fresh storage and retains its three values.
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "GetIter"
+operand_arity = 1
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3347,6 +3371,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNext"
+operand_arity = 1
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3356,6 +3381,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNextUnboxed"
+operand_arity = 1
 operand_independent_result_types = ["operand", "bool"]
 may_throw = true
 side_effecting = false
@@ -3375,6 +3401,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ForIter"
+operand_arity = 1
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3486,17 +3513,20 @@ name = "CheckException"
 may_throw = false
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "variable"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
 name = "ExceptionPending"
+operand_arity = 0
 operand_independent_result_types = ["bool"]
 frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3513,6 +3543,7 @@ name = "FunctionDefaultsVersion"
 may_throw = false
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3555,6 +3586,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstInt"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
@@ -3566,6 +3598,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBigInt"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 exact_scalar_result_type = "BigInt"
 may_throw = false
@@ -3581,6 +3614,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstFloat"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
@@ -3592,6 +3626,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstStr"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
@@ -3603,6 +3638,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBool"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
@@ -3614,6 +3650,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstNone"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = false
@@ -3625,6 +3662,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBytes"
+operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
@@ -3636,6 +3674,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "Copy"
+operand_arity = "variable"
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3663,9 +3702,11 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheGet"
+operand_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "one"
 operand_independent_result_types = ["dynbox"]
 operand_ownership = "all_borrowed"
@@ -3691,6 +3732,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetAttr"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3701,6 +3743,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleImportFrom"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3711,6 +3754,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetGlobal"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3721,6 +3765,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetName"
+operand_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3997,11 +4042,6 @@ aliases = []
 mapper_opcode = "ObjectNewBound"
 
 [[kind]]
-canonical = "object_new_bound_stack"
-aliases = []
-mapper_opcode = "ObjectNewBoundStack"
-
-[[kind]]
 canonical = "free"
 aliases = []
 mapper_opcode = "Free"
@@ -4013,7 +4053,7 @@ mapper_opcode = "LoadAttr"
 
 [[kind]]
 canonical = "set_attr"
-aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_init", "store", "store_init"]
+aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "store"]
 mapper_opcode = "StoreAttr"
 
 [[kind]]
@@ -4952,8 +4992,10 @@ reason = "structural: SSA phi merge node, not a runtime operation"
 
 [[frontend_effect_kind]]
 kind = "TYPE_OF"
-effect = "pure"
-reason = "frontend intrinsic: observe value type tag for optimizer guards"
+effect = "reads_heap"
+exact_scalar_result_type = "I64"
+frontend_intrinsic_scalar_arity = 1
+reason = "observe the runtime class; only exact immutable builtin-class provenance permits pure instance effects"
 
 [[frontend_effect_kind]]
 kind = "CONTAINS"
@@ -5192,11 +5234,6 @@ effect = "writes_heap"
 reason = "mutation: guarded attribute write helper"
 
 [[frontend_effect_kind]]
-kind = "GUARDED_SETATTR_INIT"
-effect = "writes_heap"
-reason = "mutation: guarded initialization attribute write helper"
-
-[[frontend_effect_kind]]
 kind = "LIST_APPEND"
 effect = "writes_heap"
 reason = "mutation: list append helper"
@@ -5235,11 +5272,6 @@ reason = "mutation: list reverse helper"
 kind = "SETATTR"
 effect = "writes_heap"
 reason = "mutation: legacy frontend setattr spelling"
-
-[[frontend_effect_kind]]
-kind = "SETATTR_INIT"
-effect = "writes_heap"
-reason = "mutation: initialization attribute write helper"
 
 [[frontend_effect_kind]]
 kind = "SETATTR_NAME"
@@ -5611,19 +5643,19 @@ reason = "structural: the internal MISSING sentinel marker"
 
 [[frontend_check_exception_skip]]
 kind = "TUPLE_NEW"
-reason = "structural: tuple literal construction (no throw)"
+opcode = "BuildTuple"
 
 [[frontend_check_exception_skip]]
 kind = "LIST_NEW"
-reason = "structural: list literal construction (no throw)"
+opcode = "BuildList"
 
 [[frontend_check_exception_skip]]
 kind = "DICT_NEW"
-reason = "structural: dict literal construction (no throw)"
+opcode = "BuildDict"
 
 [[frontend_check_exception_skip]]
 kind = "SET_NEW"
-reason = "structural: set literal construction (no throw)"
+opcode = "BuildSet"
 
 [[frontend_check_exception_skip]]
 kind = "CODE_NEW"

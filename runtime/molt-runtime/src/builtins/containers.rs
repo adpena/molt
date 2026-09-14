@@ -38,7 +38,7 @@ pub(crate) fn is_set_view_type(type_id: u32) -> bool {
 }
 
 pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "keys" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_keys,
@@ -192,11 +192,11 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "add" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.set_add,
@@ -324,11 +324,11 @@ pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn frozenset_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "union" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.frozenset_union,
@@ -399,11 +399,11 @@ pub(crate) fn frozenset_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "append" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_append,
@@ -557,41 +557,118 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
+    })
+}
+
+/// Explicit base descriptors admit their physical receiver before delegating
+/// to owner-agnostic builtin operations. Subclass overrides remain bypassed.
+fn tuple_sequence_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> bool {
+    if obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_TUPLE })
+    {
+        return true;
     }
+    let received = crate::type_name(py, obj_from_bits(bits));
+    crate::raise_exception::<()>(
+        py,
+        "TypeError",
+        &format!("descriptor '{method}' requires a 'tuple' object but received a '{received}'"),
+    );
+    false
+}
+
+extern "C" fn tuple_iter_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if !tuple_sequence_receiver(py, bits, "__iter__") {
+            return MoltObject::none().bits();
+        }
+        crate::object::ops_iter::builtin_iter_slot(bits)
+    })
+}
+
+extern "C" fn tuple_len_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if !tuple_sequence_receiver(py, bits, "__len__") {
+            return MoltObject::none().bits();
+        }
+        crate::object::ops_sys::molt_len_builtin(bits)
+    })
+}
+
+extern "C" fn tuple_getitem_slot(bits: u64, key: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if !tuple_sequence_receiver(py, bits, "__getitem__") {
+            return MoltObject::none().bits();
+        }
+        crate::object::ops::molt_getitem_builtin(bits, key)
+    })
+}
+
+extern "C" fn tuple_contains_slot(bits: u64, item: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if !tuple_sequence_receiver(py, bits, "__contains__") {
+            return MoltObject::none().bits();
+        }
+        molt_contains(bits, item)
+    })
 }
 
 pub(crate) fn tuple_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
-        "__new__" => {
-            let miss = crate::builtins::methods::missing_bits(_py);
-            Some(builtin_func_bits_with_defaults_tuple(
+    crate::builtins::methods::method_dispatch(_py, || {
+        match name {
+            "__new__" => {
+                let miss = crate::builtins::methods::missing_bits(_py);
+                Some(builtin_func_bits_with_defaults_tuple(
+                    _py,
+                    &runtime_state(_py).method_cache.tuple_new,
+                    fn_addr!(molt_tuple_new_bound),
+                    2,
+                    &[miss],
+                ))
+            }
+            "count" => Some(builtin_func_bits(
                 _py,
-                &runtime_state(_py).method_cache.tuple_new,
-                fn_addr!(molt_tuple_new_bound),
-                2,
-                &[miss],
-            ))
-        }
-        "count" => {
-            static TUPLE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            Some(builtin_func_bits(
-                _py,
-                &TUPLE_COUNT,
+                &runtime_state(_py).method_cache.tuple_count,
                 fn_addr!(molt_tuple_count),
                 2,
-            ))
-        }
-        "index" => {
-            static TUPLE_INDEX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            Some(builtin_func_bits(
+            )),
+            "index" => Some(builtin_func_bits(
                 _py,
-                &TUPLE_INDEX,
+                &runtime_state(_py).method_cache.tuple_index,
                 fn_addr!(molt_tuple_index_range),
                 4,
-            ))
+            )),
+            // Subclasses resolve these inherited slots through normal special
+            // lookup. The builtin slot entries consume physical tuple storage;
+            // they must not redispatch a subclass override recursively.
+            "__iter__" => Some(builtin_func_bits(
+                _py,
+                &runtime_state(_py).method_cache.tuple_iter,
+                fn_addr!(tuple_iter_slot),
+                1,
+            )),
+            "__len__" => Some(builtin_func_bits(
+                _py,
+                &runtime_state(_py).method_cache.tuple_len,
+                fn_addr!(tuple_len_slot),
+                1,
+            )),
+            "__getitem__" => Some(builtin_func_bits(
+                _py,
+                &runtime_state(_py).method_cache.tuple_getitem,
+                fn_addr!(tuple_getitem_slot),
+                2,
+            )),
+            "__contains__" => Some(builtin_func_bits(
+                _py,
+                &runtime_state(_py).method_cache.tuple_contains,
+                fn_addr!(tuple_contains_slot),
+                2,
+            )),
+            _ => None,
         }
-        _ => None,
-    }
+    })
 }
 
 pub(crate) unsafe fn list_len(ptr: *mut u8) -> usize {

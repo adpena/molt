@@ -168,7 +168,7 @@ def test_module_graph_consumes_relative_fromlist_request_projection(
     )
     stdlib_root = module_resolution._stdlib_root_path()
 
-    graph, explicit_imports = module_graph_discovery._discover_module_graph(
+    discovery_result = module_graph_discovery._discover_module_graph(
         entry,
         [tmp_path.resolve(), stdlib_root],
         [tmp_path.resolve()],
@@ -176,6 +176,8 @@ def test_module_graph_consumes_relative_fromlist_request_projection(
         tmp_path,
         module_stdlib_policy._stdlib_allowlist(),
     )
+    graph = discovery_result.graph
+    explicit_imports = discovery_result.explicit_imports
 
     assert graph["pkg.child.leaf"] == leaf
     assert {"pkg.child", "pkg.child.leaf"} <= explicit_imports

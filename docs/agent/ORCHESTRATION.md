@@ -1,11 +1,16 @@
 # Live Orchestration Board
 
-The orchestrator (Claude, senior engineer) owns this board, lane assignments,
-review, and the decision of what lands when. Codex agents: read this board at
-the START of every arc and before every commit. If your planned work touches a
-lane you don't own, stop and pick from "Delegated to Codex" instead.
+Use `tools/agent_coordination.py context` for current Git, worktree, ownership,
+and proof state, and `docs/ops/MULTI_AGENT_COORDINATION.md` for registration and
+handoff. The active integrator owns reconciliation and landing. Register that
+ownership; a role named in old prose is not a current lock.
 
-Last updated: 2026-07-16 by the orchestrator.
+Read the relevant section when the task needs its constraints or history; do
+not preload this entire board for every edit. Dated lane assignments and counts
+below are historical observations and must be checked against live records and
+source before reuse. Current operator instructions determine concurrency.
+
+Routing reviewed: 2026-09-14. Historical board last updated: 2026-07-16.
 
 ## CLOSED ARC — AGENT INSTRUCTION MODERNIZATION (2026-07-16)
 

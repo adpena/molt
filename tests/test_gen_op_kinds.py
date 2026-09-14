@@ -866,8 +866,7 @@ def test_audit_native_arms_include_extracted_op_family_authority() -> None:
         {"HANDLED_KINDS"},
     )
 
-    assert "guarded_field_init" in memory_consts["HANDLED_KINDS"]
-    assert "guarded_field_init" in native_arms
+    assert "guarded_field_set" in memory_consts["HANDLED_KINDS"]
     assert "guarded_field_set" in native_arms
     assert "const" in native_arms
 
@@ -918,65 +917,28 @@ def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
     assert inplace_matmul.llvm_covered
 
 
-def test_guarded_field_init_has_one_wire_spelling() -> None:
-    """`GUARDED_SETATTR_INIT` has one cross-component wire spelling.
-
-    `guarded_field_set_init` was a dead registry spelling while the frontend and
-    SimpleIR backends used `guarded_field_init`. Pin the chosen spelling across
-    the registry, generated mapper tables, frontend audit, LLVM StoreAttr
-    lowering text, native/WASM arm extraction, and the dangerous-cell baseline.
-    """
+def test_field_initialization_spellings_are_retired_from_generated_authority() -> None:
+    """Initialization is a typed-slot fact, never a frontend or wire spelling."""
     gen = _gen()
-    audit = _audit()
     data = gen.load_table()
-    current = "guarded_field_init"
-    rejected = "guarded_field_set_init"
 
     store_attr = next(row for row in data["kind"] if row["canonical"] == "set_attr")
     aliases = set(store_attr.get("aliases", []))
-    assert current in aliases
-    assert rejected not in aliases
+    assert {"store", "guarded_field_set"} <= aliases
+    assert {"store_init", "guarded_field_init"}.isdisjoint(aliases)
+    frontend_kinds = {row["kind"] for row in data["frontend_effect_kind"]}
+    assert {"SETATTR_INIT", "GUARDED_SETATTR_INIT"}.isdisjoint(frontend_kinds)
 
     generated_rs = OUT_RS.read_text(encoding="utf-8")
     generated_py = OUT_PY.read_text(encoding="utf-8")
-    assert f'"{current}"' in generated_rs
-    assert f'"{rejected}"' not in generated_rs
-    assert f'"{current}"' in generated_py
-    assert f'"{rejected}"' not in generated_py
-
-    res = audit.run_audit()
-    assert current in res.frontend.all
-    assert rejected not in res.frontend.all
-    assert current in res.mapper_kinds
-    assert rejected not in res.mapper_kinds
-    assert res.rows[current].frontend_emits
-    assert res.rows[current].mapper_maps
-    assert res.rows[current].native_arm
-    assert res.rows[current].wasm_arm
-
-    llvm_lowering = _read_rs_module_cluster(
-        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
-    )
-    assert f'Some("{current}")' in llvm_lowering
-    assert f'Some("{rejected}")' not in llvm_lowering
-
-    current_guarded_danger = {
-        kind
-        for kinds in res.dangerous().values()
-        for kind in kinds
-        if kind.startswith("guarded_field")
-    }
-    baseline = json.loads(
-        (ROOT / "tools/op_kinds_baseline.json").read_text(encoding="utf-8")
-    )
-    baseline_guarded_danger = {
-        kind
-        for kinds in baseline["dangerous"].values()
-        for kind in kinds
-        if kind.startswith("guarded_field")
-    }
-    assert current_guarded_danger == set()
-    assert baseline_guarded_danger == set()
+    for retired in [
+        "store_init",
+        "guarded_field_init",
+        "SETATTR_INIT",
+        "GUARDED_SETATTR_INIT",
+    ]:
+        assert f'"{retired}"' not in generated_rs
+        assert f'"{retired}"' not in generated_py
 
 
 def test_effects_rs_delegates_to_generated_tables() -> None:
@@ -1018,6 +980,7 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "fn opcode_effects_table"
     )[0]
     effects_block = rendered.split("fn opcode_effects_table")[1]
+    assert "effects.nothrow = !opcode_may_throw_table(opcode);" in effects_block
     effect_const = {
         "pure": "OPCODE_EFFECTS_PURE",
         "pure_may_throw": "OPCODE_EFFECTS_PURE_MAY_THROW",
@@ -1036,7 +999,10 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         assert f"OpCode::{name} => {se}," in side_block, (
             f"opcode_is_side_effecting arm for {name} missing/incorrect"
         )
-        assert f"OpCode::{name} => {effect_const[row['purity']]}," in effects_block, (
+        expected_effect = effect_const[row["purity"]]
+        if row["purity"] == "impure" and not row.get("may_access_arbitrary_heap", True):
+            expected_effect = "OPCODE_EFFECTS_IMPURE_LOCAL"
+        assert f"OpCode::{name} => {expected_effect}," in effects_block, (
             f"opcode_effects arm for {name} missing/incorrect"
         )
     opcodes = {row["name"]: row for row in data["opcode"]}
@@ -1044,6 +1010,88 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         assert opcodes[callback_read]["may_throw"] is True
         assert opcodes[callback_read]["side_effecting"] is True
         assert opcodes[callback_read]["purity"] == "impure"
+        assert opcodes[callback_read].get("may_access_arbitrary_heap", True) is True
+
+    local_impure = {
+        "Alloc",
+        "BuildList",
+        "BuildTuple",
+        "CheckedAdd",
+        "CheckedMul",
+        "CheckException",
+        "ExceptionPending",
+        "FunctionDefaultsVersion",
+        "ModuleCacheGet",
+        "StackAlloc",
+    }
+    assert {
+        name
+        for name, row in opcodes.items()
+        if row["purity"] == "impure"
+        and row.get("may_access_arbitrary_heap", True) is False
+    } == local_impure
+    assert "pub fn opcode_may_access_arbitrary_heap" not in rendered
+    assert "pub may_access_arbitrary_heap: bool" in rendered
+
+
+def test_allocation_heap_effects_follow_runtime_callback_boundaries() -> None:
+    """Fresh allocators stay local; callback-capable constructors fail closed."""
+
+    opcodes = {row["name"]: row for row in _gen().load_table()["opcode"]}
+    callback_free = {
+        "Alloc",
+        "BuildList",
+        "BuildSlice",
+        "BuildTuple",
+        "StackAlloc",
+    }
+    callback_capable = {
+        "BuildDict",
+        "BuildSet",
+        "ObjectNewBound",
+    }
+
+    assert {
+        name
+        for name in callback_free
+        if not opcodes[name].get(
+            "may_access_arbitrary_heap", opcodes[name]["purity"] == "impure"
+        )
+    } == callback_free
+    assert {
+        name
+        for name in callback_capable
+        if opcodes[name].get(
+            "may_access_arbitrary_heap", opcodes[name]["purity"] == "impure"
+        )
+    } == callback_capable
+
+
+def test_opcode_arbitrary_heap_effect_validation_is_fail_loud(tmp_path: Path) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+
+    invalid_type = _mutate_opcode_field(
+        source,
+        "CheckedAdd",
+        "may_access_arbitrary_heap = false",
+        'may_access_arbitrary_heap = "no"',
+    )
+    assert invalid_type != source
+    table = tmp_path / "invalid_heap_effect.toml"
+    table.write_text(invalid_type, encoding="utf-8", newline="\n")
+    with pytest.raises(gen.OpKindTableError, match="may_access_arbitrary_heap.*bool"):
+        gen.load_table(table)
+
+    pure_claim = source.replace(
+        'name = "Is"\n',
+        'name = "Is"\nmay_access_arbitrary_heap = true\n',
+        1,
+    )
+    assert pure_claim != source
+    table.write_text(pure_claim, encoding="utf-8", newline="\n")
+    with pytest.raises(gen.OpKindTableError, match="exact pure effects"):
+        gen.load_table(table)
 
 
 def test_verify_result_arity_delegates_to_generated_table() -> None:
@@ -1285,9 +1333,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "set_attr_generic_ptr",
         "set_attr_generic_obj",
         "guarded_field_set",
-        "guarded_field_init",
         "store",
-        "store_init",
         "del_attr_name",
         "del_attr_generic_ptr",
         "del_attr_generic_obj",
@@ -1697,7 +1743,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
 
     expected_attr_rows = {
         "ObjectNewBound": "object_type_hint",
-        "ObjectNewBoundStack": "object_type_hint",
         "Call": "call_return_type",
         "CallMethod": "call_return_type",
         "CallMethodIc": "call_return_type",
@@ -1887,6 +1932,7 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
         "Ge": "ge",
         "Neg": "neg",
         "Not": "not",
+        "Bool": "bool",
         "BuildTuple": "build_tuple",
     }
     assert {
@@ -1919,6 +1965,7 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
         "ge": "Ge",
         "neg": "Neg",
         "not": "Not",
+        "bool": "Bool",
         "build_tuple": "BuildTuple",
     }
     assert "pub enum SccpConstantSeedRule" in rendered
@@ -1948,7 +1995,7 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
         assert f"OpCode::{opcode} => SccpConstantEvalRule::None," in eval_block
 
     production = _rs_production_source(sccp)
-    assert "seed_constant_lattice_value(op.opcode, &op.attrs)" in production
+    assert "seed_constant_lattice_value(op)" in production
     assert "opcode_sccp_constant_seed_rule_table(op.opcode)" in production
     assert "opcode_sccp_constant_eval_rule_table(opcode)" in production
     seed_helper = production.split("fn seed_constant_lattice_value", maxsplit=1)[
@@ -2058,6 +2105,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "BuildTuple": "fixed_literal",
         "Mul": "list_repeat",
         "CallBuiltin": "len_call",
+        "Copy": "len_call",
     }
     assert {
         row["opcode"]: row["rule"] for row in data["value_range_transfer_rules"]
@@ -2429,7 +2477,7 @@ def test_lir_verify_rules_delegate_to_generated_table() -> None:
         "Add": "checked_i64_arithmetic",
         "Sub": "checked_i64_arithmetic",
         "Mul": "checked_i64_arithmetic",
-        "CallBuiltin": "truthy_materialization",
+        "Bool": "truthy_materialization",
     }
     assert {
         row["opcode"]: row["rule"] for row in data["lir_verify_rules"]
@@ -2710,17 +2758,8 @@ def test_operand_independent_result_type_validation_rejects_drift(tmp_path) -> N
     table = TABLE
     original = table.read_text(encoding="utf-8")
 
-    def mutate_opcode(name: str, old: str, new: str) -> str:
-        marker = f'[[opcode]]\nname = "{name}"\n'
-        assert original.count(marker) == 1
-        prefix, tail = original.split(marker, 1)
-        body, separator, suffix = tail.partition("\n[[")
-        assert body.count(old) == 1
-        changed = body.replace(old, new, 1)
-        assert changed != body
-        return prefix + marker + changed + separator + suffix
-
-    bad_type = mutate_opcode(
+    bad_type = _mutate_opcode_field(
+        original,
         "ConstInt",
         'operand_independent_result_types = ["i64"]',
         'operand_independent_result_types = ["bigint_maybe"]',
@@ -2734,7 +2773,8 @@ def test_operand_independent_result_type_validation_rejects_drift(tmp_path) -> N
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
         raise AssertionError("invalid operand_independent_result_type was accepted")
 
-    bad_arity = mutate_opcode(
+    bad_arity = _mutate_opcode_field(
+        original,
         "ConstBool",
         'result_arity = "one"',
         'result_arity = "zero"',
@@ -2756,8 +2796,11 @@ def test_operand_independent_result_type_validation_rejects_drift(tmp_path) -> N
         'operand_independent_result_types = ["i64", "bool"]',
         'operand_independent_result_type = "i64"',
     ):
-        malformed = mutate_opcode(
-            "ConstInt", 'operand_independent_result_types = ["i64"]', replacement
+        malformed = _mutate_opcode_field(
+            original,
+            "ConstInt",
+            'operand_independent_result_types = ["i64"]',
+            replacement,
         )
         tmp_table.write_text(malformed, encoding="utf-8", newline="\n")
         try:
@@ -2775,18 +2818,8 @@ def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path) -> None:
     gen = _gen()
     table = TABLE
     original = table.read_text(encoding="utf-8")
-    mutated = original.replace(
-        'name = "Add"\n'
-        "may_throw = true\n"
-        "side_effecting = true\n"
-        'purity = "impure"\n'
-        'result_arity = "one"',
-        'name = "Add"\n'
-        "may_throw = true\n"
-        "side_effecting = true\n"
-        'purity = "impure"\n'
-        'result_arity = "variable"',
-        1,
+    mutated = _mutate_opcode_field(
+        original, "Add", 'result_arity = "one"', 'result_arity = "variable"'
     )
     assert mutated != original, "negative test must actually mutate its source"
     tmp_table = tmp_path / "op_kinds.toml"
@@ -3153,73 +3186,6 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     assert "matches!" not in body
 
 
-def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
-    """Iterator-chain fusion barriers belong to the op-kind registry.
-
-    Deforestation may wrap the generated predicate for readability, but it must
-    not grow a second handwritten opcode list that can drift from
-    `fusion_barrier_opcodes`.
-    """
-    gen = _gen()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    deforestation = _read_rs_module_cluster(tir_path("passes/deforestation.rs"))
-
-    expected = {
-        "Call",
-        "CallBuiltin",
-        "CallMethod",
-        "CallMethodIc",
-        "CallSuperMethodIc",
-        "ChanRecvYield",
-        "ChanSendYield",
-        "ClosureLoad",
-        "ClosureStore",
-        "DelAttr",
-        "DelIndex",
-        "Import",
-        "ImportFrom",
-        "Raise",
-        "StateSwitch",
-        "StateTransition",
-        "StateYield",
-        "StoreAttr",
-        "StoreIndex",
-        "Yield",
-        "YieldFrom",
-    }
-    assert set(data["fusion_barrier_opcodes"]) == expected
-
-    table_block = rendered.split("fn opcode_is_fusion_barrier_table")[1].split(
-        "enum GeneratorFusionPollRole"
-    )[0]
-    for opcode in expected:
-        assert f"OpCode::{opcode} => true," in table_block
-    for opcode in {"BuildList", "Index", "LoadAttr", "ObjectNewBound"}:
-        assert f"OpCode::{opcode} => false," in table_block
-
-    assert (
-        "use crate::tir::op_kinds_generated::opcode_is_fusion_barrier_table;"
-        in deforestation
-    )
-    start = deforestation.index("fn is_fusion_barrier(")
-    brace = deforestation.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(deforestation)):
-        if deforestation[i] == "{":
-            depth += 1
-        elif deforestation[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    body = deforestation[start:end]
-    assert "opcode_is_fusion_barrier_table(opcode)" in body
-    assert "matches!" not in body
-    assert "OpCode::" not in body
-
-
 def test_polyhedral_opcodes_delegate_to_generated_tables() -> None:
     """Polyhedral loop classification belongs to generated opcode facts."""
     gen = _gen()
@@ -3479,7 +3445,7 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
 
     table_block = rendered.split(
         "fn opcode_is_drop_insertion_return_deferral_barrier_table"
-    )[1].split("fn opcode_is_fusion_barrier_table")[0]
+    )[1].split("enum GeneratorFusionPollRole")[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
         assert f"OpCode::{row['name']} => {expected_bool}," in table_block
@@ -3662,7 +3628,6 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "CallMethod", "rule": "call_method"},
         {"opcode": "CallMethodIc", "rule": "call_method"},
         {"opcode": "CallSuperMethodIc", "rule": "call_method"},
-        {"opcode": "ObjectNewBoundStack", "rule": "positive_payload_bytes"},
         {"opcode": "UnpackSequence", "rule": "unpack_sequence_shape"},
     ]
     assert "sroa_const_immediate_rules" not in data
@@ -3688,7 +3653,6 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
 
     rendered_expectations = {
         "OpCode::Call => TirVerifyAttrRule::CallCallee": rendered,
-        "OpCode::ObjectNewBoundStack => TirVerifyAttrRule::PositivePayloadBytes": rendered,
         "OpCode::UnpackSequence => TirVerifyAttrRule::UnpackSequenceShape": rendered,
         "OpCode::FloorDiv => StrengthReductionRule::PowerTwoFloorDiv": rendered,
         "OpCode::Mod => StrengthReductionRule::PowerTwoMod": rendered,
@@ -3709,7 +3673,8 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     assert "OpCode::Call | OpCode::CallBuiltin" not in verify_body
     assert "OpCode::ObjectNewBoundStack" not in verify_body
 
-    assert "non_heap_values_for(func, &ranges)" in sroa
+    assert "non_heap_boxed_values_for(func, &ranges)" in sroa
+    assert "non_heap_values_for(func, &ranges)" not in sroa
     assert "collect_const_immediates" not in sroa
     assert "store_value_is_refcount_neutral" not in sroa
 
@@ -3736,7 +3701,6 @@ def test_image_heap_exposure_diagnostics_do_not_admit_rc_elision() -> None:
     assert "refcount_heap_exposure_opcodes" not in data
     assert "opcode_is_refcount_heap_exposure_table" not in rendered
 
-
     assert "opcode_is_refcount_heap_exposure_table" not in refcount
     assert "build_heap_exposed_set" not in refcount
     assert "eliminate_non_heap_exposed_refs" not in refcount
@@ -3758,7 +3722,6 @@ def test_escape_alloc_sites_delegate_to_generated_table() -> None:
         "Alloc",
         "StackAlloc",
         "ObjectNewBound",
-        "ObjectNewBoundStack",
         "BuildList",
         "BuildDict",
         "BuildTuple",
@@ -3824,7 +3787,8 @@ def test_refcount_balance_roles_delegate_to_generated_table() -> None:
     table_name = "opcode_refcount_balance_role_table"
     assert table_name in production
     assert "fn refcount_balance_role(" in production
-    assert "fn is_refcount_balance_op(" in production
+    assert "fn is_refcount_balance_op(" not in production
+    assert "role.is_refcount_balance()" in production
     assert "fn complementary_refcount_opcode(" not in production
     assert "RefcountBalanceRole::Increment" in production
     assert "RefcountBalanceRole::Decrement" in production
@@ -4067,7 +4031,7 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
         1
     ].split("enum ExceptionRegionNestingRole")[0]
     nesting_block = rendered.split("enum ExceptionRegionNestingRole")[1].split(
-        "enum AliasTypedSlotRole"
+        "enum AliasTransparentAliasRole"
     )[0]
     for opcode in exception_handling:
         assert f"OpCode::{opcode} => true," in handling_block
@@ -4290,12 +4254,8 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert set(data["alias_region_container_element_opcodes"]) == expected_container
     assert set(data["alias_region_module_dict_opcodes"]) == expected_module
 
-    typed_slot_block = rendered.split("fn opcode_alias_typed_slot_role_table")[1].split(
-        "enum AliasTransparentAliasRole"
-    )[0]
-    assert "OpCode::LoadAttr => AliasTypedSlotRole::Load," in typed_slot_block
-    assert "OpCode::StoreAttr => AliasTypedSlotRole::Store," in typed_slot_block
-    assert "OpCode::Copy => AliasTypedSlotRole::NotTypedSlot," in typed_slot_block
+    assert "AliasTypedSlotRole" not in rendered
+    assert "opcode_alias_typed_slot_role_table" not in rendered
 
     transparent_block = rendered.split("fn opcode_alias_transparent_alias_role_table")[
         1
@@ -4347,12 +4307,10 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in transparent_body
     assert "OpCode::" not in transparent_body
 
-    typed_start = alias_regions.index("fn typed_slot_field_kind(")
-    typed_end = alias_regions.index("fn typed_slot_obj_offset(", typed_start)
-    typed_body = alias_regions[typed_start:typed_end]
-    assert "opcode_alias_typed_slot_role_table" in typed_body
+    typed_body = _rust_fn_body(alias_regions, "fn typed_slot_obj_offset(")
+    assert "plain_typed_slot_load" in typed_body
+    assert "plain_typed_slot_store" in typed_body
     assert "match op.opcode" not in typed_body
-    assert "OpCode::" not in typed_body
 
 
 def test_simpleir_control_kind_validation_rejects_invalid_rows() -> None:
@@ -4429,19 +4387,6 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "StoreIndx" in str(e)
     else:
         raise AssertionError("unknown opcode fact-set member was accepted")
-
-    typed_role_overlap = json.loads(json.dumps(data))
-    typed_role_overlap["alias_typed_slot_store_opcodes"].append("LoadAttr")
-    try:
-        gen._validate_disjoint_opcode_role_sets(
-            typed_role_overlap,
-            gen._ALIAS_TYPED_SLOT_ROLE_SETS,
-            "alias typed-slot role",
-        )
-    except gen.OpKindTableError as e:
-        assert "LoadAttr" in str(e)
-    else:
-        raise AssertionError("overlapping alias typed-slot role was accepted")
 
     transparent_role_overlap = json.loads(json.dumps(data))
     transparent_role_overlap["alias_transparent_copy_opcodes"].append("TypeGuard")
@@ -4774,6 +4719,26 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
     assert py.FRONTEND_EFFECT_CONTROL_KINDS == {
         kind for kind, effect in expected.items() if effect == "control"
     }
+    assert py.FRONTEND_ARBITRARY_HEAP_EFFECT == (gen._frontend_arbitrary_heap_map(data))
+    assert py.FRONTEND_TRUTHINESS_CONTROL_KINDS == (
+        gen._frontend_truthiness_control_kinds(data)
+    )
+    assert all(
+        py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind]
+        for kind in py.FRONTEND_TRUTHINESS_CONTROL_KINDS
+    )
+    for callback_control in {
+        "STATE_TRANSITION",
+        "CHAN_SEND_YIELD",
+        "CHAN_RECV_YIELD",
+    }:
+        assert py.FRONTEND_EFFECT_CLASS[callback_control] == "control"
+        assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[callback_control]
+    assert not py.FRONTEND_ARBITRARY_HEAP_EFFECT["MODULE_CACHE_GET"]
+    for kind in ("LIST_NEW", "TUPLE_NEW"):
+        assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind] is False
+    for kind in ("DICT_NEW", "SET_NEW"):
+        assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind] is True
 
 
 @pytest.mark.parametrize("kind", ["STRING_EQ", "CAST_BOOL", "NOT_IN"])
@@ -4942,6 +4907,60 @@ def test_primitive_operator_effect_matrix_rejects_ambiguous_authority(
         primitive_effect_cases(data)
 
 
+def test_primitive_operator_projections_cover_every_exact_case() -> None:
+    from itertools import product
+    from tools.op_kinds.primitive_effects import (
+        PRIMITIVE_FRONTEND_TYPES,
+        frontend_operator_map,
+        primitive_effect_cases,
+    )
+
+    gen = _gen()
+    data = gen.load_table()
+    py = _load_generated_py()
+    mapping = frontend_operator_map(data)
+    cases = primitive_effect_cases(data)
+    governed = {opcode for case in cases for opcode in case.opcodes}
+    assert governed == {
+        "Add",
+        "Sub",
+        "Mul",
+        "InplaceAdd",
+        "InplaceSub",
+        "InplaceMul",
+        "Div",
+        "FloorDiv",
+        "Mod",
+        "Pow",
+        "Neg",
+        "Pos",
+        "BitAnd",
+        "BitOr",
+        "BitXor",
+        "Shl",
+        "Shr",
+        "BitNot",
+    }
+    for case in cases:
+        for opcode in case.opcodes:
+            aliases = [kind for kind, mapped in mapping.items() if mapped == opcode]
+            assert aliases, opcode
+            for operands in product(*case.operands):
+                projected = tuple(PRIMITIVE_FRONTEND_TYPES[ty] for ty in operands)
+                for alias in aliases:
+                    assert py.frontend_operator_facts(alias, *projected) == (
+                        "pure",
+                        case.purity == "pure",
+                    ), (alias, operands)
+    for kind in ("ADD", "INPLACE_ADD"):
+        for ty in ("str", "bytes"):
+            assert py.frontend_operator_facts(kind, ty, ty) == ("pure", False)
+    rust = gen.render_rs(data)
+    assert "fn scalar_type(" not in rust
+    assert "ty.semantic_type()" in rust
+    assert "(left.semantic_type(), right.semantic_type())" in rust
+
+
 def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
     source = (ROOT / "src/molt/frontend/lowering/midend_canonicalization.py").read_text(
         encoding="utf-8"
@@ -4967,11 +4986,22 @@ def test_generated_python_canonicalizes_rc_aliases_for_analysis() -> None:
     assert py.canonical_kind("borrow") in py.BINARY_IMAGE_REF_RETAIN_KINDS
     assert py.canonical_kind("release") in py.BINARY_IMAGE_REF_RELEASE_KINDS
     assert "alloc" in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+    assert "object_new_bound_stack" not in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+    assert not hasattr(py, "BINARY_IMAGE_FRAME_CANDIDATE_KINDS")
+    data = _gen().load_table()
+    assert all(row["name"] != "ObjectNewBoundStack" for row in data["opcode"])
+    assert all(row["canonical"] != "object_new_bound_stack" for row in data["kind"])
+    assert "stack_alloc" not in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+    assert "stack_alloc" in py.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS
+    assert py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS.isdisjoint(
+        py.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS
+    )
     assert "list_new" in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
     assert "del_boundary" in py.BINARY_IMAGE_REF_RELEASE_KINDS
 
 
 def test_binary_image_analysis_consumes_generated_allocation_sets() -> None:
+    generated = _load_generated_py()
     analyzer = (ROOT / "src/molt/compiler_analysis/backend_ir.py").read_text(
         encoding="utf-8"
     )
@@ -4983,9 +5013,12 @@ def test_binary_image_analysis_consumes_generated_allocation_sets() -> None:
         "BINARY_IMAGE_REF_RELEASE_KINDS",
         "BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS",
     ):
+        assert isinstance(getattr(generated, generated_name), frozenset)
         assert f"op_kind_facts.{generated_name}" in analyzer
         private_name = f"_{generated_name.removeprefix('BINARY_IMAGE_')}"
         assert not re.search(rf"(?m)^{private_name}\s*=", analyzer)
+
+    assert not hasattr(generated, "BINARY_IMAGE_HEAP_EXPOSURE_KINDS")
 
 
 def test_binary_op_maps_match_table_and_are_exhaustive() -> None:
@@ -6110,27 +6143,31 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
     )
 
 
-def test_drop_insertion_consumes_finalizer_sensitive_roots_from_ownership_lattice() -> (
-    None
-):
-    """DropInsertion must consume FinalizerSensitive as a root-space lattice fact.
-
-    The lattice owns alias-root folding for finalizer-sensitive values and
-    return-boundary deferral; statement-release boundary composition is checked
-    separately through `StatementReleasePlan`.
-    """
+def test_drop_insertion_separates_named_lifetimes_from_finalizer_facts() -> None:
+    """Named-owner lifetime does not depend on observing a known finalizer."""
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
+    lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
     assert ".finalizer_sensitive_values()" not in drop
-    assert ".finalizer_sensitive_roots()" in drop
+    assert ".finalizer_sensitive_roots()" not in drop
     assert "let root = boundary.root;" not in drop
     assert "boundary.value" not in drop
-    marker = "let sensitive_roots: HashSet<ValueId> = lattice"
-    assert marker in drop, "sensitive_roots lattice consumer not found"
+    assert "PythonLifetimeFacts::compute(func, &aliases)" in drop
+    marker = "let named_owner_roots ="
+    assert marker in drop, "named-owner lifetime consumer not found"
     region = drop[
         drop.index(marker) : drop.index("let has_suspension", drop.index(marker))
     ]
-    assert ".finalizer_sensitive_roots()" in region
+    assert (
+        "python_lifetime_facts.return_boundary_candidate_roots(&drop_eligibility)"
+        in region
+    )
     assert ".map(|&v| canon(v))" not in region
+    assert "StatementReleasePlan::compute(" in drop
+    assert "lattice.statement_release_finalizer_boundaries()" in lattice
+    assert (
+        "python_lifetime_facts.is_statement_release_boundary_root(root, drop_eligibility)"
+        in lattice
+    )
 
 
 def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() -> None:
@@ -6179,10 +6216,10 @@ def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -
     assert "result: op.results[0]" in lattice
 
 
-def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattice() -> (
+def test_drop_insertion_consumes_borrowed_roots_without_allocation_no_drop_facts() -> (
     None
 ):
-    """Parameter/stack no-drop facts belong to OwnershipRootFacts, not the pass."""
+    """Borrowed parameters are no-drop; boxed placement never grants RC erasure."""
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
     lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
     assert "let param_ids" not in drop
@@ -6193,7 +6230,9 @@ def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattic
     assert "drop_eligibility.is_droppable(" in drop
     assert "ownership_root_facts.is_drop_owned_root_candidate(" not in drop
     assert "fn parameter_roots(" in lattice
-    assert "fn stack_value_roots(" in lattice
+    assert "fn stack_value_roots(" not in lattice
+    assert "fn produces_stack_value(" not in lattice
+    assert "is_stack_value_root" not in lattice
     assert _rust_pub_fn(lattice, "is_drop_owned_root_candidate")
 
 
@@ -6786,3 +6825,168 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
         "fact (the migrated hand-coded carve-out)"
     )
     assert "OperandCategory::Direct" in uses_root
+
+
+def _mutate_opcode_field(original: str, name: str, old: str, new: str) -> str:
+    """Change exactly one field in the named opcode, independent of neighbors."""
+    marker = f'[[opcode]]\nname = "{name}"\n'
+    assert original.count(marker) == 1
+    prefix, tail = original.split(marker, 1)
+    body, separator, suffix = tail.partition("\n[[")
+    assert body.count(old) == 1
+    changed = body.replace(old, new, 1)
+    assert changed != body, "negative test must actually mutate its source"
+    return prefix + marker + changed + separator + suffix
+
+
+def test_retired_iterator_fusion_leaves_no_generated_authority() -> None:
+    """Retiring invalid iterator fusion preserves the independent live passes."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    deforestation = _read_rs_module_cluster(tir_path("passes/deforestation.rs"))
+    assert "fusion_barrier_opcodes" not in data
+    assert "opcode_is_fusion_barrier_table" not in rendered
+    assert "mod fusion;" not in deforestation
+    assert "fusion::run" not in deforestation
+    assert "run_tuple_scalarize" in deforestation
+    assert "enum GeneratorFusionPollRole" in rendered
+    assert not tir_path("passes/deforestation/fusion.rs").exists()
+
+
+def test_frontend_only_exact_result_has_one_validated_authority() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    generated = _load_generated_py()
+    assert generated.FRONTEND_INTRINSIC_SCALAR_RESULTS["TYPE_OF"] == "int"
+    assert generated.FRONTEND_INTRINSIC_SCALAR_ARITIES["TYPE_OF"] == 1
+    assert generated.FRONTEND_EFFECT_CLASS["TYPE_OF"] == "reads_heap"
+    row = next(row for row in data["frontend_effect_kind"] if row["kind"] == "TYPE_OF")
+    for changes in (
+        {"frontend_intrinsic_scalar_arity": -1},
+        {"frontend_intrinsic_scalar_arity": True},
+        {"exact_scalar_result_type": "DynBox"},
+        {"kind": "CONST"},
+    ):
+        original = dict(row)
+        row.update(changes)
+        with pytest.raises(gen.OpKindTableError, match="exact scalar"):
+            gen._validate_frontend_tables(data, data["opcode"])
+        row.clear()
+        row.update(original)
+
+
+def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"]: row for row in data["opcode"]}
+    governed = {
+        row["name"]
+        for row in data["opcode"]
+        if any(
+            key in row
+            for key in (
+                "operand_independent_result_types",
+                "exact_scalar_result_type",
+                "predicate_semantics",
+            )
+        )
+    }
+    governed.update(row["opcode"] for row in data["type_refine_operand_type_rules"])
+    governed.add("TypeGuard")
+    assert all("operand_arity" in opcodes[name] for name in governed)
+    assert opcodes["CheckedAdd"]["operand_arity"] == 2
+    assert opcodes["CheckedMul"]["operand_arity"] == 2
+    assert opcodes["TypeGuard"]["operand_arity"] == 1
+    # Literal payloads are frontend arguments but TIR attrs. Both facts must
+    # survive validation and projection without a false cross-domain equality.
+    assert opcodes["ConstInt"]["frontend_intrinsic_scalar_arity"] == 1
+    assert opcodes["ConstInt"]["operand_arity"] == 0
+    for name in ("BuildList", "BuildTuple", "BuildSet", "Copy"):
+        assert opcodes[name]["operand_arity"] == "variable"
+    assert opcodes["BuildDict"]["operand_arity"] == "variable_pairs"
+    for row in data["fuzz_tir_opcode_shapes"]:
+        assert row["operands"] == opcodes[row["opcode"]]["operand_arity"]
+    rendered = gen.render_rs(data)
+    admission = rendered.split("pub fn opcode_accepts_operand_count", 1)[1].split(
+        "pub fn opcode_accepts_shape", 1
+    )[0]
+    for name, row in opcodes.items():
+        arity = row.get("operand_arity")
+        expected = (
+            f"count == {arity}"
+            if type(arity) is int
+            else "count % 2 == 0"
+            if arity == "variable_pairs"
+            else "true"
+        )
+        assert f"OpCode::{name} => {expected}," in admission
+    assert "opcode_accepts_operand_count(opcode, operands)" in rendered
+    assert (
+        "opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)"
+        in rendered
+    )
+    ops = tir_path("ops.rs").read_text(encoding="utf-8")
+    inference = _read_rs_module_cluster(tir_path("type_refine.rs"))
+    assert "has_valid_shape" in ops
+    assert "opcode_accepts_shape" in ops
+    assert (
+        "opcode_accepts_shape(opcode, operand_facts.len(), result_count)" in inference
+    )
+    assert "has_valid_result_arity" not in ops
+
+
+@pytest.mark.parametrize(
+    ("opcode", "replacement", "message"),
+    [
+        ("CheckedAdd", None, "require operand_arity"),
+        ("CheckedMul", "true", "nonnegative integer"),
+        ("Bool", "-1", "nonnegative integer"),
+        ("Is", '"variable"', "audited variable shape"),
+        ("Bool", "2", "predicate operand_arity"),
+        ("Eq", "1", "predicate operand_arity"),
+        ("Add", "1", "operation rule signature"),
+        ("TypeGuard", None, "require operand_arity"),
+        ("TypeGuard", "2", "requires unary operand_arity"),
+        ("BuildDict", '"variable"', "audited variable shape"),
+        ("BuildList", "0", "audited variable shape"),
+    ],
+)
+def test_semantic_operand_shape_validation_rejects_drift(
+    tmp_path, opcode: str, replacement: str | None, message: str
+) -> None:
+    original = TABLE.read_text(encoding="utf-8")
+    marker = f'[[opcode]]\nname = "{opcode}"\n'
+    prefix, tail = original.split(marker, 1)
+    body, separator, suffix = tail.partition("\n[[")
+    body, count = re.subn(
+        r"^operand_arity = [^\n]+\n",
+        "" if replacement is None else f"operand_arity = {replacement}\n",
+        body,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert count == 1
+    path = tmp_path / "bad_operand_shape.toml"
+    path.write_text(prefix + marker + body + separator + suffix, encoding="utf-8")
+    gen = _gen()
+    with pytest.raises(gen.OpKindTableError, match=message):
+        gen.load_table(path)
+
+
+def test_fuzz_and_primitive_effect_shapes_cannot_override_operand_authority() -> None:
+    import copy
+    from tools.op_kinds.primitive_effects import primitive_effect_cases
+    from tools.op_kinds.validate import _validate_fuzz_tir_opcode_shapes
+
+    gen = _gen()
+    data = gen.load_table()
+    bad = copy.deepcopy(data)
+    bad["fuzz_tir_opcode_shapes"][0]["operands"] = 1
+    opcodes = {row["name"]: row for row in bad["opcode"]}
+    with pytest.raises(gen.OpKindTableError, match="canonical fixed operand_arity"):
+        _validate_fuzz_tir_opcode_shapes(bad, opcodes)
+    bad = copy.deepcopy(data)
+    bad["primitive_operator_effect_cases"][0]["operands"].pop()
+    with pytest.raises(gen.OpKindTableError, match="canonical fixed operand_arity"):
+        primitive_effect_cases(bad)

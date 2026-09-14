@@ -26,10 +26,10 @@
 //!
 //! | field | source | lattice rule (Phase 1) |
 //! | --- | --- | --- |
-//! | [`CallFacts::target`] | `call_graph::classify_call_op` | typed [`CallTargetFact`] — `StaticDirect{name}` iff the `Call`'s `s_value` names a module-defined function, else `Opaque` (the #71 / #59 class: a typed variant, never raw marker bits) |
-//! | [`CallFacts::typed_return`] | the result `ValueId`'s `TirType` | `Some(repr)` when the type is precise (non-`DynBox`), `None` when `DynBox` |
+//! | [`CallFacts::target`] | `call_targets` operation provenance + module membership | typed [`CallTargetFact`] — `StaticDirect{name}` only for proven direct user calls, else `Opaque` |
+//! | [`CallFacts::typed_return`] | the result `ValueId`'s semantic type and `Repr::default_for` | conservative `Some(repr)` for a known semantic type (possibly `DynBox`); `None` for an unknown type |
 //! | [`CallFacts::leaf`] | `CallGraph::makes_any_call` | `Proven` iff the resolved callee makes no call of any kind; `False` iff it provably does; `Unknown` for an unresolved (opaque) target |
-//! | [`CallFacts::no_throw`] | `op_kinds` `may_throw` + callee handlers + builtin allowlist | `Proven` iff the opcode is statically no-throw **or** the resolved callee has no exception handlers **or** it is a no-throw-allowlisted builtin; else `Unknown` |
+//! | [`CallFacts::no_throw`] | generated `op_kinds` `may_throw` contract | `Proven` only when the operation contract is statically no-throw; else `Unknown`. Handler absence and builtin names are not effect proofs. |
 //! | [`CallFacts::inlinable`] | `inliner::classify_inline_eligibility` | the typed [`InlineEligibility`] (Eligible \| WhyNot(reason)) — the SAME value `inliner::is_inlineable` derives its bool from (single source of truth, doc 47 §7) |
 //!
 //! `no_alloc` and `no_escape_args` are **Phase 2** (escape-analysis-sourced) and
@@ -39,8 +39,8 @@
 //!
 //! ## Why this is an interprocedural (module-phase) analysis
 //!
-//! `leaf`, `inlinable`, the `StaticDirect`/`Opaque` classification, and the
-//! callee-has-no-handlers half of `no_throw` are **callee-side facts**: they need
+//! `leaf`, `inlinable`, and the `StaticDirect`/`Opaque` classification are
+//! **callee-side facts**: they need
 //! the whole-program [`CallGraph`], the bottom-up [`ModuleSummaries`], and the
 //! callee bodies — exactly the inputs [`ModuleSummaries::compute`] and
 //! [`is_inlineable`](super::passes::inliner::is_inlineable) already consume. So the
@@ -57,7 +57,7 @@
 //! Its `compute(func)` produces the **fail-closed intraprocedural floor**: every
 //! callee-side fact that cannot be proven from `func` alone is `Unknown`, and only
 //! the purely-local facts (`typed_return`; `no_throw` via a statically-no-throw
-//! opcode or a no-throw builtin) are `Proven`. This floor is *sound by
+//! operation contract) can be `Proven`. This floor is *sound by
 //! construction* — it can only ever say `Unknown` where the precise module-phase
 //! table would say `Proven`, never the reverse — so a cache miss can never yield a
 //! wrong `Proven`. The module phase seeds the precise table via
@@ -153,8 +153,8 @@ impl CallFactsTable {
         summaries: &ModuleSummaries,
         tti: &TargetInfo,
     ) -> BTreeMap<String, CallFactsTable> {
-        // Function bodies by name, for the callee-side fact lookups (no_throw via
-        // has-handlers, inline eligibility). O(1) per query.
+        // Function bodies by name for inline eligibility. The ordered index
+        // provides deterministic traversal and logarithmic callee lookup.
         let by_name: BTreeMap<&str, &TirFunction> = module
             .functions
             .iter()
@@ -182,7 +182,7 @@ impl CallFactsTable {
     /// Build the **fail-closed intraprocedural floor** for `func` alone (no module
     /// context). Every callee-side fact that cannot be proven from `func` is
     /// `Unknown`; only purely-local facts (`typed_return`; `no_throw` via a
-    /// statically-no-throw opcode or a no-throw builtin) are proven. This is the
+    /// statically-no-throw operation contract) can be proven. This is the
     /// [`Analysis::compute`] path — sound by construction, never out-claiming the
     /// precise [`Self::build_module`] table.
     pub fn build_local(func: &TirFunction) -> CallFactsTable {

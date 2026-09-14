@@ -352,20 +352,17 @@ pub struct OpIR {
     /// Not the canonical backend representation contract.
     pub fast_float: Option<bool>,
     pub stack_eligible: Option<bool>,
-    /// When true, this allocation should use the function-scoped
-    /// `ScopeArena` (bump allocator) instead of individual heap alloc/free.
-    /// Set by escape analysis when an `Alloc` is `NoEscape` and the arena
-    /// integration is active.
+    /// Rejected compiler-placement input. Retained at the transport boundary
+    /// solely so validation diagnoses unproved arena custody instead of silently
+    /// ignoring the requested lifetime change. No optimizer mints this field.
     #[serde(default)]
     pub arena_eligible: Option<bool>,
     /// When true on an `object_new_bound` op, the instance's class defines a
     /// `__del__` finalizer (directly or via its MRO, excluding `object`). The
-    /// frontend resolves this statically and the backend escape pass must keep
-    /// such an instance heap-allocated with a live refcount — never stack-promote
-    /// it (which stamps it IMMORTAL) and never strip its IncRef/DecRef — so the
-    /// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last reference
-    /// drop. Without this the refcount-zero transition never occurs and the
-    /// finalizer silently never runs (the standing LLVM/WASM parity hole).
+    /// frontend resolves this statically. Escape analysis keeps finalizer-bearing
+    /// instances heap-allocated: destruction callbacks can retain or resurrect
+    /// the instance, so noncapture alone does not prove scoped storage safe.
+    /// All boxed class allocations retain ordinary IncRef/DecRef ownership.
     #[serde(default)]
     pub defines_del: Option<bool>,
     /// Named-local fact (#58 ordering keystone): the op's result is bound to
@@ -435,8 +432,8 @@ pub struct OpIR {
     /// name against the op kind before weakening effect semantics.
     pub effect_proof: Option<String>,
     /// The concrete user-class name whose fixed instance layout authored the
-    /// `value` byte-offset of a typed-slot field op (`store` / `store_init` /
-    /// `load` / `guarded_field_get` / `guarded_field_set` / `guarded_field_init`).
+    /// `value` byte-offset of a typed-slot field op (`store` / `load` /
+    /// `guarded_field_get` / `guarded_field_set`).
     ///
     /// The frontend emits these offset-based forms ONLY when the object's class
     /// is proven at the op — either by a preceding runtime version-guard (the
@@ -1393,6 +1390,22 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_rejects_retired_field_initialization_spellings() {
+        for (kind, replacement) in [
+            ("store_init", "store"),
+            ("guarded_field_init", "guarded_field_set"),
+        ] {
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}"}},{{"kind":"ret_void"}}]}}]}}"#
+            );
+            let error = SimpleIR::from_json_str(&source)
+                .expect_err("retired field initialization spelling must fail closed");
+            assert!(error.contains(&format!("retired compiler operation `{kind}`")));
+            assert!(error.contains(&format!("emit `{replacement}`")));
+        }
     }
 
     #[test]

@@ -93,35 +93,40 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
     assert!(!output.bytes.is_empty());
 }
 
-fn compile_retained_alias_after_source_dec_ref(alias_kind: &str) {
+fn compile_alias_owner_transfer(alias_kind: &str, release_source: bool) {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
-            name: format!("{alias_kind}_after_dec_ref"),
+            name: format!("{alias_kind}_owner_transfer"),
             params: vec![],
-            ops: vec![
-                OpIR {
-                    kind: "const_str".to_string(),
-                    out: Some("src".to_string()),
-                    s_value: Some("owned".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: alias_kind.to_string(),
-                    args: Some(vec!["src".to_string()]),
-                    out: Some("alias".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "dec_ref".to_string(),
-                    args: Some(vec!["src".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
+            ops: {
+                let mut ops = vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("src".to_string()),
+                        s_value: Some("owned".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: alias_kind.to_string(),
+                        args: Some(vec!["src".to_string()]),
+                        out: Some("alias".to_string()),
+                        ..OpIR::default()
+                    },
+                ];
+                if release_source {
+                    ops.push(OpIR {
+                        kind: "dec_ref".to_string(),
+                        args: Some(vec!["src".to_string()]),
+                        ..OpIR::default()
+                    });
+                }
+                ops.push(OpIR {
                     kind: "ret".to_string(),
                     args: Some(vec!["alias".to_string()]),
                     ..OpIR::default()
-                },
-            ],
+                });
+                ops
+            },
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -137,11 +142,13 @@ fn compile_retained_alias_after_source_dec_ref(alias_kind: &str) {
 }
 
 #[test]
-fn native_backend_compiles_identity_alias_after_source_dec_ref() {
-    compile_retained_alias_after_source_dec_ref("identity_alias");
+fn native_backend_compiles_identity_alias_transferring_the_source_owner() {
+    // A transparent identity has no independent retain. Its return transfers
+    // the source owner; releasing that owner first would be use-after-free.
+    compile_alias_owner_transfer("identity_alias", false);
 }
 
 #[test]
 fn native_backend_compiles_binding_alias_after_source_dec_ref() {
-    compile_retained_alias_after_source_dec_ref("binding_alias");
+    compile_alias_owner_transfer("binding_alias", true);
 }

@@ -81,12 +81,23 @@ ignored while calling deallocator:" + traceback) and clears all exception channe
 or — if a surrounding exception was active — preserves/restores it (CPython
 semantics).
 
-2026-07-13 update: finalizer *sensitivity* is class metadata, not an ordinary
-dying-instance attribute probe or a duplicated instance flag.
-`HEADER_FLAG_CLASS_HAS_FINALIZER` is refreshed when a class MRO or class-level
-`__del__` binding changes. Each instance stores only its validated class edge in
-`CLASS_INLINE` or `SIDECAR` aux storage; `object_class_has_finalizer` follows
-that edge and reads the class metadata. Non-finalizer objects never enter
+Finalizer eligibility is projected from each current MRO member's own-namespace
+`HEADER_FLAG_CLASS_DECLARES_FINALIZER` bit. There is no inherited flag copied to
+descendants: adding or deleting a mutable base's `__del__` immediately affects
+existing instances. `object_class_has_finalizer` follows the validated class edge
+and pins the MRO for a callback-free, allocation-free declaration scan.
+Ordinary class set/delete shares a dictionary publication transaction: detached
+values remain owned until the declaration bit and type version are committed.
+Their destructors therefore see coherent namespace and finalizer metadata.
+Class objects follow the same rule through their owned metaclass edge. Dynamic
+type construction shares base-layout and slot-declaration preparation with static
+class construction, but rejects preallocation failures before attaching a
+finalizing metaclass. Later metadata and MRO failures may finalize the initialized
+class payload, including resurrection. Namespace, base and selected metaclass
+owners remain pinned across construction callbacks; there is no blanket
+type-payload or failed-construction finalizer suppression. The versioned oracle
+cases live in `tests/differential/basic/inherited_finalizer_mutation.py`.
+Non-finalizer objects never enter
 `__del__` lookup, so plain objects and objects with only an instance attribute
 named `__del__` cannot emit false unraisable AttributeErrors. For
 finalizer-sensitive instances,

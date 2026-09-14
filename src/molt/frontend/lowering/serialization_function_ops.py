@@ -182,11 +182,8 @@ class SerializationFunctionOpsMixin(_MixinBase):
             # `__init__`'s symbol — bypassing
             # `type.__call__` → bound-method-init → CALL_BIND.
             # See `_try_emit_class_static_call` for the predicates.
-            # The optional `value` field carries the static
-            # class-instance payload size in bytes (header NOT
-            # included), which the escape-analysis-rewritten
-            # `object_new_bound_stack` lowering uses to size the
-            # Cranelift StackSlot.  Heap arm ignores it.
+            # Static payload extent supports typed-field analysis; it does
+            # not authorize frame placement. The runtime owns allocation size.
             _onb_op: dict[str, Any] = {
                 "kind": "object_new_bound",
                 "args": [arg.name for arg in op.args],
@@ -199,18 +196,9 @@ class SerializationFunctionOpsMixin(_MixinBase):
             _onb_size = _onb_md.get("class_size_bytes")
             if isinstance(_onb_size, int) and _onb_size > 0:
                 _onb_op["value"] = _onb_size
-            # A class that defines `__del__` (directly or anywhere in its MRO
-            # except `object`) has a finalizer that CPython runs at the last
-            # reference drop.  The backend escape pass would otherwise treat a
-            # non-escaping instance as `NoEscape` and (a) strip its IncRef/
-            # DecRef and/or (b) rewrite it to a stack-allocated immortal
-            # object — either of which makes the refcount-zero transition
-            # never occur, so `__del__` would silently never run.  Carry the
-            # finalizer fact so escape analysis keeps such instances
-            # heap-allocated with a live refcount (the finalizer-aware
-            # `dec_ref_ptr` then dispatches `__del__` at the last drop).  The
-            # heap `object_new_bound` fast path (and inlined `__init__`) is
-            # preserved — only the unsound stack/RC-strip is suppressed.
+            # Positive finalizer metadata constrains lifetime transformations.
+            # Its absence does not prove finalizer freedom: a mutable class
+            # can acquire __del__ later. Owned allocation always retains RC.
             if _onb_class and _onb_class != "Any":
                 _del_info, _del_owner = self._resolve_method_info(_onb_class, "__del__")
                 if _del_info is not None and _del_owner != "object":

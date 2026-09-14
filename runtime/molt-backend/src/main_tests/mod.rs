@@ -21,7 +21,7 @@ use super::{
     default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
     default_daemon_cache_bytes_from_physical_mem_bytes, ensure_output_parent_dir,
     read_bounded_request_bytes, read_daemon_request_bytes, resolve_backend_output_path,
-    write_bytes_atomically, write_cached_output,
+    write_cached_output,
 };
 #[cfg(feature = "native-backend")]
 use super::{

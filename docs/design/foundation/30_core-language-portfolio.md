@@ -21,7 +21,10 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 **Op-kind registry state (doc 25, phase 1 complete).** 420 frontend JSON kinds; 146 in `kind_to_opcode`; LLVM coverage gap = 28 (all fail-loud); classifier silent-fallthrough = 196 (leak-safe, not UAF). `floordiv`/`floor_div` bidirectional spelling schism is the only live correctness asymmetry. Phase 2 (toml generation) is pending a build slot.
 
-**TIR OpCode enum.** `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs:22–268`. First-class opcodes: Add/Sub/Mul/CheckedAdd/CheckedMul, InplaceAdd/Sub/Mul, Div/FloorDiv/Mod/Pow, Neg/Pos, all comparisons, bitwise, Bool, GetIter/IterNext/IterNextUnboxed/ForIter, Yield/YieldFrom, Raise/CheckException/ExceptionPending/TryStart/TryEnd, ConstInt/ConstBigInt/ConstFloat/ConstStr/ConstBool/ConstNone/ConstBytes, ObjectNewBound/ObjectNewBoundStack. The `Copy{_original_kind}` carrier handles the remaining ~274 JSON kinds that have not yet been promoted.
+**TIR operation authority.** Current opcodes and frontend projections belong to
+`runtime/molt-ir/src/tir/ops.rs` and the generated `op_kinds.toml` authority, not a
+mirrored inventory in this historical audit. The unproved class-frame allocation
+operation is retired; ordinary class allocation preserves heap ownership.
 
 **Optimization pass coverage.** range_devirt, iter_devirt, deforestation, overflow_peel, sccp, gvn, licm, bce (via value_range), block_versioning, type_guard_hoist, counted_loop, loop_unroll, sroa, mem_gvn, memory_ssa. Generator/state-machine bodies are explicitly excluded from all structural passes (`has_state_machine()` gate in `function.rs:168-204`).
 

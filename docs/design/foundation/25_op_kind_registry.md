@@ -15,8 +15,10 @@ operations at opcode scope. `predicate_semantics` selects equality, ordering,
 truth conversion, or containment;
 `comparison_scalar_domains` generates the identical exact-primitive pair policy
 for the Python frontend and shared native/WASM Rust pipeline. Exact scalar pairs
-produce bool; equality is total across these domains, while ordering is nothrow
-only within an ordering-enabled domain. Unknown operands remain impure/DynBox.
+produce bool; equality is total except for the warning-sensitive pairs declared
+in `comparison_warning_pairs`, whose warning callbacks and exceptions remain
+observable. Ordering is nothrow only within an ordering-enabled domain. Unknown
+operands remain impure/DynBox.
 
 Annotations, return hints, and subclass-accepting guards are not exactness proofs.
 Frontend queries follow intrinsic defining operations; TIR's
@@ -24,11 +26,19 @@ Frontend queries follow intrinsic defining operations; TIR's
 scalar transfer rules, and SSA edges without importing those hints. The separate
 `exact_scalar_result_type` fact preserves heap BigInt semantic exactness without
 changing its boxed carrier. Refinement, DCE, GVN, LICM, exception elimination, and
-representation floors consume this shared predicate fact. No rich comparison may
+representation floors consume the shared `op_semantics` facts. No rich comparison may
 declare an operand-independent bool result or an unconditional bool projection.
+SROA's reference-count-neutral stores consume the same exact-producer map and,
+for integers, an inline-range proof. Its former constant-immediate table and
+annotation/range-only fallback are retired; arbitrary Python arguments cannot
+lose reference-counting stores merely because they carry scalar hints.
 Truth and containment produce exact bool values on success without licensing
 callback elimination: unknown truth operands and containment remain impure.
-Malformed producer/result shapes cannot mint exactness. Double logical negation
+The manifest's `operand_arity` and `result_arity` share one operation-shape
+admission across verification, effects, intrinsic result slots, guard hints and
+scalar provenance. Fixed operands, variadic builders and key/value pairs are
+explicit; a malformed producer cannot mint exactness or fall back to a pure
+opcode effect. Double logical negation
 can collapse to its input only when that input is an exact bool.
 
 Initial lifting and refinement project scalar function return contracts from
@@ -142,7 +152,7 @@ The audit categorizes by the **precise bug preconditions** (not the coarse "emit
 - **2 loop-IV ops** (`loop_index_start`, `loop_index_next`). Consumed specially by `lower_from_simple.rs:201/278` (folded into a counted-loop IV) — they should never reach `kind_to_opcode`'s Copy fallback on the lift. *Disposition: benign* (structural-IV machinery; the audit flags them only because they are not in the CFG leader/terminator helpers — they could be added to the derived structural set in phase 2).
 - **1 other** (`object_set_class`). It has native+wasm coverage, and shares `class_apply_set_name`'s native arm, but no LLVM arm. *Disposition: latent LLVM gap* — `obj.__class__ = C` on the LLVM lane fails loud. Repro sketch: `obj.__class__ = C`, `--target llvm`.
 
-Closed in the current audit: the repr-identity ops (`cast`, `widen`, `copy_var`) now have explicit LLVM identity arms that bind result values to operand 0, matching the native/WASM NaN-box passthrough contract without weakening the terminal fail-loud guard. The loop-IV helpers (`loop_index_start`, `loop_index_next`) are also closed as LLVM-gap false positives: `[[simpleir_control_kind]]` marks them as `pre_ssa_rewritten`, and the audit derives that pre-SSA consumed set directly from the registry. Runtime fallback coverage now derives from parsed extern ABI, including `unsafe extern "C"` exports; boxed async/cancellation/channel/thread ops are covered only when their ABI is boxed-integer compatible, and void-return side-effect ops (`print_newline`, `spawn`) are covered through the explicit `PRESERVED_VOID_RUNTIME_OPS` table only when table arity and boxed extern parameters match. The pointer-ABI ops `object_set_class` and `guarded_field_init` are closed by dedicated LLVM arms that unbox the receiver pointer and call the exact runtime symbols (`molt_object_set_class`, `molt_guarded_field_init_ptr`) rather than widening the generic boxed fallback. `call_async` is closed by reusing the LLVM task-frame allocation authority already used by `AllocTask`, plus the native-compatible `molt_async_sleep` constructor special case.
+Closed in the current audit: the repr-identity ops (`cast`, `widen`, `copy_var`) now have explicit LLVM identity arms that bind result values to operand 0, matching the native/WASM NaN-box passthrough contract without weakening the terminal fail-loud guard. The loop-IV helpers (`loop_index_start`, `loop_index_next`) are also closed as LLVM-gap false positives: `[[simpleir_control_kind]]` marks them as `pre_ssa_rewritten`, and the audit derives that pre-SSA consumed set directly from the registry. Runtime fallback coverage now derives from parsed extern ABI, including `unsafe extern "C"` exports; boxed async/cancellation/channel/thread ops are covered only when their ABI is boxed-integer compatible, and void-return side-effect ops (`print_newline`, `spawn`) are covered through the explicit `PRESERVED_VOID_RUNTIME_OPS` table only when table arity and boxed extern parameters match. The pointer-ABI operation `object_set_class` has dedicated LLVM lowering to `molt_object_set_class`. Field assignment has one `store`/`guarded_field_set` contract; unchecked initializer spellings and their duplicate LLVM arms are retired. `call_async` is closed by reusing the LLVM task-frame allocation authority already used by `AllocTask`, plus the native-compatible `molt_async_sleep` constructor special case.
 
 **`llvm_void_runtime_abi_mismatch = 0` - CLOSED.** The `PRESERVED_VOID_RUNTIME_OPS` table is audited as source data, not consumed opportunistically. A missing extern, non-void return, arity mismatch, or non-boxed parameter becomes a dangerous-cell finding even before the frontend emits that kind.
 
@@ -355,12 +365,71 @@ None-guard membership out of the iterator-use scanner.
 1. **One table** `runtime/molt-ir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, may_throw, side_effecting, purity ∈ {pure, pure_may_throw, impure}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-ir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the reverse `opcode_canonical_kind_table` backend spelling authority, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, generated `ALL_OPCODES`, and the typed effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants, raising/skip/binop tables, and pre-serialization frontend effect classes the emitter and midend use).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.
-4. **The effect oracles hook the same table:** `opcode_may_throw_table`, `opcode_is_side_effecting_table`, and `opcode_effects_table` are generated from the `may_throw`, `side_effecting`, and `purity` columns, then consumed by `effects.rs` with no pass-local opcode lists. Callback-capable reads (`LoadAttr`, `Index`, dynamic `LEN`/attribute/`isinstance` helpers) carry a coarse `writes_heap` floor because Python callbacks can mutate unrelated captured state. The frontend may recover read precision only from exact built-in producer provenance; annotations and raw type-tag guards admit subclasses and are not callback-absence proof. The frontend midend consumes `FRONTEND_EFFECT_CLASS`, derived from mapper rows, `[[frontend_raising_kind]]`, `[[simpleir_control_kind]]`, and `[[frontend_effect_kind]]` overrides, so pre-specialization may-raise operations cannot be DCE/CSE/LICM-pure by accident. A new opcode or frontend op-kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — and the frontend private-set drift class).
-5. **Deforestation fusion eligibility is table-owned too:** `fusion_barrier_opcodes` generates `opcode_is_fusion_barrier_table` for `deforestation.rs`. This is deliberately separate from side effects/may-throw because iterator-chain fusion preserves per-element evaluation order while still rejecting cross-iteration/control-state barriers.
+4. **The effect oracles hook the same table:** `opcode_may_throw_table`, `opcode_is_side_effecting_table`, and `opcode_effects_table` are generated from the `may_throw`, `side_effecting`, `purity`, and `may_access_arbitrary_heap` columns, then consumed by `effects.rs` with no pass-local opcode lists. Impure opcodes default to arbitrary heap access; pure classes default false, and only positive runtime evidence may mark an impure opcode local. Callback-capable reads (`LoadAttr`, `Index`, dynamic `LEN`/attribute/`isinstance` helpers), module reads, and replacing typed-slot stores retain the coarse floor because callbacks or old-value finalization can mutate unrelated captured state. Only exact-site pristine/boxed-neutral evidence from the shared typed-slot planner discharges the replacing-store destructor path; spelling is not proof. Guarded field get/set operations fail closed because a guard miss can use generic attribute dispatch. The frontend projects the same axis as `FRONTEND_ARBITRARY_HEAP_EFFECT`; it may recover callback freedom only from exact built-in producer provenance, truthiness predicate facts, and the existing exact-list write-alias authority. Annotations and raw type-tag guards admit subclasses and are not callback-absence proof. A new opcode or frontend op-kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — and the frontend private-set drift class).
+5. **Generated facts require real consumers:** the dormant deforestation iterator-fusion lane and its barrier table are retired. Its yielded-element/iterator confusion and unconsumed `fused` tags did not implement a valid backend protocol. Tuple scalarization and the separate generator-fusion pass retain their real execution paths and authorities.
 6. **Raw-i64 arithmetic lowering is table-owned too:** `i64_overflow_box_dispatch_opcodes` generates `opcode_requires_i64_overflow_box_dispatch_table`, `i64_checked_overflow_triple_opcodes` generates `opcode_supports_i64_checked_overflow_triple_table`, and `i64_zero_divisor_guard_opcodes` generates `opcode_requires_i64_zero_divisor_guard_table`, keeping overflow custody, checked-triple eligibility, boxed-dispatch retention, and proven-nonzero elimination on generated opcode facts.
 7. **The terminal state becomes generated-exhaustive:** the LLVM fail-loud gate and the classifier `_ =>` default survive ONLY as a defense for kinds the table forgot — and the sync test makes "the table forgot" a build failure, so the fail-loud path becomes statically unreachable for any in-table kind (it stays as the runtime backstop, now provably dead for known kinds).
 
 ---
+
+### Primitive operation result and effect facts
+
+`molt-ir::tir::op_semantics` owns operand-dependent scalar results and effects
+for arithmetic, bitwise, comparison, truth, containment and value-selection
+operations. It replaces the predicate-only authority. The generated primitive
+effect cases and comparison/warning domains remain in `op_kinds.toml`, shared
+with the Python frontend. `TirType::semantic_type` removes storage wrappers;
+it proves neither exact builtin provenance nor a physical unboxed carrier.
+Boolean arithmetic and arbitrary-size integer arithmetic produce semantic
+integers; Boolean bitwise pairs preserve Boolean results, but shifts do not.
+Bytes/text concatenation and repetition preserve their sequence family and
+retain length/size exceptions. Power results remain value-dependent.
+
+Optimization effects consume only `extract_exact_scalar_map`, not annotations
+or subclass-admitting guards. Ordinary type inference may consume result types
+without using their effects. Representation projection removes scalar hints
+before adding exact producer facts and separately requires integer range or
+overflow evidence. Missing facts, malformed operators, callback-capable types,
+version-dependent Boolean inversion and warning-sensitive bytes comparisons
+retain conservative effects. IR result/effect-pair tests cover boxed and
+unboxed forms; pass tests prove exact arithmetic-to-comparison transfer while
+keeping annotated parameters out of effect and representation admission.
+
+Unresolved SSA operands remain lattice bottom through governed operator results;
+they must not widen to dynamic merely because a producer's block has a larger
+ID. Effects remain conservative until convergence. Loop tests permute block
+identities and retain exception-edge widening. Frontend callback boundaries use
+instance effects, not a list of CALL spellings: operators and finalizing heap
+mutations invalidate guards and cached heap reads. Exact builtin producers can
+recover native length/index reads; annotations cannot. Mutable-object `TYPE_OF`
+is a heap read, and arbitrary attribute access retains callback observability.
+
+Reference-count cancellation preserves zero transitions: only a retain followed
+by a release can cancel, across callback- and exception-free intervals. A unique
+predecessor block is not proof of a unique entry: the shared exception-edge
+authority can expose an earlier transfer from that same block, and a function
+entry has an implicit initial arrival. Cross-block pairing rejects both cases
+while retaining ordinary straight-line optimization. SCCP compound facts are
+immutable tuples/ranges; mutable list/dict/set producers do not seed constants.
+Generated operation shapes govern admission before invalid IR can become a
+constant or lose its diagnostic.
+
+SCCP call admission must follow executable identity and the production ABI:
+`CallMethod` receives a bound callable, not a receiver value, so a method-name
+hint cannot authorize direct receiver evaluation. Generic builtin lookup is not
+an import of a dotted module name or proof of a fixed constructor. Truthiness
+uses the first-class `Bool`/`Not` operations; dedicated `range_new` retains its
+explicit three-operand primitive identity. Constant materialization is bounded
+before allocation by recursive tuple cost and UTF-8 payload size.
+
+Host evaluation is not target conformance: integer division may fold through
+f64 only when both operand conversions are exact. Float power/divmod and host
+transcendental calls remain executable until shared target semantics establish
+their values and exceptions. Ordered min/max folds preserve the selected
+operand's NaN and signed-zero bits. These admission rules prevent compiler
+misfolds; they do not claim that the runtime's float-divmod or versioned Unicode
+implementations are conformant. Those consumers still require shared semantic
+authorities and native/WASM differential execution.
 
 ## 6. Remaining dangerous-cell burndown plan
 
@@ -373,7 +442,7 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 3. **Dangerous-cell fixes, each a SEPARATE reviewed commit** (NOT folded into the migration):
    - (a) canonical `floordiv` spelling is closed: `lower_to_simple` emits `floordiv` and the generated mapper accepts `floordiv | floor_div`. Remaining cleanup, if scheduled, is deleting the explicit `floor_div` alias once no serialized or round-trip artifact can produce it.
    - (b) closed: `loop_index_*` is derived from `[[simpleir_control_kind]].pre_ssa_rewritten`, and the LLVM identity arms for `cast`/`widen`/`copy_var` are closed in the current audit.
-   - (c) closed: `guarded_field_init`, `object_set_class`, and `call_async` have dedicated LLVM arms with exact pointer/task ABI lowering. `call_async` remains explicitly non-eligible for the generic runtime fallback; it is covered only by its dedicated task-constructor arm.
+   - (c) closed: `object_set_class` and `call_async` have dedicated LLVM arms with exact pointer/task ABI lowering. `call_async` remains explicitly non-eligible for the generic runtime fallback; it is covered only by its dedicated task-constructor arm.
    - (d) closed: `classifier_silent_fallthrough` is promoted to **explicit** `classifier_transparent_alias` rows, distinct from `classifier_no_heap_move`, so the `_ =>` default no longer silently buckets known runtime ops.
 
 ### 6.2 Key decisions / constraints

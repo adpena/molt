@@ -227,19 +227,6 @@ pub(super) fn wasm_direct_call_indices_for_export(wasm: &[u8], export_name: &str
     wasm_direct_call_indices_for_body(wasm, Some(wasm_export_body_index(wasm, export_name)))
 }
 
-pub(super) fn wasm_operators_for_export<'a>(
-    wasm: &'a [u8],
-    export_name: &str,
-) -> Vec<wasmparser::Operator<'a>> {
-    let mut operators = Vec::new();
-    wasm_visit_operators(
-        wasm,
-        Some(wasm_export_body_index(wasm, export_name)),
-        |op| operators.push(op),
-    );
-    operators
-}
-
 fn wasm_export_body_index(wasm: &[u8], export_name: &str) -> u32 {
     let export_index = *wasm_function_export_indices(wasm)
         .get(export_name)

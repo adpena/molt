@@ -19,7 +19,6 @@ use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
     enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
 };
-use molt_obj_model::MoltObject;
 use molt_runtime::attestation_probe;
 use num_bigint::BigUint;
 use serde_json::{Value, json};
@@ -27,10 +26,9 @@ use std::ffi::CString;
 use std::hint::black_box;
 use std::time::Instant;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/l7_numeric_runtime_perf_attestation"
+));
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;

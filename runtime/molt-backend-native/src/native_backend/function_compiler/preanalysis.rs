@@ -4,7 +4,8 @@ use super::*;
 pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     pub(in crate::native_backend::function_compiler) has_ret: bool,
     pub(in crate::native_backend::function_compiler) stateful: bool,
-    pub(in crate::native_backend::function_compiler) has_store: bool,
+    /// Only proven DirectNonHeap stores omit the field-store profiling path.
+    pub(in crate::native_backend::function_compiler) needs_field_store_profile: bool,
     pub(in crate::native_backend::function_compiler) var_names: Vec<String>,
     pub(in crate::native_backend::function_compiler) last_use: BTreeMap<String, usize>,
     pub(in crate::native_backend::function_compiler) cfg_liveness:
@@ -34,12 +35,6 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     /// the native backend has a valid old-value slot for loop-carried cleanup.
     pub(in crate::native_backend::function_compiler) loop_body_init_vars:
         BTreeMap<usize, Vec<String>>,
-    /// True when any op in this function is marked `arena_eligible`.
-    /// Triggers scope-arena lifecycle (molt_arena_new at entry,
-    /// molt_arena_alloc for eligible allocs, molt_arena_free at exit).
-    pub(in crate::native_backend::function_compiler) has_arena_eligible: bool,
-    /// Set of output variable names from arena-eligible alloc ops.
-    pub(in crate::native_backend::function_compiler) arena_eligible_outs: BTreeSet<String>,
     /// Scalar-like variables (int/bool/float) that MUST stay slot-backed
     /// because they escape the local scalar fast-path scope.  A variable
     /// is unsafe to exclude when ANY of:
@@ -49,7 +44,7 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     ///   - it has explicit inc_ref/dec_ref ops in the IR
     pub(in crate::native_backend::function_compiler) scalar_slot_exclusion_unsafe: BTreeSet<String>,
     /// Per-field-store ownership facts for fresh fixed-layout object payloads.
-    /// `FreshInit` means the old slot is proven uninitialized zero storage,
+    /// `FreshInit` proves a pristine receiver and boxed-neutral old storage,
     /// even when the surface op is `store`; `DirectNonHeap` is the narrower
     /// performance fact that both old and new slot contents are non-heap.
     pub(in crate::native_backend::function_compiler) field_store_modes:
@@ -64,11 +59,7 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
 }
 
 #[cfg(feature = "native-backend")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(in crate::native_backend::function_compiler) enum FieldStoreMode {
-    FreshInit,
-    DirectNonHeap,
-}
+pub(in crate::native_backend::function_compiler) use crate::tir::passes::typed_slot_access::TypedSlotStoreMode as FieldStoreMode;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn import_func_ref(
@@ -190,9 +181,9 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source<'a>(
-    op: &'a OpIR,
-) -> Option<&'a str> {
+pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source(
+    op: &OpIR,
+) -> Option<&str> {
     match op.kind.as_str() {
         "copy" => op.var.as_deref().or_else(|| {
             op.args
@@ -223,186 +214,6 @@ pub(in crate::native_backend::function_compiler) fn simple_ir_op_absorbs_finaliz
         op.kind.as_str(),
         "build_list" | "build_tuple" | "build_dict" | "build_set"
     ) || crate::tir::op_kinds_generated::kind_result_absorbs_operand_ownership_table(&op.kind)
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn preanalysis_value_is_known_non_heap(
-    name: &str,
-    representation_plan: &ScalarRepresentationPlan,
-) -> bool {
-    representation_plan.name_is_non_heap_scalar(name)
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn direct_field_store_control_boundary(
-    kind: &str,
-) -> bool {
-    matches!(
-        kind,
-        "label"
-            | "state_label"
-            | "jump"
-            | "br_if"
-            | "if"
-            | "else"
-            | "end_if"
-            | "loop_start"
-            | "loop_end"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "loop_continue"
-            | "ret"
-            | "ret_void"
-    )
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn direct_field_store_passthrough(
-    kind: &str,
-) -> bool {
-    matches!(
-        kind,
-        "copy"
-            | "copy_var"
-            | "load_var"
-            | "store_var"
-            | "delete_var"
-            | "identity_alias"
-            | "const"
-            | "const_bool"
-            | "const_float"
-            | "const_none"
-            | "const_str"
-            | "const_bytes"
-            | "line"
-            | "nop"
-            | "trace_enter_slot"
-            | "trace_exit"
-            | "missing"
-    )
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn remove_direct_field_store_root(
-    root: &str,
-    direct_object_roots: &mut BTreeSet<String>,
-    known_non_heap_slots: &mut BTreeSet<(String, i64)>,
-) {
-    direct_object_roots.remove(root);
-    known_non_heap_slots.retain(|(slot_root, _)| slot_root != root);
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn op_allocates_fresh_fixed_layout_object(
-    op: &OpIR,
-) -> bool {
-    match op.kind.as_str() {
-        "object_new_bound_stack" => op.value.is_some_and(|payload_size| payload_size > 0),
-        "object_new_bound" => op.value.is_some_and(|payload_size| payload_size > 0),
-        _ => false,
-    }
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn analyze_field_store_modes(
-    func_ir: &FunctionIR,
-    alias_roots: &BTreeMap<String, String>,
-    representation_plan: &ScalarRepresentationPlan,
-) -> BTreeMap<usize, FieldStoreMode> {
-    let mut modes = BTreeMap::new();
-    let mut direct_object_roots: BTreeSet<String> = BTreeSet::new();
-    let mut initialized_slots: BTreeSet<(String, i64)> = BTreeSet::new();
-    let mut known_non_heap_slots: BTreeSet<(String, i64)> = BTreeSet::new();
-
-    for (idx, op) in func_ir.ops.iter().enumerate() {
-        let kind = op.kind.as_str();
-        if direct_field_store_control_boundary(kind) {
-            direct_object_roots.clear();
-            initialized_slots.clear();
-            known_non_heap_slots.clear();
-            continue;
-        }
-
-        if op_allocates_fresh_fixed_layout_object(op) {
-            if let Some(out) = op.out.as_deref() {
-                let root = alias_root_name(alias_roots, out).to_string();
-                direct_object_roots.insert(root);
-            }
-            continue;
-        }
-
-        if matches!(kind, "store" | "store_init") {
-            let Some(args) = op.args.as_ref() else {
-                continue;
-            };
-            let (Some(obj_name), Some(value_name)) = (args.first(), args.get(1)) else {
-                continue;
-            };
-            let root = alias_root_name(alias_roots, obj_name).to_string();
-            if !direct_object_roots.contains(&root) {
-                continue;
-            }
-            let offset = op.value.unwrap_or(0);
-            let value_known_non_heap =
-                preanalysis_value_is_known_non_heap(value_name, representation_plan);
-            let slot = (root.clone(), offset);
-            let slot_initialized = initialized_slots.contains(&slot);
-            let slot_known_non_heap = known_non_heap_slots.contains(&slot);
-
-            if kind == "store_init" || !slot_initialized {
-                modes.insert(idx, FieldStoreMode::FreshInit);
-                initialized_slots.insert(slot.clone());
-                if value_known_non_heap {
-                    known_non_heap_slots.insert(slot);
-                } else {
-                    known_non_heap_slots.remove(&slot);
-                }
-                continue;
-            }
-
-            if value_known_non_heap && slot_known_non_heap {
-                modes.insert(idx, FieldStoreMode::DirectNonHeap);
-                initialized_slots.insert(slot.clone());
-                known_non_heap_slots.insert(slot);
-            } else {
-                initialized_slots.insert(slot.clone());
-                known_non_heap_slots.remove(&slot);
-            }
-            continue;
-        }
-
-        if direct_field_store_passthrough(kind) {
-            continue;
-        }
-
-        let mut touched_roots: BTreeSet<String> = BTreeSet::new();
-        if let Some(args) = op.args.as_ref() {
-            for arg in args {
-                let root = alias_root_name(alias_roots, arg).to_string();
-                if direct_object_roots.contains(&root) {
-                    touched_roots.insert(root);
-                }
-            }
-        }
-        if let Some(var) = op.var.as_ref() {
-            let root = alias_root_name(alias_roots, var).to_string();
-            if direct_object_roots.contains(&root) {
-                touched_roots.insert(root);
-            }
-        }
-        for root in touched_roots {
-            remove_direct_field_store_root(
-                &root,
-                &mut direct_object_roots,
-                &mut known_non_heap_slots,
-            );
-            initialized_slots.retain(|(slot_root, _)| slot_root != &root);
-        }
-    }
-
-    modes
 }
 
 #[cfg(feature = "native-backend")]
@@ -1033,8 +844,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         }
     }
 
-    let field_store_modes = analyze_field_store_modes(func_ir, &alias_roots, representation_plan);
-    let has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
+    let field_store_modes = representation_plan.typed_slot_store_modes().clone();
+    let needs_field_store_profile = func_ir.ops.iter().enumerate().any(|(idx, op)| {
         op.kind == "store" && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
     });
 
@@ -1080,25 +891,13 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         shared_resume_label_ids.insert(pending_state_id);
     }
 
-    // Scope arena eligibility: detect alloc ops marked arena_eligible.
-    let mut has_arena_eligible = false;
-    let mut arena_eligible_outs: BTreeSet<String> = BTreeSet::new();
-    for op in &func_ir.ops {
-        if op.arena_eligible == Some(true) {
-            has_arena_eligible = true;
-            if let Some(ref out) = op.out {
-                arena_eligible_outs.insert(out.clone());
-            }
-        }
-    }
-
     let scalar_slot_exclusion_unsafe = representation_plan.scalar_slot_exclusion_unsafe();
     let cfg_liveness = crate::tir::cfg_liveness::analyze_simple_cfg_liveness(&func_ir.ops);
 
     FunctionPreanalysis {
         has_ret,
         stateful,
-        has_store,
+        needs_field_store_profile,
         var_names,
         last_use,
         cfg_liveness,
@@ -1116,8 +915,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         const_int_map,
         loop_body_out_vars,
         loop_body_init_vars,
-        has_arena_eligible,
-        arena_eligible_outs,
         scalar_slot_exclusion_unsafe,
         field_store_modes,
         drop_inserted,

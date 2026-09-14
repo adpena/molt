@@ -9,6 +9,11 @@ doc 55; it pins doc 55's plan to the verified runtime line numbers. -->
 
 # Ownership Lattice — Phase 0 Trust Root + LifetimeClassFacts 4-Bitset Spec
 
+Historical design proposal. Designs 20 and 49 own current ownership/field
+contracts; `lifetime_class_facts.md` owns the proposed fact-plane requirements.
+The June 2026 file/line inventories and activation recipes below are not current
+implementation or conformance evidence.
+
 ## 0. Why this doc exists (the trust-root ordering)
 
 Doc 55 (§2.5, Phase 0) makes `MOLT_ASSERT_NO_LEAK` = **actual destruction** the
@@ -301,7 +306,7 @@ assertion below is checked under the honest destruction gauge.
 
 | Bit | Derivation (source of truth) | Verified current state |
 |---|---|---|
-| **MayFinalize(class)** | class/MRO has `__del__`. Runtime: `HEADER_FLAG_CLASS_HAS_FINALIZER` set by `class_refresh_finalizer_flag` (mod.rs:1493-1501) reading `__del__` via `class_lookup_raw_mro_dict_attr`, sealed by `class_finish_definition` (mod.rs:1512-1516). | EXISTS. Reused verbatim as the `may_finalize` seed. |
+| **MayFinalize(class)** | [Current-MRO declaration projection](48_finalizer_region_deferred_drain.md); no inherited negative cache. | Positive compiler seeds do not prove absence or replace runtime lookup. |
 | **HasWeakrefs(class)** | class allows weakrefs (CPython `tp_weaklistoffset != 0`): `__slots__` does not suppress `__weakref__`. Runtime: NEW `HEADER_FLAG_CLASS_SUPPORTS_WEAKREF`, refreshed on the SAME MRO/version hook beside the finalizer flag (mod.rs:1493 region), copied to the instance on `object_set_class_bits` (mod.rs:1417). | DOES NOT EXIST yet (grep: no `SUPPORTS_WEAKREF`/`weaklistoffset` in runtime/). NEW WORK. |
 | **MayResurrect(class)** | conservatively `= MayFinalize` (any `__del__` can re-root `self`). DERIVED, not stored. | Derived from bit 1. |
 | **InnerRefOrdering(class)** | `MayFinalize ∧ HEADER_FLAG_HAS_PTRS` (mod.rs:446; the object owns ref-counted fields a `__del__` can observe, doc 49). DERIVED, not stored. | `HEADER_FLAG_HAS_PTRS` EXISTS (mod.rs:446, set by `object_mark_has_ptrs` mod.rs:1518). |
@@ -339,18 +344,10 @@ discipline).
 
 ### 3.3 The single-authority consumer list (binding)
 
-The council mandate (CLAUDE.md): `FinalizerSensitive` is ONE fact consumed by
-**escape + refcount-elim + stack-alloc + Free-eligibility + ownership-lowering**.
-Generalized to the 4-bitset, every consumer reads `LifetimeClassFacts`, none
-re-derives:
-
-| Consumer | Reads | Replaces (today's narrower query) |
-|---|---|---|
-| escape analysis (`escape_analysis.rs`) | `¬is_trivial_lifetime_root` declines stack-promotion | finalizer-only guard (doc 48 status) |
-| refcount-elim Step 6 (`refcount_elim.rs:621-718`) | `is_trivial_lifetime_root` gates `DecRef→Free` (M3) | `!finalizer_roots.contains` single-class guard (refcount_elim.rs:704) |
-| stack-allocation | `¬is_trivial_lifetime_root` blocks stack alloc | finalizer-only |
-| Free-eligibility (M3) | all four false ⇒ Free-eligible | finalizer-only |
-| ownership-lowering / rung-3 placement (`ownership_lattice_min.rs:495-510`, `drop_insertion.rs`) | `¬is_trivial_lifetime_root` ⇒ Python-lifetime-boundary release (M2) | `is_finalizer_sensitive_root` |
+See `lifetime_class_facts.md` section 3 for the proposed shared-fact contract,
+and Designs 20/49 for current consumers. The former mirrored list of stack
+promotion, heap-RC stripping and `DecRef→Free` consumers is removed: those
+compiler lanes are retired, not pending wider negative-flag guards.
 
 ### 3.4 Fail-closed rule (binding)
 

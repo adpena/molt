@@ -21,12 +21,14 @@
 //!
 //! ## Built ON the alias oracle (S5 phase 1), never duplicating it
 //!
-//! This module classifies each op into Def / Use / neither using **only** the
-//! public queries of [`AliasAnalysisResult`]:
+//! This module classifies each op into Def / Use / neither using the alias
+//! oracle, refined only by the shared exact-site typed-slot plan:
 //!
 //! * [`AliasAnalysisResult::region_of`] — the op's [`MemRegion`].
-//! * [`AliasAnalysisResult::load_purity`] — whether a load is a proven-pure
-//!   typed-slot read or `MayDispatch` (opaque, may run a user dunder).
+//! * `TypedSlotAccessPlan::region_at` — exact-site field-access refinement.
+//!   The graph retains this same plan for MemGVN's source and read admission.
+//! * `TypedSlotAccessPlan::load_purity_at` — a read is pure only with proven
+//!   inline backing and a present word; unknown/missing fields may call Python.
 //! * [`MemRegion::may_alias`] — the TBAA-style disambiguation that lets a store
 //!   to offset 8 *not* kill a load from offset 0.
 //!
@@ -73,9 +75,8 @@
 //!
 //! The value types ([`MemVersion`], [`MemAccess`], [`MemorySsaResult`]),
 //! [`compute_standalone`], and the [`MemorySSA`] marker registering the analysis
-//! with the S1 [`AnalysisManager`] (`am.get::<MemorySSA>(func)`) — a STANDALONE
-//! analysis with no pipeline consumers and **zero behavior change**. The first
-//! consumer is MemGVN (S5-2b).
+//! with the S1 [`AnalysisManager`] (`am.get::<MemorySSA>(func)`). MemGVN consumes
+//! the graph and its exact-site facts; context-free effects stay conservative.
 //!
 //! [`AnalysisManager`]: crate::tir::analysis::AnalysisManager
 //! [`CfgEdgePolicy::Full`]: crate::tir::dominators::CfgEdgePolicy

@@ -16,10 +16,9 @@ use super::call_facts::{CallFacts, CallFactsTable, CallTargetFact, FactValue, In
 use super::function::TirFunction;
 use super::op_kinds_generated::{
     ExplicitReleaseOperands, RefcountBalanceRole, opcode_explicit_release_operands_table,
-    opcode_is_escape_alloc_site_table, opcode_is_refcount_heap_exposure_table,
-    opcode_refcount_balance_role_table,
+    opcode_is_escape_alloc_site_table, opcode_refcount_balance_role_table,
 };
-use super::ops::{AttrValue, OpCode, SOURCE_FILE_ATTR, TirOp};
+use super::ops::{AttrValue, SOURCE_FILE_ATTR, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
 use crate::repr::Repr;
@@ -213,6 +212,31 @@ impl FactGraph {
 
         for (value, ty) in sorted_value_types(func) {
             add_value_type_facts(&mut nodes, value, ty, "function.value_types");
+        }
+
+        // Capture obligations are the shared CFG/alias-aware analysis result,
+        // never an opcode-only list or permission to erase a heap release.
+        for (value, state) in super::passes::escape_analysis::analyze(func) {
+            let source_site = nodes
+                .get(&value.0)
+                .and_then(|node| node.producer.as_ref())
+                .and_then(|producer| producer.source_site.clone());
+            add_allocation_fact(
+                &mut nodes,
+                value,
+                "ownership.escape_state",
+                format!("{state:?}"),
+                format!("{}:v{}:ownership.escape_state", func.name, value.0),
+                source_site,
+                "escape_analysis::analyze",
+                "conservative capture obligation; NoEscape does not permit lifetime or release erasure",
+            );
+            let fact = ensure_node(&mut nodes, value)
+                .facts
+                .last_mut()
+                .expect("escape fact was just inserted");
+            fact.confidence = "conservative-analysis".into();
+            fact.invalidators.push("cfg".into());
         }
 
         let values: Vec<ValueFactNode> = nodes
@@ -413,31 +437,7 @@ fn add_result_ownership_facts(
             fact_event_id(&event_prefix, "allocation.heap_root"),
             source_site.clone(),
             "op_kinds.escape_alloc_site_opcodes",
-            "fresh heap roots drive escape analysis and stack promotion",
-        );
-    }
-    if matches!(op.opcode, OpCode::StackAlloc | OpCode::ObjectNewBoundStack) {
-        add_allocation_fact(
-            nodes,
-            result,
-            "allocation.stack_root",
-            "stack_alloc_site",
-            fact_event_id(&event_prefix, "allocation.stack_root"),
-            source_site.clone(),
-            "op_kind + escape_analysis stack promotion",
-            "stack roots remove heap allocation and refcount traffic",
-        );
-    }
-    if matches!(op.attrs.get("arena_eligible"), Some(AttrValue::Bool(true))) {
-        add_allocation_fact(
-            nodes,
-            result,
-            "allocation.arena_eligible",
-            "true",
-            fact_event_id(&event_prefix, "allocation.arena_eligible"),
-            source_site.clone(),
-            "escape_analysis",
-            "arena placement amortizes allocation/free overhead",
+            "fresh roots seed capture analysis without granting placement or release erasure",
         );
     }
     if matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true))) {
@@ -449,7 +449,7 @@ fn add_result_ownership_facts(
             fact_event_id(&event_prefix, "ownership.finalizer_sensitive"),
             source_site.clone(),
             "frontend class MRO + escape_analysis",
-            "finalizer-sensitive roots constrain stack promotion and drop order",
+            "positive finalizer sensitivity rejects unsafe allocation and lifetime rewrites",
         );
     }
 }
@@ -487,28 +487,6 @@ fn add_op_ownership_facts(
                 source_site.clone(),
                 "op_kinds.refcount_balance_*_opcodes",
                 "refcount balance events explain retained and released ownership",
-            );
-        }
-    }
-
-    if opcode_is_refcount_heap_exposure_table(op.opcode) {
-        for (operand_index, operand) in op.operands.iter().copied().enumerate() {
-            let event_prefix = op_event_prefix(
-                function_name,
-                block_id,
-                op_index,
-                op,
-                &format!("operand{operand_index}"),
-            );
-            add_allocation_fact(
-                nodes,
-                operand,
-                "ownership.heap_exposure",
-                "true",
-                fact_event_id(&event_prefix, "ownership.heap_exposure"),
-                source_site.clone(),
-                "op_kinds.refcount_heap_exposure_opcodes",
-                "heap exposure blocks deferred RC elimination and stack-only assumptions",
             );
         }
     }
@@ -1082,7 +1060,7 @@ mod tests {
                     })
         }));
         assert_eq!(graph.summary.source_site_value_count, 1);
-        assert_eq!(graph.summary.allocation_ownership_fact_count, 3);
+        assert_eq!(graph.summary.allocation_ownership_fact_count, 4);
     }
 
     #[test]
@@ -1115,5 +1093,56 @@ mod tests {
         assert_eq!(decoded.kind, FACT_GRAPH_KIND);
         assert_eq!(decoded.values[0].value, 0);
         assert_eq!(decoded.values[1].value, 1);
+    }
+    #[test]
+    fn graph_projects_capture_obligations_through_cfg_without_heap_release_claims() {
+        let mut func = TirFunction::new("capture_graph".into(), vec![], TirType::None);
+        let root = func.fresh_value();
+        let parameter = func.fresh_value();
+        let target = func.fresh_block();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(OpCode::Alloc, vec![], vec![root]));
+        entry.terminator = Terminator::Branch {
+            target,
+            args: vec![root],
+        };
+        func.blocks.insert(
+            target,
+            TirBlock {
+                id: target,
+                args: vec![TirValue {
+                    id: parameter,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![parameter],
+                },
+            },
+        );
+        let graph = FactGraph::build_local(&func);
+        for value in [root, parameter] {
+            let node = graph
+                .values
+                .iter()
+                .find(|node| node.value == value.0)
+                .unwrap();
+            let fact = node
+                .facts
+                .iter()
+                .find(|fact| fact.kind == "ownership.escape_state")
+                .unwrap();
+            assert_eq!(fact.value, "GlobalEscape");
+            assert_eq!(fact.producer, "escape_analysis::analyze");
+            assert_eq!(fact.confidence, "conservative-analysis");
+            assert!(fact.invalidators.iter().any(|kind| kind == "cfg"));
+            assert!(
+                !node
+                    .facts
+                    .iter()
+                    .any(|fact| fact.kind == "ownership.heap_exposure")
+            );
+        }
+        assert_eq!(graph, FactGraph::build_local(&func));
     }
 }

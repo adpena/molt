@@ -249,39 +249,54 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     out.append(
-        "/// Effect triple for the LICM/GVN purity core. This is generated from\n"
-        "/// each opcode row's `purity` class so effects.rs never carries a second\n"
-        "/// opcode-classification table.\n"
+        "/// Effect facts for the LICM/GVN/alias/MemorySSA core. Generated from\n"
+        "/// each opcode row's `purity`, `may_throw`, and heap-access facts so\n"
+        "/// consumers never carry a second callback-effect classification table.\n"
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n"
         "pub struct OpcodeEffects {\n"
         "    pub consistent: bool,\n"
         "    pub effect_free: bool,\n"
         "    pub nothrow: bool,\n"
+        "    pub may_access_arbitrary_heap: bool,\n"
         "}\n\n"
         "pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: true,\n"
         "    effect_free: true,\n"
         "    nothrow: true,\n"
+        "    may_access_arbitrary_heap: false,\n"
         "};\n"
         "pub const OPCODE_EFFECTS_PURE_MAY_THROW: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: true,\n"
         "    effect_free: true,\n"
         "    nothrow: false,\n"
+        "    may_access_arbitrary_heap: false,\n"
         "};\n"
         "pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: false,\n"
         "    effect_free: false,\n"
         "    nothrow: false,\n"
+        "    may_access_arbitrary_heap: true,\n"
+        "};\n"
+        "pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {\n"
+        "    consistent: false,\n"
+        "    effect_free: false,\n"
+        "    nothrow: false,\n"
+        "    may_access_arbitrary_heap: false,\n"
         "};\n\n"
-        "/// Per-OpCode effect triple. EXHAUSTIVE over the enum — a new variant fails\n"
+        "/// Per-OpCode effect facts. EXHAUSTIVE over the enum — a new variant fails\n"
         "/// to compile until classified in op_kinds.toml.\n"
         "#[inline]\n"
         "pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {\n"
-        "    match opcode {\n"
+        "    let mut effects = match opcode {\n"
     )
     out.append(_render_opcode_effect_arms(opcodes))
-    out.append("    }\n}\n\n")
-
+    out.append(
+        "    };\n"
+        "    // Impurity does not imply throwing. Project the same authority\n"
+        "    // used by exception consumers instead of inheriting a preset floor.\n"
+        "    effects.nothrow = !opcode_may_throw_table(opcode);\n"
+        "    effects\n}\n\n"
+    )
     out.append(_render_call_opcode_roles(opcodes, data))
     out.append("\n")
 
@@ -362,9 +377,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, proven_result_type_seeds))
     out.append("    }\n}\n\n")
 
-    local_only_operands = list(
-        data.get("opcode_has_local_only_operands_opcodes", [])
-    )
+    local_only_operands = list(data.get("opcode_has_local_only_operands_opcodes", []))
     out.append(
         "/// Whether every operand remains local to this opcode: it cannot be\n"
         "/// retained by a heap object or opaque external callee. This positive\n"
@@ -423,8 +436,6 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append(_render_opcode_bool_arms(opcodes, polyhedral_affine_body))
     out.append("    }\n}\n\n")
-
-
     out.append(_render_refcount_balance_role(opcodes, data))
     out.append("\n")
 
@@ -471,23 +482,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(
         _render_opcode_bool_arms(opcodes, drop_insertion_return_deferral_barriers)
     )
-    out.append("    }\n}\n\n")
-
-    fusion_barriers = list(data.get("fusion_barrier_opcodes", []))
-    out.append(
-        "/// Whether an opcode makes a comprehension/generator body ineligible for\n"
-        "/// deforestation iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/\n"
-        "/// `all`/`min`/`max` over a `for` loop). This is a DISTINCT fact from\n"
-        "/// `opcode_is_side_effecting`: fusion preserves per-element evaluation order\n"
-        "/// and count, so allocation/attribute-read/may-throw ops are deliberately\n"
-        "/// NOT barriers. The barrier set lives in op_kinds.toml. EXHAUSTIVE over\n"
-        "/// OpCode — a new variant fails to compile until it is classified, closing\n"
-        "/// the prior default-false drift trap in deforestation's hand-written set.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, fusion_barriers))
     out.append("    }\n}\n\n")
 
     out.append(_render_generator_fusion_poll_role(opcodes, data))
@@ -726,8 +720,6 @@ def _render_rs_unformatted(data: dict) -> str:
         )
     out.append("    }\n}\n\n")
 
-    out.append(_render_alias_typed_slot_role(opcodes, data))
-    out.append("\n")
     out.append(_render_alias_transparent_alias_role(opcodes, data))
     out.append("\n")
     out.append(_render_alias_memory_region(opcodes, data))
@@ -1775,7 +1767,10 @@ def _render_opcode_effect_arms(opcodes: list[dict]) -> str:
     lines = []
     for row in opcodes:
         name = row["name"]
-        variant = _PURITY_EFFECTS[row["purity"]]
+        purity = row["purity"]
+        variant = _PURITY_EFFECTS[purity]
+        if purity == "impure" and not row.get("may_access_arbitrary_heap", True):
+            variant = "OPCODE_EFFECTS_IMPURE_LOCAL"
         lines.append(f"        OpCode::{name} => {variant},\n")
     return "".join(lines)
 
@@ -1835,12 +1830,6 @@ _ALIAS_MEMORY_REGION_VARIANTS = {
     "alias_region_container_element_opcodes": "AliasMemoryRegionClass::ContainerElement",
     "alias_region_module_dict_opcodes": "AliasMemoryRegionClass::ModuleDict",
     "alias_memory_inert_opcodes": "AliasMemoryRegionClass::ScalarRegister",
-}
-
-
-_ALIAS_TYPED_SLOT_ROLE_VARIANTS = {
-    "alias_typed_slot_load_opcodes": "AliasTypedSlotRole::Load",
-    "alias_typed_slot_store_opcodes": "AliasTypedSlotRole::Store",
 }
 
 
@@ -2106,37 +2095,6 @@ def _render_gvn_value_key_spec(opcodes: list[dict], data: dict) -> str:
 
 def _gvn_value_key_attrs_const(opcode: str) -> str:
     return f"GVN_VALUE_KEY_ATTRS_{_opcode_const_suffix(opcode)}"
-
-
-def _render_alias_typed_slot_role(opcodes: list[dict], data: dict) -> str:
-    role_by_opcode: dict[str, str] = {}
-    for key, variant in _ALIAS_TYPED_SLOT_ROLE_VARIANTS.items():
-        for opcode in data.get(key, []):
-            role_by_opcode[opcode] = variant
-
-    out: list[str] = []
-    out.append(
-        "/// Opcode role for offset-based typed-slot field helpers. Omitted\n"
-        "/// opcodes are not typed-slot field candidates.\n"
-        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
-        "pub enum AliasTypedSlotRole {\n"
-        "    Load,\n"
-        "    Store,\n"
-        "    NotTypedSlot,\n"
-        "}\n\n"
-        "/// Typed-slot opcode role for alias_analysis.rs. EXHAUSTIVE over OpCode.\n"
-        "#[inline]\n"
-        "pub fn opcode_alias_typed_slot_role_table(\n"
-        "    opcode: OpCode,\n"
-        ") -> AliasTypedSlotRole {\n"
-        "    match opcode {\n"
-    )
-    for row in opcodes:
-        name = row["name"]
-        variant = role_by_opcode.get(name, "AliasTypedSlotRole::NotTypedSlot")
-        out.append(f"        OpCode::{name} => {variant},\n")
-    out.append("    }\n}\n")
-    return "".join(out)
 
 
 def _render_alias_transparent_alias_role(opcodes: list[dict], data: dict) -> str:

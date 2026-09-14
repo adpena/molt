@@ -12,6 +12,10 @@ use libfuzzer_sys::fuzz_target;
 use molt_runtime::vfs::VfsError;
 use molt_runtime::vfs::caps::check_mount_capability;
 
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime fuzz_vfs_caps"
+));
+
 /// Known mount prefixes from the capability table.
 const KNOWN_PREFIXES: &[&str] = &["/bundle", "/tmp", "/state", "/dev"];
 

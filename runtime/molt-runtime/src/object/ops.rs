@@ -78,12 +78,13 @@ pub(crate) use ascii_bytes::{
 };
 pub(in crate::object) use dict_set_tables::simd_contains_u64;
 pub(crate) use dict_set_tables::{
-    checked_dict_table_capacity, dict_clear_in_place, dict_clear_in_place_shutdown,
-    dict_clear_method, dict_commit_structure, dict_copy_method, dict_del_in_place, dict_find_entry,
-    dict_find_entry_kv_in_place, dict_find_entry_with_hash, dict_fromkeys_method,
-    dict_get_in_place, dict_get_method, dict_get_str_bytes_borrowed, dict_inc_in_place,
-    dict_inc_prehashed_string_key_in_place, dict_items_method, dict_keys_method,
-    dict_popitem_method, dict_rebuild, dict_set_in_place, dict_set_inline_int_in_place,
+    DetachedDictReferences, checked_dict_table_capacity, dict_clear_deferred, dict_clear_in_place,
+    dict_clear_in_place_shutdown, dict_clear_method, dict_commit_structure, dict_copy_method,
+    dict_del_deferred, dict_del_in_place, dict_find_entry, dict_find_entry_kv_in_place,
+    dict_find_entry_with_hash, dict_fromkeys_method, dict_get_in_place, dict_get_method,
+    dict_get_str_bytes_borrowed, dict_inc_in_place, dict_inc_prehashed_string_key_in_place,
+    dict_items_method, dict_keys_method, dict_popitem_method, dict_publish_staged, dict_rebuild,
+    dict_set_deferred, dict_set_in_place, dict_set_inline_int_in_place,
     dict_set_with_hash_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
     dict_update_set_via_store, dict_values_method, set_add_in_place, set_del_in_place,
     set_find_entry, set_find_entry_fast, set_replace_entries, set_table_capacity,
@@ -2224,32 +2225,22 @@ pub(crate) fn class_break_cycles(_py: &PyToken<'_>, bits: u64) {
         if object_type_id(ptr) != TYPE_ID_TYPE {
             return;
         }
-        let none_bits = MoltObject::none().bits();
-        let bases_bits = class_bases_bits(ptr);
-        let mro_bits = class_mro_bits(ptr);
-        if !obj_from_bits(bases_bits).is_none() {
-            dec_ref_bits(_py, bases_bits);
+        assert!(
+            super::class_storage::class_runtime_contents_empty(ptr),
+            "class identity detached before callback-bearing contents retired"
+        );
+        let mut retired = super::heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
+            super::class_storage::ClassReferenceSlot::ALL.len(),
+            0,
+        );
+        for bits in super::class_storage::detach_class_references(ptr) {
+            retired.detach_if_heap(bits);
         }
-        if !obj_from_bits(mro_bits).is_none() {
-            dec_ref_bits(_py, mro_bits);
-        }
-        class_set_bases_bits(ptr, none_bits);
-        class_set_mro_bits(ptr, none_bits);
-        if !object_replace_class_edge(_py, ptr, 0, ClassEdgeOwnership::Owned) {
-            return;
-        }
-        // Detach scalar metadata before intern/name pools are drained. Class
-        // destruction happens much later, after those authorities are gone.
-        class_set_name_bits(_py, ptr, none_bits);
-        class_set_qualname_bits(_py, ptr, 0u64);
-        class_set_annotations_bits(_py, ptr, 0u64);
-        class_set_annotate_bits(_py, ptr, 0u64);
-        let dict_bits = class_dict_bits(ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-        {
-            dict_clear_in_place_shutdown(_py, dict_ptr);
-        }
+        assert!(
+            object_replace_class_edge(_py, ptr, 0, ClassEdgeOwnership::Owned),
+            "class metaclass edge could not retire"
+        );
+        retired.release_all(_py);
     }
 }
 
@@ -2771,13 +2762,16 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if debug_class_def {
         eprintln!("molt class_def after apply_set_name");
     }
-    crate::with_gil_entry_nopanic!(_py, {
-        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-            unsafe {
-                crate::object::class_finish_definition(_py, class_ptr);
-            }
-        }
+    let sealed = crate::with_gil_entry_nopanic!(_py, {
+        obj_from_bits(class_bits)
+            .as_ptr()
+            .is_some_and(|class_ptr| unsafe {
+                crate::object::class_finish_definition(_py, class_ptr).is_ok()
+            })
     });
+    if !sealed {
+        return none;
+    }
 
     if nb > 0 {
         let init_subclass_ok = crate::with_gil_entry_nopanic!(_py, {
@@ -2936,7 +2930,7 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
         }
 
         // Allocate output buffer and copy all parts.
-        let out_ptr = alloc_bytes_like_with_len(_py, total_len, TYPE_ID_STRING);
+        let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
         if out_ptr.is_null() {
             for &(bits, owned) in &parts {
                 if owned {

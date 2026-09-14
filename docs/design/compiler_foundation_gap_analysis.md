@@ -93,14 +93,16 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   over the call graph, recursion-safe, cost-model-gated (S2). THE keystone: kills call overhead +
   unlocks cross-call opt, monomorphization, CoroElide, generator fusion. (Measure call_internal vs
   call_func ratio first — dynamic calls need devirt to become inlinable.)
-- **E2. SROA / object-field promotion** (needs S5; partial without it for NoEscape single-block).
-  tuple_scalarize (deforestation.rs) only handles BuildTuple+immediate-unpack. Build general field
-  promotion: a NoEscape `ObjectNewBoundStack` with known field offsets → fields become SSA values,
-  LoadAttr/StoreAttr removed. Kills the bench_struct memory cliff; prerequisite for CoroElide.
-- **E3. Interprocedural escape + purity summaries** (needs S4). escape_analysis.rs marks every `Call`
-  arg GlobalEscape (line 338) and only builtins have effects; user fns are opaque-impure. Build
-  bottom-up callee summaries (does_not_capture_param[i], is_pure) → stack-alloc across calls + CSE/LICM/
-  DCE of pure user calls. Implement the declared-but-dead `ArgEscape` lattice slot.
+- **E2. SROA / object-field promotion** (needs S5). Shared SROA removes complete
+  unobserved, callback-free raw allocations. General Python class scalar
+  replacement additionally requires class/destruction/owned-edge proofs;
+  nonescape and known field offsets are insufficient. The unproved class-frame
+  opcode is retired. Designs 20/49 own the lifetime and field contracts.
+- **E3. Interprocedural capture + effect summaries** (needs S4). Build
+  identity-bound bottom-up summaries for parameter aliases, retention, callbacks
+  and exceptions, consumed by the shared analyses. Noncapture does not prove
+  frame placement or RC freedom. Design 03 owns this proposal; generated
+  operation effects are the current authority, not builtin-name hand tables.
 - **E4. IPSCCP + whole-program constant propagation** (needs S4). SCCP seeds params Bottom; module-
   level constants don't cross fn boundaries. Seed constant call-site args; propagate module globals.
 - **E5. Function monomorphization / specialization** (needs S4+E1) — THE Julia engine. One body per

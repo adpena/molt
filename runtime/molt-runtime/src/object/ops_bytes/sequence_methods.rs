@@ -183,7 +183,7 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
                 inc_ref_bits(_py, parts[0].bits);
                 return parts[0].bits;
             }
-            let out_ptr = alloc_bytes_like_with_len(_py, total_len, TYPE_ID_BYTES);
+            let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::Bytes);
             if out_ptr.is_null() {
                 if iter_owned {
                     for bits in owned_bits.iter().copied() {

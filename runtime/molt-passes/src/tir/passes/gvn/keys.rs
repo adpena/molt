@@ -27,15 +27,6 @@ pub(super) struct ValueKey {
     pub(super) attr_key: Option<GvnValueKey>,
 }
 
-/// A type is "primitive" when arithmetic on it is provably side-effect-free.
-pub(super) fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
-    use crate::tir::types::TirType;
-    matches!(
-        ty,
-        TirType::I64 | TirType::F64 | TirType::Bool | TirType::None
-    )
-}
-
 fn attr_for_gvn_value_key(op: &TirOp, spec: GvnValueKeySpec) -> Option<&AttrValue> {
     spec.attrs.iter().find_map(|attr| op.attrs.get(*attr))
 }

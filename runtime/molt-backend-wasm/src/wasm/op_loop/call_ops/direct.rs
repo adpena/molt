@@ -127,7 +127,6 @@ fn emit_internal_call(
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
-    let arena_local = call_ctx.arena_local;
     let tail_call_count = call_ctx.tail_call_count;
     let call_liveness = call_ctx.call_liveness;
     let call_live_idx = call_ctx.call_live_idx;
@@ -144,15 +143,6 @@ fn emit_internal_call(
         && op.out.as_deref().is_some_and(|out_name| {
             is_tail_call_candidate(call_ctx, target_name, args_names, out_name)
         });
-
-    if is_tail_call && let Some(arena_idx) = arena_local {
-        func.instruction(&Instruction::LocalGet(arena_idx));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
-        );
-    }
 
     push_call_args(func, locals, args_names);
 

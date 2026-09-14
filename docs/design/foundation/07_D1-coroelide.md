@@ -135,7 +135,7 @@ loop_exit:
 Remove `AllocTask(alloc_val)`, `GetIter(alloc_val → iter_val)`, the `IterNext`/`ForIter` ops. Remove any `IncRef`/`DecRef` on `alloc_val` or `iter_val`. The consumer body's RefCount on `elem` is preserved (the yielded value still has +1 ownership semantics from the old `STATE_YIELD` retain).
 
 **Step 6 — Re-run the per-function pipeline on the merged caller.**
-After splicing, run `run_pipeline(merged_caller, tti)`. SCCP fold-propagates the state_phi for single-yield generators (trivial 2-way switch → straight line). LICM hoists any loop-invariant sub-expressions from P's body. escape_analysis eliminates any remaining local allocs. This is the joint optimization that makes the fusion profitable.
+After splicing, run `run_pipeline(merged_caller, tti)`. SCCP fold-propagates the state_phi for single-yield generators (trivial 2-way switch → straight line). LICM hoists any loop-invariant sub-expressions from P's body. SROA may eliminate remaining complete callback-free raw allocations; escape analysis supplies capture facts without changing storage. This is the joint optimization that makes the fusion profitable.
 
 ## 4. Complete File-by-File Implementation Map
 

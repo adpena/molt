@@ -13,24 +13,26 @@ pub(super) fn apply_transform(
     c: &ListLoopCandidate,
     stats: &mut PassStats,
 ) {
-    // 1. In the setup block, replace GetIter with CallBuiltin("len", list_val).
-    //    Reuse the GetIter result ValueId for the len value so we don't need to
-    //    find and update all references to the iterator (there are none after
-    //    we replace IterNextUnboxed).
+    // 1. Replace GetIter with the backend-supported receiver-valued len op.
+    //    Allocate a fresh result; iterator uses are removed by the loop rewrite.
     let len_val = func.fresh_value();
     func.value_types.insert(len_val, TirType::I64);
-    let len_op = TirOp {
+    let mut len_op = TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::CallBuiltin,
+        opcode: OpCode::Copy,
         operands: vec![c.list_val],
         results: vec![len_val],
         attrs: {
             let mut a = AttrDict::new();
-            a.insert("name".to_string(), AttrValue::Str("len".to_string()));
+            a.insert(
+                "_original_kind".to_string(),
+                AttrValue::Str("len".to_string()),
+            );
             a
         },
         source_span: None,
     };
+    len_op.inherit_source_from(&func.blocks[&c.setup_block].ops[c.get_iter_idx]);
 
     // Materialize ConstInt(0) for the initial index.
     let zero_val = func.fresh_value();

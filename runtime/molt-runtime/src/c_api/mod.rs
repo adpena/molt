@@ -73,28 +73,30 @@ fn c_api_module_state(_py: &PyToken<'_>) -> MutexGuard<'static, CApiModuleRuntim
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
-    let bits_to_decref = {
+pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
+    let (metadata, by_def, by_module) = {
         let mut guard = state
             .c_api_module
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.metadata.clear();
-        let out = guard
-            .state_registry
-            .by_def
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        guard.state_registry.by_def.clear();
-        guard.state_registry.by_module.clear();
-        out
+        (
+            std::mem::take(&mut guard.metadata),
+            std::mem::take(&mut guard.state_registry.by_def),
+            std::mem::take(&mut guard.state_registry.by_module),
+        )
     };
-    for bits in bits_to_decref {
+    let changed = !metadata.is_empty() || !by_def.is_empty() || !by_module.is_empty();
+    // Publish the entire empty ownership cohort before dropping module-state
+    // storage or releasing a module handle. Either operation belongs outside
+    // the registry lock and may be followed by callback-driven republication.
+    drop(metadata);
+    drop(by_module);
+    for bits in by_def.into_values() {
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
         }
     }
+    changed
 }
 
 #[inline]

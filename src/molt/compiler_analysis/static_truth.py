@@ -11,8 +11,9 @@ import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 import math
-import struct
 from typing import Literal, TypeAlias, TypedDict, cast
+
+from molt.compiler_analysis.literal_identity import same_literal_value
 
 ScalarValue: TypeAlias = None | bool | int | float | complex | str | bytes
 ExpressionKind: TypeAlias = Literal[
@@ -268,19 +269,9 @@ def static_expression_result(
 
 def _same_scalar_value(left: ScalarValue, right: ScalarValue) -> bool:
     """Exact merge identity, distinct from Python numeric equality."""
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, float):
-        assert isinstance(right, float)
-        return not (math.isnan(left) or math.isnan(right)) and struct.pack(
-            "!d", left
-        ) == struct.pack("!d", right)
-    if isinstance(left, complex):
-        assert isinstance(right, complex)
-        return _same_scalar_value(left.real, right.real) and _same_scalar_value(
-            left.imag, right.imag
-        )
-    return left == right
+    # Expression truth inference deliberately declines NaN merges. The shared
+    # key still preserves NaN payloads for dataflow convergence and literal CSE.
+    return not (_has_nan(left) or _has_nan(right)) and same_literal_value(left, right)
 
 
 def _has_nan(value: ScalarValue) -> bool:

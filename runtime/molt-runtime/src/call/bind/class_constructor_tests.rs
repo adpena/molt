@@ -297,27 +297,49 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             let descriptor_type = empty_type(_py, b"Descriptor", ty, &[]);
             let hook_key = crate::attr_name_bits_from_bytes(_py, b"__init_subclass__").unwrap();
             let set_key = crate::attr_name_bits_from_bytes(_py, b"__set_name__").unwrap();
-            for (owner, key, function, arity) in [
-                (left, hook_key, record_left_hook as *const (), 1),
-                (right, hook_key, record_right_hook as *const (), 1),
-                (descriptor_type, set_key, record_set_name as *const (), 3),
+            for (owner, function) in [
+                (left, record_left_hook as *const ()),
+                (right, record_right_hook as *const ()),
             ] {
                 let ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     _py,
                     crate::provenance::abi::expose_function_address(function),
-                    arity,
+                    1,
                 );
                 assert!(!ptr.is_null());
                 let bits = MoltObject::from_ptr(ptr).bits();
+                // type.__new__ installs a plain __init_subclass__ function as a
+                // classmethod. This fixture mutates an already-created base
+                // dictionary directly, so preserve that namespace contract
+                // explicitly before exercising class-mode super dispatch.
+                let hook = crate::molt_classmethod_new(bits);
+                assert!(!obj_from_bits(hook).is_none());
                 let dictionary = crate::class_dict_bits(obj_from_bits(owner).as_ptr().unwrap());
                 crate::dict_set_in_place(
                     _py,
                     obj_from_bits(dictionary).as_ptr().unwrap(),
-                    key,
-                    bits,
+                    hook_key,
+                    hook,
                 );
+                dec_ref_bits(_py, hook);
                 dec_ref_bits(_py, bits);
             }
+            let ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(record_set_name as *const ()),
+                3,
+            );
+            assert!(!ptr.is_null());
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let dictionary =
+                crate::class_dict_bits(obj_from_bits(descriptor_type).as_ptr().unwrap());
+            crate::dict_set_in_place(
+                _py,
+                obj_from_bits(dictionary).as_ptr().unwrap(),
+                set_key,
+                bits,
+            );
+            dec_ref_bits(_py, bits);
             let first = crate::alloc_instance_for_class(
                 _py,
                 obj_from_bits(descriptor_type).as_ptr().unwrap(),

@@ -20,9 +20,11 @@ impl CopyMemoRuntimeState {
         }
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self) -> bool {
+        let changed = !self.registry.is_empty();
         self.next_handle = 1;
         self.registry.clear();
+        changed
     }
 
     fn alloc(&mut self) -> i64 {
@@ -59,9 +61,9 @@ impl CopyMemoRuntimeState {
     }
 }
 
-pub(crate) fn copy_memo_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn copy_memo_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
-    state.copy_memo.lock().unwrap().clear();
+    state.copy_memo.lock().unwrap().clear()
 }
 
 fn memo_alloc(_py: &PyToken<'_>) -> i64 {

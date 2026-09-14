@@ -146,9 +146,12 @@ fn execution_is_nested() -> bool {
 /// isolate is not attached while the browser host is between app calls.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current_thread_has_runtime_execution_custody() -> bool {
-    (crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
-        || current_thread_holds_shutdown_drain_custody())
-        && execution_is_nested()
+    // Shutdown owns a distinct lifetime capability, not an ordinary admitted
+    // execution frame. Its callbacks must remain attached without fabricating
+    // a runtime lease or WASM execution depth during finalization.
+    current_thread_holds_shutdown_drain_custody()
+        || (crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
+            && execution_is_nested())
 }
 
 fn current_thread_holds_shutdown_drain_custody() -> bool {
@@ -1197,14 +1200,101 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[test]
+    fn wasm_shutdown_custody_attaches_callbacks_without_an_execution_frame_or_c_state() {
+        use molt_cpython_abi::hooks::{AttachedRuntimeContextKind, hooks_or_stubs};
+
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        let attached_context = || unsafe { (hooks_or_stubs().attached_runtime_context)() };
+        let lease_count = crate::state::runtime_state::active_runtime_execution_lease_count();
+        let retained_count = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+        assert!(crate::state::runtime_state::runtime_is_initialized());
+        assert!(!current_thread_has_runtime_execution_custody());
+        assert!(!execution_is_nested());
+        assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
+        assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        assert_eq!(
+            attached_context(),
+            AttachedRuntimeContextKind::Detached as u32
+        );
+
+        {
+            let _shutdown = ShutdownDrainExecutionCustody::enter();
+            assert!(current_thread_has_runtime_execution_custody());
+            assert!(current_thread_has_c_extension_execution_context());
+            assert!(!execution_is_nested());
+            assert_eq!(
+                attached_context(),
+                AttachedRuntimeContextKind::WasmSingleThread as u32
+            );
+            {
+                let nested = RuntimeExecutionGuard::enter();
+                assert!(
+                    nested.custody.is_none(),
+                    "callback inherits shutdown custody"
+                );
+                assert!(!nested.active_lifecycle_lease);
+                assert!(
+                    !execution_is_nested(),
+                    "shutdown callback is not an ordinary WASM frame"
+                );
+                assert!(
+                    !crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
+                );
+                assert_eq!(
+                    crate::state::runtime_state::active_runtime_execution_lease_count(),
+                    lease_count
+                );
+                assert!(
+                    !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
+                );
+                assert_eq!(
+                    molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                    retained_count
+                );
+                assert_eq!(
+                    attached_context(),
+                    AttachedRuntimeContextKind::WasmSingleThread as u32
+                );
+            }
+            assert!(current_thread_has_runtime_execution_custody());
+            assert!(!execution_is_nested());
+            assert_eq!(
+                attached_context(),
+                AttachedRuntimeContextKind::WasmSingleThread as u32
+            );
+        }
+
+        assert!(!current_thread_has_runtime_execution_custody());
+        assert!(!current_thread_has_c_extension_execution_context());
+        assert!(!execution_is_nested());
+        assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
+        assert_eq!(
+            crate::state::runtime_state::active_runtime_execution_lease_count(),
+            lease_count
+        );
+        assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            retained_count
+        );
+        assert_eq!(
+            attached_context(),
+            AttachedRuntimeContextKind::Detached as u32
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
     fn wasm_logical_gil_and_execution_nesting_are_distinct() {
         assert!(gil_held(), "single-threaded wasm owns the logical GIL");
         assert!(
             !execution_is_nested(),
             "logical always-held GIL must not fabricate an execution frame"
         );
+        assert!(!current_thread_has_runtime_execution_custody());
         let outer = RuntimeExecutionGuard::enter();
         assert!(execution_is_nested());
+        assert!(current_thread_has_runtime_execution_custody());
         let inner = RuntimeExecutionGuard::enter();
         drop(inner);
         assert!(
@@ -1213,5 +1303,6 @@ mod tests {
         );
         drop(outer);
         assert!(!execution_is_nested());
+        assert!(!current_thread_has_runtime_execution_custody());
     }
 }

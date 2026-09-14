@@ -83,13 +83,13 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             if guard_compare.is_some() {
                 return Err(Refusal::ImpureBody);
             }
-            let replay_safe = crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
-                .is_some_and(|facts| {
-                    facts.result_type == TirType::Bool
-                        && facts.effects.consistent
-                        && facts.effects.effect_free
-                        && facts.effects.nothrow
-                });
+            let effects = super::super::effects::op_effects_with_types(op, &exact);
+            let replay_safe = crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
+                .and_then(|facts| facts.result_type)
+                .is_some_and(|ty| ty == TirType::Bool)
+                && effects.consistent
+                && effects.effect_free
+                && effects.nothrow;
             if !replay_safe {
                 return Err(Refusal::ObservableGuard);
             }
@@ -123,8 +123,12 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
     // (no side effect, deterministic), so a multiply accumulator
     // (`prod = prod * i`) re-executes BigInt-exact on the boxed slow loop.
     for op in &body_block.ops {
-        if !opcode_is_overflow_peel_body_pure_table(op.opcode) || !op.has_valid_result_arity() {
+        if !opcode_is_overflow_peel_body_pure_table(op.opcode) || !op.has_valid_shape() {
             return Err(Refusal::ImpureBody);
+        }
+        let effects = super::super::effects::op_effects_with_types(op, &exact);
+        if !effects.consistent || !effects.effect_free || !effects.nothrow {
+            return Err(Refusal::ObservableArithmetic);
         }
         if op.opcode == OpCode::Copy {
             if copy_value_source(op).is_none() && !is_ignorable_marker(op) {

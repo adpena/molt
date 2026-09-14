@@ -16,8 +16,23 @@ pub(super) fn op_effects_with_types(
     op: &TirOp,
     value_types: &HashMap<ValueId, TirType>,
 ) -> crate::tir::op_kinds_generated::OpcodeEffects {
-    if op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind") {
+    // A marked CheckException is not merely a local exception-status read: it
+    // services pending calls/eval-breaker work and can therefore invoke Python.
+    // This instance fact must dominate every opcode/type/proof refinement.
+    if !op.has_valid_shape() || op.is_async_work_poll() {
         return crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
+    }
+    if op.opcode == OpCode::Copy {
+        // Copy is also the fallback carrier for unrelated SimpleIR operations.
+        // Reuse the single value-identity authority: only a shape/spelling that
+        // it proves forwards one SSA value is semantically pure. Everything
+        // else retains the conservative generated Copy floor.
+        if super::value_identity::copy_value_source(op).is_some() {
+            return crate::tir::op_kinds_generated::OPCODE_EFFECTS_PURE;
+        }
+        if op.attrs.contains_key("_original_kind") {
+            return crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
+        }
     }
     let mut effects = crate::tir::op_semantics::op_instance_effects_for_op(op, value_types);
     if tir_has_static_module_class_binding_effect_proof(op) {
@@ -57,7 +72,7 @@ pub(super) fn guarded_throw_condition_disproven(
     shift_count_valid: bool,
     divisor_nonzero: bool,
 ) -> bool {
-    if !op.has_valid_result_arity() || op.operands.len() != 2 {
+    if !op.has_valid_shape() || op.operands.len() != 2 {
         return false;
     }
     let exact_integer_operands = op.operands.iter().all(|value| {
@@ -79,11 +94,23 @@ pub(super) fn guarded_throw_condition_disproven(
 mod tests {
     use super::*;
     use crate::tir::op_kinds_generated::{
-        GvnNumberingRole, TypeRefineOperandTypeRule, opcode_effects_table,
-        opcode_gvn_numbering_role_table, opcode_type_refine_operand_type_rule_table,
+        GvnNumberingRole, TypeRefineOperandTypeRule, opcode_accepts_operand_count,
+        opcode_effects_table, opcode_gvn_numbering_role_table,
+        opcode_type_refine_operand_type_rule_table,
     };
 
     // Unified generated operation-effect oracle.
+    #[test]
+    fn generated_exception_projection_agrees_for_every_opcode() {
+        for &opcode in crate::tir::op_kinds_generated::ALL_OPCODES {
+            assert_eq!(
+                opcode_effects_table(opcode).nothrow,
+                !crate::tir::op_kinds_generated::opcode_may_throw_table(opcode),
+                "{opcode:?}: effect and exception consumers must share one throw fact",
+            );
+        }
+    }
+
     // Generated pure-op oracle invariants.
     //
     // Opcode membership comes from op_kinds_generated::ALL_OPCODES. The table's
@@ -109,38 +136,37 @@ mod tests {
                 );
                 continue;
             }
-            let operands = if category
-                == Some(crate::tir::op_kinds_generated::PredicateSemantics::Truth)
-            {
-                vec![TirType::I64]
-            } else {
-                match opcode_type_refine_operand_type_rule_table(op) {
-                    TypeRefineOperandTypeRule::UnaryNumeric
-                    | TypeRefineOperandTypeRule::IntegerInvert => vec![TirType::I64],
-                    TypeRefineOperandTypeRule::IntegerBitwise
-                    | TypeRefineOperandTypeRule::IntegerShift => {
-                        vec![TirType::I64, TirType::I64]
-                    }
-                    _ => vec![TirType::I64, TirType::F64],
-                }
-            };
-            if let Some(facts) = crate::tir::op_semantics::op_instance_facts(op, &operands) {
-                assert_eq!(role, GvnNumberingRole::TypeGated);
-                let coarse = opcode_effects_table(op);
-                assert!(
-                    !coarse.consistent || !coarse.effect_free,
-                    "{op:?}: generic predicate must not be CSE-safe"
-                );
-                assert!(facts.effects.consistent && facts.effects.effect_free);
+            if role == GvnNumberingRole::Never {
                 continue;
             }
-            if role != GvnNumberingRole::Never {
-                let coarse = opcode_effects_table(op);
-                assert!(
-                    coarse.consistent && coarse.effect_free,
-                    "{op:?}: generated GVN numbering role is not CSE-safe"
-                );
+            let coarse = opcode_effects_table(op);
+            if coarse.consistent && coarse.effect_free {
+                continue;
             }
+            assert_eq!(
+                role,
+                GvnNumberingRole::TypeGated,
+                "{op:?}: numbering without opcode-level purity requires instance proof"
+            );
+            let count = (1..=2)
+                .find(|&count| opcode_accepts_operand_count(op, count))
+                .unwrap_or_else(|| panic!("{op:?}: add a valid primitive fixture"));
+            let mut operands = vec![TirType::I64; count];
+            if count == 2
+                && !matches!(
+                    opcode_type_refine_operand_type_rule_table(op),
+                    TypeRefineOperandTypeRule::IntegerBitwise
+                        | TypeRefineOperandTypeRule::IntegerShift
+                )
+            {
+                operands[1] = TirType::F64;
+            }
+            let facts = crate::tir::op_semantics::op_instance_facts(op, &operands)
+                .unwrap_or_else(|| panic!("{op:?}: missing instance effect authority"));
+            assert!(
+                facts.effects.consistent && facts.effects.effect_free,
+                "{op:?}: admitted primitive instance is not CSE-safe"
+            );
         }
     }
 

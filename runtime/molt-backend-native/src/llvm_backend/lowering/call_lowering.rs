@@ -685,47 +685,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_call_builtin(&mut self, op: &TirOp) {
-        // CallBuiltin accepts two frontend shapes:
-        // A) canonical call_builtin: name/s_value carries the builtin name,
-        //    operands[0] is the name ConstStr, operands[1..] are args.
-        // B) preserved builtin op: _original_kind carries the builtin name and
-        //    all operands are args.
+        // IR owns executable identity and argument roles. Named calls carry
+        // arguments only; dynamic lookup alone consumes operand zero as name.
         let i64_ty = self.backend.context.i64_type();
-
-        // Determine the builtin name and where positional args start.
-        let (builtin_name_str, args_start): (Option<String>, usize) = {
-            let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-                AttrValue::Str(s) => Some(s.as_str()),
-                _ => None,
-            });
-            let name_attr = op.attrs.get("name").and_then(|v| match v {
-                AttrValue::Str(s) => Some(s.as_str()),
-                _ => None,
-            });
-            if let Some(kind) = original_kind {
-                // Pattern B: print, builtin_print, etc.
-                // All operands are args.
-                (Some(kind.to_string()), 0)
-            } else if let Some(name) = name_attr {
-                // Pattern A: call_builtin with explicit name.
-                // operands[0] is the name ConstStr, rest are args.
-                (Some(name.to_string()), 1)
-            } else {
-                // Fallback: operands[0] is the name bits.
-                (None, 1)
-            }
+        let Some(call) = op.builtin_call() else {
+            self.record_fatal("malformed CallBuiltin identity or argument contract");
+            return;
         };
 
-        if builtin_name_str.as_deref() == Some("print")
-            || builtin_name_str.as_deref() == Some("builtin_print")
-        {
+        if matches!(call.wire_kind, "print" | "builtin_print") {
             // PRINT is a dedicated frontend op. By the time it reaches
             // backend IR, multi-argument CPython semantics have already
             // been normalized into a single joined display string plus
             // explicit newline behavior. Lower it directly to the
             // runtime print surface just like the native backend.
             let print_fn = self.ensure_runtime_void_fn("molt_print_obj", 1);
-            for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
+            for &arg_id in call.arguments {
                 let arg_i64 = self.materialize_dynbox_operand(arg_id);
                 self.backend
                     .builder
@@ -739,7 +714,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(result_id, none_val);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
-        } else if builtin_name_str.as_deref() == Some("range_new") {
+        } else if call.wire_kind == "range_new" {
             // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a
             // generic builtin lookup. The SSA lifter folds it into
             // `OpCode::CallBuiltin` with `_original_kind = "range_new"`
@@ -751,20 +726,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // step)`, exactly as the native and WASM backends do. The
             // frontend (`_parse_range_call`) always materializes all three
             // boxed bounds (start defaults to 0, step to 1), so operands is
-            // exactly [start, stop, step] (args_start == 0 because Pattern B
-            // was detected via `_original_kind`).
-            debug_assert_eq!(
-                op.operands.len(),
-                3,
-                "range_new must carry exactly [start, stop, step]"
-            );
-            if op.operands.len() != 3 {
-                return;
-            }
+            // exactly [start, stop, step], admitted by the shared call view.
             let range_new_fn = self.ensure_runtime_i64_fn("molt_range_new", 3);
-            let start = self.materialize_dynbox_operand(op.operands[0]).into();
-            let stop = self.materialize_dynbox_operand(op.operands[1]).into();
-            let step = self.materialize_dynbox_operand(op.operands[2]).into();
+            let start = self.materialize_dynbox_operand(call.arguments[0]).into();
+            let stop = self.materialize_dynbox_operand(call.arguments[1]).into();
+            let step = self.materialize_dynbox_operand(call.arguments[2]).into();
             let result = self
                 .backend
                 .builder
@@ -778,28 +744,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         } else {
             // Generic builtin call via molt_call_builtin.
-            let builtin_name_bits = if let Some(ref name) = builtin_name_str {
-                // Create a runtime string for the builtin name via
-                // molt_string_from_bytes.
-                let name_val = self.intern_string_const(name);
-                self.ensure_i64(name_val)
-            } else if args_start <= op.operands.len() && !op.operands.is_empty() {
-                let bv = self.resolve(op.operands[0]);
-                self.ensure_i64(bv)
-            } else if let Some(s_val) = op.attrs.get("s_value").and_then(|v| {
-                if let AttrValue::Str(s) = v {
-                    Some(s.as_str())
-                } else {
-                    None
+            let builtin_name_bits = match call.target {
+                molt_ir::tir::ops::BuiltinCallTarget::Named(name) => {
+                    let name_val = self.intern_string_const(name);
+                    self.ensure_i64(name_val)
                 }
-            }) {
-                let name_val = self.intern_string_const(s_val);
-                self.ensure_i64(name_val)
-            } else {
-                i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                molt_ir::tir::ops::BuiltinCallTarget::Dynamic(name) => {
+                    self.materialize_dynbox_operand(*name)
+                }
             };
 
-            let n_args = op.operands.len().saturating_sub(args_start) as u64;
+            let n_args = call.arguments.len() as u64;
             let new_fn = self
                 .backend
                 .module
@@ -824,7 +779,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .module
                 .get_function("molt_callargs_push_pos")
                 .unwrap();
-            for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
+            for &arg_id in call.arguments {
                 let arg_i64 = self.materialize_dynbox_operand(arg_id);
                 self.backend
                     .builder

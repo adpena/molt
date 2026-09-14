@@ -1879,13 +1879,9 @@ class CallNamedDispatchMixin(_MixinBase):
                     init_is_default = init_info is None or init_owner == "object"
                     if init_is_default and len(node.args) == 0:
                         res = MoltValue(self.next_var(), type_hint=class_id)
-                        # Carry the static class-instance payload size
-                        # (in bytes, header NOT included) so the
-                        # backend's escape-analysis-rewritten
-                        # `object_new_bound_stack` arm can size the
-                        # Cranelift StackSlot at codegen time.  The
-                        # heap arm ignores it (sizing happens at
-                        # runtime via `class_layout_size`).
+                        # Carry static payload extent for typed-field analysis.
+                        # The runtime owns physical class layout and allocation;
+                        # layout metadata is not a placement or lifetime proof.
                         class_size_bytes = (
                             class_info.get("size", 0) if class_info else 0
                         )

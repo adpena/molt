@@ -2265,10 +2265,39 @@ def test_stable_user_class_ctor_lowers_to_structural_allocation() -> None:
     )
 
     assert any(op.get("kind") == "object_new_bound" for op in make_ops)
-    assert any(op.get("kind") == "store_init" for op in make_ops)
     assert any(op.get("kind") == "store" for op in make_ops)
+    assert all(op.get("kind") not in {"store_init", "guarded_field_init"} for op in make_ops)
     assert all(op.get("kind") != "call_bind" for op in make_ops)
     assert all(op.get("kind") != "callargs_new" for op in make_ops)
+
+
+def test_dishonest_return_annotation_uses_guarded_field_receiver_admission() -> None:
+    ir = compile_to_tir(
+        "class Expected:\n"
+        "    guarded: int\n"
+        "\n"
+        "def dishonest() -> Expected:\n"
+        "    return 3\n"
+        "\n"
+        "def exercise():\n"
+        "    value = dishonest()\n"
+        "    before = value.guarded\n"
+        "    value.guarded = 4\n"
+        "    return before\n",
+        type_hint_policy="check",
+    )
+    exercise_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____exercise"
+    )
+
+    guarded_get = next(
+        op for op in exercise_ops if op.get("kind") == "guarded_field_get"
+    )
+    guarded_set = next(
+        op for op in exercise_ops if op.get("kind") == "guarded_field_set"
+    )
+    assert guarded_get.get("class") == "Expected"
+    assert guarded_set.get("class") == "Expected"
 
 
 def test_finalizer_user_class_ctor_call_bind_carries_finalizer_fact() -> None:

@@ -20,7 +20,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "guarded_field_set" | "guarded_field_init" => {
+            "guarded_field_set" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);

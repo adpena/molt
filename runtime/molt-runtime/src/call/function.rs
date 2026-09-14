@@ -408,11 +408,11 @@ unsafe fn maybe_call_function_obj_trampoline(
             function_trampoline_ptr(func_ptr),
         );
         let reserved_info = crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
-        let force_trampoline = fixed_arity_call_requires_trampoline(
-            fn_ptr,
-            tramp_ptr,
-            function_needs_task_trampoline(_py, func_bits),
-        );
+        let Ok(task_trampoline_needed) = function_needs_task_trampoline(_py, func_bits) else {
+            return Some(crate::MoltObject::none().bits());
+        };
+        let force_trampoline =
+            fixed_arity_call_requires_trampoline(fn_ptr, tramp_ptr, task_trampoline_needed);
         if matches!(
             std::env::var("MOLT_TRACE_TRAMPOLINE_POLICY")
                 .ok()
@@ -600,19 +600,27 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     }
 }
 
-unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> bool {
+unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> Result<bool, ()> {
     unsafe {
+        if exception_pending(_py) {
+            return Err(());
+        }
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return false;
+            return Ok(false);
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return false;
+            return Ok(false);
         }
         if let Some(cached) = function_task_trampoline_cached(func_ptr) {
-            return cached;
+            return Ok(cached);
         }
-        refresh_function_task_trampoline_cache(_py, func_ptr)
+        let needed = refresh_function_task_trampoline_cache(_py, func_ptr);
+        if exception_pending(_py) {
+            Err(())
+        } else {
+            Ok(needed)
+        }
     }
 }
 
@@ -641,51 +649,111 @@ pub(crate) unsafe fn refresh_function_task_trampoline_cache(
     func_ptr: *mut u8,
 ) -> bool {
     unsafe {
-        let needed = compute_function_task_trampoline_needed(_py, func_ptr);
-        let header = header_from_obj_ptr(func_ptr);
-        (*header).update_flags(
-            HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN
-                | if needed {
-                    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
-                } else {
-                    0
-                },
-            if needed {
-                0
+        project_function_task_trampoline_cache(_py, func_ptr)
+            .unwrap_or_else(|| compute_function_task_trampoline_needed(_py, func_ptr))
+    }
+}
+
+/// Read canonical function metadata without interning, allocation, hashing
+/// callbacks, or rich equality. This is also the commit-time cache reader.
+pub(crate) unsafe fn function_metadata_bits(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    name: &[u8],
+) -> u64 {
+    unsafe {
+        let dictionary = crate::function_dict_bits(func_ptr);
+        obj_from_bits(dictionary)
+            .as_ptr()
+            .and_then(|ptr| crate::object::ops::dict_get_str_bytes_borrowed(py, ptr, name))
+            .unwrap_or_else(|| crate::MoltObject::none().bits())
+    }
+}
+
+const TASK_METADATA_NAMES: [&[u8]; 3] = [
+    b"__molt_is_generator__",
+    b"__molt_is_coroutine__",
+    b"__molt_is_async_generator__",
+];
+
+/// Commit derived facts before displaced metadata can run a finalizer. Unknown
+/// task truth values invalidate the cache; their Python truth protocol remains
+/// a call-time operation, never part of publication.
+pub(crate) unsafe fn commit_function_metadata_change(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    name: &[u8],
+    user: bool,
+) {
+    unsafe {
+        if user && matches!(name, b"__defaults__" | b"__kwdefaults__") {
+            crate::object::layout::function_bump_defaults_version(func_ptr);
+        }
+        crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
+        let _ = project_function_task_trampoline_cache(py, func_ptr);
+    }
+}
+
+unsafe fn project_function_task_trampoline_cache(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+) -> Option<bool> {
+    unsafe {
+        let mut needed = Some(false);
+        for name in TASK_METADATA_NAMES {
+            let value = obj_from_bits(function_metadata_bits(py, func_ptr, name));
+            let truth = if value.is_none() {
+                Some(false)
+            } else if let Some(value) = value.as_bool() {
+                Some(value)
+            } else if let Some(value) = value.as_int() {
+                Some(value != 0)
+            } else if !value.is_ptr() {
+                value.as_float().map(|value| value != 0.0)
             } else {
-                HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
-            },
-        );
+                None
+            };
+            if truth != Some(false) {
+                needed = truth;
+                break;
+            }
+        }
+        let header = header_from_obj_ptr(func_ptr);
+        match needed {
+            Some(needed) => (*header).update_flags(
+                HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN
+                    | if needed {
+                        HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
+                    } else {
+                        0
+                    },
+                if needed {
+                    0
+                } else {
+                    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
+                },
+            ),
+            None => (*header).fetch_and_flags(
+                !(HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN | HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED),
+            ),
+        };
         needed
     }
 }
 
 unsafe fn compute_function_task_trampoline_needed(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
     unsafe {
-        let interned = &runtime_state(_py).interned;
-        let gen_name =
-            intern_static_name(_py, &interned.molt_is_generator, b"__molt_is_generator__");
-        if let Some(bits) = function_attr_bits(_py, func_ptr, gen_name)
-            && is_truthy(_py, obj_from_bits(bits))
-        {
-            return true;
-        }
-        let coro_name =
-            intern_static_name(_py, &interned.molt_is_coroutine, b"__molt_is_coroutine__");
-        if let Some(bits) = function_attr_bits(_py, func_ptr, coro_name)
-            && is_truthy(_py, obj_from_bits(bits))
-        {
-            return true;
-        }
-        let asyncgen_name = intern_static_name(
-            _py,
-            &interned.molt_is_async_generator,
-            b"__molt_is_async_generator__",
-        );
-        if let Some(bits) = function_attr_bits(_py, func_ptr, asyncgen_name)
-            && is_truthy(_py, obj_from_bits(bits))
-        {
-            return true;
+        for name in TASK_METADATA_NAMES {
+            let bits = function_metadata_bits(_py, func_ptr, name);
+            crate::inc_ref_bits(_py, bits);
+            let truth = is_truthy(_py, obj_from_bits(bits));
+            crate::dec_ref_bits(_py, bits);
+            if exception_pending(_py) {
+                return false;
+            }
+            if truth {
+                return true;
+            }
         }
         false
     }
@@ -2822,9 +2890,9 @@ pub(crate) unsafe fn call_function_obj_trampoline(
                 "<unnamed>".to_string()
             };
             eprintln!(
-                "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} task_trampoline={}",
+                "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} task_trampoline={:?}",
                 args.len(),
-                function_needs_task_trampoline(_py, func_bits),
+                function_task_trampoline_cached(func_ptr),
             );
         }
         let res = {
@@ -2925,7 +2993,10 @@ pub(crate) unsafe fn call_function_obj_bound_vec(
                 return call_function_obj_trampoline(_py, func_bits, args);
             }
         }
-        if function_needs_task_trampoline(_py, func_bits) {
+        let Ok(task_trampoline_needed) = function_needs_task_trampoline(_py, func_bits) else {
+            return crate::MoltObject::none().bits();
+        };
+        if task_trampoline_needed {
             return call_function_obj_trampoline(_py, func_bits, args);
         }
         match args.len() {
@@ -3032,7 +3103,9 @@ mod tests {
     ) {
         let attr_bits = intern_metadata_name(_py, name);
         unsafe {
-            crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, value_bits)
+            assert!(crate::call::class_init::function_set_attr_bits(
+                _py, func_ptr, attr_bits, value_bits
+            ))
         };
     }
 

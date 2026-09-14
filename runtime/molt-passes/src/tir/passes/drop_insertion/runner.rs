@@ -1131,79 +1131,29 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
-    // ── 0b. FinalizerSensitive release deferral (#58, the ordering keystone) ──
-    // CPython releases a named local at its Python lifetime boundary (`del` /
-    // rebinding / scope exit), not at its last read. For a value whose release
-    // (transitively) fires a `__del__`, that timing is OBSERVABLE — releasing
-    // `bag = [A()]` at its SSA last-use fires `A.__del__` before the rest of
-    // the function body runs (doc 50 §A, repro c_scope). The ownership lattice
-    // names exactly those values (FinalizerSensitive: `defines_del` allocation
-    // roots closed over absorbing container constructors). For each such root
-    // this pass would otherwise release at SSA-last-use, DEFER the release to
-    // the Python lifetime boundary: §1/§1b skip it and a `DecRef` lands before
-    // the DEF BLOCK'S OWN `Terminator::Return` (merged into `plans` after §5,
-    // sorted by ValueId so multi-instance finalizer order matches CPython's
-    // creation-order frame teardown).
+    // ── 0b. Python named-owner release deferral ──
+    // Explicit DEL_BOUNDARY/slot ownership remains authoritative. For a
+    // boundaryless pure-SSA root, positive bound_local provenance requires the
+    // Python local lifetime even if no defines_del fact is present: opaque
+    // results and mutable classes can have observable destruction.
     //
-    // SAME-BLOCK-ONLY (the rung-1 soundness frame). The deferred DecRef is
-    // placed exclusively before the terminator of the block that DEFINES the
-    // root, and only when that terminator is `Return`. This is provably sound
-    // by straight-line construction: the only way to execute the block's
-    // terminator is to fall through every op after the def, so the def always
-    // precedes the DecRef on every path that reaches it — no dominance
-    // analysis required. Every mid-block exception edge departs the block
-    // BEFORE the terminator, so on those paths the DecRef simply does not run
-    // (the value leaks on the exception path — the SAME fail-closed
-    // leak-not-UAF class as §3's dominance guard; per-region exception
-    // cleanup is doc 45's arc). CROSS-BLOCK placement is deliberately NOT
-    // attempted at this rung: block-granularity dominance cannot see WHERE
-    // inside a block an exception edge departs (the §3 trap), pred-map
-    // comparisons cannot see a self-pred exception edge (terminator-pred and
-    // exception-pred of the same successor dedup to one entry), and
-    // unresolved universal-check targets exist only inside the codegen
-    // drivers (observed: a module-chunk deferred DecRef in a shared Return
-    // block aborted LLVM verification with "Instruction does not dominate
-    // all uses!"). Cross-block deferral needs op-granular dominance — the
-    // ownership-boundaries rung. Python function bodies overwhelmingly lower
-    // to a single Return-terminated block, so the c_scope class is covered.
-    //
-    // FAIL-CLOSED GATES — any failure keeps the pre-#58 SSA-last-use placement
-    // for that value (never a UAF, never a NEW silent-skip class):
-    //   (a) droppable alias ROOT (heap-carrying, function-owned, own root);
-    //   (b) defined by an op (not a block arg / phi) in a block whose
-    //       terminator is `Return` (same-block-only, above);
-    //   (c) no ownership-consuming or explicit-RC use anywhere: never a
-    //       branch arg or terminator use, never consumed by an op (the
-    //       CallArgs builder), never an operand of an IncRef/DecRef/Free
-    //       already in the IR (an explicit release — a `del` boundary
-    //       rewritten by §0a, or module-scope `del` — is its own authority),
-    //       never an operand ABSORBED by a container constructor (CPython's
-    //       BUILD_LIST consumes the stack ref, so the molt temp `+1` mirrors
-    //       a ref that dies AT construction — deferring it held the element
-    //       past `container.clear()`, finalizer_matrix `container_hold`),
-    //       and the alias group never touches a NAMED-SLOT move
-    //       (`store_var`/`load_var` Copy): a slot-backed local has
-    //       `del`/rebinding boundaries the slot machinery owns. The c_scope
-    //       class is PURE-SSA locals — the frontend emits no slot for them.
-    //   (d) the function has no suspension points (resumable-frame ownership
-    //       is its own arc; lowered state machines already bail the pass).
+    // This existing planner accepts only owned op-defined roots in their own
+    // Return block, with no suspension, ownership transfer, explicit RC boundary,
+    // or named-slot ownership. Unmarked expression temporaries retain last-use
+    // release. Mid-block exception cleanup is not proved by return placement;
+    // this change does not claim broader exception-path lifetime coverage.
     let deferred: HashSet<ValueId>;
     let mut deferred_return_placements: Vec<(BlockId, ValueId)> = Vec::new();
     {
-        let lattice = &ownership_lattice;
-        let sensitive_roots: HashSet<ValueId> = lattice
-            .finalizer_sensitive_roots()
-            .iter()
-            .copied()
-            .filter(|&r| drop_eligibility.is_droppable(r))
-            .collect();
-        let has_suspension = !sensitive_roots.is_empty()
+        let named_owner_roots =
+            python_lifetime_facts.return_boundary_candidate_roots(&drop_eligibility);
+        let has_suspension = !named_owner_roots.is_empty()
             && func
                 .blocks
                 .values()
                 .any(|b| b.ops.iter().any(|o| is_suspension_point(o.opcode)));
         let mut accepted: HashSet<ValueId> = HashSet::new();
-        if !sensitive_roots.is_empty() && !has_suspension {
+        if !named_owner_roots.is_empty() && !has_suspension {
             // Gate (c): one scan over the whole function for disqualifying uses.
             // Gate (b') NAMED-LOCAL proof, collected in the same scan: only a
             // value the frontend stamped `bound_local` (its result is bound to
@@ -1224,7 +1174,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 for v in terminator_branch_args(&block.terminator) {
                     disqualified.insert(canon(v));
                 }
-                for &r in &sensitive_roots {
+                for &r in &named_owner_roots {
                     if terminator_uses_root(&block.terminator, r, &canon) {
                         disqualified.insert(r);
                     }
@@ -1248,7 +1198,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                 }
             }
-            for &r in &sensitive_roots {
+            for &r in &named_owner_roots {
                 if disqualified.contains(&r) {
                     continue;
                 }
@@ -2596,7 +2546,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let mut d: Vec<u32> = deferred.iter().map(|v| v.0).collect();
             d.sort_unstable();
             out.push_str(&format!(
-                "  deferred(finalizer-sensitive→Return)={:?} placements={:?}\n",
+                "  deferred(named-owner→Return)={:?} placements={:?}\n",
                 d,
                 deferred_return_placements
                     .iter()

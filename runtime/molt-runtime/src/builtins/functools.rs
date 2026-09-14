@@ -7,15 +7,18 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
+use crate::builtins::types::{
+    RuntimeClassMethodSpec, RuntimeMethodSignature, SELF_RUNTIME_ARGUMENT_NAMES,
+    init_cached_runtime_class,
+};
 use crate::{
-    ClassEdgeOwnership, PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_string,
-    alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
-    dec_ref_bits, dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_truthy, issubclass_runtime, molt_class_set_base, molt_getattr_builtin,
-    molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, raise_not_iterable, string_obj_to_owned,
-    to_i64, type_of_bits,
+    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_find_entry_kv_in_place,
+    dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
+    exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy,
+    issubclass_runtime, molt_getattr_builtin, molt_is_callable, molt_iter, molt_object_setattr,
+    molt_repr_from_obj, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    raise_not_iterable, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
@@ -108,20 +111,28 @@ impl FunctoolsRuntimeState {
     }
 }
 
-pub(crate) fn functools_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+pub(crate) fn functools_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
     crate::gil_assert();
-    {
+    let dispatches = {
         let mut registry = state.functools.singledispatch_registry.lock().unwrap();
-        for (_, dispatch_state) in registry.drain() {
-            dispatch_state.release(_py);
-        }
-    }
-    state
-        .functools
-        .next_singledispatch_handle
-        .store(1, Ordering::Release);
+        let detached = std::mem::take(&mut *registry);
+        // Reset before any displaced owner can publish a new dispatch state.
+        state
+            .functools
+            .next_singledispatch_handle
+            .store(1, Ordering::Release);
+        detached
+    };
+    let changed = !dispatches.is_empty();
     let slots = state.functools.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
+    let slots_changed = crate::state::cache::clear_atomic_slots(_py, &slots);
+    for dispatch in dispatches.into_values() {
+        dispatch.release(_py);
+    }
+    changed | slots_changed
 }
 
 #[derive(Default)]
@@ -173,32 +184,6 @@ impl LruOrderState {
     }
 }
 
-fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
-    init_atomic_bits(_py, slot, || {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            unsafe {
-                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                let old_bits = object_class_bits(ptr);
-                if old_bits != builtin_bits
-                    && !crate::object::object_init_class_edge_unpublished(
-                        _py,
-                        ptr,
-                        builtin_bits,
-                        ClassEdgeOwnership::Owned,
-                    )
-                {
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
 fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
     init_atomic_bits(_py, &functools.kwd_mark_bits, || {
@@ -221,355 +206,176 @@ pub extern "C" fn molt_functools_kwd_mark() -> u64 {
     })
 }
 
-fn functools_class(
-    _py: &PyToken<'_>,
-    slot: &AtomicU64,
-    name: &str,
-    layout_size: i64,
-    shape: crate::object::ObjectShapeId,
-) -> u64 {
-    init_atomic_bits(_py, slot, || {
-        let name_ptr = alloc_string(_py, name.as_bytes());
-        if name_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let class_ptr = alloc_class_obj(_py, name_bits);
-        dec_ref_bits(_py, name_bits);
-        if class_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
-            dec_ref_bits(_py, class_bits);
-            return MoltObject::none().bits();
-        }
-        let builtins = builtin_classes(_py);
-        unsafe {
-            if let Some(ptr) = obj_from_bits(class_bits).as_ptr()
-                && !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    ptr,
-                    builtins.type_obj,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, class_bits);
-                return MoltObject::none().bits();
-            }
-        }
-        let _ = molt_class_set_base(class_bits, builtins.object);
-        let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
-        {
-            let layout_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_layout_size,
-                b"__molt_layout_size__",
-            );
-            let layout_bits = MoltObject::from_int(layout_size).bits();
-            unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
-        }
-        class_bits
-    })
-}
-
-fn set_class_method(_py: &PyToken<'_>, class_bits: u64, name: &str, fn_bits: u64) {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
-    };
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
-        }
-    }
-    let name_ptr = alloc_string(_py, name.as_bytes());
-    if name_ptr.is_null() {
-        return;
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    unsafe { dict_set_in_place(_py, dict_ptr, name_bits, fn_bits) };
-    dec_ref_bits(_py, name_bits);
-}
-
 fn partial_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(
+    let methods = [
+        RuntimeClassMethodSpec::with_signature(
+            "__call__",
+            &functools.partial_call_fn,
+            crate::molt_functools_partial_call as *const () as usize as u64,
+            3,
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__repr__",
+            &functools.partial_repr_fn,
+            crate::molt_functools_partial_repr as *const () as usize as u64,
+            1,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
         &functools.partial_class,
         "partial",
         32,
-        crate::object::ObjectShapeId::FunctoolsPartial,
-    );
-    let call_bits = builtin_func_bits(
-        _py,
-        &functools.partial_call_fn,
-        crate::molt_functools_partial_call as *const () as usize as u64,
-        3,
-    );
-    let repr_bits = builtin_func_bits(
-        _py,
-        &functools.partial_repr_fn,
-        crate::molt_functools_partial_repr as *const () as usize as u64,
-        1,
-    );
-    set_class_method(_py, class_bits, "__call__", call_bits);
-    set_class_method(_py, class_bits, "__repr__", repr_bits);
-    // mark __call__ as vararg/varkw
-    if let Some(call_ptr) = obj_from_bits(call_bits).as_ptr() {
-        let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
-        if !dict_ptr.is_null() {
-            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-            unsafe { crate::function_set_dict_bits(call_ptr, dict_bits) };
-            let vararg_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_vararg,
-                b"__molt_vararg__",
-            );
-            let varkw_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_varkw,
-                b"__molt_varkw__",
-            );
-            let arg_names_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_arg_names,
-                b"__molt_arg_names__",
-            );
-            let self_name_ptr = alloc_string(_py, b"self");
-            if !self_name_ptr.is_null() {
-                let self_name_bits = MoltObject::from_ptr(self_name_ptr).bits();
-                let arg_names_ptr = alloc_tuple(_py, &[self_name_bits]);
-                dec_ref_bits(_py, self_name_bits);
-                if !arg_names_ptr.is_null() {
-                    let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
-                    unsafe { dict_set_in_place(_py, dict_ptr, arg_names_name, arg_names_bits) };
-                    dec_ref_bits(_py, arg_names_bits);
-                }
-            }
-            unsafe {
-                dict_set_in_place(
-                    _py,
-                    dict_ptr,
-                    vararg_name,
-                    MoltObject::from_bool(true).bits(),
-                );
-                dict_set_in_place(
-                    _py,
-                    dict_ptr,
-                    varkw_name,
-                    MoltObject::from_bool(true).bits(),
-                );
-            }
-        }
-    }
-    class_bits
+        Some(crate::object::ObjectShapeId::FunctoolsPartial),
+        &methods,
+    )
 }
 
 fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(
+    let methods = [
+        RuntimeClassMethodSpec::fixed(
+            "__lt__",
+            &functools.cmpkey_lt_fn,
+            crate::molt_functools_cmpkey_lt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__le__",
+            &functools.cmpkey_le_fn,
+            crate::molt_functools_cmpkey_le as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__gt__",
+            &functools.cmpkey_gt_fn,
+            crate::molt_functools_cmpkey_gt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ge__",
+            &functools.cmpkey_ge_fn,
+            crate::molt_functools_cmpkey_ge as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            &functools.cmpkey_eq_fn,
+            crate::molt_functools_cmpkey_eq as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ne__",
+            &functools.cmpkey_ne_fn,
+            crate::molt_functools_cmpkey_ne as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
         &functools.cmpkey_class,
         "_CmpKey",
         24,
-        crate::object::ObjectShapeId::FunctoolsCmpKey,
-    );
-    let lt_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_lt_fn,
-        crate::molt_functools_cmpkey_lt as *const () as usize as u64,
-        2,
-    );
-    let le_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_le_fn,
-        crate::molt_functools_cmpkey_le as *const () as usize as u64,
-        2,
-    );
-    let gt_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_gt_fn,
-        crate::molt_functools_cmpkey_gt as *const () as usize as u64,
-        2,
-    );
-    let ge_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_ge_fn,
-        crate::molt_functools_cmpkey_ge as *const () as usize as u64,
-        2,
-    );
-    let eq_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_eq_fn,
-        crate::molt_functools_cmpkey_eq as *const () as usize as u64,
-        2,
-    );
-    let ne_bits = builtin_func_bits(
-        _py,
-        &functools.cmpkey_ne_fn,
-        crate::molt_functools_cmpkey_ne as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__lt__", lt_bits);
-    set_class_method(_py, class_bits, "__le__", le_bits);
-    set_class_method(_py, class_bits, "__gt__", gt_bits);
-    set_class_method(_py, class_bits, "__ge__", ge_bits);
-    set_class_method(_py, class_bits, "__eq__", eq_bits);
-    set_class_method(_py, class_bits, "__ne__", ne_bits);
-    class_bits
+        Some(crate::object::ObjectShapeId::FunctoolsCmpKey),
+        &methods,
+    )
 }
 
 fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(
+    let methods = [
+        RuntimeClassMethodSpec::with_signature(
+            "__call__",
+            &functools.lru_call_fn,
+            crate::molt_functools_lru_call as *const () as usize as u64,
+            3,
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__get__",
+            &functools.lru_descriptor_get_fn,
+            crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
+            3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "cache_info",
+            &functools.lru_cache_info_fn,
+            crate::molt_functools_lru_cache_info as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "cache_clear",
+            &functools.lru_cache_clear_fn,
+            crate::molt_functools_lru_cache_clear as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "cache_parameters",
+            &functools.lru_cache_params_fn,
+            crate::molt_functools_lru_cache_params as *const () as usize as u64,
+            1,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
         &functools.lru_wrapper_class,
         "_lru_cache_wrapper",
         64,
-        crate::object::ObjectShapeId::FunctoolsLruWrapper,
-    );
-    let call_bits = builtin_func_bits(
-        _py,
-        &functools.lru_call_fn,
-        crate::molt_functools_lru_call as *const () as usize as u64,
-        3,
-    );
-    let info_bits = builtin_func_bits(
-        _py,
-        &functools.lru_cache_info_fn,
-        crate::molt_functools_lru_cache_info as *const () as usize as u64,
-        1,
-    );
-    let clear_bits = builtin_func_bits(
-        _py,
-        &functools.lru_cache_clear_fn,
-        crate::molt_functools_lru_cache_clear as *const () as usize as u64,
-        1,
-    );
-    let params_bits = builtin_func_bits(
-        _py,
-        &functools.lru_cache_params_fn,
-        crate::molt_functools_lru_cache_params as *const () as usize as u64,
-        1,
-    );
-    let get_bits = builtin_func_bits(
-        _py,
-        &functools.lru_descriptor_get_fn,
-        crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
-        3,
-    );
-    set_class_method(_py, class_bits, "__call__", call_bits);
-    set_class_method(_py, class_bits, "__get__", get_bits);
-    set_class_method(_py, class_bits, "cache_info", info_bits);
-    set_class_method(_py, class_bits, "cache_clear", clear_bits);
-    set_class_method(_py, class_bits, "cache_parameters", params_bits);
-    // mark __call__ as vararg/varkw
-    if let Some(call_ptr) = obj_from_bits(call_bits).as_ptr() {
-        let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
-        if !dict_ptr.is_null() {
-            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-            unsafe { crate::function_set_dict_bits(call_ptr, dict_bits) };
-            let vararg_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_vararg,
-                b"__molt_vararg__",
-            );
-            let varkw_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_varkw,
-                b"__molt_varkw__",
-            );
-            let arg_names_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.molt_arg_names,
-                b"__molt_arg_names__",
-            );
-            let self_name_ptr = alloc_string(_py, b"self");
-            if !self_name_ptr.is_null() {
-                let self_name_bits = MoltObject::from_ptr(self_name_ptr).bits();
-                let arg_names_ptr = alloc_tuple(_py, &[self_name_bits]);
-                dec_ref_bits(_py, self_name_bits);
-                if !arg_names_ptr.is_null() {
-                    let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
-                    unsafe { dict_set_in_place(_py, dict_ptr, arg_names_name, arg_names_bits) };
-                    dec_ref_bits(_py, arg_names_bits);
-                }
-            }
-            unsafe {
-                dict_set_in_place(
-                    _py,
-                    dict_ptr,
-                    vararg_name,
-                    MoltObject::from_bool(true).bits(),
-                );
-                dict_set_in_place(
-                    _py,
-                    dict_ptr,
-                    varkw_name,
-                    MoltObject::from_bool(true).bits(),
-                );
-            }
-        }
-    }
-    class_bits
+        Some(crate::object::ObjectShapeId::FunctoolsLruWrapper),
+        &methods,
+    )
 }
 
 fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(
+    let methods = [RuntimeClassMethodSpec::fixed(
+        "__call__",
+        &functools.lru_factory_call_fn,
+        crate::molt_functools_lru_factory_call as *const () as usize as u64,
+        2,
+    )];
+    init_cached_runtime_class(
         _py,
         &functools.lru_factory_class,
         "_LruCacheFactory",
         24,
-        crate::object::ObjectShapeId::FunctoolsLruFactory,
-    );
-    let call_bits = builtin_func_bits(
-        _py,
-        &functools.lru_factory_call_fn,
-        crate::molt_functools_lru_factory_call as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__call__", call_bits);
-    class_bits
+        Some(crate::object::ObjectShapeId::FunctoolsLruFactory),
+        &methods,
+    )
 }
 
 fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(
+    let methods = [
+        RuntimeClassMethodSpec::fixed(
+            "__iter__",
+            &functools.cacheinfo_iter_fn,
+            crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__repr__",
+            &functools.cacheinfo_repr_fn,
+            crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__getattr__",
+            &functools.cacheinfo_getattr_fn,
+            crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
         &functools.cacheinfo_class,
         "CacheInfo",
         40,
-        crate::object::ObjectShapeId::FunctoolsCacheInfo,
-    );
-    let iter_bits = builtin_func_bits(
-        _py,
-        &functools.cacheinfo_iter_fn,
-        crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
-        1,
-    );
-    let repr_bits = builtin_func_bits(
-        _py,
-        &functools.cacheinfo_repr_fn,
-        crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
-        1,
-    );
-    let getattr_bits = builtin_func_bits(
-        _py,
-        &functools.cacheinfo_getattr_fn,
-        crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__iter__", iter_bits);
-    set_class_method(_py, class_bits, "__repr__", repr_bits);
-    set_class_method(_py, class_bits, "__getattr__", getattr_bits);
-    class_bits
+        Some(crate::object::ObjectShapeId::FunctoolsCacheInfo),
+        &methods,
+    )
 }
 
 unsafe fn partial_func_bits(ptr: *mut u8) -> u64 {
@@ -1114,6 +920,9 @@ pub extern "C" fn molt_functools_wraps_call(closure_bits: u64, wrapper_bits: u64
 pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let class_bits = cmpkey_class(_py);
+        if class_bits == 0 {
+            return MoltObject::none().bits();
+        }
         let tuple_ptr = alloc_tuple(_py, &[cmp_bits, class_bits]);
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
@@ -2385,10 +2194,9 @@ pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
         let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        {
-            if let Some(state) = singledispatch_registry(_py).lock().unwrap().remove(&id) {
-                state.release(_py);
-            }
+        let state = singledispatch_registry(_py).lock().unwrap().remove(&id);
+        if let Some(state) = state {
+            state.release(_py);
         }
         MoltObject::none().bits()
     })

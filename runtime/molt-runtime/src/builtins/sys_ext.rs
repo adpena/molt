@@ -65,7 +65,7 @@ fn sys_state(_py: &PyToken<'_>) -> &'static SysRuntimeState {
     &runtime_state(_py).sys_ext
 }
 
-pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let (trace_bits, profile_bits) = {
         let mut trace_profile = state
@@ -78,14 +78,14 @@ pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
         *trace_profile = SysTraceProfileState::new();
         (trace_bits, profile_bits)
     };
-    state
+    let switch_interval_bits = state
         .sys_ext
         .switch_interval_bits
-        .store(DEFAULT_SWITCH_INTERVAL_BITS, AtomicOrdering::Relaxed);
-    state
+        .swap(DEFAULT_SWITCH_INTERVAL_BITS, AtomicOrdering::Relaxed);
+    let int_max_str_digits = state
         .sys_ext
         .int_max_str_digits
-        .store(DEFAULT_INT_MAX_STR_DIGITS, AtomicOrdering::Relaxed);
+        .swap(DEFAULT_INT_MAX_STR_DIGITS, AtomicOrdering::Relaxed);
     let audit_hooks = {
         let mut hooks = state
             .sys_ext
@@ -94,12 +94,18 @@ pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::take(&mut *hooks)
     };
+    let changed = (trace_bits != 0 && !obj_from_bits(trace_bits).is_none())
+        || (profile_bits != 0 && !obj_from_bits(profile_bits).is_none())
+        || !audit_hooks.is_empty()
+        || switch_interval_bits != DEFAULT_SWITCH_INTERVAL_BITS
+        || int_max_str_digits != DEFAULT_INT_MAX_STR_DIGITS;
 
     dec_ref_sys_owned_bits(_py, trace_bits);
     dec_ref_sys_owned_bits(_py, profile_bits);
     for bits in audit_hooks {
         dec_ref_sys_owned_bits(_py, bits);
     }
+    changed
 }
 
 fn dec_ref_sys_owned_bits(_py: &PyToken<'_>, bits: u64) {

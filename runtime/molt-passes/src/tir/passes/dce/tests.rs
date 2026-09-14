@@ -1,8 +1,8 @@
-use super::classify::is_potentially_throwing;
 use super::run;
 use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::effect_proof::EffectProof;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_may_throw_table as is_potentially_throwing;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -40,19 +40,21 @@ fn unused_constant_removed() {
 // -----------------------------------------------------------------------
 #[test]
 fn unused_arithmetic_removed() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::None);
-    let p0 = ValueId(0);
-    let p1 = ValueId(1);
+    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let p0 = func.fresh_value();
+    let p1 = func.fresh_value();
     let sum = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![p0]));
+    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![p1]));
     entry
         .ops
         .push(make_op(OpCode::Add, vec![p0, p1], vec![sum]));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let stats = run(&mut func);
-    assert_eq!(stats.ops_removed, 1);
+    assert_eq!(stats.ops_removed, 3);
     assert!(func.blocks[&func.entry_block].ops.is_empty());
 }
 

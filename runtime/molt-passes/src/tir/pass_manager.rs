@@ -373,7 +373,7 @@ impl PassManager {
     }
 }
 
-/// Build the default 28-pass optimization pipeline in the canonical order.
+/// Build the default 27-pass optimization pipeline in the canonical order.
 ///
 /// ## RC drop insertion runs in a SEPARATE final phase — NOT here (round-7)
 ///
@@ -425,7 +425,6 @@ impl PassManager {
 ///   (block removal).
 /// * `OpsOnly` — rewrites/removes ops within blocks, never an exception-edge
 ///   op or terminator: canonicalize (×2), unboxing, gvn, refcount_elim,
-///   escape_analysis (removes IncRef/DecRef, rewrites ObjectNewBound),
 ///   dead_store_elim, strength_reduction, fast_math, copy_prop,
 ///   tuple_scalarize.
 /// * `ReadOnly` — only marks attrs/metadata, no executable-IR change: bce
@@ -467,16 +466,13 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am)),
         pass("licm", Cfg, |f, am, _tti| passes::licm::run(f, am)),
         // ── Memory optimization ─────────────────────────────────────
-        pass("escape_analysis", OpsOnly, |f, _am, _tti| {
-            passes::escape_analysis::run(f)
-        }),
         pass("refcount_elim", OpsOnly, |f, am, _tti| {
             passes::refcount_elim::run(f, am)
         }),
         pass("dead_store_elim", OpsOnly, |f, am, _tti| {
             passes::dead_store_elim::run(f, am)
         }),
-        // MemGVN consumes MemorySSA (built on the class-aware TypedField alias
+        // MemGVN consumes MemorySSA (built on the physical Field alias
         // regions) to forward stores into proven-pure typed-slot loads and dedup
         // redundant loads. Placed AFTER dead_store_elim so it sees the final set
         // of live stores, and its replacement IncRef is final (refcount_elim has
@@ -484,13 +480,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("mem_gvn", OpsOnly, |f, am, _tti| {
             passes::mem_gvn::run(f, am)
         }),
-        // SROA promotes the fields of a proven-non-escaping object out of memory
-        // and deletes the allocation. Placed AFTER mem_gvn (which forwards every
-        // observable typed-slot load to a Copy, so a fully-promotable object's
-        // residue is store-only) and BEFORE the later cleanup: SROA removes the
-        // stores, and the now-unreferenced ObjectNewBoundStack (not
-        // side-effecting) is deleted by the trailing dce pass. OpsOnly: it only
-        // removes StoreAttr ops within blocks (no CFG change).
+        // Whole-object scalar replacement follows load forwarding and deletes
+        // callback-free allocation/alias/store/RC operations atomically. Class
+        // construction remains observable; no later DCE is needed for ownership.
         pass("sroa", OpsOnly, |f, am, _tti| passes::sroa::run(f, am)),
         // ── Value optimization ──────────────────────────────────────
         pass("type_guard_hoist", Cfg, |f, am, _tti| {
@@ -754,13 +746,40 @@ mod tests {
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
 
-    /// The default pipeline must preserve the EXACT canonical pass order (28
+    /// The default pipeline must preserve the EXACT canonical pass order (27
     /// `run` invocations — canonicalize runs twice). The RC drop-insertion passes
     /// (design 20) are NOT in this pipeline — they run in the separate terminal
     /// [`build_drop_pipeline`] (round-7), and block-argument pruning runs only
     /// there after ownership transfer facts have been settled. Any
     /// reorder/insert/drop is a behavior change and must update this list
     /// deliberately.
+    #[test]
+    fn default_pipeline_does_not_infer_frame_placement_from_layout_and_nonescape() {
+        let mut func = TirFunction::new(
+            "mutable_class_candidate".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![ValueId(0)],
+            results: vec![result],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(16))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+        build_default_pipeline(TargetInfo::native_release_fast()).run(&mut func);
+        assert!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .any(|op| op.opcode == OpCode::ObjectNewBound)
+        );
+    }
+
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
@@ -777,7 +796,6 @@ mod tests {
                 "canonicalize_post",
                 "gvn",
                 "licm",
-                "escape_analysis",
                 "refcount_elim",
                 "dead_store_elim",
                 "mem_gvn",
@@ -845,6 +863,7 @@ mod tests {
                 attrs: AttrDict::new(),
                 source_span: None,
             },
+            labeled(OpCode::CheckException),
             TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
@@ -853,7 +872,6 @@ mod tests {
                 attrs: AttrDict::new(),
                 source_span: None,
             },
-            labeled(OpCode::CheckException),
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
@@ -865,6 +883,16 @@ mod tests {
             .collect();
         assert_eq!(polls.len(), 1);
         assert_eq!(polls[0].operands, [ValueId(0)]);
+        let ops = &func.blocks[&entry].ops;
+        let poll_index = ops.iter().position(|op| op.is_async_work_poll()).unwrap();
+        let release_index = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::DecRef)
+            .unwrap();
+        assert!(
+            poll_index < release_index,
+            "poll must precede finalizer-capable cleanup"
+        );
         crate::tir::verify::verify_function(&func)
             .expect("later memory/value/cleanup phases must preserve the edge payload");
     }
@@ -886,7 +914,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = build_default_pipeline(TargetInfo::luau_release_fast()).run(&mut func);
-        assert_eq!(stats.len(), 28);
+        assert_eq!(stats.len(), 27);
         assert!(
             func.blocks
                 .values()
@@ -1043,11 +1071,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 27 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 28);
+        assert_eq!(stats.len(), 27);
 
         // The drop pipeline runs its two passes under the same verify guard.
         // (This trivial loop carries no heap-allocated values, so drop_insertion

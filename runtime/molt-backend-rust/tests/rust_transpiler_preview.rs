@@ -26,14 +26,14 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
     let mut none0 = op("const_none");
     none0.out = Some("slot0_init".to_string());
 
-    let mut store0_init = op("store_init");
+    let mut store0_init = op("store");
     store0_init.args = Some(vec!["point_obj".to_string(), "slot0_init".to_string()]);
     store0_init.value = Some(0);
 
     let mut none1 = op("const_none");
     none1.out = Some("slot1_init".to_string());
 
-    let mut store1_init = op("store_init");
+    let mut store1_init = op("store");
     store1_init.args = Some(vec!["point_obj".to_string(), "slot1_init".to_string()]);
     store1_init.value = Some(8);
 

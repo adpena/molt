@@ -8,8 +8,9 @@ import pathlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
@@ -274,28 +275,49 @@ def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
 # identical trees within one build process.
 _SOURCE_TREE_CONTENT_DIGEST_CACHE: dict[tuple[str, ...], str] = {}
 _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT = 64
-_SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[dict[tuple[str, ...], str] | None] = (
-    ContextVar("_SOURCE_TREE_FINGERPRINT_TRANSACTION", default=None)
-)
+
+
+class _FrontendSemanticSourceSnapshot(NamedTuple):
+    """Resolved tooling inputs and their identity for one immutable operation."""
+
+    root: Path
+    source_paths: tuple[Path, ...]
+    fingerprint: str
+
+
+@dataclass
+class _SourceTreeFingerprintTransaction:
+    fingerprints: dict[tuple[str, ...], str] = field(default_factory=dict)
+    frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
+        default_factory=dict
+    )
+
+
+_SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
+    _SourceTreeFingerprintTransaction | None
+] = ContextVar("_SOURCE_TREE_FINGERPRINT_TRANSACTION", default=None)
 
 
 @contextmanager
 def _source_tree_fingerprint_transaction() -> Iterator[None]:
-    """Share content-complete source-tree fingerprints within one build command.
+    """Share immutable tooling snapshots within one frontend operation.
 
-    The transaction cache is deliberately scoped: long-lived processes still
-    recompute fingerprints between build requests, so in-process edits are
-    observed. Within a single ``molt build`` invocation, every frontend cache key
-    asks the same immutable tooling question dozens of times; computing it once
-    removes that duplicate authority without weakening byte-level invalidation
-    outside the command boundary.
+    Build commands own the outer transaction. Independently callable graph,
+    analysis and cache operations enter the same reentrant authority, so their
+    cache keys, validation and publication share one identity even without the
+    CLI wrapper. A new operation recaptures source bytes, import topology and
+    resolved ownership; no process-wide path/stat-only memo may replace that.
+    Tooling must remain immutable during an operation. Application source
+    payloads are not frozen here and retain their content-validation gates.
     """
 
     current = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     if current is not None:
         yield
         return
-    token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set({})
+    token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
+        _SourceTreeFingerprintTransaction()
+    )
     try:
         with local_python_import_graph_transaction():
             yield
@@ -416,7 +438,7 @@ def _source_tree_cache_fingerprint(
         *path_keys,
     )
     if transaction is not None:
-        cached = transaction.get(transaction_key)
+        cached = transaction.fingerprints.get(transaction_key)
         if cached is not None:
             return cached
     clean_signature = _source_tree_clean_pathspec_signature(root, path_keys)
@@ -436,7 +458,7 @@ def _source_tree_cache_fingerprint(
     # are provenance, not compiler semantics.
     digest = content_digest
     if transaction is not None:
-        transaction[transaction_key] = digest
+        transaction.fingerprints[transaction_key] = digest
     return digest
 
 
@@ -509,10 +531,32 @@ def _frontend_semantic_tooling_fingerprint() -> str:
     ``scope`` tag keeps this digest namespace-separated from the broad
     ``frontend-tooling`` fingerprint.
     """
+    return _frontend_semantic_tooling_snapshot().fingerprint
+
+
+def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
+    # Look up the operation snapshot BEFORE walking seeds, resolving the import
+    # closure or canonicalizing every fingerprint path. The lower-level digest
+    # memo is too late to eliminate those repeated filesystem operations.
     root = _compiler_root()
-    return _source_tree_cache_fingerprint(
-        root=root,
-        source_paths=_frontend_semantic_tooling_source_paths(root),
-        scope="frontend-semantic-tooling",
-        extra_fingerprint_inputs="",
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if transaction is not None:
+        snapshot = transaction.frontend_semantic_sources.get(root)
+        if snapshot is not None:
+            return snapshot
+    source_paths = tuple(
+        path.resolve() for path in _frontend_semantic_tooling_source_paths(root)
     )
+    snapshot = _FrontendSemanticSourceSnapshot(
+        root=root,
+        source_paths=source_paths,
+        fingerprint=_source_tree_cache_fingerprint(
+            root=root,
+            source_paths=source_paths,
+            scope="frontend-semantic-tooling",
+            extra_fingerprint_inputs="",
+        ),
+    )
+    if transaction is not None:
+        transaction.frontend_semantic_sources[root] = snapshot
+    return snapshot

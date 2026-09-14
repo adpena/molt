@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
 from molt.native_callable_abi import NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1
 from molt.type_facts import TypeFacts
 
@@ -189,11 +190,8 @@ def _build_entry_main_ops(
             "value": register_global_code_id("molt_runtime_init"),
         },
         *version_ops,
-        # Clear any stale exception flag left by startup helpers. Without
-        # this, the first check_exception inside the entry init function
-        # sees the leftover flag and jumps straight to the error handler,
-        # skipping module_cache_set and leaving the module unavailable.
-        {"kind": "exception_clear"},
+        # Pending startup errors are preserved. The completed wrapper is guarded
+        # after all late code-slot, sys-init, and spawn-override insertions.
         {
             "kind": "call",
             "s_value": entry_init,
@@ -395,21 +393,70 @@ def _replace_entry_call_with_spawn_override(
     return next_var
 
 
+def _guard_initialization_ops(
+    ops: Sequence[dict[str, Any]],
+    *,
+    failure_label: int | None = None,
+    failure_returns_object: bool = False,
+) -> list[dict[str, Any]]:
+    """Preserve pending setup failure before any subsequent initialization work.
+
+    Check every initialization operation rather than maintaining a second
+    may-throw classifier. The existing operation-effect authority can eliminate
+    redundant checks. Structural control markers, terminators, and existing checks do not execute
+    initialization work and need no additional edge.
+    """
+    owns_failure_exit = failure_label is None
+    if failure_label is None:
+        failure_label = 1 + max(
+            (int(op["value"]) for op in ops if op.get("kind") == "label"),
+            default=0,
+        )
+    check = {"kind": "check_exception", "value": failure_label}
+    guarded: list[dict[str, Any]] = []
+    for op in ops:
+        if op == check and guarded and guarded[-1] == check:
+            continue
+        guarded.append(dict(op))
+        kind = op.get("kind")
+        if kind != "check_exception" and kind not in SIMPLEIR_STRUCTURAL_KINDS:
+            guarded.append(dict(check))
+    if owns_failure_exit:
+        guarded.append({"kind": "label", "value": failure_label})
+        if failure_returns_object:
+            result = f"v{_next_tir_var_index(ops)}"
+            guarded.extend(
+                [
+                    {"kind": "const_none", "out": result},
+                    {"kind": "ret", "args": [result]},
+                ]
+            )
+        else:
+            guarded.append({"kind": "ret_void"})
+    return guarded
+
+
 def _build_isolate_bootstrap_ops(
     *,
     code_slot_count: int,
     version_ops: Sequence[dict[str, Any]],
     module_code_ops: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
+    ops = [
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
-        # Match `molt_main`: version/code-slot setup can leave a stale pending
-        # exception bit that must not leak into the first lazily imported module.
-        {"kind": "exception_clear"},
         *module_code_ops,
-        {"kind": "ret_void"},
     ]
+    # Native runtime and WASM host imports share () -> owned Molt object.
+    # A ret_void-only body has a genuinely void native linkage signature.
+    result = f"v{_next_tir_var_index(ops)}"
+    ops.extend(
+        [
+            {"kind": "const_none", "out": result},
+            {"kind": "ret", "args": [result]},
+        ]
+    )
+    return _guard_initialization_ops(ops, failure_returns_object=True)
 
 
 def _build_isolate_import_ops(
@@ -466,12 +513,8 @@ def _build_isolate_import_ops(
                 }
             )
             import_ops.append({"kind": "if", "args": [match_var]})
-            # Match `molt_main` and `molt_isolate_bootstrap`: startup helpers
-            # can leave stale pending exception bits. Imported module init
-            # functions start with check_exception-based error paths and often
-            # predeclare globals to None, so entering them with a stale flag
-            # corrupts module publication instead of executing the real body.
-            import_ops.append({"kind": "exception_clear"})
+            # Never erase a failure from code-slot/cache/name setup before
+            # entering module initialization.
             init_out = import_var()
             import_ops.append(
                 {
@@ -492,6 +535,9 @@ def _build_isolate_import_ops(
         {"kind": "module_cache_get", "args": [name_var], "out": loaded_var}
     )
     import_ops.append({"kind": "ret", "args": [loaded_var]})
+    import_ops = _guard_initialization_ops(
+        import_ops, failure_label=import_failed_label
+    )
     failed_var = import_var()
     import_ops.append({"kind": "label", "value": import_failed_label})
     import_ops.append({"kind": "const_none", "out": failed_var})
@@ -1857,6 +1903,8 @@ def _prepare_backend_ir(
             next_var=next_var,
         )
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    host_init_ops = _guard_initialization_ops(host_init_ops)
+    entry_ops = _guard_initialization_ops(entry_ops)
     functions.append({"name": "molt_host_init", "params": [], "ops": host_init_ops})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(

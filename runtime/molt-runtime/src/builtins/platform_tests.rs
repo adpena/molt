@@ -5,6 +5,12 @@ use std::io::Write;
 
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
+    with_env_projection(entries, f)
+}
+
+/// Change import-path inputs under the caller's existing runtime transaction.
+/// Runtime capabilities remain those admitted at bootstrap.
+fn with_env_projection<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     let original = {
         let mut env = env_state()
             .lock()
@@ -16,14 +22,17 @@ fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
         }
         original
     };
-    let out = f();
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     {
         let mut env = env_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *env = original;
     }
-    out
+    match out {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 fn platform_test_path(parts: &[&str]) -> String {
@@ -888,7 +897,6 @@ fn extension_manifest_cache_fingerprint_changes_when_sidecar_changes() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -923,7 +931,6 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_invalid_manifest_payload --ignored`"]
 fn extension_spec_boundary_rejects_invalid_manifest_payload() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -957,7 +964,6 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_accepts_valid_manifest --ignored`"]
 fn extension_spec_boundary_accepts_valid_manifest() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1001,7 +1007,6 @@ fn extension_spec_boundary_accepts_valid_manifest() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_spec_boundary_rejects_manifest_module_mismatch() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1043,7 +1048,6 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_revalidates_cache_after_artifact_mutation --ignored`"]
 fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1095,7 +1099,6 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_object_boundary_enforces_missing_and_valid_manifest --ignored`"]
 fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1176,7 +1179,6 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1205,7 +1207,6 @@ fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_invalid_manifest_payload --ignored`"]
 fn extension_loader_boundary_rejects_invalid_manifest_payload() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1233,7 +1234,6 @@ fn extension_loader_boundary_rejects_invalid_manifest_payload() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1262,7 +1262,6 @@ fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_invalid_manifest_metadata --ignored`"]
 fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1290,7 +1289,6 @@ fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_loader_boundary_rejects_manifest_module_mismatch() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1325,7 +1323,6 @@ fn extension_loader_boundary_rejects_manifest_module_mismatch() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_exec_boundary_rejects_manifest_module_mismatch() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1360,7 +1357,6 @@ fn extension_exec_boundary_rejects_manifest_module_mismatch() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_revalidates_cache_after_artifact_mutation --ignored`"]
 fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1408,7 +1404,6 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_records_cache_hits_and_misses --ignored`"]
 fn extension_loader_boundary_records_cache_hits_and_misses() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
@@ -1471,7 +1466,6 @@ fn extension_loader_boundary_records_cache_hits_and_misses() {
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module --ignored`"]
 fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         crate::with_gil_entry_nopanic!(_py, {
@@ -1519,7 +1513,6 @@ fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module(
 }
 
 #[test]
-#[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_clears_internal_dunder_path_placeholder --ignored`"]
 fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         crate::with_gil_entry_nopanic!(_py, {
@@ -1707,37 +1700,46 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
     let staged_ext_text = staged_ext.to_string_lossy().into_owned();
     let stale_search_paths = vec![stale_pkg.to_string_lossy().into_owned()];
 
-    with_env_state(
-        &[
-            ("PYTHONPATH", ""),
-            ("MOLT_MODULE_ROOTS", &module_roots),
-            ("MOLT_DEV_TRUSTED", "1"),
-            ("PWD", &pwd),
-        ],
-        || {
-            crate::with_gil_entry_nopanic!(_py, {
-                let payload_result = importlib_find_spec_payload(
-                    _py,
-                    "nativepkg._native",
-                    &stale_search_paths,
-                    Some(bootstrap_module_file()),
-                    1,
-                    0,
-                    true,
-                );
-                let payload = match payload_result {
-                    Ok(Some(payload)) => payload,
-                    Ok(None) => panic!("expected staged extension payload"),
-                    Err(_) => panic!(
-                        "find spec payload failed: {:?}",
-                        pending_exception_kind_and_message(_py)
-                    ),
-                };
-                assert_eq!(payload.origin.as_deref(), Some(staged_ext_text.as_str()));
-                assert_eq!(payload.loader_kind, "extension");
-            });
-        },
-    );
+    // Extension capabilities are admitted at cold bootstrap; the projected
+    // environment below independently controls import roots and cwd policy.
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        with_env_projection(
+            &[
+                ("PYTHONPATH", ""),
+                ("MOLT_MODULE_ROOTS", &module_roots),
+                ("MOLT_DEV_TRUSTED", "1"),
+                ("PWD", &pwd),
+            ],
+            || {
+                crate::with_gil_entry_nopanic!(_py, {
+                    assert!(has_capability(_py, "fs.read"));
+                    let bootstrap =
+                        sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+                    assert!(bootstrap.include_cwd);
+                    assert_eq!(bootstrap.dev_trusted_raw, "1");
+                    let payload_result = importlib_find_spec_payload(
+                        _py,
+                        "nativepkg._native",
+                        &stale_search_paths,
+                        Some(bootstrap_module_file()),
+                        1,
+                        0,
+                        true,
+                    );
+                    let payload = match payload_result {
+                        Ok(Some(payload)) => payload,
+                        Ok(None) => panic!("expected staged extension payload"),
+                        Err(_) => panic!(
+                            "find spec payload failed: {:?}",
+                            pending_exception_kind_and_message(_py)
+                        ),
+                    };
+                    assert_eq!(payload.origin.as_deref(), Some(staged_ext_text.as_str()));
+                    assert_eq!(payload.loader_kind, "extension");
+                });
+            },
+        );
+    });
 
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }

@@ -24,7 +24,7 @@ fn builtin_len_return_refines_to_i64_without_transport_hint() {
 
 #[test]
 fn builtin_predicate_returns_refine_to_bool() {
-    for name in ["bool", "hasattr", "isinstance", "issubclass"] {
+    for name in ["hasattr", "isinstance", "issubclass"] {
         let value = ValueId(0);
         let result = ValueId(1);
         let mut attrs = AttrDict::new();
@@ -122,6 +122,49 @@ fn unknown_builtin_return_stays_dynbox() {
     let type_map = extract_type_map(&func);
 
     assert_eq!(type_map.get(&result), Some(&TirType::DynBox));
+}
+
+#[test]
+fn mutable_builtin_names_and_conflicting_dispatch_do_not_prove_results() {
+    for name in ["bool", "int", "float", "str", "range", "math.floor"] {
+        let mut attrs = AttrDict::from([("name".into(), AttrValue::Str(name.into()))]);
+        attrs.insert("return_type".into(), AttrValue::Str("bool".into()));
+        let mut func = single_block_func(
+            vec![make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                attrs,
+            )],
+            2,
+        );
+        func.value_types.insert(ValueId(0), TirType::DynBox);
+        refine_types(&mut func);
+        assert_eq!(
+            extract_type_map(&func).get(&ValueId(1)),
+            Some(&TirType::DynBox),
+            "{name}"
+        );
+    }
+    let attrs = AttrDict::from([
+        ("name".into(), AttrValue::Str("len".into())),
+        ("_original_kind".into(), AttrValue::Str("print".into())),
+    ]);
+    let mut func = single_block_func(
+        vec![make_op(
+            OpCode::CallBuiltin,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            attrs,
+        )],
+        2,
+    );
+    func.value_types.insert(ValueId(0), TirType::DynBox);
+    refine_types(&mut func);
+    assert_eq!(
+        extract_type_map(&func).get(&ValueId(1)),
+        Some(&TirType::DynBox)
+    );
 }
 
 #[test]

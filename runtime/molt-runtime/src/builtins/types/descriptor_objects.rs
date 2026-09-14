@@ -197,18 +197,6 @@ pub(crate) fn super_call(_py: &PyToken<'_>, args: &[u64], has_keywords: bool) ->
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_classmethod_new(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let ptr = alloc_classmethod_obj(_py, func_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
 #[cfg(test)]
 mod super_frame_tests {
     use super::*;
@@ -325,7 +313,10 @@ mod super_frame_tests {
                     MoltObject::from_int(0).bits(),
                     MoltObject::none().bits(),
                 );
-                dec_ref_bits(py, changed);
+                assert!(!exception_pending(py));
+                // StoreIndex is a statement; its runtime return aliases the
+                // borrowed container and does not create an owned reference.
+                assert_eq!(changed, argument_cell);
                 let args = molt_callargs_new(0, 0);
                 let bound = molt_call_bind(classes.super_type, args);
                 assert!(!exception_pending(py));
@@ -340,17 +331,31 @@ mod super_frame_tests {
                     MoltObject::from_int(0).bits(),
                     MoltObject::from_int(42).bits(),
                 );
-                dec_ref_bits(py, changed);
+                assert!(!exception_pending(py));
+                assert_eq!(changed, class_cell);
                 assert_error(
                     py,
                     call_callable0(py, classes.super_type),
                     "RuntimeError",
                     "super(): __class__ is not a type (int)",
                 );
+                for bits in [argument_cell, class_cell] {
+                    let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                    assert_eq!(
+                        (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot(),
+                        2
+                    );
+                }
             }
             frame_stack_pop(py);
-            dec_ref_bits(py, argument_cell);
-            dec_ref_bits(py, class_cell);
+            for bits in [argument_cell, class_cell] {
+                let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                    1,
+                );
+                dec_ref_bits(py, bits);
+            }
         });
     }
 
@@ -576,98 +581,5 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
             return MoltObject::none().bits();
         }
         typevar_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_new(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let ptr = alloc_staticmethod_obj(_py, func_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let ptr = alloc_property_obj(_py, get_bits, set_bits, del_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_getter(prop_bits: u64, get_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let prop_obj = obj_from_bits(prop_bits);
-        let Some(prop_ptr) = prop_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "property.getter expects property");
-        };
-        unsafe {
-            if object_type_id(prop_ptr) != TYPE_ID_PROPERTY {
-                return raise_exception::<_>(_py, "TypeError", "property.getter expects property");
-            }
-            let set_bits = property_set_bits(prop_ptr);
-            let del_bits = property_del_bits(prop_ptr);
-            let ptr = alloc_property_obj(_py, get_bits, set_bits, del_bits);
-            if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_setter(prop_bits: u64, set_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let prop_obj = obj_from_bits(prop_bits);
-        let Some(prop_ptr) = prop_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "property.setter expects property");
-        };
-        unsafe {
-            if object_type_id(prop_ptr) != TYPE_ID_PROPERTY {
-                return raise_exception::<_>(_py, "TypeError", "property.setter expects property");
-            }
-            let get_bits = property_get_bits(prop_ptr);
-            let del_bits = property_del_bits(prop_ptr);
-            let ptr = alloc_property_obj(_py, get_bits, set_bits, del_bits);
-            if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_deleter(prop_bits: u64, del_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let prop_obj = obj_from_bits(prop_bits);
-        let Some(prop_ptr) = prop_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "property.deleter expects property");
-        };
-        unsafe {
-            if object_type_id(prop_ptr) != TYPE_ID_PROPERTY {
-                return raise_exception::<_>(_py, "TypeError", "property.deleter expects property");
-            }
-            let get_bits = property_get_bits(prop_ptr);
-            let set_bits = property_set_bits(prop_ptr);
-            let ptr = alloc_property_obj(_py, get_bits, set_bits, del_bits);
-            if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        }
     })
 }

@@ -757,7 +757,7 @@ unsafe fn module_create2(
                     if rc != 0 {
                         let mod_name = CStr::from_ptr(name).to_string_lossy();
                         let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
-                        set_module_system_error(format!(
+                        set_module_system_error_if_clear(format!(
                             "PyModule_Create2 for {mod_name:?}: failed to register method {meth_name_str:?}"
                         ));
                         eprintln!(
@@ -769,7 +769,7 @@ unsafe fn module_create2(
                 } else {
                     let mod_name = CStr::from_ptr(name).to_string_lossy();
                     let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
-                    set_module_system_error(format!(
+                    set_module_system_error_if_clear(format!(
                         "PyModule_Create2 for {mod_name:?}: runtime rejected method {meth_name_str:?} (flags 0x{:x})",
                         entry.ml_flags
                     ));

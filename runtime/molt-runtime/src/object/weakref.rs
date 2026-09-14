@@ -103,9 +103,10 @@ fn try_retain_registered_ptr(_registry: &WeakRefRegistry, registered_ptr: *mut u
         return Some(bits);
     }
     let retained = if flags & super::HEADER_FLAG_HAS_ABI_VIEW != 0 {
-        let internal_pins = u32::from(flags & super::HEADER_FLAG_GC_PINNED != 0);
+        // Collector custody is a physical lifetime owner. Only the collector's
+        // reachability scratch excludes it, not a live registry upgrade.
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .transition_runtime_owner_add(bits, false, internal_pins, || unsafe {
+            .transition_runtime_owner_add(bits, false, 0, || unsafe {
                 (*header).try_retain_live_previous()
             })
             .is_some()
@@ -562,6 +563,13 @@ fn weakref_resolve_target_ptr(registry: &WeakRefRegistry, weak_slot: PtrSlot) ->
     (!entry.target.0.is_null()).then_some(entry.target.0)
 }
 
+fn target_is_retiring_runtime_class(target_ptr: *mut u8) -> bool {
+    unsafe {
+        crate::object_type_id(target_ptr) == crate::TYPE_ID_TYPE
+            && super::class_is_runtime_retiring(target_ptr)
+    }
+}
+
 pub(crate) fn weakref_attach_container_cookie(
     _py: &PyToken<'_>,
     weak_bits: u64,
@@ -574,7 +582,10 @@ pub(crate) fn weakref_attach_container_cookie(
     let Some(entry) = registry.by_ref.get_mut(&PtrSlot(weak_ptr)) else {
         return false;
     };
-    if entry.target.0.is_null() || entry.container_cookie.is_some() {
+    if entry.target.0.is_null()
+        || entry.container_cookie.is_some()
+        || target_is_retiring_runtime_class(entry.target.0)
+    {
         return false;
     }
     entry.container_cookie = Some(cookie);
@@ -674,6 +685,11 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
+        // Constructor interning must not bypass the same admission boundary as
+        // fresh registration, even before existing target links are detached.
+        if target_is_retiring_runtime_class(target_ptr) {
+            return MoltObject::none().bits();
+        }
         let registry = runtime_state(_py).weakrefs.lock().unwrap();
         let target_slot = PtrSlot(target_ptr);
         if let Some(ref_slots) = registry.by_target.get(&target_slot) {
@@ -815,6 +831,13 @@ pub extern "C" fn molt_weakref_register(
                 _py,
                 "ReferenceError",
                 "cannot create weak reference to deallocating object",
+            );
+        }
+        if target_is_retiring_runtime_class(target_ptr) {
+            return raise_exception::<_>(
+                _py,
+                "ReferenceError",
+                "cannot create weak reference to retiring runtime type",
             );
         }
         if crate::object::ops_sys::runtime_target_minor(_py) >= 15
@@ -1119,6 +1142,222 @@ mod tests {
         weakref_head_for_target, weakref_peek_owned, weakref_seed_cached_hash,
         weakref_snapshot_for_target,
     };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RETIRING_TARGET: AtomicU64 = AtomicU64::new(0);
+    static RETIRING_RETRY_WEAK: AtomicU64 = AtomicU64::new(0);
+    static RETIRING_CALLBACK: AtomicU64 = AtomicU64::new(0);
+    static RETIRING_OBSERVATIONS: AtomicU64 = AtomicU64::new(0);
+    static RETIRING_CALLBACK_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn take_retiring_registration_error(py: &crate::PyToken<'_>) -> bool {
+        let matched = crate::builtins::exceptions::exception_last_bits_noinc(py)
+            .and_then(|bits| crate::obj_from_bits(bits).as_ptr())
+            .is_some_and(|ptr| {
+                let class = unsafe { crate::object_class_bits(ptr) };
+                class
+                    == crate::builtins::exceptions::exception_type_bits_from_name(
+                        py,
+                        "ReferenceError",
+                    )
+                    && crate::builtins::exceptions::format_exception_message(py, ptr)
+                        .contains("cannot create weak reference to retiring runtime type")
+            });
+        crate::clear_exception(py);
+        matched
+    }
+
+    extern "C" fn observe_retiring_class_weakref(weak_bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let target = RETIRING_TARGET.load(Ordering::SeqCst);
+            let retry = RETIRING_RETRY_WEAK.load(Ordering::SeqCst);
+            let callback = RETIRING_CALLBACK.load(Ordering::SeqCst);
+            let ptr = crate::obj_from_bits(target).as_ptr().unwrap();
+            let header = unsafe { crate::header_from_obj_ptr(ptr) };
+            let mut observations = 0;
+            RETIRING_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
+            if crate::obj_from_bits(crate::molt_weakref_get(weak_bits)).is_none() {
+                observations |= 1;
+            }
+
+            // Ordinary attribute reads and strong ownership remain valid. The
+            // retirement policy is not the terminal DEALLOCATING state.
+            let name_key = crate::attr_name_bits_from_bytes(py, b"__name__").unwrap();
+            let name = crate::molt_get_attr_name(target, name_key);
+            if crate::string_obj_to_owned(crate::obj_from_bits(name)).as_deref() == Some("int")
+                && unsafe { crate::object_class_bits(ptr) } == crate::builtin_classes(py).type_obj
+                && !crate::obj_from_bits(unsafe { crate::class_mro_bits(ptr) }).is_none()
+                && unsafe { (*header).load_synchronized_flags() }
+                    & crate::object::HEADER_FLAG_DEALLOCATING
+                    == 0
+            {
+                observations |= 2;
+            }
+            crate::dec_ref_bits(py, name);
+            crate::dec_ref_bits(py, name_key);
+            let before = unsafe { (*header).ref_count_snapshot() };
+            crate::molt_inc_ref_obj(target);
+            if unsafe { (*header).ref_count_snapshot() } == before + 1 {
+                observations |= 4;
+            }
+            crate::molt_dec_ref_obj(target);
+
+            let callback_ptr = crate::obj_from_bits(callback).as_ptr().unwrap();
+            let callback_header = unsafe { crate::header_from_obj_ptr(callback_ptr) };
+            let callback_before = unsafe { (*callback_header).ref_count_snapshot() };
+            let registered = crate::molt_weakref_register(retry, target, callback);
+            if unsafe { (*callback_header).ref_count_snapshot() } == callback_before {
+                observations |= 16;
+            }
+            if crate::obj_from_bits(registered).is_none() && take_retiring_registration_error(py) {
+                observations |= 8;
+            }
+            let constructed = crate::molt_weakref_new(
+                crate::builtin_classes(py).reference_type,
+                target,
+                crate::MoltObject::none().bits(),
+            );
+            if crate::obj_from_bits(constructed).is_none() && take_retiring_registration_error(py) {
+                observations |= 32;
+            } else if !crate::obj_from_bits(constructed).is_none() {
+                crate::dec_ref_bits(py, constructed);
+            }
+            let retry_ptr = crate::obj_from_bits(retry).as_ptr().unwrap();
+            let registry = crate::runtime_state(py).weakrefs.lock().unwrap();
+            if !registry.by_ref.contains_key(&crate::PtrSlot(retry_ptr))
+                && !registry.by_target.contains_key(&crate::PtrSlot(ptr))
+            {
+                observations |= 64;
+            }
+            drop(registry);
+            RETIRING_OBSERVATIONS.store(observations, Ordering::SeqCst);
+            crate::MoltObject::none().bits()
+        })
+    }
+
+    #[test]
+    fn retiring_class_weakref_callback_cannot_rearm_but_can_read_and_retain_class() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let target = crate::builtin_classes(py).int;
+                let reference = crate::builtin_classes(py).reference_type;
+                let reference_ptr = crate::obj_from_bits(reference).as_ptr().unwrap();
+                let retry = unsafe { crate::alloc_instance_for_class(py, reference_ptr) };
+                let callback_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "observe_retiring_class_weakref",
+                        observe_retiring_class_weakref as *const (),
+                    ),
+                    1,
+                );
+                assert!(!callback_ptr.is_null());
+                let callback = crate::MoltObject::from_ptr(callback_ptr).bits();
+                RETIRING_TARGET.store(target, Ordering::SeqCst);
+                RETIRING_RETRY_WEAK.store(retry, Ordering::SeqCst);
+                RETIRING_CALLBACK.store(callback, Ordering::SeqCst);
+                RETIRING_OBSERVATIONS.store(0, Ordering::SeqCst);
+                RETIRING_CALLBACK_CALLS.store(0, Ordering::SeqCst);
+                let weak = crate::molt_weakref_new(reference, target, callback);
+                let cached =
+                    crate::molt_weakref_new(reference, target, crate::MoltObject::none().bits());
+                assert!(crate::obj_from_bits(weak).as_ptr().is_some());
+                assert!(crate::obj_from_bits(cached).as_ptr().is_some());
+                assert!(!crate::exception_pending(py));
+
+                let mut retirement = crate::object::class_storage::RuntimeClassRetirement::new();
+                assert!(retirement.include(py, [target]));
+                assert_eq!(RETIRING_CALLBACK_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(RETIRING_OBSERVATIONS.load(Ordering::SeqCst), 127);
+                assert!(crate::obj_from_bits(crate::molt_weakref_get(cached)).is_none());
+                assert!(
+                    crate::obj_from_bits(crate::molt_weakref_find_nocallback(target)).is_none()
+                );
+                assert!(!crate::exception_pending(py));
+
+                // Rejection neither corrupts the candidate weakref nor closes
+                // unrelated targets: the same object can still register normally.
+                let ordinary = crate::object::builders::alloc_set_with_entries(py, &[]);
+                assert!(!ordinary.is_null());
+                let ordinary_bits = crate::bits_from_ptr(ordinary);
+                assert_eq!(
+                    crate::molt_weakref_register(
+                        retry,
+                        ordinary_bits,
+                        crate::MoltObject::none().bits()
+                    ),
+                    crate::MoltObject::from_bool(true).bits()
+                );
+                for bits in [retry, ordinary_bits, weak, cached, callback] {
+                    crate::dec_ref_bits(py, bits);
+                }
+                retirement.release_pins(py);
+                RETIRING_TARGET.store(0, Ordering::SeqCst);
+                RETIRING_RETRY_WEAK.store(0, Ordering::SeqCst);
+                RETIRING_CALLBACK.store(0, Ordering::SeqCst);
+            });
+        });
+    }
+
+    #[test]
+    fn retiring_class_closes_cached_constructor_before_existing_links_are_detached() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let target = crate::builtin_classes(py).int;
+                let target_ptr = crate::obj_from_bits(target).as_ptr().unwrap();
+                let reference = crate::builtin_classes(py).reference_type;
+                let weak =
+                    crate::molt_weakref_new(reference, target, crate::MoltObject::none().bits());
+                assert!(crate::obj_from_bits(weak).as_ptr().is_some());
+                unsafe { crate::object::class_begin_runtime_retirement(target_ptr) };
+                assert!(
+                    crate::obj_from_bits(crate::molt_weakref_find_nocallback(target)).is_none()
+                );
+                assert!(
+                    crate::obj_from_bits(crate::molt_weakref_new(
+                        reference,
+                        target,
+                        crate::MoltObject::none().bits()
+                    ))
+                    .is_none()
+                );
+                assert!(take_retiring_registration_error(py));
+                // Weak-container insertion is another admission path through an
+                // existing weakref. Cookie rejection must roll back its new entry.
+                let container =
+                    crate::molt_weakcontainer_new(crate::MoltObject::from_int(3).bits());
+                assert!(crate::obj_from_bits(container).as_ptr().is_some());
+                crate::molt_weakcontainer_store_commit(
+                    container,
+                    target,
+                    target,
+                    weak,
+                    crate::MoltObject::from_int(0).bits(),
+                );
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+                assert!(super::weakref_container_cookie(py, weak).is_none());
+                assert_eq!(
+                    crate::to_i64(crate::obj_from_bits(crate::molt_weakcontainer_len(
+                        container
+                    ))),
+                    Some(0)
+                );
+                crate::dec_ref_bits(py, container);
+                // Existing weakrefs can still upgrade their live target until the
+                // retirement transaction publishes target death for the cohort.
+                let retained = weakref_peek_owned(py, weak).expect("existing target remains live");
+                assert_eq!(retained, target);
+                crate::dec_ref_bits(py, retained);
+                let mut retirement = crate::object::class_storage::RuntimeClassRetirement::new();
+                assert!(retirement.include(py, [target]));
+                assert!(weakref_peek_owned(py, weak).is_none());
+                crate::dec_ref_bits(py, weak);
+                retirement.release_pins(py);
+                assert!(!crate::exception_pending(py));
+            });
+        });
+    }
 
     #[test]
     fn weakref_registry_entry_stays_cache_compact() {
@@ -1402,9 +1641,6 @@ mod tests {
             crate::TYPE_ID_RANGE,
             crate::TYPE_ID_SLICE,
             crate::TYPE_ID_EXCEPTION,
-            crate::TYPE_ID_PROPERTY,
-            crate::TYPE_ID_STATICMETHOD,
-            crate::TYPE_ID_CLASSMETHOD,
             crate::TYPE_ID_SUPER,
             crate::TYPE_ID_ENUMERATE,
             crate::TYPE_ID_ZIP,
@@ -1418,6 +1654,50 @@ mod tests {
                 Some(crate::object::HeapWeakrefPolicy::Deny)
             );
         }
+        // Wrapper subclasses carry their sealed class policy; the native
+        // prefix alone must not categorically deny subclass weakrefs.
+        for type_id in [
+            crate::TYPE_ID_OBJECT,
+            crate::TYPE_ID_FOREIGN,
+            crate::TYPE_ID_PROPERTY,
+            crate::TYPE_ID_STATICMETHOD,
+            crate::TYPE_ID_CLASSMETHOD,
+        ] {
+            assert_eq!(
+                crate::object::heap_weakref_policy(type_id),
+                Some(crate::object::HeapWeakrefPolicy::Class)
+            );
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = crate::MoltObject::none().bits();
+            let wrappers = [
+                crate::object::builders::alloc_property_obj(py, none, none, none),
+                crate::object::builders::alloc_staticmethod_obj(py, none),
+                crate::object::builders::alloc_classmethod_obj(py, none),
+            ];
+            for ptr in wrappers {
+                assert!(!ptr.is_null());
+                let bits = crate::MoltObject::from_ptr(ptr).bits();
+                assert!(crate::is_builtin_class_bits(
+                    py,
+                    crate::type_of_bits(py, bits)
+                ));
+                assert!(!super::object_supports_weakrefs(py, bits));
+                let weak =
+                    crate::molt_weakref_new(crate::builtin_classes(py).reference_type, bits, none);
+                assert!(crate::obj_from_bits(weak).is_none());
+                let exception = crate::builtins::exceptions::exception_last_bits_noinc(py)
+                    .and_then(|bits| crate::obj_from_bits(bits).as_ptr())
+                    .expect("exact builtin wrapper weakref rejection");
+                assert_eq!(
+                    unsafe { crate::object_class_bits(exception) },
+                    crate::builtins::exceptions::exception_type_bits_from_name(py, "TypeError")
+                );
+                crate::clear_exception(py);
+                crate::dec_ref_bits(py, bits);
+            }
+        });
     }
 
     #[test]

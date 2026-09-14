@@ -172,7 +172,7 @@ use state::{
 };
 
 pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "__init__" => {
             exception_method_bits_for_owner(_py, builtin_classes(_py).base_exception, name)
         }
@@ -195,7 +195,7 @@ pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 /// Materialize the builtin ``__init__`` descriptor for its declaring exception
@@ -207,83 +207,84 @@ pub(crate) fn exception_method_bits_for_owner(
     owner_bits: u64,
     name: &str,
 ) -> Option<u64> {
-    if name != "__init__" {
-        return exception_method_bits(_py, name);
-    }
-    let owner_ptr = obj_from_bits(owner_bits).as_ptr()?;
-    let root = if owner_bits == builtin_classes(_py).base_exception {
-        ExceptionLayoutRoot::Base
-    } else {
-        let root = unsafe { crate::object::class_exception_layout_root(owner_ptr) };
-        if root == ExceptionLayoutRoot::Base
-            || owner_bits != exception_type_bits_from_name(_py, root.owner_name())
-        {
-            return None;
+    crate::builtins::methods::method_dispatch(_py, || {
+        if name != "__init__" {
+            return exception_method_bits(_py, name);
         }
-        root
-    };
-    let cache = &runtime_state(_py).method_cache;
-    let slot = match root {
-        ExceptionLayoutRoot::Base => &cache.exception_init,
-        ExceptionLayoutRoot::BaseExceptionGroup => &cache.exception_init_base_exception_group,
-        ExceptionLayoutRoot::SyntaxError => &cache.exception_init_syntax_error,
-        ExceptionLayoutRoot::ImportError => &cache.exception_init_import_error,
-        ExceptionLayoutRoot::UnicodeDecodeError => &cache.exception_init_unicode_decode_error,
-        ExceptionLayoutRoot::UnicodeEncodeError => &cache.exception_init_unicode_encode_error,
-        ExceptionLayoutRoot::UnicodeTranslateError => &cache.exception_init_unicode_translate_error,
-        ExceptionLayoutRoot::SystemExit => &cache.exception_init_system_exit,
-        ExceptionLayoutRoot::OSError => &cache.exception_init_os_error,
-        ExceptionLayoutRoot::StopIteration => &cache.exception_init_stop_iteration,
-        ExceptionLayoutRoot::NameError => &cache.exception_init_name_error,
-        ExceptionLayoutRoot::AttributeError => &cache.exception_init_attribute_error,
-    };
-    Some(init_atomic_bits(_py, slot, || {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(
-            _py,
-            fn_addr!(molt_exception_init_owned),
-            4,
-        );
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let bits = MoltObject::from_ptr(ptr).bits();
-        unsafe {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-            crate::function_set_closure_bits(
-                _py,
-                ptr,
-                MoltObject::from_int(i64::from(root as u8)).bits(),
-            );
-            let vararg_name = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_vararg,
-                b"__molt_vararg__",
-            );
-            crate::function_set_attr_bits(
-                _py,
-                ptr,
-                vararg_name,
-                MoltObject::from_bool(true).bits(),
-            );
-            crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
-            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-            if !object_init_class_edge_unpublished(
-                _py,
-                ptr,
-                builtin_bits,
-                ClassEdgeOwnership::Owned,
-            ) {
-                (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_IMMORTAL);
-                dec_ref_bits(_py, bits);
-                return MoltObject::none().bits();
+        let owner_ptr = obj_from_bits(owner_bits).as_ptr()?;
+        let root = if owner_bits == builtin_classes(_py).base_exception {
+            ExceptionLayoutRoot::Base
+        } else {
+            let root = unsafe { crate::object::class_exception_layout_root(owner_ptr) };
+            if root == ExceptionLayoutRoot::Base
+                || owner_bits != exception_type_bits_from_name(_py, root.owner_name())
+            {
+                return None;
             }
-        }
-        bits
-    }))
+            root
+        };
+        let cache = &runtime_state(_py).method_cache;
+        let slot = match root {
+            ExceptionLayoutRoot::Base => &cache.exception_init,
+            ExceptionLayoutRoot::BaseExceptionGroup => &cache.exception_init_base_exception_group,
+            ExceptionLayoutRoot::SyntaxError => &cache.exception_init_syntax_error,
+            ExceptionLayoutRoot::ImportError => &cache.exception_init_import_error,
+            ExceptionLayoutRoot::UnicodeDecodeError => &cache.exception_init_unicode_decode_error,
+            ExceptionLayoutRoot::UnicodeEncodeError => &cache.exception_init_unicode_encode_error,
+            ExceptionLayoutRoot::UnicodeTranslateError => {
+                &cache.exception_init_unicode_translate_error
+            }
+            ExceptionLayoutRoot::SystemExit => &cache.exception_init_system_exit,
+            ExceptionLayoutRoot::OSError => &cache.exception_init_os_error,
+            ExceptionLayoutRoot::StopIteration => &cache.exception_init_stop_iteration,
+            ExceptionLayoutRoot::NameError => &cache.exception_init_name_error,
+            ExceptionLayoutRoot::AttributeError => &cache.exception_init_attribute_error,
+        };
+        Some(init_atomic_bits(_py, slot, || {
+            let bits = crate::builtins::methods::alloc_builtin_function(
+                _py,
+                fn_addr!(molt_exception_init_owned),
+                4,
+            );
+            if bits == 0 {
+                return 0;
+            }
+            let ptr = obj_from_bits(bits).as_ptr().unwrap();
+            unsafe {
+                crate::function_set_closure_bits(
+                    _py,
+                    ptr,
+                    MoltObject::from_int(i64::from(root as u8)).bits(),
+                );
+                let vararg_name = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.molt_vararg,
+                    b"__molt_vararg__",
+                );
+                if exception_pending(_py)
+                    || !crate::function_set_attr_bits(
+                        _py,
+                        ptr,
+                        vararg_name,
+                        MoltObject::from_bool(true).bits(),
+                    )
+                {
+                    dec_ref_bits(_py, bits);
+                    return 0;
+                }
+                crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, bits);
+                    return 0;
+                }
+            }
+            bits
+        }))
+    })
 }
 
 pub(crate) fn exception_group_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    crate::builtins::methods::method_dispatch(_py, || match name {
         "__init__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.exception_group_init,
@@ -315,7 +316,7 @@ pub(crate) fn exception_group_method_bits(_py: &PyToken<'_>, name: &str) -> Opti
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 #[track_caller]
@@ -1940,7 +1941,7 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
     thread_last_exception_bits_noinc(_py)
 }
 
-pub(crate) fn clear_thread_exception_for_teardown(_py: &PyToken<'_>) {
+pub(crate) fn take_thread_exception_for_teardown(_py: &PyToken<'_>) -> Option<u64> {
     crate::gil_assert();
     clear_all_emergency_memory_error_state();
     let ptr = THREAD_LAST_EXCEPTION
@@ -1957,37 +1958,98 @@ pub(crate) fn clear_thread_exception_for_teardown(_py: &PyToken<'_>) {
     if current_task_key().is_none() {
         let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     }
-    if let Some(ptr) = ptr {
-        let bits = MoltObject::from_ptr(ptr.0).bits();
-        dec_ref_bits(_py, bits);
-    }
+    ptr.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
 }
 
+pub(crate) fn clear_thread_exception_for_teardown(py: &PyToken<'_>) -> bool {
+    let detached = take_thread_exception_for_teardown(py);
+    if let Some(bits) = detached {
+        dec_ref_bits(py, bits);
+    }
+    detached.is_some()
+}
+
+/// Borrow canonical class roots for the shared class-retirement transaction.
+/// Cache ownership and canonical lookup remain published until final release.
+pub(crate) fn canonical_exception_class_roots(state: &RuntimeState) -> Vec<u64> {
+    let cache = state.exception_type_cache.lock().unwrap();
+    let mut entries = cache
+        .iter()
+        .filter(|(name, _)| builtin_exception_spec(name).is_some())
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    let mut roots: Vec<_> = entries.into_iter().map(|(_, &bits)| bits).collect();
+    roots.push(
+        state
+            .exceptions
+            .unraisable_hook_args_class
+            .load(AtomicOrdering::Acquire),
+    );
+    roots
+}
+
+/// Release dynamic cache owners while callbacks may still use intact classes.
+/// Returns whether any entries were drained; callback reentry may repopulate
+/// dynamic names, so the shutdown quiescence transaction must revisit this lane.
+pub(crate) fn drain_dynamic_exception_type_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
+    crate::gil_assert();
+    let types = {
+        let mut cache = state.exception_type_cache.lock().unwrap();
+        let mut names: Vec<_> = cache
+            .keys()
+            .filter(|name| builtin_exception_spec(name).is_none())
+            .cloned()
+            .collect();
+        names.sort_unstable();
+        names
+            .into_iter()
+            .filter_map(|name| cache.remove(&name))
+            .collect::<Vec<_>>()
+    };
+    let drained = !types.is_empty();
+    for bits in types {
+        // Cache membership is an owned reference, not a death verdict for a
+        // user class. Ordinary RC/GC owns finalization and cycle collection.
+        dec_ref_bits(_py, bits);
+    }
+    drained
+}
+
+/// Release canonical anchors after the shared class-retirement transaction has
+/// detached their identity/cycle edges. Dynamic references must already be quiet.
 pub(crate) fn clear_exception_type_cache(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     let types = {
         let mut guard = state.exception_type_cache.lock().unwrap();
-        let old = std::mem::take(&mut *guard);
-        old.into_values().collect::<Vec<_>>()
+        assert!(
+            guard
+                .keys()
+                .all(|name| builtin_exception_spec(name).is_some()),
+            "dynamic exception cache survived callback-capable shutdown draining"
+        );
+        std::mem::take(&mut *guard)
+            .into_values()
+            .collect::<Vec<_>>()
     };
     for bits in types {
-        class_break_cycles(_py, bits);
         dec_ref_bits(_py, bits);
     }
 }
 
-pub(crate) fn exceptions_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn exceptions_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
+    let slots = state.exceptions.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots)
+}
+
+pub(crate) fn exceptions_release_runtime_class_anchor(_py: &PyToken<'_>, state: &RuntimeState) {
     let unraisable_class_bits = state
         .exceptions
         .unraisable_hook_args_class
         .swap(0, AtomicOrdering::AcqRel);
     if unraisable_class_bits != 0 && !obj_from_bits(unraisable_class_bits).is_none() {
-        class_break_cycles(_py, unraisable_class_bits);
         dec_ref_bits(_py, unraisable_class_bits);
     }
-    let slots = state.exceptions.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots);
 }
 
 pub(crate) fn exception_handler_active() -> bool {
@@ -2179,6 +2241,49 @@ pub(crate) fn exception_stack_push() {
             "molt exc stack push task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
             task, depth, baseline, code_bits, line
         );
+    }
+}
+
+/// Own one synthetic exception-handler frame and restore the exact entry depth
+/// when the scope ends, including during a Rust unwind.
+///
+/// Runtime-only exception boundaries (finalizers, descriptor probes, and other
+/// implicit Python handlers) must not leave manual push/pop pairs around code
+/// that can invoke arbitrary callbacks.  Restoring by depth also handles a
+/// callback consuming the synthetic frame while propagating an exception.
+pub(crate) struct ExceptionStackScope<'a, 'py> {
+    py: &'a PyToken<'py>,
+    entry_depth: usize,
+}
+
+impl<'a, 'py> ExceptionStackScope<'a, 'py> {
+    pub(crate) fn push(py: &'a PyToken<'py>) -> Self {
+        let entry_depth = exception_stack_depth();
+        exception_stack_push();
+        Self { py, entry_depth }
+    }
+}
+
+impl Drop for ExceptionStackScope<'_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Never replace the callback's panic with a cleanup panic.  Both
+            // stack channels detach to the target depth before releasing any
+            // owned exception edge, so the depth is already restored even if
+            // an edge destructor exposes a separate invariant failure.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                exception_stack_set_depth(self.py, self.entry_depth);
+            }))
+            .is_err()
+            {
+                eprintln!(
+                    "molt: synthetic exception frame cleanup panicked at entry depth {}; preserving original unwind",
+                    self.entry_depth,
+                );
+            }
+        } else {
+            exception_stack_set_depth(self.py, self.entry_depth);
+        }
     }
 }
 
@@ -2798,6 +2903,9 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
     }
 }
 
+/// Borrow a runtime exception identity. Schema names are canonical runtime
+/// classes; mutable Python builtins bindings are projections, never authority.
+/// Names outside the schema retain dynamic lookup and synthetic-class behavior.
 pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u64 {
     let builtins = builtin_classes(_py);
     match name {
@@ -2823,29 +2931,30 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
         }
         _ => {}
     }
+    let spec = builtin_exception_spec(name);
+    if let Some(spec) = spec
+        && spec.canonical_name() != name
+    {
+        // Aliases have no second owning cache slot. One canonical cache entry
+        // owns the class; each Python module entry owns its own projection.
+        let bits = exception_type_bits_from_name(_py, spec.canonical_name());
+        if bits != 0 {
+            ensure_exception_in_builtins(_py, name, bits);
+        }
+        return bits;
+    }
     if let Some(bits) = exception_type_cache(_py).lock().unwrap().get(name).copied() {
         return bits;
     }
-    if let Some(bits) = exception_type_bits_from_builtins(_py, name) {
+    if spec.is_none()
+        && let Some(bits) = exception_type_bits_from_builtins(_py, name)
+    {
         let mut cache = exception_type_cache(_py).lock().unwrap();
         if let Some(existing) = cache.get(name).copied() {
             return existing;
         }
         inc_ref_bits(_py, bits);
         cache.insert(name.to_string(), bits);
-        return bits;
-    }
-    let spec = builtin_exception_spec(name);
-    let canonical_name = spec.map(|spec| spec.canonical_name()).unwrap_or(name);
-    if canonical_name != name {
-        let bits = exception_type_bits_from_name(_py, canonical_name);
-        if bits != 0 {
-            exception_type_cache(_py)
-                .lock()
-                .unwrap()
-                .insert(name.to_string(), bits);
-            ensure_exception_in_builtins(_py, name, bits);
-        }
         return bits;
     }
     let fallback = builtins.exception;
@@ -2985,13 +3094,33 @@ fn set_exception_text_signature_none(_py: &PyToken<'_>, class_bits: u64) {
 }
 
 fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
-    let mut cache = exception_type_cache(_py).lock().unwrap();
-    if let Some(bits) = cache.get(name).copied() {
+    if builtin_exception_spec(name).is_some() {
+        let ptr = obj_from_bits(class_bits)
+            .as_ptr()
+            .expect("new exception class");
+        assert_eq!(
+            unsafe { object_class_bits(ptr) },
+            builtin_classes(_py).type_obj
+        );
+        assert!(unsafe { crate::object::class_set_immutable(_py, ptr) });
+    }
+    // Transfer the constructor's owned reference into the cache. The returned
+    // reference is borrowed on both a miss and a hit; no creator hold leaks.
+    let existing = {
+        let mut cache = exception_type_cache(_py).lock().unwrap();
+        if let Some(bits) = cache.get(name).copied() {
+            Some(bits)
+        } else {
+            cache.insert(name.to_string(), class_bits);
+            None
+        }
+    };
+    if let Some(bits) = existing {
         dec_ref_bits(_py, class_bits);
         return bits;
     }
-    inc_ref_bits(_py, class_bits);
-    cache.insert(name.to_string(), class_bits);
+    // Namespace publication may allocate or release references. Never do it
+    // under the exception identity-cache mutex.
     ensure_exception_in_builtins(_py, name, class_bits);
     class_bits
 }
@@ -3020,7 +3149,7 @@ fn ensure_exception_in_builtins(_py: &PyToken<'_>, name: &str, class_bits: u64) 
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let existing = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) };
-    let needs_set = existing != Some(class_bits);
+    let needs_set = existing.is_none();
     if needs_set {
         unsafe {
             dict_set_in_place(_py, dict_ptr, name_bits, class_bits);
@@ -4698,6 +4827,252 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
+    fn canonical_exception_identity_ignores_cold_and_warm_builtins_rebinding() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name = crate::attr_name_bits_from_bytes(_py, b"builtins").unwrap();
+            let module = crate::alloc_module_obj(_py, name);
+            assert!(!module.is_null());
+            dec_ref_bits(_py, name);
+            let module_bits = MoltObject::from_ptr(module).bits();
+            let previous_module = super::module_cache(_py)
+                .lock()
+                .unwrap()
+                .insert("builtins".to_string(), module_bits);
+            let previous_class = super::exception_type_cache(_py)
+                .lock()
+                .unwrap()
+                .remove("SyntaxWarning");
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(module) })
+                .as_ptr()
+                .unwrap();
+            let key = crate::attr_name_bits_from_bytes(_py, b"SyntaxWarning").unwrap();
+            let user = super::alloc_class_obj_from_name(_py, "UserWarningReplacement");
+            assert!(!user.is_null());
+            let user_bits = MoltObject::from_ptr(user).bits();
+            crate::molt_class_set_base(user_bits, crate::builtin_classes(_py).exception);
+            unsafe { crate::dict_set_in_place(_py, dict, key, user_bits) };
+
+            let canonical = super::exception_type_bits_from_name(_py, "SyntaxWarning");
+            assert_ne!(
+                canonical, user_bits,
+                "cold lookup must not adopt a Python binding"
+            );
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(_py, dict, key) },
+                Some(user_bits)
+            );
+            let canonical_ptr = obj_from_bits(canonical).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { crate::object_class_bits(canonical_ptr) },
+                crate::builtin_classes(_py).type_obj
+            );
+            assert!(unsafe { crate::object::class_is_immutable(_py, canonical_ptr) });
+            assert!(!unsafe { crate::object::class_is_immutable(_py, user) });
+
+            let replacement = MoltObject::from_int(37).bits();
+            unsafe { crate::dict_set_in_place(_py, dict, key, replacement) };
+            assert_eq!(
+                super::exception_type_bits_from_name(_py, "SyntaxWarning"),
+                canonical
+            );
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(_py, dict, key) },
+                Some(replacement)
+            );
+            let root_key = crate::attr_name_bits_from_bytes(_py, b"Exception").unwrap();
+            unsafe { crate::dict_set_in_place(_py, dict, root_key, replacement) };
+            assert_eq!(
+                super::exception_type_bits_from_name(_py, "Exception"),
+                crate::builtin_classes(_py).exception
+            );
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(_py, dict, root_key) },
+                Some(replacement)
+            );
+            let alias_key = crate::attr_name_bits_from_bytes(_py, b"IOError").unwrap();
+            unsafe { crate::dict_set_in_place(_py, dict, alias_key, user_bits) };
+            assert_eq!(
+                super::exception_type_bits_from_name(_py, "IOError"),
+                super::exception_type_bits_from_name(_py, "OSError")
+            );
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(_py, dict, alias_key) },
+                Some(user_bits)
+            );
+            assert!(!exception_pending(_py));
+
+            {
+                let mut cache = super::module_cache(_py).lock().unwrap();
+                assert_eq!(cache.remove("builtins"), Some(module_bits));
+                if let Some(previous) = previous_module {
+                    cache.insert("builtins".to_string(), previous);
+                }
+            }
+            dec_ref_bits(_py, module_bits);
+            {
+                let mut cache = super::exception_type_cache(_py).lock().unwrap();
+                assert_eq!(cache.remove("SyntaxWarning"), Some(canonical));
+                if let Some(previous) = previous_class {
+                    cache.insert("SyntaxWarning".to_string(), previous);
+                }
+            }
+            unsafe { crate::object::heap_lifecycle::clear_cycle_edges(_py, canonical_ptr) };
+            dec_ref_bits(_py, canonical);
+            for bits in [user_bits, key, root_key, alias_key] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn exception_aliases_share_one_cache_owner_and_new_classes_transfer_their_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            // Exclude independently owned module projections from the cache RC assertion.
+            let previous_module = super::module_cache(_py).lock().unwrap().remove("builtins");
+            let canonical = super::exception_type_bits_from_name(_py, "OSError");
+            let ptr = obj_from_bits(canonical).as_ptr().unwrap();
+            let before = unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+            for _ in 0..2 {
+                for name in ["IOError", "EnvironmentError", "WindowsError"] {
+                    assert_eq!(super::exception_type_bits_from_name(_py, name), canonical);
+                    assert!(
+                        !super::exception_type_cache(_py)
+                            .lock()
+                            .unwrap()
+                            .contains_key(name)
+                    );
+                }
+            }
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                before
+            );
+            if let Some(previous) = previous_module {
+                super::module_cache(_py)
+                    .lock()
+                    .unwrap()
+                    .insert("builtins".to_string(), previous);
+            }
+
+            let fresh = super::alloc_class_obj_from_name(_py, "CacheOwnershipProbe");
+            assert!(!fresh.is_null());
+            let fresh_bits = MoltObject::from_ptr(fresh).bits();
+            let before = unsafe { (*header_from_obj_ptr(fresh)).ref_count_snapshot() };
+            // Keep projection absent here too, so only constructor/cache custody is measured.
+            let previous_module = super::module_cache(_py).lock().unwrap().remove("builtins");
+            assert_eq!(
+                super::cache_exception_type(_py, "CacheOwnershipProbe", fresh_bits),
+                fresh_bits
+            );
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(fresh)).ref_count_snapshot() },
+                before
+            );
+            let owned = super::exception_type_cache(_py)
+                .lock()
+                .unwrap()
+                .remove("CacheOwnershipProbe")
+                .unwrap();
+            dec_ref_bits(_py, owned);
+            if let Some(previous) = previous_module {
+                super::module_cache(_py)
+                    .lock()
+                    .unwrap()
+                    .insert("builtins".to_string(), previous);
+            }
+            assert!(!exception_pending(_py));
+        });
+    }
+
+    #[test]
+    fn dynamic_exception_cache_release_preserves_user_class_identity_and_namespace() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name = crate::attr_name_bits_from_bytes(_py, b"builtins").unwrap();
+            let module = crate::alloc_module_obj(_py, name);
+            assert!(!module.is_null());
+            dec_ref_bits(_py, name);
+            let module_bits = MoltObject::from_ptr(module).bits();
+            let previous_module = super::module_cache(_py)
+                .lock()
+                .unwrap()
+                .insert("builtins".to_string(), module_bits);
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(module) })
+                .as_ptr()
+                .unwrap();
+            let key = crate::attr_name_bits_from_bytes(_py, b"DynamicCacheProbe").unwrap();
+            let marker = crate::attr_name_bits_from_bytes(_py, b"preserved_marker").unwrap();
+            let user = super::alloc_class_obj_from_name(_py, "DynamicUserClass");
+            assert!(!user.is_null());
+            let user_bits = MoltObject::from_ptr(user).bits();
+            crate::molt_class_set_base(user_bits, crate::builtin_classes(_py).exception);
+            let namespace = obj_from_bits(unsafe { crate::class_dict_bits(user) })
+                .as_ptr()
+                .unwrap();
+            unsafe {
+                crate::dict_set_in_place(_py, namespace, marker, MoltObject::from_int(91).bits())
+            };
+            unsafe { crate::dict_set_in_place(_py, dict, key, user_bits) };
+            assert_eq!(
+                super::exception_type_bits_from_name(_py, "DynamicCacheProbe"),
+                user_bits
+            );
+            assert!(
+                !super::canonical_exception_class_roots(runtime_state(_py)).contains(&user_bits)
+            );
+            let identity = unsafe {
+                (
+                    crate::class_name_bits(user),
+                    crate::class_bases_bits(user),
+                    crate::class_mro_bits(user),
+                    crate::class_dict_bits(user),
+                    crate::object_class_bits(user),
+                )
+            };
+            assert!(super::drain_dynamic_exception_type_cache(
+                _py,
+                runtime_state(_py)
+            ));
+            assert!(
+                !super::exception_type_cache(_py)
+                    .lock()
+                    .unwrap()
+                    .contains_key("DynamicCacheProbe")
+            );
+            assert_eq!(
+                unsafe {
+                    (
+                        crate::class_name_bits(user),
+                        crate::class_bases_bits(user),
+                        crate::class_mro_bits(user),
+                        crate::class_dict_bits(user),
+                        crate::object_class_bits(user),
+                    )
+                },
+                identity
+            );
+            assert!(!unsafe { crate::object::class_is_immutable(_py, user) });
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(_py, namespace, marker) },
+                Some(MoltObject::from_int(91).bits())
+            );
+            {
+                let mut cache = super::module_cache(_py).lock().unwrap();
+                cache.remove("builtins");
+                if let Some(previous) = previous_module {
+                    cache.insert("builtins".to_string(), previous);
+                }
+            }
+            for bits in [module_bits, user_bits, key, marker] {
+                dec_ref_bits(_py, bits);
+            }
+            assert!(!exception_pending(_py));
+        });
+    }
+
+    #[test]
     fn exception_payload_has_ten_word_prefix_and_schema_sized_tails() {
         assert_eq!(super::EXCEPTION_FIXED_WORDS, 10);
         assert_eq!(
@@ -5750,113 +6125,169 @@ mod tests {
     #[test]
     #[ignore = "permanently shuts down process-global runtime; run in isolation"]
     fn tls_exception_destructor_excludes_concurrent_shutdown() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let exc_bits = crate::with_gil_entry_nopanic!(_py, {
-            MoltObject::from_ptr(alloc_exception(_py, "RuntimeError", "tls-shutdown")).bits()
-        });
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let (thread_id_tx, thread_id_rx) = std::sync::mpsc::channel();
-        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
-        let (recorded_tx, recorded_rx) = std::sync::mpsc::channel();
-        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
-        let (destructor_done_tx, destructor_done_rx) = std::sync::mpsc::channel();
-        let worker_exc_bits = exc_bits;
-        let worker = std::thread::spawn(move || {
-            thread_id_tx.send(std::thread::current().id()).unwrap();
-            proceed_rx.recv().unwrap();
-            crate::with_gil_entry_nopanic!(_py, {
-                let ptr = obj_from_bits(worker_exc_bits)
-                    .as_ptr()
-                    .expect("live exception");
-                record_exception(_py, ptr);
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            // The observing thread must not retain a C record that would itself
+            // refuse shutdown on the separate finalization thread. Use the real
+            // completed-execution boundary for both of its ownership operations.
+            let exc_bits = {
+                let execution =
+                    crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+                MoltObject::from_ptr(alloc_exception(
+                    &execution.token(),
+                    "RuntimeError",
+                    "tls-shutdown",
+                ))
+                .bits()
+            };
+            assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let (thread_id_tx, thread_id_rx) = std::sync::mpsc::channel();
+            let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+            let (recorded_tx, recorded_rx) = std::sync::mpsc::channel();
+            let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+            let (destructor_done_tx, destructor_done_rx) = std::sync::mpsc::channel();
+            let worker_exc_bits = exc_bits;
+            let worker = std::thread::spawn(move || {
+                thread_id_tx.send(std::thread::current().id()).unwrap();
+                proceed_rx.recv().unwrap();
+                crate::with_gil_entry_nopanic!(_py, {
+                    let ptr = obj_from_bits(worker_exc_bits)
+                        .as_ptr()
+                        .expect("live exception");
+                    record_exception(_py, ptr);
+                });
+                recorded_tx.send(()).unwrap();
+                exit_rx.recv().unwrap();
             });
-            recorded_tx.send(()).unwrap();
-            exit_rx.recv().unwrap();
-        });
-        let worker_id = thread_id_rx.recv().unwrap();
-        *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
-            .lock()
-            .unwrap() = Some(super::state::ThreadExceptionDropTestGate {
-            owner: worker_id,
-            entered: entered_tx,
-            release: std::sync::Arc::clone(&release),
-            completion: destructor_done_tx,
-        });
+            let worker_id = thread_id_rx.recv().unwrap();
+            *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+                .lock()
+                .unwrap() = Some(super::state::ThreadExceptionDropTestGate {
+                owner: worker_id,
+                entered: entered_tx,
+                release: std::sync::Arc::clone(&release),
+                completion: destructor_done_tx,
+            });
 
-        // Create the shutdown thread before the worker holds the GIL: Windows
-        // thread startup can itself enter runtime initialization.
-        let (shutdown_id_tx, shutdown_id_rx) = std::sync::mpsc::channel();
-        let (shutdown_proceed_tx, shutdown_proceed_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (trace_tx, trace_rx) = std::sync::mpsc::channel();
-        let shutdown = std::thread::spawn(move || {
-            shutdown_id_tx.send(std::thread::current().id()).unwrap();
-            shutdown_proceed_rx.recv().unwrap();
-            done_tx
-                .send(crate::state::runtime_state::molt_runtime_shutdown())
-                .unwrap();
-        });
-        let shutdown_id = shutdown_id_rx.recv().unwrap();
-        *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
-            .lock()
-            .unwrap() = Some((shutdown_id, trace_tx));
+            // Create the shutdown thread before the worker holds the GIL: Windows
+            // thread startup can itself enter runtime initialization.
+            let (shutdown_id_tx, shutdown_id_rx) = std::sync::mpsc::channel();
+            let (shutdown_proceed_tx, shutdown_proceed_rx) = std::sync::mpsc::channel();
+            let (shutdown_quiescent_tx, shutdown_quiescent_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let (trace_tx, trace_rx) = std::sync::mpsc::channel();
+            let shutdown = std::thread::spawn(move || {
+                shutdown_id_tx.send(std::thread::current().id()).unwrap();
+                shutdown_proceed_rx.recv().unwrap();
+                let first = crate::state::runtime_state::molt_runtime_shutdown();
+                done_tx.send(first).unwrap();
+                if first == 0 {
+                    // The exception callback can finish before the worker's C
+                    // record destructor. Retry only after the observer joins that
+                    // exact worker and proves its ownership has been retired.
+                    shutdown_quiescent_rx.recv().unwrap();
+                    done_tx
+                        .send(crate::state::runtime_state::molt_runtime_shutdown())
+                        .unwrap();
+                }
+            });
+            let shutdown_id = shutdown_id_rx.recv().unwrap();
+            *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
+                .lock()
+                .unwrap() = Some((shutdown_id, trace_tx));
 
-        proceed_tx.send(()).unwrap();
-        recorded_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("worker recorded its pending exception");
-        crate::with_gil_entry_nopanic!(_py, {
-            dec_ref_bits(_py, exc_bits);
-        });
-        exit_tx.send(()).unwrap();
-        entered_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("worker entered ThreadExceptionState::drop");
-
-        shutdown_proceed_tx.send(()).unwrap();
-        assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err(),
-            "shutdown must wait while TLS destructor validates and decrefs under GIL"
-        );
-
-        release.wait();
-        destructor_done_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("target exception TLS destructor completed its DECREF");
-        assert_eq!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("shutdown completed after TLS destructor released the GIL"),
-            1
-        );
-        let mut trace = Vec::new();
-        while let Ok(stage) = trace_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-            trace.push(stage);
-            if stage == "drained" || stage == "cleared" {
-                break;
+            proceed_tx.send(()).unwrap();
+            recorded_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("worker recorded its pending exception");
+            {
+                let execution =
+                    crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+                dec_ref_bits(&execution.token(), exc_bits);
             }
-        }
-        assert_eq!(
-            trace,
-            vec![
-                "enter",
-                "gil_acquired",
-                "runtime_absent",
-                "gil_released",
-                "drained"
-            ],
-            "shutdown thread TLS cleanup stages"
-        );
-        shutdown.join().unwrap();
-        worker.join().unwrap();
-        *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
-            .lock()
-            .unwrap() = None;
-        *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
-            .lock()
-            .unwrap() = None;
+            assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                1,
+                "the gated worker must be the sole retained C thread-state owner"
+            );
+            exit_tx.send(()).unwrap();
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("worker entered ThreadExceptionState::drop");
+
+            shutdown_proceed_tx.send(()).unwrap();
+            assert!(
+                done_rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err(),
+                "shutdown must wait while TLS destructor validates and decrefs under GIL"
+            );
+
+            release.wait();
+            destructor_done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("target exception TLS destructor completed its DECREF");
+            let first_shutdown = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("shutdown returned after TLS destructor released the GIL");
+            worker.join().unwrap();
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0,
+                "joined worker must retire its C state before successful shutdown"
+            );
+            if first_shutdown == 0 {
+                assert!(crate::state::runtime_state::runtime_is_initialized());
+                shutdown_quiescent_tx.send(()).unwrap();
+                assert_eq!(
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("quiescent shutdown completed"),
+                    1
+                );
+            } else {
+                assert_eq!(first_shutdown, 1);
+            }
+            assert!(!crate::state::runtime_state::runtime_is_initialized());
+            let mut trace = Vec::new();
+            while let Ok(stage) = trace_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                trace.push(stage);
+                if stage == "drained" || stage == "cleared" {
+                    break;
+                }
+            }
+            let thread_exit_start = trace
+                .iter()
+                .position(|stage| *stage == "enter")
+                .expect("shutdown owner must enter its final TLS destructor");
+            let (runtime_drain, thread_exit) = trace.split_at(thread_exit_start);
+            assert!(
+                !runtime_drain.is_empty()
+                    && runtime_drain
+                        .iter()
+                        .all(|stage| *stage == "ic_caches_cleared"),
+                "the shared shutdown fixed point must clear inline caches before thread exit: {trace:?}"
+            );
+            assert_eq!(
+                thread_exit,
+                vec![
+                    "enter",
+                    "gil_acquired",
+                    "runtime_absent",
+                    "gil_released",
+                    "drained"
+                ],
+                "after runtime retirement, thread-exit TLS must observe only the absent-runtime drain"
+            );
+            shutdown.join().unwrap();
+            *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
+                .lock()
+                .unwrap() = None;
+            *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+                .lock()
+                .unwrap() = None;
+        });
     }
 }

@@ -132,7 +132,7 @@ def _emit_backend_pipeline_outputs(
         assert prepared_non_native_result is not None
         snapshot_build_diagnostics()
 
-        # -- Snapshot header generation (Plan D) ----------------------------
+        # -- Snapshot metadata-template generation ---------------------------
         if snapshot and output_layout.is_wasm:
             _non_native_output._generate_snapshot_header(
                 output_wasm=prepared_non_native_result.primary_output,
@@ -141,9 +141,9 @@ def _emit_backend_pipeline_outputs(
                 verbose=verbose,
             )
             prepared_non_native_result.success_messages.append(
-                f"Snapshot header: {prepared_non_native_result.primary_output.parent / 'molt.snapshot.json'}"
+                f"Snapshot metadata template (non-restorable): {prepared_non_native_result.primary_output.parent / 'molt.snapshot.json'}"
             )
-        # -- End snapshot header generation ----------------------------------
+        # -- End snapshot metadata-template generation -----------------------
 
         return _emit_non_native_build_result(
             output=prepared_non_native_result.primary_output,

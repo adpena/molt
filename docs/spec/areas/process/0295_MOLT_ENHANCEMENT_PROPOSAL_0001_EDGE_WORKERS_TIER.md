@@ -5,7 +5,7 @@
 **Created:** 2026-03-11
 **Requires:** 0400, 0401, 0964, 0965, 0968
 **Audience:** Molt maintainers, runtime engineers, wasm/host integrators
-**Purpose:** Provide a PEP-style decision record for adopting a first-class Edge/Workers tier with a minimal virtual filesystem, snapshot-oriented deployment, and capability-first web/Worker integration.
+**Purpose:** Provide a PEP-style decision record for adopting a first-class Edge/Workers tier with a minimal virtual filesystem, verified deployment metadata, and capability-first web/Worker integration.
 
 ---
 
@@ -21,7 +21,7 @@ This MEP proposes a new Molt product/runtime tier named `Molt Edge`.
 The proposal standardizes:
 
 - a minimal mountable virtual filesystem
-- snapshot-oriented deployment artifacts
+- verified execution metadata and future full-state snapshot artifacts
 - schema-first host capability boundaries
 - Cloudflare Workers as the first concrete production edge target
 
@@ -52,7 +52,10 @@ The missing piece is a clear, stable contract for how Molt should behave in thos
 ### 1. Snapshotting is the biggest leverage point
 Cloudflare's Python Workers model shows that deploy-time import execution and linear-memory snapshots are one of the best cold-start optimizations available for constrained runtimes.
 
-Molt should copy this operational pattern.
+Molt should copy this operational pattern only after it has a real resumable
+boundary and one authority for continuation, linear-memory, mutable-global,
+table, and host-resource state. Precompiled modules are the current cold-start
+mechanism.
 
 ### 2. A small VFS unlocks real parity without bloating the runtime
 Many workloads want:
@@ -83,7 +86,7 @@ Properties:
 
 - wasm-first deployment
 - strict-by-default capability model
-- snapshot-aware startup path
+- precompiled-module startup with execution-identity-aware metadata
 - target profiles for browser, WASI, and Worker hosts
 
 ### 2. Minimal VFS
@@ -109,16 +112,19 @@ Molt SHALL keep non-filesystem host services as explicit capability surfaces, in
 - storage services that do not naturally map to path semantics
 
 ### 4. Snapshot artifact
-Molt SHALL define a `molt.snapshot` artifact for edge-class deployments.
+Molt SHALL define a versioned `molt.snapshot.json` artifact for edge-class deployments.
 
-The artifact SHALL capture:
+Version 2 is a non-restorable metadata template. It SHALL record:
 
-- initialized runtime state
-- module/package manifest
+- complete linked or split-runtime execution identity, when available
 - schema registry compatibility stamp
 - mount plan
 - capability manifest
 - deterministic build metadata
+
+It SHALL NOT claim captured runtime state. A future executable snapshot format
+must bind and restore the complete continuation and runtime-state set defined by
+spec 0968.
 
 ### 5. Cloudflare-first host profile
 Molt SHALL treat Cloudflare Workers as the first concrete `Molt Edge` production target.
@@ -139,7 +145,7 @@ It does require future wasm host work to align to the standardized Edge/Workers 
 ## Security implications
 - No ambient filesystem or network authority is introduced.
 - Persistent storage remains explicit and host-defined.
-- Snapshot artifacts must exclude secrets unless explicitly requested and documented.
+- Current metadata templates must not contain secrets. Future executable snapshots must exclude secrets unless explicitly requested and documented.
 - Host boundaries remain schema-first and capability-based.
 - Rejecting arbitrary JS object proxies reduces confused-deputy and lifetime/ownership bugs.
 
@@ -148,7 +154,7 @@ It does require future wasm host work to align to the standardized Edge/Workers 
 ## Reference implementation plan
 1. Land the Edge/Workers VFS and host-capability spec.
 2. Add runtime mount abstraction and capability checks for `/bundle`, `/tmp`, and stdio.
-3. Implement snapshot artifact generation.
+3. Implement non-restorable snapshot metadata generation and admission; keep executable capture/restore deferred.
 4. Add Cloudflare Worker host adapter and integration tests.
 5. Add cold-start, size, and parity gates against representative Pyodide/wasm baselines.
 
@@ -175,7 +181,7 @@ This MEP is accepted when:
 
 - the associated Edge/Workers spec is canonicalized
 - the runtime exposes the minimal VFS
-- snapshot artifacts exist and are benchmarked
+- precompiled modules are benchmarked and snapshot metadata fails closed against executable restore
 - Cloudflare Worker target support is implemented
 - wasm/browser/Worker documentation, parity tests, and host adapters align to the new contract
 

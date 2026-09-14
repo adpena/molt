@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING, Any, NoReturn
+
+from molt.frontend.cfg_analysis import CFGEdgeKind
 
 from molt.frontend._types import (
     CFGGraph,
@@ -12,6 +15,7 @@ from molt.frontend._types import (
     build_cfg,
 )
 from molt.frontend.lowering.try_regions import try_region_id
+from molt.frontend.lowering.midend_dataflow import current_unique_result_definitions
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -23,24 +27,6 @@ else:
 
 
 class MidendCFGMixin(_MixinBase):
-    def _can_hoist_guard_pair(self, first: MoltOp, second: MoltOp) -> bool:
-        if first.kind != second.kind:
-            return False
-        if first.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
-            return False
-        if first.result.name != "none" or second.result.name != "none":
-            return False
-        if len(first.args) != len(second.args):
-            return False
-        for left, right in zip(first.args, second.args):
-            if isinstance(left, MoltValue) and isinstance(right, MoltValue):
-                if left.name != right.name:
-                    return False
-                continue
-            if left != right:
-                return False
-        return True
-
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
         if op.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
             return None
@@ -59,8 +45,13 @@ class MidendCFGMixin(_MixinBase):
     ) -> None:
         if not available:
             return
+        # SimpleIR can reuse result names before SSA construction. A new
+        # binding invalidates every guard mentioning the old value.
+        if op.result.name != "none":
+            rebound = ("v", op.result.name)
+            available.difference_update([sig for sig in available if rebound in sig[1]])
         effect_class = self._op_effect_class(op)
-        if self._is_uncertain_heap_boundary(op.kind):
+        if self._op_may_access_arbitrary_heap(op):
             available.clear()
             return
         if effect_class == "writes_heap":
@@ -160,121 +151,81 @@ class MidendCFGMixin(_MixinBase):
     def _eliminate_redundant_guards_cfg(
         self, ops: list[MoltOp]
     ) -> tuple[list[MoltOp], int, int, int]:
-        if not ops:
-            return ops, 0, 0, 0
-        cfg = build_cfg(ops)
-        control = cfg.control
-        if_to_else = control.if_to_else
-        if_to_end = control.if_to_end
-        loop_start_to_end = control.loop_start_to_end
-        try_start_to_end = control.try_start_to_end
+        with current_unique_result_definitions(self, ops):
+            if not ops:
+                return ops, 0, 0, 0
+            signatures = [self._guard_signature(op) for op in ops]
+            universe = {sig for sig in signatures if sig is not None}
+            if not universe:
+                return ops, 0, 0, 0
+            cfg = build_cfg(ops)
 
-        def process_range(
-            start: int,
-            end: int,
-            in_guards: set[tuple[Any, ...]],
-        ) -> tuple[list[MoltOp], set[tuple[Any, ...]], int, int]:
-            out: list[MoltOp] = []
-            available = set(in_guards)
-            attempted = 0
-            accepted = 0
-            i = start
-            while i < end:
-                op = ops[i]
-                if op.kind == "IF" and i in if_to_end:
-                    else_idx = if_to_else.get(i)
-                    end_if_idx = if_to_end[i]
-                    then_start = i + 1
-                    then_end = else_idx if else_idx is not None else end_if_idx
-                    then_ops, then_out, then_attempts, then_accepted = process_range(
-                        then_start,
-                        then_end,
-                        set(available),
-                    )
-                    if else_idx is not None:
-                        else_ops, else_out, else_attempts, else_accepted = (
-                            process_range(
-                                else_idx + 1,
-                                end_if_idx,
-                                set(available),
-                            )
-                        )
+            # Summarize transfer once. Fixed-point iterations use sets, never repeat
+            # producer/effect classification or mutate the instruction stream.
+            generated: dict[int, set[tuple[Any, ...]]] = {}
+            preserved: dict[int, set[tuple[Any, ...]]] = {}
+            for block in cfg.blocks:
+                gen: set[tuple[Any, ...]] = set()
+                keep = set(universe)
+                for idx in range(block.start, block.end):
+                    sig = signatures[idx]
+                    if sig is not None:
+                        gen.add(sig)
                     else:
-                        else_ops, else_out, else_attempts, else_accepted = (
-                            [],
-                            set(available),
-                            0,
-                            0,
-                        )
-                    attempted += then_attempts + else_attempts
-                    accepted += then_accepted + else_accepted
-                    out.append(op)
-                    out.extend(then_ops)
-                    if else_idx is not None:
-                        out.append(ops[else_idx])
-                        out.extend(else_ops)
-                    out.append(ops[end_if_idx])
-                    available = then_out.intersection(else_out)
-                    i = end_if_idx + 1
-                    continue
+                        self._clear_invalidated_guard_signatures(gen, ops[idx])
+                        self._clear_invalidated_guard_signatures(keep, ops[idx])
+                generated[block.id] = gen
+                preserved[block.id] = keep
 
-                if op.kind == "LOOP_START" and i in loop_start_to_end:
-                    loop_end = loop_start_to_end[i]
-                    body_ops, body_out, body_attempts, body_accepted = process_range(
-                        i + 1,
-                        loop_end,
-                        set(available),
-                    )
-                    attempted += body_attempts
-                    accepted += body_accepted
-                    out.append(op)
-                    out.extend(body_ops)
-                    out.append(ops[loop_end])
-                    # Loop may execute zero times, so only guards guaranteed on both
-                    # paths remain available after the loop region.
-                    available = available.intersection(body_out)
-                    i = loop_end + 1
-                    continue
+            # Guard success is a must-fact. Start at top away from the entry and
+            # intersect every predecessor, including backedges, before rewriting.
+            incoming = {block.id: set(universe) for block in cfg.blocks}
+            outgoing = {block.id: set(universe) for block in cfg.blocks}
+            pending = deque(sorted(cfg.reachable))
+            queued = set(pending)
+            while pending:
+                block_id = pending.popleft()
+                queued.remove(block_id)
+                preds = [
+                    pred for pred in cfg.predecessors[block_id] if pred in cfg.reachable
+                ]
+                available: set[tuple[Any, ...]] = set()
+                if block_id != 0 and preds:
+                    available = set(universe)
+                    for pred in preds:
+                        # Success facts cannot cross failure or externally
+                        # resumed execution, including coalesced normal edges.
+                        edge_kind = cfg.edge_kinds[pred, block_id]
+                        if edge_kind & (CFGEdgeKind.EXCEPTION | CFGEdgeKind.RESUME):
+                            available.clear()
+                            break
+                        available.intersection_update(outgoing[pred])
+                incoming[block_id] = available
+                result = generated[block_id] | (available & preserved[block_id])
+                if result != outgoing[block_id]:
+                    outgoing[block_id] = result
+                    for successor in cfg.successors[block_id]:
+                        if successor in cfg.reachable and successor not in queued:
+                            pending.append(successor)
+                            queued.add(successor)
 
-                if op.kind == "TRY_START" and i in try_start_to_end:
-                    try_end = try_start_to_end[i]
-                    body_ops, body_out, body_attempts, body_accepted = process_range(
-                        i + 1,
-                        try_end,
-                        set(available),
-                    )
-                    attempted += body_attempts
-                    accepted += body_accepted
-                    out.append(op)
-                    out.extend(body_ops)
-                    out.append(ops[try_end])
-                    # Try body may exit via exceptional edge, so preserve only
-                    # guards guaranteed on both normal and exceptional paths.
-                    available = available.intersection(body_out)
-                    i = try_end + 1
-                    continue
-
-                sig = self._guard_signature(op)
-                if sig is not None:
-                    attempted += 1
-                    if sig in available:
-                        accepted += 1
-                        i += 1
-                        continue
-                    available.add(sig)
-                    out.append(op)
-                    i += 1
-                    continue
-
-                self._clear_invalidated_guard_signatures(available, op)
-                out.append(op)
-                i += 1
-
-            return out, available, attempted, accepted
-
-        rewritten, _out_guards, attempted, accepted = process_range(0, len(ops), set())
-        rejected = max(0, attempted - accepted)
-        return rewritten, attempted, accepted, rejected
+            removed: set[int] = set()
+            attempted = 0
+            for block in cfg.blocks:
+                available = (
+                    set(incoming[block.id]) if block.id in cfg.reachable else set()
+                )
+                for idx in range(block.start, block.end):
+                    sig = signatures[idx]
+                    if sig is not None:
+                        attempted += 1
+                        if sig in available and block.id in cfg.reachable:
+                            removed.add(idx)
+                        available.add(sig)
+                    else:
+                        self._clear_invalidated_guard_signatures(available, ops[idx])
+            rewritten = [op for idx, op in enumerate(ops) if idx not in removed]
+            return rewritten, attempted, len(removed), attempted - len(removed)
 
     def _op_equal_for_tail_merge(self, left: MoltOp, right: MoltOp) -> bool:
         return (
@@ -344,6 +295,9 @@ class MidendCFGMixin(_MixinBase):
                     if else_idx is not None
                     else []
                 )
+                can_elide_condition = not self._op_may_access_arbitrary_heap(
+                    op
+                ) and self._op_instance_cannot_raise(op, {})
 
                 branch_choice = branch_choice_by_if_index.get(i)
                 if branch_choice is True:
@@ -357,30 +311,28 @@ class MidendCFGMixin(_MixinBase):
                     i = end_if_idx + 1
                     continue
 
-                if else_idx is not None and then_ops and else_ops:
-                    hoisted_guards = self._collect_movable_common_guards(
-                        then_ops, else_ops
-                    )
-                    self.midend_stats["guard_hoist_attempts"] += max(
-                        1, len(hoisted_guards)
-                    )
-                    if hoisted_guards:
-                        self.midend_stats["guard_hoist_accepted"] += len(hoisted_guards)
-                        for hoisted in hoisted_guards:
-                            sig = self._guard_signature(hoisted)
-                            if sig is None:
-                                continue
-                            then_ops = [
-                                op
-                                for op in then_ops
-                                if self._guard_signature(op) != sig
-                            ]
-                            else_ops = [
-                                op
-                                for op in else_ops
-                                if self._guard_signature(op) != sig
-                            ]
-                        out.extend(hoisted_guards)
+                if (
+                    else_idx is not None
+                    and then_ops
+                    and else_ops
+                    and can_elide_condition
+                ):
+                    # Only the ordered common entry prefix dominates both
+                    # branches. A matching guard later in a branch may follow
+                    # a callback, a different failure, or conditional execution.
+                    hoisted_count = 0
+                    for left, right in zip(then_ops, else_ops):
+                        if self._guard_signature(left) is None:
+                            break
+                        if not self._op_equal_for_tail_merge(left, right):
+                            break
+                        hoisted_count += 1
+                    self.midend_stats["guard_hoist_attempts"] += max(1, hoisted_count)
+                    if hoisted_count:
+                        self.midend_stats["guard_hoist_accepted"] += hoisted_count
+                        out.extend(then_ops[:hoisted_count])
+                        then_ops = then_ops[hoisted_count:]
+                        else_ops = else_ops[hoisted_count:]
                     else:
                         self.midend_stats["guard_hoist_rejected"] += 1
 
@@ -397,7 +349,7 @@ class MidendCFGMixin(_MixinBase):
                     else_ops = else_ops[:-1]
                 shared_tail.reverse()
 
-                if not then_ops and not else_ops:
+                if not then_ops and not else_ops and can_elide_condition:
                     out.extend(shared_tail)
                     i = end_if_idx + 1
                     continue
@@ -412,7 +364,8 @@ class MidendCFGMixin(_MixinBase):
                 i = end_if_idx + 1
             return out
 
-        rewritten = rewrite_range(0, len(ops))
+        with current_unique_result_definitions(self, ops):
+            rewritten = rewrite_range(0, len(ops))
         return rewritten, branch_prunes
 
     def _canonicalize_structured_regions_pre_sccp(
@@ -446,11 +399,18 @@ class MidendCFGMixin(_MixinBase):
                         if else_idx is not None
                         else []
                     )
-                    if not then_ops and not else_ops:
+                    can_elide_condition = not self._op_may_access_arbitrary_heap(
+                        op
+                    ) and self._op_instance_cannot_raise(op, {})
+                    if not then_ops and not else_ops and can_elide_condition:
                         structural_prunes += 1
                         i = end_if_idx + 1
                         continue
-                    if else_idx is not None and then_ops == else_ops:
+                    if (
+                        else_idx is not None
+                        and then_ops == else_ops
+                        and can_elide_condition
+                    ):
                         structural_prunes += 1
                         out.extend(then_ops)
                         i = end_if_idx + 1
@@ -466,10 +426,8 @@ class MidendCFGMixin(_MixinBase):
                 if op.kind == "LOOP_START" and i in loop_start_to_end:
                     loop_end = loop_start_to_end[i]
                     body = rewrite_range(i + 1, loop_end)
-                    if not body:
-                        structural_prunes += 1
-                        i = loop_end + 1
-                        continue
+                    # An empty body does not prove termination. The backedge
+                    # remains observable even when no value is produced.
                     out.append(op)
                     out.extend(body)
                     out.append(ops[loop_end])
@@ -491,7 +449,8 @@ class MidendCFGMixin(_MixinBase):
                 i += 1
             return out
 
-        rewritten = rewrite_range(0, len(ops))
+        with current_unique_result_definitions(self, ops):
+            rewritten = rewrite_range(0, len(ops))
         return rewritten, structural_prunes
 
     def _compute_postdominators_for_cfg(self, cfg: CFGGraph) -> dict[int, set[int]]:
@@ -1245,7 +1204,10 @@ class MidendCFGMixin(_MixinBase):
             terminal_start = len(rewritten)
             if rewritten and rewritten[-1].kind in {"ret", "ret_void", "RETURN"}:
                 terminal_start -= 1
-                if terminal_start > 0 and rewritten[terminal_start - 1].kind == "TRACE_EXIT":
+                if (
+                    terminal_start > 0
+                    and rewritten[terminal_start - 1].kind == "TRACE_EXIT"
+                ):
                     terminal_start -= 1
             rewritten[terminal_start:terminal_start] = trailing_closes
 

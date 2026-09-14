@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection
 import functools
 import hashlib
 import json
@@ -13,12 +13,18 @@ from molt.cli.artifact_sync import (
     _read_artifact_sync_state,
     _write_artifact_sync_payload,
 )
-from molt.cli.cache_fingerprints import _frontend_semantic_tooling_fingerprint
+from molt.cli.cache_fingerprints import (
+    _frontend_semantic_tooling_fingerprint,
+    _source_tree_fingerprint_transaction,
+)
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ImportScanMode,
+    _CompleteImportScan as _PersistedImportScan,
+    _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
     _ImportAdmissionPolicy,
 )
 from molt.cli.runtime_paths import _build_state_root
@@ -32,6 +38,7 @@ class _PersistedModuleGraphState(NamedTuple):
     graph: dict[str, Path]
     explicit_imports: set[str]
     dirty_modules: set[str]
+    scan_authority: _ModuleGraphScanAuthority
 
 
 @functools.lru_cache(maxsize=4096)
@@ -41,10 +48,12 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 9
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 11
 
 
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 8
+# v8 allowed imports-only producers to publish a false empty execution list.
+# There is no sound way to distinguish those rows from complete empty scans.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 9
 
 
 def _module_graph_policy_digest(
@@ -79,9 +88,14 @@ def _module_graph_cache_key(
     compiler_fingerprint: str,
     target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
     capability_config_digest: str = "",
+    *,
+    full_scan_roots: bool,
+    scan_input_digest: str = "",
 ) -> str:
     payload: dict[str, Any] = {
         "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
+        "full_scan_roots": full_scan_roots,
+        "scan_input_digest": scan_input_digest,
         "compiler_fingerprint": compiler_fingerprint,
         "entry_path": str(Path(entry_path).resolve()),
         "roots": [str(Path(path).resolve()) for path in roots],
@@ -141,6 +155,7 @@ def _module_graph_cache_path(
     entry_path: Path,
     *,
     roots: list[Path],
+    full_scan_roots: bool,
     module_roots: list[Path],
     stdlib_root: Path,
     skip_modules: set[str],
@@ -151,6 +166,7 @@ def _module_graph_cache_path(
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    scan_input_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -172,15 +188,19 @@ def _module_graph_cache_path(
         _frontend_semantic_tooling_fingerprint(),
         target_python.tag,
         capability_config_digest=capability_config_digest,
+        full_scan_roots=full_scan_roots,
+        scan_input_digest=scan_input_digest,
     )
     return root / f"{entry_path.stem}.{cache_key}.json"
 
 
+@_source_tree_fingerprint_transaction()
 def _read_persisted_module_graph(
     project_root: Path,
     entry_path: Path,
     *,
     roots: list[Path],
+    full_scan_roots: bool,
     module_roots: list[Path],
     stdlib_root: Path,
     skip_modules: set[str],
@@ -192,11 +212,15 @@ def _read_persisted_module_graph(
     resolution_cache: _module_resolution._ModuleResolutionCache | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    scan_input_digest: str = "",
+    source_input_authority: _ModuleGraphScanAuthority | None = None,
 ) -> _PersistedModuleGraphState | None:
     cache_path = _module_graph_cache_path(
         project_root,
         entry_path,
         roots=roots,
+        full_scan_roots=full_scan_roots,
+        scan_input_digest=scan_input_digest,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules=skip_modules,
@@ -214,6 +238,8 @@ def _read_persisted_module_graph(
     if (
         not isinstance(payload, dict)
         or payload.get("version") != _MODULE_GRAPH_CACHE_SCHEMA_VERSION
+        or payload.get("full_scan_roots") is not full_scan_roots
+        or payload.get("scan_input_digest", "") != scan_input_digest
         or payload.get("compiler_fingerprint")
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("capability_config_digest", "") != capability_config_digest
@@ -224,6 +250,7 @@ def _read_persisted_module_graph(
         return None
     graph: dict[str, Path] = {}
     dirty_modules: set[str] = set()
+    scan_sources: list[_ModuleSourceScanAuthority] = []
     for item in raw_modules:
         if not isinstance(item, dict):
             return None
@@ -241,6 +268,38 @@ def _read_persisted_module_graph(
         ):
             return None
         path = Path(path_text)
+        mode = item.get("scan_mode")
+        if mode not in {"full", "module_init", "module_init_static_helpers"}:
+            return None
+        is_package = item.get("is_package")
+        source_input = (
+            source_input_authority.by_module.get(module_name)
+            if source_input_authority is not None
+            else None
+        )
+        if source_input is not None and source_input.source_path != path.resolve():
+            return None
+        expected_package = (
+            source_input.is_package
+            if source_input is not None
+            else path.name == "__init__.py"
+        )
+        if not isinstance(is_package, bool) or is_package != expected_package:
+            return None
+        from molt.cli.module_import_scanner import _module_import_scan_mode
+
+        expected_mode = _module_import_scan_mode(
+            module_name,
+            full_scan=full_scan_roots and path.resolve() == entry_path.resolve(),
+            static_import_helper_modules=stdlib_static_import_helper_modules,
+        )
+        if mode != expected_mode or module_name in graph:
+            return None
+        scan_sources.append(
+            _ModuleSourceScanAuthority(
+                module_name, path, cast(ImportScanMode, mode), is_package
+            )
+        )
         if not _module_resolution._case_exact_file(path):
             dirty_modules.add(module_name)
             graph[module_name] = path
@@ -262,6 +321,8 @@ def _read_persisted_module_graph(
         ):
             dirty_modules.add(module_name)
         graph[module_name] = path
+    if not any(path.resolve() == entry_path.resolve() for path in graph.values()):
+        return None
     raw_explicit_imports = payload.get("explicit_imports", [])
     if not isinstance(raw_explicit_imports, list) or not all(
         isinstance(name, str) for name in raw_explicit_imports
@@ -271,14 +332,17 @@ def _read_persisted_module_graph(
         graph=graph,
         explicit_imports=set(cast(list[str], raw_explicit_imports)),
         dirty_modules=dirty_modules,
+        scan_authority=_ModuleGraphScanAuthority(tuple(scan_sources)),
     )
 
 
+@_source_tree_fingerprint_transaction()
 def _write_persisted_module_graph(
     project_root: Path,
     entry_path: Path,
     *,
     roots: list[Path],
+    full_scan_roots: bool,
     module_roots: list[Path],
     stdlib_root: Path,
     skip_modules: set[str],
@@ -288,10 +352,13 @@ def _write_persisted_module_graph(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     graph: dict[str, Path],
+    scan_authority: _ModuleGraphScanAuthority,
     explicit_imports: set[str],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    scan_input_digest: str = "",
 ) -> None:
+    scan_authority.validate_graph(graph)
     modules: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
         if not _module_resolution._case_exact_file(path):
@@ -303,6 +370,8 @@ def _write_persisted_module_graph(
         modules.append(
             {
                 "module": module_name,
+                "scan_mode": scan_authority.mode_for(module_name, path),
+                "is_package": scan_authority.by_module[module_name].is_package,
                 "path": str(path),
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
@@ -311,6 +380,8 @@ def _write_persisted_module_graph(
         )
     payload = {
         "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
+        "full_scan_roots": full_scan_roots,
+        "scan_input_digest": scan_input_digest,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "capability_config_digest": capability_config_digest,
         "modules": modules,
@@ -320,6 +391,8 @@ def _write_persisted_module_graph(
         project_root,
         entry_path,
         roots=roots,
+        full_scan_roots=full_scan_roots,
+        scan_input_digest=scan_input_digest,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
         skip_modules=skip_modules,
@@ -335,7 +408,8 @@ def _write_persisted_module_graph(
     _write_cached_json_object(cache_path, payload)
 
 
-def _read_persisted_import_scan_payload(
+@_source_tree_fingerprint_transaction()
+def _read_persisted_import_scan_record(
     project_root: Path,
     path: Path,
     *,
@@ -345,7 +419,7 @@ def _read_persisted_import_scan_payload(
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
-) -> dict[str, Any] | None:
+) -> _PersistedImportScan | None:
     cache_path = _import_scan_cache_path(
         project_root,
         path,
@@ -362,6 +436,9 @@ def _read_persisted_import_scan_payload(
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint")
         != _frontend_semantic_tooling_fingerprint()
+        or payload.get("module_name") != module_name
+        or payload.get("is_package") != is_package
+        or payload.get("target_python") != target_python.tag
         or payload.get("import_scan_mode") != import_scan_mode
         or payload.get("capability_config_digest", "") != capability_config_digest
     ):
@@ -373,7 +450,26 @@ def _read_persisted_import_scan_payload(
             return None
     if not _module_source._payload_source_matches(payload, path, path_stat):
         return None
-    return payload
+    imports = payload.get("imports")
+    if not isinstance(imports, list) or not all(
+        isinstance(item, str) for item in imports
+    ):
+        return None
+    raw_executions = payload.get("source_executions")
+    if not isinstance(raw_executions, list):
+        return None
+    executions: list[tuple[str | None, Path]] = []
+    for raw_execution in raw_executions:
+        if not isinstance(raw_execution, dict):
+            return None
+        execution_module = raw_execution.get("module")
+        execution_path = raw_execution.get("path")
+        if (
+            execution_module is not None and not isinstance(execution_module, str)
+        ) or not isinstance(execution_path, str):
+            return None
+        executions.append((execution_module, Path(execution_path)))
+    return _PersistedImportScan(tuple(imports), tuple(executions))
 
 
 def _read_persisted_import_scan(
@@ -387,7 +483,7 @@ def _read_persisted_import_scan(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> tuple[str, ...] | None:
-    payload = _read_persisted_import_scan_payload(
+    record = _read_persisted_import_scan_record(
         project_root,
         path,
         module_name=module_name,
@@ -397,16 +493,10 @@ def _read_persisted_import_scan(
         target_python=target_python,
         capability_config_digest=capability_config_digest,
     )
-    if payload is None:
-        return None
-    imports = payload.get("imports")
-    if not isinstance(imports, list) or not all(
-        isinstance(item, str) for item in imports
-    ):
-        return None
-    return tuple(imports)
+    return None if record is None else record.imports
 
 
+@_source_tree_fingerprint_transaction()
 def _write_persisted_import_scan(
     project_root: Path,
     path: Path,
@@ -414,8 +504,7 @@ def _write_persisted_import_scan(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
-    imports: Iterable[str],
-    source_executions: Iterable[tuple[str | None, Path]] = (),
+    scan: _PersistedImportScan,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> None:
@@ -443,54 +532,14 @@ def _write_persisted_import_scan(
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
-        "imports": list(imports),
+        "imports": list(scan.imports),
         "source_executions": [
             {
                 "module": execution_module,
                 "path": os.fspath(execution_path.resolve()),
             }
-            for execution_module, execution_path in source_executions
+            for execution_module, execution_path in scan.source_executions
         ],
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload)
-
-
-def _read_persisted_source_executions(
-    project_root: Path,
-    path: Path,
-    *,
-    module_name: str,
-    is_package: bool,
-    import_scan_mode: ImportScanMode,
-    path_stat: os.stat_result | None = None,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-) -> tuple[tuple[str | None, Path], ...] | None:
-    payload = _read_persisted_import_scan_payload(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        path_stat=path_stat,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
-    )
-    if payload is None:
-        return None
-    raw_executions = payload.get("source_executions")
-    if not isinstance(raw_executions, list):
-        return None
-    executions: list[tuple[str | None, Path]] = []
-    for raw_execution in raw_executions:
-        if not isinstance(raw_execution, dict):
-            return None
-        execution_module = raw_execution.get("module")
-        execution_path = raw_execution.get("path")
-        if (
-            execution_module is not None and not isinstance(execution_module, str)
-        ) or not isinstance(execution_path, str):
-            return None
-        executions.append((execution_module, Path(execution_path)))
-    return tuple(executions)

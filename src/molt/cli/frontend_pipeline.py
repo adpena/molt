@@ -11,6 +11,7 @@ from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence,
 
 from molt.type_facts import TypeFacts, load_type_facts
 
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_execution as _frontend_execution
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import typecheck as _typecheck
@@ -171,6 +172,8 @@ def _prepare_build_module_outputs(
     project_root: Path,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
     try:
+        if prepared_module_graph.target != target:
+            raise ValueError("prepared source closure target changed before materialization")
         import_plan = _materialize_import_plan(
             prepared_module_graph=prepared_module_graph,
             module_reasons=module_reasons,
@@ -207,6 +210,7 @@ def _prepare_build_module_outputs(
     ), None
 
 
+@_source_tree_fingerprint_transaction()
 def _prepare_frontend_analysis(
     *,
     module_graph: Mapping[str, Path],
@@ -958,6 +962,7 @@ def _prepare_frontend_stage_state(
     )
 
 
+@_source_tree_fingerprint_transaction()
 def _prepare_frontend_pipeline(
     *,
     prepared_build_preamble: _PreparedBuildPreamble,

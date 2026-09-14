@@ -343,6 +343,7 @@ import appModule from "./app.wasm";
 const {
   callableTableFromModule,
   callableTableSignature,
+  runtimeExceptionPending,
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
@@ -1359,8 +1360,15 @@ export default {
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
+      if (runtimeExceptionPending(rtInstance)) {
+        throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before startup");
+      }
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
+      else throw new Error("missing application startup export");
+      if (runtimeExceptionPending(rtInstance)) {
+        throw new Error("MOLT_APP_BOOTSTRAP_FAILED: application returned with a pending runtime exception");
+      }
     } catch (err) {
       if (err instanceof ProcExit) procExit = err;
       else pendingError = err;

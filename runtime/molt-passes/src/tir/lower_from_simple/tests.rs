@@ -411,6 +411,32 @@ fn transport_hints_do_not_seed_canonical_types() {
 }
 
 #[test]
+fn source_origins_survive_removed_markers_without_mutating_the_input() {
+    for explicit in [None, Some(91)] {
+        let mut constant = op_val_out("const", 7, "value");
+        constant.source_op_idx = explicit;
+        let func = make_func(
+            "source_origin_before_marker_removal",
+            &[],
+            vec![op("drop_inserted"), constant, op_args("ret", &["value"])],
+        );
+        let tir = lower_to_tir(&func);
+        let constant = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::ConstInt)
+            .unwrap();
+        assert_eq!(
+            constant.source_op_index(),
+            Some(explicit.unwrap_or(1) as usize)
+        );
+        assert_eq!(func.ops[1].source_op_idx, explicit);
+        assert_eq!(func.ops[0].source_op_idx, None);
+    }
+}
+
+#[test]
 fn predicate_return_contracts_require_exact_not_annotated_operands() {
     for kind in ["eq", "ne", "lt", "le", "gt", "ge"] {
         let mut source = make_func(

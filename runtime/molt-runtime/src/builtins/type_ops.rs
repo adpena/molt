@@ -314,7 +314,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 // Every exception owns an explicit common-header class edge.
                 // A missing edge is corrupt state, not permission to synthesize
                 // type identity from the display name.
-                TYPE_ID_EXCEPTION => 0,
+                TYPE_ID_EXCEPTION | crate::TYPE_ID_NATIVE_DESCRIPTOR => 0,
                 TYPE_ID_FUNCTION => {
                     let class_bits = object_class_bits(ptr);
                     if class_bits != 0 {

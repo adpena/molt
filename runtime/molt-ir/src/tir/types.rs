@@ -2,7 +2,7 @@
 /// values start as DynBox and get refined to concrete types.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum TirType {
-    // Unboxed scalars (register-resident)
+    // Semantic scalar families; exact provenance and Repr own physical storage.
     I64,
     F64,
     Bool,
@@ -62,6 +62,16 @@ pub struct FuncSignature {
 }
 
 impl TirType {
+    /// Remove explicit storage wrappers without asserting exact builtin
+    /// provenance or authorizing an unboxed physical representation.
+    pub fn semantic_type(&self) -> &Self {
+        let mut ty = self;
+        while let Self::Box(inner) = ty {
+            ty = inner;
+        }
+        ty
+    }
+
     /// Lattice meet for SSA join points.
     ///
     /// Returns the most specific common supertype of `self` and `other`.
@@ -373,6 +383,22 @@ fn split_top_level_commas(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_type_removes_only_storage_wrappers() {
+        for ty in [
+            TirType::Bool,
+            TirType::BigInt,
+            TirType::Bytes,
+            TirType::DynBox,
+            TirType::UserClass("Subclass".into()),
+            TirType::List(Box::new(TirType::I64)),
+        ] {
+            let boxed = TirType::Box(Box::new(TirType::Box(Box::new(ty.clone()))));
+            assert_eq!(boxed.semantic_type(), &ty);
+            assert_eq!(ty.semantic_type(), &ty);
+        }
+    }
 
     #[test]
     fn meet_identical_types() {

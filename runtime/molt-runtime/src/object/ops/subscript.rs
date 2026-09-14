@@ -954,6 +954,9 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
     })
 }
 
+/// Statement operation: successful builtin mutations return the borrowed
+/// container without retaining it. Callers must inspect exception state, not
+/// treat the ABI return as a newly owned value (StoreIndex has zero IR results).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

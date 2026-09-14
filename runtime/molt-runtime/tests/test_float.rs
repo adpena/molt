@@ -4,10 +4,9 @@ use molt_obj_model::MoltObject;
 use std::f64::consts::PI;
 use std::sync::Once;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/test_float"
+));
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;

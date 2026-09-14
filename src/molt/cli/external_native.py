@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import contextlib
 import json
 import os
@@ -70,7 +69,11 @@ from molt.cli.source_extension_object_closure import (
     SourceExtensionObjectClosureError,
     validate_source_extension_object_closure,
 )
-from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import (
+    TargetPythonVersion,
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_source_for_target,
+)
 
 
 def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:
@@ -1185,9 +1188,10 @@ def _validate_external_package_native_artifact(
 
     def _package_module_imports(module_name: str, source_path: Path) -> set[str]:
         try:
-            tree = ast.parse(
+            tree = _parse_source_for_target(
                 source_path.read_text(encoding="utf-8", errors="replace"),
                 filename=str(source_path),
+                target_python=expected_target_python,
             )
         except (OSError, SyntaxError) as exc:
             errors.append(
@@ -1200,6 +1204,7 @@ def _validate_external_package_native_artifact(
                 module_name=module_name,
                 is_package=source_path.name == "__init__.py",
                 import_scan_mode="module_init",
+                target_python=expected_target_python,
             )
         )
         return {

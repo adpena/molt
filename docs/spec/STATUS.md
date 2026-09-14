@@ -209,7 +209,7 @@ the implementation. For forward-looking priorities, use
   generated `ALL_OPCODES`, and typed `opcode_effects_table` facts, so
   `effects.rs` no longer carries a pass-local opcode classifier.
 - Refcount elimination preserves runtime destruction in pre- and post-drop
-  pipelines. Only proven stack references and forward retain/release pairs on
+  pipelines. Only proven nonheap/stack references and forward retain/release pairs on
   callback-free, exception-free execution are removed; cross-block pairing
   requires an unconditional one-to-one edge. The opcode-only deferred-RC and
   per-block direct-Free lanes were deleted. Binary-image heap-exposure categories
@@ -1090,11 +1090,12 @@ the implementation. For forward-looking priorities, use
   disabling unrelated proven-float locals in the same function. The raw-bool
   shadow lane has been removed; non-primary bools stay boxed in their main I64
   variables.
-  Native fixed-layout field stores now share a single direct-write proof for
-  fresh stack and sized heap objects: `store_init` is direct for non-heap
-  values, later `store` is direct only when the slot's prior direct write is
-  known non-heap, and any unknown/control/escaping use drops the object from
-  the direct-write set.
+  Native fixed-layout field stores consume one shared exact-site pristine-slot
+  plan for sized owned objects. `store` is the sole assignment spelling;
+  initialization and direct neutral-write specialization require current
+  allocation/alias/value facts. Unknown, callback, control or escaping uses
+  revoke the fact. WASM and LLVM retain admitted scalar inline writes while
+  owning or dictionary-backed writes use the ordinary runtime setter.
   Function-local loops cache same-module stable class bindings when the whole
   module proves that the class name is defined once, is not rebound or deleted,
   does not escape through `globals()`/`vars()`, and keeps a stable layout. The

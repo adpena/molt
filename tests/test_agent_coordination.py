@@ -5,7 +5,99 @@ import os
 from pathlib import Path
 import sys
 
+import pytest
+
 from tools import agent_coordination
+
+
+def _identity_fixture_git(repo: Path, *arguments: str) -> str:
+    result = agent_coordination._run_context_command(
+        "git.fixture",
+        ("git", "-c", f"core.hooksPath={repo / '.identity-test-no-hooks'}", *arguments),
+        cwd=repo,
+    )
+    assert result.ok, result.error_payload()
+    return result.stdout.strip()
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_coordination_record_git_identity_in_linked_worktree(
+    monkeypatch, tmp_path: Path, detached: bool
+) -> None:
+    repo = tmp_path / "main checkout"
+    repo.mkdir()
+    _identity_fixture_git(repo, "init", "--initial-branch=main")
+    commit_arguments = (
+        "-c",
+        "user.name=Coordination Test",
+        "-c",
+        "user.email=coordination@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "identity fixture",
+    )
+    _identity_fixture_git(repo, *commit_arguments)
+    main_head = _identity_fixture_git(repo, "rev-parse", "HEAD")
+    linked = tmp_path / "linked checkout"
+    _identity_fixture_git(
+        repo, "worktree", "add", "-b", "feature/identity", str(linked)
+    )
+    # A different worktree HEAD catches accidentally reading the common HEAD.
+    _identity_fixture_git(linked, *commit_arguments)
+    head = _identity_fixture_git(linked, "rev-parse", "HEAD")
+    assert head != main_head
+    _identity_fixture_git(repo, "pack-refs", "--all")
+    if detached:
+        _identity_fixture_git(linked, "checkout", "--detach", head)
+    assert (linked / ".git").is_file()
+    expected_branch = "detached" if detached else "feature/identity"
+
+    monkeypatch.setattr(agent_coordination, "environment_snapshot", lambda _root: {})
+    record = agent_coordination.build_record(
+        repo_root=linked,
+        task="identity",
+        report_path=linked / "logs" / "agents" / "identity" / "report.md",
+        role="implementer",
+        lane="parent-owned-proof",
+        status="running",
+        target_root="target",
+        owned_paths=["tools/agent_coordination.py"],
+        agent="agent-test",
+        session="identity-test",
+        created_at="2026-09-14T00:00:00Z",
+    )
+    assert (record["branch"], record["commit"]) == (expected_branch, head[:12])
+    context = agent_coordination._git_agent_context(linked, [])
+    assert (context["branch"], context["head"]) == (expected_branch, head)
+    assert agent_coordination.read_git_identity(repo) == ("main", main_head[:12])
+
+
+def test_read_git_identity_without_repository(tmp_path: Path) -> None:
+    assert agent_coordination.read_git_identity(tmp_path) == ("unknown", "unknown")
+
+
+def test_read_git_identity_with_unborn_branch(tmp_path: Path) -> None:
+    _identity_fixture_git(tmp_path, "init", "--initial-branch=unborn")
+    assert agent_coordination.read_git_identity(tmp_path) == ("unborn", "unknown")
+
+
+def test_read_git_identity_preserves_command_failure_as_unknown(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def failed(source, command, *, cwd, timeout=30.0):
+        return agent_coordination.ContextCommandResult(
+            source=source,
+            command=tuple(command),
+            return_code=None,
+            failure_kind="spawn_error",
+            failure_message="Git unavailable",
+        )
+
+    monkeypatch.setattr(agent_coordination, "_run_context_command", failed)
+    assert agent_coordination.read_git_identity(tmp_path) == ("unknown", "unknown")
 
 
 def test_agent_coordination_init_writes_report_and_json(

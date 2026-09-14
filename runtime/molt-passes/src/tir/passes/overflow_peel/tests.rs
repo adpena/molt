@@ -446,12 +446,12 @@ fn rich_comparison_guard_cannot_observe_wrapped_values_or_be_replayed() {
             comparison.opcode = opcode;
             comparison.operands[1] = ValueId(0);
             let exact = crate::tir::type_refine::extract_exact_scalar_map(&func);
-            let facts = crate::tir::predicate_semantics::predicate_facts_for_op(
+            let facts = crate::tir::op_semantics::op_instance_facts_for_op(
                 func.blocks[&guard].ops.last().unwrap(),
                 &exact,
             )
             .unwrap();
-            assert_eq!(facts.result_type, TirType::DynBox);
+            assert_eq!(facts.result_type, Some(TirType::DynBox));
             assert!(!facts.effects.effect_free);
             let before = format!("{func:?}");
             assert_eq!(

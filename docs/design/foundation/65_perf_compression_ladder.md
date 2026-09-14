@@ -256,19 +256,19 @@ Borrowed-in] }` so an unmapped/unknown kind defaults to `Borrowed result` fail-c
 typed contract (doc 46 §4.4, council "Free is demoted") is the lowering target.
 
 **Producers:** `alias_analysis.rs` (alias roots, borrow provenance), the generated
-`borrow_signature` column, `escape_analysis.rs` (the escape facts that promote
-`Owned`→stack). **Consumers:** drop placement (replaces the insert-then-remove of
-`drop_insertion.rs` + `refcount_elim.rs` Steps 5/6, doc 27 §0), **CallFacts Rung 2**
-(`no_alloc`/`no_escape_args` become `Proven` from the same escape facts), reuse/FBIP
-future end-to-end reuse/FBIP, and the native value-tracking *deletion* (doc 51 §5, the dead
-legacy lane).
+`borrow_signature` column, and shared capture analysis. Capture facts do not
+promote `Owned` to stack or prove allocation freedom. **Consumers:** Python
+lifetime placement, balanced RC cancellation, and identity-bound call summaries.
+Heap-RC stripping and `DecRef→Free` Steps 5/6 have been deleted; Designs 20/49 own
+the current contract. Future reuse/FBIP and native value-tracking retirement must
+preserve that contract rather than resurrect the deleted lanes.
 
-**Benchmark class healed:** `bench_struct` 0.04× (per-iter alloc + RC on a non-escaping
-`Point(i,i+1)` — `Owned`-proven-unique → stack + zero RC), `bench_gc_pressure`,
+**Proposed benchmark class, not current acceptance:** `bench_struct` (per-iteration
+allocation and RC; uniqueness alone does not prove zero-RC lifetime), `bench_gc_pressure`,
 `bench_exception_heavy`'s ~22% `molt_inc_ref`/`molt_dec_ref` samples (doc 46 §3 Q3),
-every allocation-in-loop benchmark. **PyPy/Codon gap closed:** Perceus garbage-free RC
-is the mechanism PyPy gets from its GC + escape and Codon from value semantics; this is
-the dynamic-RC reference closer (doc 51 §5 "borrow inference").
+every allocation-in-loop benchmark. These are optimization targets, not evidence
+that Molt closes a PyPy/Codon performance gap. Compare measured allocation,
+destruction, binary size and execution costs on the accepted target matrix.
 
 **Phases / gates** (doc 27 §7 has the full validator set):
 - 1a — promote `ownership_lattice_min` to the full four-point per-(root,point) carrier;

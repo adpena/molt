@@ -1,11 +1,16 @@
 # RC Ownership & Drop Insertion Substrate (Design 20)
 
-**Document status**: Implementation-ready design.
+**Document status**: Implemented ownership model with historical activation notes;
+current consolidation changes still require source-bound target execution.
 **Scope**: All refcounting backends — native/Cranelift, LLVM, WASM. Luau is GC-managed (no-op). This is a complete structural arc, not a partial fix.
 
 ---
 
-## Executive Summary
+## Original problem and design rationale
+
+This section records the pre-insertion failure that motivated the design, not
+the current activation state. Current ownership contracts follow in section 1;
+pipeline admission belongs to `tir/pass_manager.rs` and executable proof receipts.
 
 Every expression-result heap object created in a molt-compiled function is allocated with `ref_count = 1` (`object/mod.rs:1228` for `alloc_object`, `:1155` for `alloc_object_zeroed`) and **never decremented**. The runtime's `dec_ref` machinery, the TIR `DecRef` opcode, and the `molt_dec_ref_obj` C-ABI function all exist and are correct in isolation; what is missing is the compiler pass that *inserts* `DecRef` ops for expression temporaries in the first place.
 
@@ -37,14 +42,14 @@ The following table specifies the ownership state of the **result** of each majo
 | OpCode class | Result | Operands |
 |---|---|---|
 | `Add`, `Sub`, `Mul`, `Div`, `FloorDiv`, `Mod`, `Pow`, `Neg`, `Pos`, `InplaceAdd`, `InplaceSub`, `InplaceMul` | Owned (fresh allocation when BigInt/str result) | Borrowed |
-| `CheckedAdd` | Raw i64 pair (RawI64Safe, no heap) | Borrowed |
-| `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `Is`, `IsNot`, `In`, `NotIn` | Owned if result is a heap bool, else inline | Borrowed |
+| `CheckedAdd`, `CheckedMul` | Checked raw i64 result (RawI64FullDeopt) plus Bool overflow slot; no heap | Borrowed |
+| `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge` | Owned when a rich-comparison callback returns a heap object; exact primitive comparisons return Bool | Borrowed |
+| `Is`, `IsNot`, `In`, `NotIn`, `Not`, `Bool` | Bool result, no heap obligation; truth/containment callbacks can still have effects or raise | Borrowed |
 | `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr` | Owned (BigInt result possible) | Borrowed |
-| `And`, `Or`, `Not`, `Bool` | Owned (the Python `True`/`False` objects are immortal; inline bool is unboxed; DynBox bool is borrowed-and-inc'd by the runtime op) | Borrowed |
+| `And`, `Or` | Selected operand, not necessarily Bool; retain its owned result obligation when heap-backed | Borrowed |
 | `Alloc`, `ObjectNewBound` | Owned (heap-allocated, rc=1) | N/A |
-| `ObjectNewBoundStack` | Stack slot, no RC | N/A |
-| `StackAlloc` | Stack, no RC | N/A |
-| `Free` | None | Takes-ownership (frees unconditionally — only emitted by `refcount_elim` Step 6 for proven-unique values) |
+| `StackAlloc` | Unsupported boxed raw-stack contract; rejected at target admission | N/A |
+| `Free` | None | Explicit raw-storage release; refcount elimination never substitutes it for observable object destruction |
 | `LoadAttr`, `Index`, `ModuleGetAttr`, `ModuleImportFrom`, `ModuleGetGlobal`, `ModuleGetName`, `ModuleCacheGet` | Owned (runtime ops inc-ref before returning) | Borrowed |
 | `StoreAttr`, `StoreIndex`, `ModuleSetAttr`, `ModuleCacheSet` | None | Borrowed (the container inc-refs the value it stores; the caller keeps its own ref) |
 | `DelAttr`, `DelIndex`, `ModuleDelGlobal`, `ModuleDelGlobalIfPresent`, `ModuleCacheDel` | None | Borrowed |
@@ -76,7 +81,7 @@ The following table specifies the ownership state of the **result** of each majo
 
 - Live-across-yield values must be inc-ref'd before the yield and dec-ref'd on frame teardown (gen.close()/forced drop), not at the next use.
 - Values used only *before* the yield are still dropped at their last use before the yield.
-- The suspension opcodes themselves are `is_rc_barrier` (alias_analysis.rs already classifies them as such) and `refcount_heap_exposure_opcodes` in `op_kinds.toml`, consumed by `is_heap_exposing` in `refcount_elim.rs`.
+- Suspension and callback boundaries are shared alias-analysis RC barriers. Refcount elimination cancels only retain-before-release pairs on the same execution path; frame-local capture state never authorizes deleting a heap object's final release.
 
 Frame teardown (`AllocTask` frame with gen.close()) must dec-ref all live frame slots. This is handled by the existing coroutine finalizer path in `async_rt/generators.rs`; the compiler must ensure the frame *has* those refs at suspension — which the IncRef-before-yield rule above guarantees.
 
@@ -97,7 +102,8 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 | `molt_dec_ref_obj(bits)` | Releases one reference to `bits`; may free | void |
 | `molt_get_attr_name(obj, name)` | Borrowed | Owned |
 | `molt_store_attr_name(obj, name, val)` | Borrowed | void |
-| `molt_object_new_bound(class_bits)` | Borrowed (class is module-resident) | Owned |
+| `molt_object_new_bound(class_bits)` | Borrowed (instance retains class) | Owned |
+| `molt_object_init_stack(storage, class_bits, payload_size)` (unsafe runtime API, not a compiler opcode) | Caller proves backing outlives every owner; borrowed class | Owned; runtime validates stable class lifetime before touching caller storage |
 | Compiled function call `f(a, b, ...)` | Borrowed (callee borrows all args) | Owned |
 | `molt_iter_next(iter)` | Borrowed | Owned |
 | Generator `_poll(frame, send_val)` | Borrowed | Owned |
@@ -108,13 +114,17 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 
 ### 2.1 Insertion Point Choice
 
-Drop insertion runs as a TIR pass **post-optimization, pre-lowering**, in the `build_default_pipeline` ordering after `check_exception_elim` and `dce` but before the `lower_to_simple` round-trip. This position guarantees:
+Drop insertion runs **post-optimization, pre-lowering**, in the separate terminal
+`build_drop_pipeline`, not the optimization pipeline. `tir/pass_manager.rs` owns
+the executable pass order. This position guarantees:
 
 1. SSA is stable (no further CFG or ops mutations).
 2. Representation facts (`repr_by_value`) are computed (the `ValueRange`/`Repr` analyses ran during optimization).
 3. Liveness analysis over the final SSA is sound.
 4. The result (IncRef/DecRef ops) round-trips through `lower_to_simple` (tir/lower_to_simple.rs:1898-1907 already maps `OpCode::IncRef`/`DecRef` to `"inc_ref"`/`"dec_ref"` SimpleIR kinds).
-5. The downstream `refcount_elim` pass, which runs *during* optimization (currently pass 12 in the 28-pass sequence), will subsequently be moved to *also* run post-insertion to elide the ops the inserter places redundantly (the existing elim pass is fully correct and will handle this).
+5. The terminal pipeline runs `refcount_elim` after insertion, preserving final
+   destruction while canceling proved neutral retain/release pairs. It also runs
+   during optimization; neither invocation uses nonescape as release permission.
 
 Insertion point (b) is confirmed as the right choice. Options (a) (frontend pre-optimization) and (c) (per-backend) are rejected: (a) requires all optimization passes to maintain RC invariants under transformations — a large unsound surface, (c) triplicates logic and is the root cause of the current state.
 
@@ -123,10 +133,12 @@ Insertion point (b) is confirmed as the right choice. Options (a) (frontend pre-
 The `DropInsertion` pass consumes:
 - `ImmediateDoms` and `PredMap` (from `AnalysisManager`, tir/analysis/mod.rs) — for dominator-aware liveness backpropagation.
 - `LoopForest` — to identify back-edges and loop-exit edges where loop-carried phis must be dropped.
-- `AliasAnalysis` (tir/passes/alias_analysis.rs) — for `is_rc_barrier` queries that bound where a value is safe to hold across, and for `escape_state` to know which values have stack-only lifetime.
+- `AliasAnalysis` — for RC barriers, exact aliases, and conservative capture
+  obligations. Escape state never establishes stack-only lifetime.
 - `ValueRange` / `Repr` information threaded from `representation_plan.rs` — to filter out raw scalar values (`Repr::RawI64Safe`, `Repr::Bool`, `Repr::FloatUnboxed`) that carry no heap reference.
 
-The pass is `Mutates::OpsOnly` because it only inserts `DecRef`/`IncRef` ops within blocks and never changes the block set, edges, or terminators.
+The pass is `Mutates::Cfg`: mixed-ownership joins may require critical-edge
+splitting. The pass manager invalidates CFG analyses before later consumers.
 
 **Critical note**: `IncRef`/`DecRef` opcodes are already listed as `opcode_is_side_effecting` in `effects.rs:171-172`. The `OpsOnly` constraint in `pass_manager.rs:66-68` explicitly states that `OpsOnly` passes must NOT add/remove ops that carry exception edges. `DecRef`/`IncRef` do not carry exception edges (they are not `CheckException`/`TryStart`/`TryEnd`/`StateBlock*`), so inserting them is sound under `OpsOnly`. However, because they are side-effecting, DCE will not remove them after insertion; this is correct.
 
@@ -155,7 +167,7 @@ For each basic block B, work forward through its ops. Track the set of currently
 - V is not live-out of B (would be redundant if dropped at a successor).
 - V's repr is not a raw scalar.
 - V is not a block argument that flows to a successor (handled at the edge).
-- V is not a StackAlloc/ObjectNewBoundStack result (stack, no RC).
+- V has an owned heap/boxed result contract; placement guesses never discharge it.
 
 A value is "last-used at op I" when it appears in I's operands and does not appear in any op's operands at positions I+1...N, and does not appear in the terminator's branch arguments.
 
@@ -266,14 +278,124 @@ At loop *exit*, any loop-carried phi that is not returned or stored must be drop
 ### 2.8 Representation-Aware Filtering
 
 Before inserting any `DecRef(V)`:
-1. Obtain V's `Repr` from `representation_plan::repr_by_value` (or `Repr::default_for(&type_of_V)` for values not in the map).
-2. If `Repr::RawI64Safe` → skip (bare i64 register, no heap ref).
+
+1. Consume liveness's `raw_scalars`, projected from the shared `representation_facts::non_heap_values_for` authority. It uses the same value-keyed representation and exact scalar provenance as lowering; semantic annotations cannot suppress heap ownership.
+2. If `Repr::RawI64Safe` or `Repr::RawI64FullDeopt` → skip (bare i64 register, no heap ref).
 3. If `Repr::Bool` → skip (inline bool tag, no heap ref).
 4. If `Repr::FloatUnboxed` → skip (bare f64 register, no heap ref).
-5. If `Repr::MaybeBigInt` or `Repr::DynBox` → insert the DecRef. The runtime's `molt_dec_ref_obj` fast-paths non-pointer tags (`ops.rs:7087-7090`), so inserting a DecRef for a value that turns out to be inline at runtime is safe but wasteful. The inline tag-check in `emit_dec_ref_obj` (`simple_backend.rs:1086-1103`) already short-circuits this at the Cranelift level.
-6. `Repr::Never` → dead value, no insert needed.
+5. If `Repr::MaybeBigInt` or `Repr::DynBox` → insert the DecRef. The runtime's `molt_dec_ref_obj` in `runtime/molt-runtime/src/object/ops.rs` fast-paths non-pointer tags. Cranelift's corresponding emission authority is `runtime/molt-backend-native/src/native_backend/simple_backend/refcount.rs`. These tagged-value guards do not authorize passing arbitrary raw integer bits to the runtime.
+6. Producer-proven None → no insert needed. `Repr::Never` is only the carrier lattice's join bottom, never defined-value non-heap evidence: `Repr::default_for(TirType::Never)` floors to `DynBox`. Bool/F64 annotations likewise stay boxed, and float subclasses retain their heap obligation.
 
 This filtering ensures that the `overflow_peel` fast loop's raw-i64 accumulators receive zero RC ops — the performance contract is preserved structurally.
+
+### Boxed field ownership boundary
+
+Register RC and field RC are distinct projections of the same representation
+authority. `non_heap_values_for` admits checked full-i64 carriers for local
+drop elision; `non_heap_boxed_values_for` excludes those carriers because
+overflow-safe boxing may allocate BigInt. DSE and SROA consume the latter.
+Only exact None/bool/float and inline-safe integer facts discharge field ownership.
+
+Field initialization retains incoming heap values. `object/field_storage.rs`
+owns the backing transition: ordinary inferred fields live inline until dictionary
+materialization, then exclusively in that dictionary. Build the complete dictionary,
+publish it, clear all transferred words, and only then release retired owners.
+Allocation failure preserves the original state. Repeated materialization is a
+read, not a merge; dictionary replacement/reset never resurrects old inline values.
+Genuine declared slots remain independent, including same-name dictionary keys.
+Their provenance belongs to sealed class layout, not mutable Python `__slots__`.
+The sealed type also owns the exact frozen field-offset map; namespace mutation
+cannot redirect physical traversal, and GC/materialization never probe mutable
+namespace keys. Heap and stack constructors initialize physical fields to the
+existing immortal missing singleton. Zero bits remain the valid float `+0.0`;
+signed zeros survive exposure, deletion, reset, and slot-state serialization.
+
+Class attachment compares the sealed physical type, shape, extent, exception
+layout, dictionary/weakref permissions, and named field offsets before replacing
+the owned class edge. Compatible reassignment preserves values; incompatible
+reassignment fails without mutation. Public attribute mutation uses this same
+authority after custom setters and data descriptors. Tuple-subclass construction
+has one fresh unpublished tuple initializer: retain elements, attach the owned
+class, then publish. Its layout is admitted before evaluating user iterables.
+The exact empty-tuple singleton is never reclassified. Specialized dataclass
+storage has no proved reassignment layout mapping yet: published reassignment
+fails explicitly rather than invoking its unpublished construction primitive.
+That cell is not a CPython compatibility claim.
+
+Physical class sealing does not freeze Python behavior. The unsafe runtime API
+uses caller storage only when its entire MRO is immutable and nonfinalizing;
+mutable classes use the same owned heap constructor even if no `__del__` exists
+yet. Published class replacement preserves this lifetime requirement for scoped
+objects as well as physical layout compatibility. Checking only at construction
+for a currently absent finalizer cannot protect against later class mutation and
+receiver resurrection. The caller must separately prove every owner dies before
+the backing storage. No compiler producer/verifier establishes that lifetime, so
+the old class-frame opcode and its backend-specific realizations are retired.
+
+Dataclass construction is a two-phase protocol, not class reassignment. Both
+frontend constructor pairs and runtime builders allocate zeroed, unpublished
+payloads, then use `dataclass_finish_construction_unpublished` through the
+constructor-only `molt_dataclass_set_class` ABI where applicable. The finalizer
+rejects published or pre-attached receivers before mutating the target class,
+validates and seals a nonzero type, attaches its owned edge, refreshes metadata,
+and publishes exactly once after checking for a pending exception. Failed
+construction remains unpublished and destructible; retries cannot reclassify a
+published object or replace an attached class. No public attribute setter may
+enter this private construction protocol.
+
+The boxed and pointer get/set/init ABIs delegate to `object/accessors.rs`.
+Generic lookup, deletion, GC, and serialization project the same storage owner.
+Internal missing words and absent metadata pointers are not Python referents;
+actual stored `0.0` is. The generated `BoxedFields` shape owns every classless
+compiler-allocation word, including its tail. Named class fields, boxed captures,
+and task payloads have distinct structural admission and one traversal/detachment
+authority each; a raw flag is not permission to scan arbitrary byte allocations.
+Publication precedes displaced-owner release; dictionary backing stays pinned
+across callbacks. A dictionary miss is not retried, and callback exceptions are
+not swallowed. Typed public loads retain normal missing-attribute/class fallback.
+
+`tir/passes/typed_slot_access` owns field-access history along single-predecessor
+unconditional normal chains. Joins, backedges and implicit exception edges do not
+inherit predecessor end state. It proves inline backing, boxed-neutral old words,
+and present loaded values independently. Raw boxed allocations start with neutral
+zero words; class fields start missing. A stored unknown value may itself be the
+internal missing marker: presence requires exact producer or allocation evidence.
+Proven reads retain presence knowledge for later reads but revoke pristine writes.
+MemorySSA retains this plan for MemGVN; module promotion uses its exact-site
+regions for seed and loop legality. DSE consumes its removable-store sites; native lowering
+projects its initialization/direct-store modes through unique matching source
+origins onto the current, unoptimized instruction stream. Duplicate origins fail
+closed. Capture, observation, or an undischargeable release permanently revokes
+pristine history. SROA uses the same fixed-allocation/field-extent admission plus
+whole-root unobservability and boxed-neutral writes throughout. The extent excludes
+the universal trailing dictionary word for class instances; classless boxed
+allocations own the full payload. Neither pass may erase final fields on a
+finalizer-bearing root. Shape-valid plain loads or stores alone prove neither
+callback freedom nor ownership neutrality. Context-free field accesses remain
+GenericHeap; only this exact-site plan may refine them to physical Field regions.
+
+Native, LLVM, and WASM direct field paths consult the shared `HEADER_FLAG_HAS_PTRS`
+ABI after admitting the receiver. Dictionary publication/reset and missing-sentinel
+stores retain that sticky exclusion, including scalar-to-scalar stores and init
+paths. Runtime accessors resolve the actual backing; no backend owns a mirror.
+Fresh immortal missing words do not set HAS_PTRS or require release. An inline
+read additionally admits the loaded value as an immediate, routing pointers
+(including missing) to normal runtime resolution. Scalar initialization therefore
+retains its direct path. The compiler has no admitted class-frame operation:
+the former native-frame versus LLVM/WASM-heap split lacked an owner-lifetime
+proof and is retired. Direct unsafe runtime callers use one initializer.
+Caller-managed storage uses the same SCOPED flag as arenas, normal RC, and an
+owned class edge. Terminal
+destruction releases class and field owners, while storage reclamation/accounting
+remains with the frame or arena. An immortal header is not a frame-lifetime proof.
+Raw `Alloc` stays heap-owned; the incomplete raw `StackAlloc` contract is rejected
+by shared target admission. Explicit arena boxed storage uses the same size-class
+or exact-sidecar extent authority as heap storage and must release all owners
+before reset/free. SROA deletes a complete unobserved boxed-neutral root, including
+transparent aliases, stores, and RC, or preserves it in full. Its finalizer and
+escape exclusions remain mandatory.
+These are implementation contracts; source-bound target execution is required
+before a conformance or release claim.
 
 ### 2.9 Suspension Point Survival
 
@@ -299,7 +421,7 @@ Drop insertion produces a correct but potentially un-elided set of RC ops. The p
 
 Already implements:
 - Intra-block adjacent IncRef+DecRef pair elimination (Steps 2a/2b).
-- StackAlloc value RC removal (Step 2a).
+- Representation-proven non-heap RC removal; frame allocation candidates remain owned.
 - Cross-block dominator-edge elimination (Step 3).
 - Loop-invariant IncRef+DecRef elimination (Step 4).
 - Deferred-RC: values with no heap exposure have all their RC ops removed (Step 5).
@@ -337,12 +459,13 @@ chain is `exception_edge_borrowed_payload_retains_for_owned_handler_arg`,
 
 ### 3.2 Borrow Inference (new, part of DropInsertion)
 
-During the drop insertion phase, when computing whether a value requires an IncRef before passing to a function call, apply borrow inference:
-
-- If a Call/CallMethod/CallBuiltin op borrows V and V is immediately DecRef'd after the call returns (V is dead after the call), the IncRef+DecRef pair is a no-op and neither is emitted. The callee borrows V for the call's duration; the call returns before the drop; the net refcount change is zero.
-- Formally: if V's last use IS the call operand, do not insert `IncRef(V)` before the call and do not insert `DecRef(V)` after. The existing refcount convention (callee borrows, caller drops at last use) is exactly this rule applied correctly.
-
-This eliminates the dominant pattern: `result = f(x); ...use result...; // x is dead → no IncRef/DecRef for x around the call`.
+Borrow admission is an explicit ownership contract, not an inference from a
+callable name or a last-use position. If the caller already holds an owned
+reference throughout a borrowing call, another temporary retain may be
+unnecessary, but the caller's original owned reference still requires its final
+release. A value borrowed from a container needs a live-owner proof across the
+call; callbacks can mutate the container and destroy its last reference. Merely
+observing `call(V); DecRef(V)` does not authorize removing that release.
 
 ### 3.3 Future Reuse/FBIP Integration
 
@@ -596,7 +719,7 @@ Files to create/modify:
   - Successor-edge placement: for each block-exit edge where a value V is live-in to the predecessor but not live-in to the target successor AND V is not passed as a branch argument to that successor — insert `DecRef(V)` at the end of the current block before the terminator. When the CondBranch has two successors with different dead-value sets, use the "before-the-terminator" insertion for values that die on ALL successors (common-prefix), and for values that die only on one successor, insert after the terminator switch by placing them at the start of the successor block (this keeps the pass OpsOnly — no edge-splitting).
   - Loop-exit placement: detect loop exit edges using `LoopForest`. For phi values that are the back-edge carrier (last live use at the back-edge branch), insert `DecRef` before the loop-exit branch.
   - Suspension handling: for each `StateYield`/`ChanSendYield`/`ChanRecvYield`/`Yield`/`YieldFrom` op, for each value that is live-across-this-yield (in `LiveIn` of the resume continuation block), insert `IncRef(V)` immediately before the yield op.
-  - Stack filter: values produced by `StackAlloc` or `ObjectNewBoundStack` — never insert DecRef.
+  - Owned allocations: preserve root/alias/CFG final drops; reject unsupported raw and class-frame compiler operations before emission.
   - Borrow inference: if V's only remaining use after the drop candidate is as an operand to a `Call`/`CallMethod`/`CallBuiltin` where V is dead after the call, and no IncRef is needed (no heap-exposing barrier between definition and call), skip the IncRef+DecRef pair entirely.
   - Set `func.attrs.insert("drop_inserted", AttrValue::Bool(true))` for every non-bailed full-function analysis, even when no physical `DecRef`/`IncRef` is inserted; report this as `PassStats.attrs_changed` so pass-manager snapshot restore preserves metadata-only RC authority changes.
   - Mutation class: `Cfg`, because mixed-ownership phi retains may split critical edges.
@@ -616,7 +739,7 @@ Files to create/modify:
   - Loop accumulator: verify `DecRef(old_total)` inserted before back-edge branch and `DecRef(total_final)` at loop exit.
   - Exception path: value live at throw site is dropped on both normal and handler paths.
   - Raw i64 value: zero DecRef ops inserted.
-  - StackAlloc: zero DecRef ops inserted.
+  - Heap allocation: root/alias/CFG final drops survive; unsupported compiler frame/raw-stack operations: explicit admission failure.
   - Generator yield: `IncRef(V)` inserted before yield for live-across value.
   - Borrow inference: last-use-is-call-arg → no IncRef+DecRef pair.
 - Integration tests:
@@ -737,9 +860,9 @@ The per-iteration flow: each `Add` creates a new owned BigInt, the previous one 
 
 ### R3: Overflow-peel fast loop receives spurious DecRef
 
-**Risk**: The overflow-peel fast loop (tir/passes/overflow_peel.rs) emits `CheckedAdd` ops whose results are `RawI64Safe`. The repr filter should prevent any DecRef insertion, but if the filter misclassifies a value, a raw i64 register gets passed to `molt_dec_ref_obj` → type confusion / crash.
+**Risk**: The overflow-peel fast loop emits `CheckedAdd` ops whose integer results are `RawI64FullDeopt` and whose overflow results are Bool. If the repr filter misclassifies either slot, a raw register gets passed to `molt_dec_ref_obj` → type confusion / crash.
 
-**Treatment**: The repr filter is based on `repr_map.get(&val)` (which returns `Some(Repr::RawI64Safe)` for overflow-peel fast-loop accumulators) or `Repr::default_for` for values not in the map. `CheckedAdd` results are promoted to `RawI64Safe` by the representation plan; the filter correctly excludes them. Validated by the `bench_sum` performance smoke test in Phase 3 (zero new ops).
+**Treatment**: Liveness projects the shared carrier map and exact None provenance through `non_heap_values_for`; it has no separate by-type raw-scalar classifier. Result-slot and executable-phi regressions cover the checked fast path and annotation/subclass negatives. Performance claims still require a source-bound benchmark receipt.
 
 ### R4: Generator frame missing inc-ref before yield
 
@@ -753,17 +876,30 @@ The per-iteration flow: each `Add` creates a new owned BigInt, the previous one 
 
 **Treatment**: `ConstBigInt` results are classified Owned (§1.4) and the drop pass inserts a DecRef at their last use. This is correct but suboptimal — the ideal is to hoist the constant to an immortal module-level static. The suboptimal-but-correct path is acceptable for Phase 3; the immortal-constant optimization is a follow-up.
 
-### R6: Stack-allocated objects incorrectly dropped
+### R6: Scoped storage mistaken for immortal ownership
 
-**Risk**: `ObjectNewBoundStack` produces a stack slot (`StackAlloc` variant). If the drop pass misidentifies the repr and inserts a DecRef, the generated code passes a stack address to `molt_dec_ref_obj`, which will interpret it as a NaN-boxed value and either no-op (if the tag check treats the stack address bits as a non-pointer) or crash.
+**Risk**: Erasing candidate RC leaks heap realizations and loses captured/class
+ownership; immortal native frames can retain a dangling borrowed class.
 
-**Treatment**: The drop pass explicitly checks `op.opcode == OpCode::StackAlloc || op.opcode == OpCode::ObjectNewBoundStack` and skips all RC insertion for those values. Additionally, `escape_analysis.rs:680` already removes any IncRef/DecRef on stack-allocated values, and `refcount_elim.rs:126-136` (Step 2a) eliminates any that survive. Triple-redundant defense.
+**Treatment**: Candidate results are boxed owned values on every target. The
+runtime's scoped-storage flag separates storage reclamation from normal terminal
+edge release. Compiler escape/destruction proofs ensure every owner dies before
+scope exit and destruction cannot expose frame storage. Heap-valued/unknown
+field graphs remain ineligible for frame promotion. Scoped runtime constructors
+still enroll and publish through normal GC, and collection/destruction untracks
+them before their caller reclaims backing storage.
 
 ### R7: matches!-oracle silent miscompile for new opcodes
 
-**Risk**: The lessons from `ModuleImportFrom` apply: `effects.rs::opcode_may_throw` and `opcode_is_side_effecting` use `matches!` which defaults to `false` for unlisted opcodes. `DropInsertion` does not add new opcodes, so this risk is zero for the current arc. However, `AnalysisId::Liveness` is a new analysis that must be registered in `AnalysisId::ALL` and handled in `assert_analyses_fresh` to avoid the verification skip.
+**Risk**: A pass-local opcode allowlist can silently omit callbacks or throwing
+constructors, removing exception checks or owned releases when a new operation
+is introduced.
 
-**Treatment**: Add `AnalysisId::Liveness` to `AnalysisId::ALL` (analysis/mod.rs:89). Add the `Liveness` arm to every `match AnalysisId` in the analysis manager. Build failure if not done (exhaustive match).
+**Treatment**: `op_kinds.toml` and its validated generated projections own effects,
+operand roles, allocation classes, and callback admission. Passes consume the
+shared operation-level effects with exact producer facts; annotations and opcode
+spelling alone cannot discharge dynamic effects. Constructor exception-retention
+tests and generator synchronization guard this boundary.
 
 ---
 
@@ -799,18 +935,17 @@ The TIR inliner (E1) activates via `run_module_pipeline`, which is currently tes
 
 ## Key file anchors
 
-- Runtime alloc birth: `runtime/molt-runtime/src/object/mod.rs:1155,1228`
-- Runtime dealloc zero-transition (dealloc counter insertion point): `runtime/molt-runtime/src/object/mod.rs:1812-1821`
-- Dealloc counter statics (add alongside): `runtime/molt-runtime/src/constants.rs:88-95`
-- IncRef/DecRef opcodes: `runtime/molt-ir/src/tir/ops.rs:123-125`
-- refcount_elim pass (existing, to run post-insertion): `runtime/molt-passes/src/tir/passes/refcount_elim.rs`
-- effects.rs side-effect oracle (DecRef already listed): `runtime/molt-passes/src/tir/passes/effects.rs:171-172`
-- alias_analysis is_rc_barrier: `runtime/molt-passes/src/tir/passes/alias_analysis.rs`
-- TIR AnalysisManager (add Liveness): `runtime/molt-passes/src/tir/analysis/mod.rs:66-100`
-- Pass pipeline build (add drop_insertion + refcount_elim_post): `runtime/molt-passes/src/tir/pass_manager.rs:282`
-- LLVM DecRef lowering (already wired): `runtime/molt-backend/src/llvm_backend/lowering.rs:1275-1287`
-- SimpleIR DecRef round-trip (already wired): `runtime/molt-passes/src/tir/lower_to_simple.rs:1903`
-- loop_reassign_old_val guard (Phase 3 modification): `runtime/molt-backend/src/native_backend/function_compiler.rs:3577-3628`
-- emit_dec_ref_obj (Cranelift inline tag-check, already correct): `runtime/molt-backend/src/native_backend/simple_backend.rs:1076-1103`
-- Repr lattice (filter raw scalars): `runtime/molt-tir/src/representation_plan.rs:78-133`
-- future reuse/FBIP design: `docs/design/foundation/27_perceus_borrow_inference.md`
+The phase narratives above retain historical observations; use these current
+authorities instead of their historical monolith paths or line numbers.
+
+- Tagged runtime RC entrypoints: `runtime/molt-runtime/src/object/ops.rs`
+- Operation contracts: `runtime/molt-ir/src/tir/op_kinds.toml`
+- Representation lattice and proof map: `runtime/molt-ir/src/repr.rs`, `runtime/molt-passes/src/representation_facts.rs`
+- Liveness/non-heap projection: `runtime/molt-passes/src/tir/passes/liveness/raw.rs`
+- Drop insertion and RC elimination: `runtime/molt-passes/src/tir/passes/drop_insertion/`, `runtime/molt-passes/src/tir/passes/refcount_elim/`
+- Effect and alias consumers: `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/alias_analysis/`
+- Pipeline: `runtime/molt-passes/src/tir/pass_manager.rs`
+- LLVM dispatch: `runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs`
+- SimpleIR transport: `runtime/molt-passes/src/tir/lower_to_simple/`
+- Cranelift RC emission: `runtime/molt-backend-native/src/native_backend/simple_backend/refcount.rs`
+- Future reuse/FBIP design: `docs/design/foundation/27_perceus_borrow_inference.md`

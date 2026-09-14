@@ -16,6 +16,11 @@ from molt.frontend._types import (
     build_cfg,
 )
 
+from molt.frontend.lowering.midend_dataflow import (
+    current_unique_result_definitions,
+    primitive_const_values,
+)
+
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
@@ -87,74 +92,76 @@ class MidendPipelineMixin(_MixinBase):
     def _hoist_loop_invariant_pure_ops(
         self, ops: list[MoltOp]
     ) -> tuple[list[MoltOp], int]:
-        cfg = build_cfg(ops)
-        if not cfg.blocks:
-            return ops, 0
+        with current_unique_result_definitions(self, ops) as definitions:
+            cfg = build_cfg(ops)
+            if not cfg.blocks:
+                return ops, 0
 
-        control = cfg.control
-        target_start_by_index: dict[int, int] = {}
-        loop_ranges = sorted(
-            (
-                (start, end)
-                for start, end in control.loop_start_to_end.items()
-                if end > start
-            ),
-            key=lambda item: (item[1] - item[0], item[0]),
-        )
-
-        const_by_name = self._primitive_const_value_map(ops)
-
-        for loop_start, loop_end in loop_ranges:
-            if loop_end is None or loop_end <= loop_start:
-                continue
-            # In generators, loops containing state_yield create resume points
-            # inside the loop body.  Hoisting definitions before the loop would
-            # leave them undefined when the generator is resumed at that point.
-            has_yield = any(
-                ops[i].kind == "STATE_YIELD" for i in range(loop_start + 1, loop_end)
+            control = cfg.control
+            target_start_by_index: dict[int, int] = {}
+            loop_ranges = sorted(
+                (
+                    (start, end)
+                    for start, end in control.loop_start_to_end.items()
+                    if end > start
+                ),
+                key=lambda item: (item[1] - item[0], item[0]),
             )
-            if has_yield:
-                continue
-            pre_defs = self._collect_defined_value_names(ops[:loop_start])
-            hoisted_defs: set[str] = set()
-            for idx in range(loop_start + 1, loop_end):
-                op = ops[idx]
-                if op.result.name == "none":
-                    continue
-                if op.kind == "PHI":
-                    continue
-                if self._op_effect_class(op) != "pure":
-                    continue
-                if not self._op_instance_cannot_raise(op, const_by_name):
-                    continue
-                uses: set[str] = set()
-                for arg in op.args:
-                    self._collect_arg_value_names(arg, uses)
-                if uses.issubset(pre_defs.union(hoisted_defs)):
-                    target_start_by_index.setdefault(idx, loop_start)
-                    hoisted_defs.add(op.result.name)
 
-        if not target_start_by_index:
-            return ops, 0
+            const_by_name = primitive_const_values(definitions)
 
-        out: list[MoltOp] = []
-        hoisted_count = 0
-        for idx, op in enumerate(ops):
-            if op.kind == "LOOP_START":
-                hoisted_here = [
-                    ops[candidate_idx]
-                    for candidate_idx, target_start in sorted(
-                        target_start_by_index.items()
-                    )
-                    if target_start == idx
-                ]
-                out.extend(hoisted_here)
-                hoisted_count += len(hoisted_here)
-            if idx in target_start_by_index:
-                continue
-            out.append(op)
+            for loop_start, loop_end in loop_ranges:
+                if loop_end is None or loop_end <= loop_start:
+                    continue
+                # In generators, loops containing state_yield create resume points
+                # inside the loop body.  Hoisting definitions before the loop would
+                # leave them undefined when the generator is resumed at that point.
+                has_yield = any(
+                    ops[i].kind == "STATE_YIELD"
+                    for i in range(loop_start + 1, loop_end)
+                )
+                if has_yield:
+                    continue
+                pre_defs = self._collect_defined_value_names(ops[:loop_start])
+                hoisted_defs: set[str] = set()
+                for idx in range(loop_start + 1, loop_end):
+                    op = ops[idx]
+                    if op.result.name == "none":
+                        continue
+                    if op.kind == "PHI":
+                        continue
+                    if self._op_effect_class(op, const_by_name=const_by_name) != "pure":
+                        continue
+                    if not self._op_instance_cannot_raise(op, const_by_name):
+                        continue
+                    uses: set[str] = set()
+                    for arg in op.args:
+                        self._collect_arg_value_names(arg, uses)
+                    if uses.issubset(pre_defs.union(hoisted_defs)):
+                        target_start_by_index.setdefault(idx, loop_start)
+                        hoisted_defs.add(op.result.name)
 
-        return out, hoisted_count
+            if not target_start_by_index:
+                return ops, 0
+
+            out: list[MoltOp] = []
+            hoisted_count = 0
+            for idx, op in enumerate(ops):
+                if op.kind == "LOOP_START":
+                    hoisted_here = [
+                        ops[candidate_idx]
+                        for candidate_idx, target_start in sorted(
+                            target_start_by_index.items()
+                        )
+                        if target_start == idx
+                    ]
+                    out.extend(hoisted_here)
+                    hoisted_count += len(hoisted_here)
+                if idx in target_start_by_index:
+                    continue
+                out.append(op)
+
+            return out, hoisted_count
 
     def _run_cse_canonicalization_round(
         self,
@@ -1197,38 +1204,39 @@ class MidendPipelineMixin(_MixinBase):
         return rewritten_ops
 
     def _canonicalize_control_aware_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
-        predefined = self._infer_predefined_value_names(ops)
-        self.midend_stats["expanded_attempts"] += 1
+        with current_unique_result_definitions(self, ops):
+            predefined = self._infer_predefined_value_names(ops)
+            self.midend_stats["expanded_attempts"] += 1
 
-        expanded_ops = self._canonicalize_control_aware_ops_impl(
-            ops, allow_cross_block_const_dedupe=True
-        )
-        expanded_failures = self._verify_definite_assignment_in_ops(
-            expanded_ops, predefined_value_names=predefined
-        )
-        if not expanded_failures:
-            self.midend_stats["expanded_accepted"] += 1
-            return expanded_ops
-
-        self.midend_stats["expanded_fallbacks"] += 1
-        # Diagnostic: log which variables caused the verification failure so
-        # that the cross-block CSE issue can be traced.  Each failure is a
-        # tuple (op_index, op_kind, value_name).
-        if os.getenv("MOLT_MIDEND_STATS"):
-            failed_vars = sorted({name for _, _, name in expanded_failures})
-            failed_ops = sorted({kind for _, kind, _ in expanded_failures})
-            print(
-                f"molt midend cross-block CSE fallback:"
-                f" func={self._active_midend_function_name!r}"
-                f" failed_vars={failed_vars}"
-                f" failed_ops={failed_ops}"
-                f" failure_count={len(expanded_failures)}",
-                file=sys.stderr,
+            expanded_ops = self._canonicalize_control_aware_ops_impl(
+                ops, allow_cross_block_const_dedupe=True
             )
-        safe_ops = self._canonicalize_control_aware_ops_impl(
-            ops, allow_cross_block_const_dedupe=False
-        )
-        return safe_ops
+            expanded_failures = self._verify_definite_assignment_in_ops(
+                expanded_ops, predefined_value_names=predefined
+            )
+            if not expanded_failures:
+                self.midend_stats["expanded_accepted"] += 1
+                return expanded_ops
+
+            self.midend_stats["expanded_fallbacks"] += 1
+            # Diagnostic: log which variables caused the verification failure so
+            # that the cross-block CSE issue can be traced.  Each failure is a
+            # tuple (op_index, op_kind, value_name).
+            if os.getenv("MOLT_MIDEND_STATS"):
+                failed_vars = sorted({name for _, _, name in expanded_failures})
+                failed_ops = sorted({kind for _, kind, _ in expanded_failures})
+                print(
+                    f"molt midend cross-block CSE fallback:"
+                    f" func={self._active_midend_function_name!r}"
+                    f" failed_vars={failed_vars}"
+                    f" failed_ops={failed_ops}"
+                    f" failure_count={len(expanded_failures)}",
+                    file=sys.stderr,
+                )
+            safe_ops = self._canonicalize_control_aware_ops_impl(
+                ops, allow_cross_block_const_dedupe=False
+            )
+            return safe_ops
 
     def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
         # Keep coalescing conservative: moving checks across value-producing ops can

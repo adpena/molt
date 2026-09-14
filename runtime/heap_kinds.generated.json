@@ -441,48 +441,48 @@
       "acyclic_slots": {},
       "cycle": "always",
       "drop": "classmethod",
-      "edges": "fixed",
+      "edges": "shape",
       "external_gc": "none",
       "id": 226,
-      "layout": "fixed_bits",
+      "layout": "object",
       "metrics": "none",
       "name": "CLASSMETHOD",
       "publication": "python",
-      "shape": "fixed",
+      "shape": "class",
       "track": "always",
-      "weakref": "deny"
+      "weakref": "class"
     },
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
       "cycle": "always",
       "drop": "staticmethod",
-      "edges": "fixed",
+      "edges": "shape",
       "external_gc": "none",
       "id": 227,
-      "layout": "fixed_bits",
+      "layout": "object",
       "metrics": "none",
       "name": "STATICMETHOD",
       "publication": "python",
-      "shape": "fixed",
+      "shape": "class",
       "track": "always",
-      "weakref": "deny"
+      "weakref": "class"
     },
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
       "cycle": "always",
       "drop": "property",
-      "edges": "fixed",
+      "edges": "shape",
       "external_gc": "none",
       "id": 228,
-      "layout": "fixed_bits",
+      "layout": "object",
       "metrics": "none",
       "name": "PROPERTY",
       "publication": "python",
-      "shape": "fixed",
+      "shape": "class",
       "track": "always",
-      "weakref": "deny"
+      "weakref": "class"
     },
     {
       "acyclic_capability": "none",
@@ -942,6 +942,22 @@
       "shape": "class",
       "track": "always",
       "weakref": "deny"
+    },
+    {
+      "acyclic_capability": "none",
+      "acyclic_slots": {},
+      "cycle": "always",
+      "drop": "native_descriptor",
+      "edges": "fixed",
+      "external_gc": "none",
+      "id": 257,
+      "layout": "fixed_bits",
+      "metrics": "none",
+      "name": "NATIVE_DESCRIPTOR",
+      "publication": "python",
+      "shape": "fixed",
+      "track": "always",
+      "weakref": "deny"
     }
   ],
   "object_shapes": [
@@ -1147,6 +1163,12 @@
       "family": "task",
       "id": 33,
       "name": "GENERIC_TASK_PAYLOAD",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "boxed_fields",
+      "id": 34,
+      "name": "BOXED_FIELDS",
       "resource_slot0": "none"
     },
     {

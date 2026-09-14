@@ -117,44 +117,6 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                         "class": expected_class,
                     }
                 )
-        elif op.kind == "SETATTR_INIT":
-            obj, attr, val, *rest = op.args
-            if rest:
-                expected_class = rest[0]
-            else:
-                expected_class = list(self.classes.keys())[-1]
-            offset = self._serialization_field_offset(expected_class, attr)
-            if offset is None:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
-                    ctx.json_ops.append(
-                        {
-                            "kind": "set_attr_generic_obj",
-                            "args": [obj.name, val.name],
-                            "s_value": attr,
-                            "out": op.result.name,
-                        }
-                    )
-                else:
-                    ctx.json_ops.append(
-                        {
-                            "kind": "set_attr_generic_ptr",
-                            "args": [obj.name, val.name],
-                            "s_value": attr,
-                            "out": op.result.name,
-                        }
-                    )
-            else:
-                ctx.json_ops.append(
-                    {
-                        "kind": "store_init",
-                        "args": [obj.name, val.name],
-                        "value": offset,
-                        "class": expected_class,
-                    }
-                )
         elif op.kind == "GUARDED_SETATTR":
             obj, class_ref, expected_version, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
@@ -196,47 +158,6 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                         # The class the runtime version-guard proves at this
                         # op; authority for `offset`. Carried through TIR for
                         # the class+offset `TypedField` alias region (S5-1.5).
-                        "class": expected_class,
-                    }
-                )
-        elif op.kind == "GUARDED_SETATTR_INIT":
-            obj, class_ref, expected_version, attr, val, expected_class = op.args
-            offset = self._serialization_field_offset(expected_class, attr)
-            if offset is None:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
-                    ctx.json_ops.append(
-                        {
-                            "kind": "set_attr_generic_obj",
-                            "args": [obj.name, val.name],
-                            "s_value": attr,
-                            "out": op.result.name,
-                        }
-                    )
-                else:
-                    ctx.json_ops.append(
-                        {
-                            "kind": "set_attr_generic_ptr",
-                            "args": [obj.name, val.name],
-                            "s_value": attr,
-                            "out": op.result.name,
-                        }
-                    )
-            else:
-                ctx.json_ops.append(
-                    {
-                        "kind": "guarded_field_init",
-                        "args": [
-                            obj.name,
-                            class_ref.name,
-                            expected_version.name,
-                            val.name,
-                        ],
-                        "s_value": attr,
-                        "value": offset,
-                        "out": op.result.name,
                         "class": expected_class,
                     }
                 )

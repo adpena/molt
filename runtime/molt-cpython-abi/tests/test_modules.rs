@@ -403,6 +403,15 @@ unsafe extern "C" fn fake_module_set_attr(
         if name == b"reject_attr" {
             return -1;
         }
+        if name == b"reject_attr_with_error" {
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_SetString(
+                    (&raw mut PyExc_ValueError).cast::<PyObject>(),
+                    c"method publication detail".as_ptr(),
+                );
+            }
+            return -1;
+        }
     }
     0
 }
@@ -492,6 +501,15 @@ unsafe extern "C" fn fake_register_c_function(
     if !data.is_null() {
         let name = unsafe { std::slice::from_raw_parts(data, len) };
         if name == b"reject" {
+            return 0;
+        }
+        if name == b"reject_with_error" {
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_SetString(
+                    (&raw mut PyExc_MemoryError).cast::<PyObject>(),
+                    c"callable allocation detail".as_ptr(),
+                );
+            }
             return 0;
         }
     }
@@ -1489,87 +1507,72 @@ unsafe extern "C" fn fake_c_method(_self: *mut PyObject, _args: *mut PyObject) -
 }
 
 #[test]
-fn test_module_create2_fails_closed_when_c_function_registration_fails() {
+fn test_module_create2_callable_publication_failures_preserve_the_original_error() {
     let _guard = init();
-    let mut methods = [
-        PyMethodDef {
-            ml_name: c"reject".as_ptr(),
-            ml_meth: Some(fake_c_method),
-            ml_flags: METH_VARARGS,
-            ml_doc: ptr::null(),
-        },
-        PyMethodDef {
-            ml_name: ptr::null(),
-            ml_meth: None,
-            ml_flags: 0,
-            ml_doc: ptr::null(),
-        },
-    ];
-    let mut def = PyModuleDef {
-        m_base: PyModuleDef_Base {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: ptr::null_mut(),
+    for (name, expected_type, expected_message) in [
+        (
+            c"reject",
+            (&raw mut PyExc_SystemError).cast::<PyObject>(),
+            "runtime rejected method",
+        ),
+        (
+            c"reject_attr",
+            (&raw mut PyExc_SystemError).cast::<PyObject>(),
+            "failed to register method",
+        ),
+        (
+            c"reject_with_error",
+            (&raw mut PyExc_MemoryError).cast::<PyObject>(),
+            "callable allocation detail",
+        ),
+        (
+            c"reject_attr_with_error",
+            (&raw mut PyExc_ValueError).cast::<PyObject>(),
+            "method publication detail",
+        ),
+    ] {
+        let mut methods = [
+            PyMethodDef {
+                ml_name: name.as_ptr(),
+                ml_meth: Some(fake_c_method),
+                ml_flags: METH_VARARGS,
+                ml_doc: ptr::null(),
             },
-            m_init: None,
-            m_index: 0,
-            m_copy: ptr::null_mut(),
-        },
-        m_name: c"rejectmod".as_ptr(),
-        m_doc: ptr::null(),
-        m_size: -1,
-        m_methods: methods.as_mut_ptr(),
-        m_slots: ptr::null_mut(),
-        m_traverse: ptr::null_mut(),
-        m_clear: ptr::null_mut(),
-        m_free: ptr::null_mut(),
-    };
-    let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
-    assert!(m.is_null());
-    let message = support::take_current_error_text()
-        .expect("method registration failure must enter CPython ABI error state");
-    assert!(message.contains("runtime rejected method"));
-}
-
-#[test]
-fn test_module_create2_fails_closed_when_c_function_attr_publication_fails() {
-    let _guard = init();
-    let mut methods = [
-        PyMethodDef {
-            ml_name: c"reject_attr".as_ptr(),
-            ml_meth: Some(fake_c_method),
-            ml_flags: METH_VARARGS,
-            ml_doc: ptr::null(),
-        },
-        PyMethodDef {
-            ml_name: ptr::null(),
-            ml_meth: None,
-            ml_flags: 0,
-            ml_doc: ptr::null(),
-        },
-    ];
-    let mut def = PyModuleDef {
-        m_base: PyModuleDef_Base {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: ptr::null_mut(),
+            PyMethodDef {
+                ml_name: ptr::null(),
+                ml_meth: None,
+                ml_flags: 0,
+                ml_doc: ptr::null(),
             },
-            m_init: None,
-            m_index: 0,
-            m_copy: ptr::null_mut(),
-        },
-        m_name: c"rejectattrmod".as_ptr(),
-        m_doc: ptr::null(),
-        m_size: -1,
-        m_methods: methods.as_mut_ptr(),
-        m_slots: ptr::null_mut(),
-        m_traverse: ptr::null_mut(),
-        m_clear: ptr::null_mut(),
-        m_free: ptr::null_mut(),
-    };
-    let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
-    assert!(m.is_null());
-    let message = support::take_current_error_text()
-        .expect("method publication failure must enter CPython ABI error state");
-    assert!(message.contains("failed to register method"));
+        ];
+        let mut def = PyModuleDef {
+            m_base: PyModuleDef_Base {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: ptr::null_mut(),
+                },
+                m_init: None,
+                m_index: 0,
+                m_copy: ptr::null_mut(),
+            },
+            m_name: c"publication_failure".as_ptr(),
+            m_doc: ptr::null(),
+            m_size: -1,
+            m_methods: methods.as_mut_ptr(),
+            m_slots: ptr::null_mut(),
+            m_traverse: ptr::null_mut(),
+            m_clear: ptr::null_mut(),
+            m_free: ptr::null_mut(),
+        };
+        let module = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
+        assert!(module.is_null(), "{name:?}");
+        assert_ne!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_ExceptionMatches(expected_type) },
+            0,
+            "{name:?}",
+        );
+        let message = support::take_current_error_text()
+            .expect("publication failure must leave an exception");
+        assert!(message.contains(expected_message), "{name:?}: {message}");
+    }
 }

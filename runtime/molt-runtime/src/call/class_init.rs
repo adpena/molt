@@ -8,7 +8,6 @@ use crate::call::type_policy::{
     resolved_new_is_default_object_new,
 };
 use crate::object::ops_encoding::DecodeFailure;
-use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::*;
 use molt_obj_model::ExceptionTypedField;
 
@@ -62,14 +61,11 @@ unsafe fn max_slot_end_from_mro_offsets(
             if object_type_id(mro_class_ptr) != TYPE_ID_TYPE {
                 continue;
             }
-            let dict_bits = class_dict_bits(mro_class_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                continue;
-            }
-            let Some(offsets_bits) = dict_get_in_place(_py, dict_ptr, fields_name_bits) else {
+            let Some(offsets_bits) = crate::builtins::attr::class_field_offsets_map_bits(
+                _py,
+                mro_class_ptr,
+                Some(fields_name_bits),
+            ) else {
                 continue;
             };
             let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
@@ -119,11 +115,8 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
         // the hot-path cache authority. A forged smaller value therefore cannot
         // under-allocate an instance.
         let builtins = builtin_classes(_py);
-        let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
-            2 * std::mem::size_of::<u64>()
-        } else {
-            std::mem::size_of::<u64>()
-        };
+        let reserved_prefix = crate::object::class_reserved_layout_prefix(class_ptr);
+        let reserved_tail = crate::object::class_reserved_layout_tail(_py, class_ptr);
         let mut size = 0usize;
         let mut has_own_layout = false;
         let mut own_has_offsets = false;
@@ -143,17 +136,49 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
                     .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
             }
         }
-        if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits)
-            && let Some(val) = obj_from_bits(size_bits).as_int()
-            && val > 0
-        {
-            size = size.max(usize::try_from(val).ok()?);
+        // A sealed ancestor's private size cache is the only layout-size
+        // authority. Namespace reads remain available solely for ancestors
+        // that are themselves still under construction.
+        for ancestor_bits in class_mro_view(_py, class_ptr).iter().copied().skip(1) {
+            let Some(ancestor) = obj_from_bits(ancestor_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(ancestor) != TYPE_ID_TYPE {
+                continue;
+            }
+            let inherited = if crate::object::class_definition_is_finished(ancestor) {
+                Some(
+                    crate::object::layout::class_cached_layout_size(ancestor)
+                        .expect("sealed ancestor has no private layout size"),
+                )
+            } else {
+                let Some(dict) = obj_from_bits(class_dict_bits(ancestor)).as_ptr() else {
+                    continue;
+                };
+                if object_type_id(dict) != TYPE_ID_DICT {
+                    continue;
+                }
+                dict_get_in_place(_py, dict, size_name_bits)
+                    .and_then(|bits| obj_from_bits(bits).as_int())
+                    .filter(|&value| value > 0)
+                    .and_then(|value| usize::try_from(value).ok())
+            };
+            if let Some(inherited) = inherited {
+                size = size.max(inherited);
+            }
         }
         let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits)?;
-        let required = max_end.checked_add(reserved_tail)?;
-        let needs_recompute =
-            !has_own_layout || size < reserved_tail || !own_has_offsets || size < required;
-        if needs_recompute && max_end != 0 {
+        let required = max_end.max(reserved_prefix).checked_add(reserved_tail)?;
+        if has_own_layout && own_has_offsets && size < required {
+            raise_exception::<()>(
+                _py,
+                "ValueError",
+                "class field offset exceeds the declared layout size",
+            );
+            return None;
+        }
+        let needs_recompute = !has_own_layout || size < required || !own_has_offsets;
+        if needs_recompute {
             size = size.max(required);
         }
         if size == 0 {
@@ -175,7 +200,13 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
         {
             let size_bits = MoltObject::from_int(size_i64).bits();
             dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
+            if exception_pending(_py) {
+                return None;
+            }
             class_bump_layout_version(class_ptr);
+        }
+        if exception_pending(_py) {
+            return None;
         }
         if crate::object::class_definition_is_finished(class_ptr) {
             crate::object::layout::class_set_cached_layout_size(class_ptr, size);
@@ -190,29 +221,24 @@ pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
     total_size: usize,
 ) -> u64 {
     unsafe {
-        let type_id = crate::object::class_instance_type_id(class_ptr);
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let obj_ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
-            _py,
-            total_size,
-            type_id,
-            ObjectAuxPreselection::ClassInline,
-        );
-        if obj_ptr.is_null() {
+        let Some(payload) = total_size.checked_sub(std::mem::size_of::<MoltHeader>()) else {
             return MoltObject::none().bits();
-        }
-        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
-        {
-            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+        };
+        let bits = crate::object::builders::alloc_class_instance(_py, payload, class_bits);
+        let Some(obj_ptr) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
-        }
+        };
         crate::object::gc::gc_publish_initialized(_py, obj_ptr);
-        MoltObject::from_ptr(obj_ptr).bits()
+        bits
     }
 }
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
     unsafe {
+        if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+            return MoltObject::none().bits();
+        }
         let Some(payload_size) = class_layout_size_cached(_py, class_ptr) else {
             return MoltObject::none().bits();
         };
@@ -243,6 +269,9 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     class_ptr: *mut u8,
 ) -> u64 {
     unsafe {
+        if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+            return MoltObject::none().bits();
+        }
         let Some(payload_size) = class_layout_size_cached(_py, class_ptr) else {
             return MoltObject::none().bits();
         };
@@ -583,28 +612,6 @@ pub(crate) unsafe fn construct_exception_from_args(
     }
 }
 
-/// Allocate a fresh tuple payload for a tuple subclass and attach its class
-/// before the value crosses the constructor boundary. Tuple subclass
-/// construction must never reuse and retag an exact tuple input.
-unsafe fn alloc_tuple_subclass_from_items(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    items: &[u64],
-) -> u64 {
-    let ptr = alloc_tuple(_py, items);
-    if ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let bits = MoltObject::from_ptr(ptr).bits();
-    if !unsafe {
-        object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned)
-    } {
-        dec_ref_bits(_py, bits);
-        return MoltObject::none().bits();
-    }
-    bits
-}
-
 pub(crate) unsafe fn call_class_init_with_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -707,7 +714,7 @@ pub(crate) unsafe fn call_class_init_with_args(
             match args.len() {
                 0 => {
                     if class_bits != builtins.tuple {
-                        return alloc_tuple_subclass_from_items(_py, class_bits, &[]);
+                        return crate::object::builders::alloc_tuple_subclass(_py, class_bits, &[]);
                     }
                     let ptr = alloc_tuple(_py, &[]);
                     return if ptr.is_null() {
@@ -732,7 +739,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                             dec_ref_bits(_py, bits);
                             return MoltObject::none().bits();
                         };
-                        alloc_tuple_subclass_from_items(_py, class_bits, &items)
+                        crate::object::builders::alloc_tuple_subclass(_py, class_bits, &items)
                     } else {
                         MoltObject::none().bits()
                     };
@@ -849,33 +856,14 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
             }
         }
-        if class_bits == builtins.classmethod {
-            if args.len() != 1 {
-                let msg = format!("classmethod expected 1 argument, got {}", args.len());
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            return molt_classmethod_new(args[0]);
-        }
-        if class_bits == builtins.staticmethod {
-            if args.len() != 1 {
-                let msg = format!("staticmethod expected 1 argument, got {}", args.len());
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            return molt_staticmethod_new(args[0]);
-        }
-        if class_bits == builtins.property {
-            if args.len() > 4 {
-                let msg = format!(
-                    "property() takes at most 4 arguments ({} given)",
-                    args.len()
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            let none_bits = MoltObject::none().bits();
-            let get_bits = args.first().copied().unwrap_or(none_bits);
-            let set_bits = args.get(1).copied().unwrap_or(none_bits);
-            let del_bits = args.get(2).copied().unwrap_or(none_bits);
-            return molt_property_new(get_bits, set_bits, del_bits);
+        if let Some(result) = crate::builtins::types::wrappers::try_construct_exact_wrapper(
+            _py,
+            class_bits,
+            args,
+            &[],
+            &[],
+        ) {
+            return result;
         }
         if class_bits == builtins.bytes {
             match args.len() {
@@ -1316,40 +1304,157 @@ pub(crate) unsafe fn function_attr_bits(
     }
 }
 
-/// Set an attribute on a function object's __dict__.
-/// If the function has no dict or the dict slot holds a non-dict value (e.g. a
-/// bare int from the legacy FUNC_DEFAULT_* system), a fresh dict is allocated
-/// and installed before inserting the key-value pair.
+/// Allocate the first metadata dictionary off-object. Its allocation reference
+/// transfers to the function only after every initial entry is installed.
+unsafe fn publish_function_dict(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    pairs: &[u64],
+) -> Option<*mut u8> {
+    unsafe {
+        let dict_ptr =
+            crate::object::builders::alloc_dict_with_capacity_and_pairs(py, pairs.len() / 2, &[]);
+        if dict_ptr.is_null() || exception_pending(py) {
+            if !dict_ptr.is_null() {
+                dec_ref_bits(py, MoltObject::from_ptr(dict_ptr).bits());
+            }
+            if !exception_pending(py) {
+                raise_exception::<u64>(py, "MemoryError", "function metadata allocation failed");
+            }
+            return None;
+        }
+        for pair in pairs.chunks_exact(2) {
+            if crate::object::ops::dict_set_deferred(py, dict_ptr, pair[0], pair[1]).is_err() {
+                dec_ref_bits(py, MoltObject::from_ptr(dict_ptr).bits());
+                if !exception_pending(py) {
+                    raise_exception::<u64>(py, "MemoryError", "function metadata insertion failed");
+                }
+                return None;
+            }
+        }
+        function_set_dict_bits(func_ptr, MoltObject::from_ptr(dict_ptr).bits());
+        Some(dict_ptr)
+    }
+}
+
+/// Return the live metadata dictionary, creating it only for an explicit
+/// __dict__ read. Attribute writes stage their first entry before publication.
+pub(crate) unsafe fn function_ensure_dict(py: &PyToken<'_>, func_ptr: *mut u8) -> Option<*mut u8> {
+    unsafe {
+        if exception_pending(py) {
+            return None;
+        }
+        let bits = function_dict_bits(func_ptr);
+        if bits == 0 {
+            return publish_function_dict(py, func_ptr, &[]);
+        }
+        if let Some(ptr) = obj_from_bits(bits).as_ptr()
+            && object_type_id(ptr) == TYPE_ID_DICT
+        {
+            return Some(ptr);
+        }
+        raise_exception::<Option<*mut u8>>(
+            py,
+            "SystemError",
+            "invalid function metadata dictionary",
+        )
+    }
+}
+
+/// Set a borrowed string-keyed attribute. False always leaves an exception;
+/// failed first insertion never installs an empty or partially built dictionary.
+#[must_use]
 pub(crate) unsafe fn function_set_attr_bits(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
     attr_bits: u64,
     val_bits: u64,
-) {
+) -> bool {
     unsafe {
-        let dict_bits = function_dict_bits(func_ptr);
-        let dict_ptr = if dict_bits != 0 {
-            if let Some(p) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(p) == TYPE_ID_DICT {
-                    p
-                } else {
-                    // Dict slot holds a non-dict (legacy default_kind int).
-                    // Replace it with a real dict.
-                    let new_dict = alloc_dict_with_pairs(_py, &[]);
-                    function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
-                    new_dict
-                }
-            } else {
-                let new_dict = alloc_dict_with_pairs(_py, &[]);
-                function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
-                new_dict
+        match function_set_attr_bits_deferred(_py, func_ptr, attr_bits, val_bits) {
+            Ok(publication) => {
+                let name = obj_from_bits(attr_bits).as_ptr().unwrap();
+                crate::call::function::commit_function_metadata_change(
+                    _py,
+                    func_ptr,
+                    std::slice::from_raw_parts(crate::string_bytes(name), crate::string_len(name)),
+                    false,
+                );
+                drop(publication);
+                !exception_pending(_py)
             }
-        } else {
-            let new_dict = alloc_dict_with_pairs(_py, &[]);
-            function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
-            new_dict
+            Err(()) => false,
+        }
+    }
+}
+
+/// A committed dictionary update whose displaced owner has not been released.
+/// Dependent call metadata must be published before this receipt is dropped.
+#[must_use]
+pub(crate) struct FunctionMetadataPublication<'a, 'py> {
+    _displaced: Option<crate::object::ops::DetachedDictReferences<'a, 'py>>,
+}
+
+pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    func_ptr: *mut u8,
+    attr_bits: u64,
+    val_bits: u64,
+) -> Result<FunctionMetadataPublication<'a, 'py>, ()> {
+    unsafe {
+        if exception_pending(_py) {
+            return Err(());
+        }
+        if !obj_from_bits(attr_bits)
+            .as_ptr()
+            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_STRING)
+        {
+            raise_exception::<u64>(_py, "TypeError", "function attribute name must be a string");
+            return Err(());
+        }
+        if function_dict_bits(func_ptr) == 0 {
+            return publish_function_dict(_py, func_ptr, &[attr_bits, val_bits])
+                .map(|_| FunctionMetadataPublication { _displaced: None })
+                .ok_or(());
+        }
+        let Some(dict_ptr) = function_ensure_dict(_py, func_ptr) else {
+            return Err(());
         };
-        dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+        let result = crate::object::ops::dict_set_deferred(_py, dict_ptr, attr_bits, val_bits);
+        if result.is_err() && !exception_pending(_py) {
+            raise_exception::<u64>(_py, "MemoryError", "function metadata insertion failed");
+        }
+        result.map(|displaced| FunctionMetadataPublication {
+            _displaced: Some(displaced),
+        })
+    }
+}
+
+/// Resolve an owned attribute name and release it on either result path.
+#[must_use]
+pub(crate) unsafe fn function_set_attr_name(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    name: &[u8],
+    value: u64,
+) -> bool {
+    unsafe {
+        if exception_pending(py) {
+            return false;
+        }
+        let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+            if !exception_pending(py) {
+                raise_exception::<u64>(
+                    py,
+                    "MemoryError",
+                    "function attribute name allocation failed",
+                );
+            }
+            return false;
+        };
+        let result = function_set_attr_bits(py, func_ptr, name_bits, value);
+        dec_ref_bits(py, name_bits);
+        result
     }
 }
 
@@ -1360,6 +1465,94 @@ mod tests {
     };
     use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
     use crate::*;
+
+    #[test]
+    fn function_metadata_failure_never_publishes_or_replaces_a_dictionary() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let _ = builtin_classes(py);
+            let function = alloc_function_obj(py, 1, 0);
+            let name = alloc_string(py, b"metadata_key");
+            let value = alloc_list(py, &[]);
+            assert!(!function.is_null() && !name.is_null() && !value.is_null());
+            let function_bits = MoltObject::from_ptr(function).bits();
+            let name_bits = MoltObject::from_ptr(name).bits();
+            let value_bits = MoltObject::from_ptr(value).bits();
+            unsafe {
+                assert!(!super::function_set_attr_bits(
+                    py,
+                    function,
+                    MoltObject::none().bits(),
+                    value_bits
+                ));
+                assert!(exception_pending(py));
+                assert_eq!(function_dict_bits(function), 0);
+                let _ = molt_exception_clear();
+
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    ..Default::default()
+                })));
+                let reset = RestoreTracker;
+                assert!(!super::function_set_attr_bits(
+                    py, function, name_bits, value_bits
+                ));
+                assert!(exception_pending(py));
+                assert_eq!(function_dict_bits(function), 0);
+                drop(reset);
+                let _ = molt_exception_clear();
+                assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 1);
+
+                assert!(super::function_set_attr_bits(
+                    py, function, name_bits, value_bits
+                ));
+                let dictionary = function_dict_bits(function);
+                assert_ne!(dictionary, 0);
+                assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 2);
+                assert!(super::function_set_attr_bits(
+                    py,
+                    function,
+                    name_bits,
+                    MoltObject::none().bits()
+                ));
+                assert_eq!(function_dict_bits(function), dictionary);
+                assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 1);
+                assert_eq!(
+                    MoltObject::from_ptr(super::function_ensure_dict(py, function).unwrap()).bits(),
+                    dictionary
+                );
+                assert!(!exception_pending(py));
+            }
+            for bits in [function_bits, name_bits, value_bits] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn function_metadata_corruption_is_reported_without_legacy_replacement() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let function = alloc_function_obj(py, 1, 0);
+            assert!(!function.is_null());
+            unsafe {
+                let corrupt = MoltObject::from_int(7).bits();
+                function_set_dict_bits(function, corrupt);
+                assert!(super::function_ensure_dict(py, function).is_none());
+                assert!(exception_pending(py));
+                assert_eq!(function_dict_bits(function), corrupt);
+                let _ = molt_exception_clear();
+            }
+            dec_ref_bits(py, MoltObject::from_ptr(function).bits());
+        });
+    }
 
     extern "C" fn compiled_init_borrows_self(self_bits: u64) -> i64 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -1417,7 +1610,7 @@ mod tests {
                     1,
                     std::mem::size_of::<u64>() as i64,
                     0,
-                    0,
+                    1, // Install the supplied bases before inherited-hook dispatch.
                 )
             };
             let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");

@@ -1,6 +1,8 @@
 use super::super::{ConstVal, MAX_COMPOUND_ELEMENTS};
-use crate::tir::numeric_facts::{py_i64_floordiv, py_i64_mod};
-use crate::tir::op_kinds_generated::{SccpConstantEvalRule, opcode_sccp_constant_eval_rule_table};
+use crate::tir::numeric_facts::{py_i64_floordiv, py_i64_mod, python_range_is_non_empty};
+use crate::tir::op_kinds_generated::{
+    SccpConstantEvalRule, opcode_accepts_shape, opcode_sccp_constant_eval_rule_table,
+};
 use crate::tir::ops::OpCode;
 
 /// Try to evaluate a binary/unary op on constant operands.
@@ -8,6 +10,9 @@ pub(in crate::tir::passes::sccp) fn evaluate_op(
     opcode: OpCode,
     operands: &[Option<&ConstVal>],
 ) -> Option<ConstVal> {
+    if !opcode_accepts_shape(opcode, operands.len(), 1) {
+        return None;
+    }
     match opcode_sccp_constant_eval_rule_table(opcode) {
         // Binary arithmetic
         // Use checked arithmetic to avoid panic on overflow in debug / silent wrap in release.
@@ -15,16 +20,16 @@ pub(in crate::tir::passes::sccp) fn evaluate_op(
         SccpConstantEvalRule::Add => {
             // Try string concatenation first, then numeric addition.
             eval_str_concat(operands)
-                .or_else(|| eval_list_concat(operands))
+                .or_else(|| eval_tuple_concat(operands))
                 .or_else(|| eval_binary(operands, |a, b| a.checked_add(b), |a, b| Some(a + b)))
         }
         SccpConstantEvalRule::Sub => {
             eval_binary(operands, |a, b| a.checked_sub(b), |a, b| Some(a - b))
         }
         SccpConstantEvalRule::Mul => {
-            // Try string/list repeat first, then numeric multiplication.
+            // Try immutable sequence repeat first, then numeric multiplication.
             eval_str_repeat(operands)
-                .or_else(|| eval_list_repeat(operands))
+                .or_else(|| eval_tuple_repeat(operands))
                 .or_else(|| eval_binary(operands, |a, b| a.checked_mul(b), |a, b| Some(a * b)))
         }
         SccpConstantEvalRule::Div => eval_binary_div(operands),
@@ -51,20 +56,31 @@ pub(in crate::tir::passes::sccp) fn evaluate_op(
         }
         SccpConstantEvalRule::Not => {
             let a = operands.first().copied().flatten()?;
-            match a {
-                ConstVal::Bool(v) => Some(ConstVal::Bool(!v)),
-                _ => None,
-            }
+            constant_truth_value(a).map(|value| ConstVal::Bool(!value))
+        }
+        SccpConstantEvalRule::Bool => {
+            constant_truth_value(operands.first().copied().flatten()?).map(ConstVal::Bool)
         }
 
-        // Container construction with all-constant elements.
-        SccpConstantEvalRule::BuildList => eval_build_list(operands),
-        SccpConstantEvalRule::BuildDict => eval_build_dict(operands),
-        // Tuples fold to List for SCCP purposes.
-        SccpConstantEvalRule::BuildTupleAsList => eval_build_list(operands),
+        // Only recursively immutable containers belong to the value lattice.
+        SccpConstantEvalRule::BuildTuple => eval_build_tuple(operands),
 
         SccpConstantEvalRule::None => None,
     }
+}
+
+/// Truthiness of exact immutable values. This belongs to Bool/Not operations,
+/// not a generic callable whose lookup name happens to be "bool".
+fn constant_truth_value(value: &ConstVal) -> Option<bool> {
+    Some(match value {
+        ConstVal::Int(value) => *value != 0,
+        ConstVal::Float(value) => *value != 0.0,
+        ConstVal::Bool(value) => *value,
+        ConstVal::Str(value) => !value.is_empty(),
+        ConstVal::None => false,
+        ConstVal::Tuple(elements) => !elements.is_empty(),
+        ConstVal::Range { start, stop, step } => python_range_is_non_empty(*start, *stop, *step)?,
+    })
 }
 
 /// Fold string concatenation: "a" + "b" → "ab".
@@ -73,9 +89,8 @@ fn eval_str_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Str(x), ConstVal::Str(y)) => {
-            let result = format!("{}{}", x, y);
-            if result.len() <= MAX_COMPOUND_ELEMENTS {
-                Some(ConstVal::Str(result))
+            if x.len().checked_add(y.len())? <= MAX_COMPOUND_ELEMENTS {
+                Some(ConstVal::Str(format!("{}{}", x, y)))
             } else {
                 None
             }
@@ -84,17 +99,20 @@ fn eval_str_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     }
 }
 
-/// Fold list concatenation: [1,2] + [3,4] → [1,2,3,4].
-fn eval_list_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+/// Fold immutable tuple concatenation: (1, 2) + (3, 4) → (1, 2, 3, 4).
+fn eval_tuple_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
-        (ConstVal::List(x), ConstVal::List(y)) => {
-            let total = x.len() + y.len();
-            if total <= MAX_COMPOUND_ELEMENTS {
-                let mut result = x.clone();
+        (ConstVal::Tuple(x), ConstVal::Tuple(y)) => {
+            let cost = a
+                .materialization_cost()?
+                .checked_add(b.materialization_cost()?)?
+                - 1;
+            if cost <= MAX_COMPOUND_ELEMENTS {
+                let mut result = x.to_vec();
                 result.extend(y.iter().cloned());
-                Some(ConstVal::List(result))
+                Some(ConstVal::Tuple(result.into()))
             } else {
                 None
             }
@@ -109,10 +127,10 @@ fn eval_str_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Str(s), ConstVal::Int(n)) | (ConstVal::Int(n), ConstVal::Str(s)) => {
-            if *n <= 0 {
+            if *n <= 0 || s.is_empty() {
                 Some(ConstVal::Str(String::new()))
             } else {
-                let count = *n as usize;
+                let count = usize::try_from(*n).ok()?;
                 let result_len = s.len().checked_mul(count)?;
                 if result_len <= MAX_COMPOUND_ELEMENTS {
                     Some(ConstVal::Str(s.repeat(count)))
@@ -125,59 +143,44 @@ fn eval_str_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     }
 }
 
-/// Fold list repeat: [1,2] * 3 → [1,2,1,2,1,2].
-fn eval_list_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+/// Fold immutable tuple repetition: (1, 2) * 3 → (1, 2, 1, 2, 1, 2).
+fn eval_tuple_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
-    let (list, n) = match (a, b) {
-        (ConstVal::List(l), ConstVal::Int(n)) => (l, *n),
-        (ConstVal::Int(n), ConstVal::List(l)) => (l, *n),
+    let (value, tuple, n) = match (a, b) {
+        (ConstVal::Tuple(t), ConstVal::Int(n)) => (a, t, *n),
+        (ConstVal::Int(n), ConstVal::Tuple(t)) => (b, t, *n),
         _ => return None,
     };
-    if n <= 0 {
-        return Some(ConstVal::List(Vec::new()));
+    if n <= 0 || tuple.is_empty() {
+        return Some(ConstVal::Tuple(Vec::new().into()));
     }
-    let count = n as usize;
-    let total = list.len().checked_mul(count)?;
-    if total > MAX_COMPOUND_ELEMENTS {
+    let count = usize::try_from(n).ok()?;
+    let cost = (value.materialization_cost()? - 1)
+        .checked_mul(count)?
+        .checked_add(1)?;
+    let total = tuple.len().checked_mul(count)?;
+    if cost > MAX_COMPOUND_ELEMENTS {
         return None;
     }
     let mut result = Vec::with_capacity(total);
     for _ in 0..count {
-        result.extend(list.iter().cloned());
+        result.extend(tuple.iter().cloned());
     }
-    Some(ConstVal::List(result))
+    Some(ConstVal::Tuple(result.into()))
 }
 
-/// Fold BuildList with all-constant operands to ConstVal::List.
-fn eval_build_list(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
-    if operands.len() > MAX_COMPOUND_ELEMENTS {
-        return None;
-    }
+/// Fold BuildTuple with recursively immutable operands to ConstVal::Tuple.
+fn eval_build_tuple(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    operands.iter().try_fold(1usize, |cost, operand| {
+        let cost = cost.checked_add((*operand)?.materialization_cost()?)?;
+        (cost <= MAX_COMPOUND_ELEMENTS).then_some(cost)
+    })?;
     let elements: Vec<ConstVal> = operands
         .iter()
         .map(|o| o.map(|v| (*v).clone()))
         .collect::<Option<Vec<_>>>()?;
-    Some(ConstVal::List(elements))
-}
-
-/// Fold BuildDict with all-constant operands to ConstVal::Dict.
-/// Dict operands are laid out as [k1, v1, k2, v2, ...].
-fn eval_build_dict(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
-    if !operands.len().is_multiple_of(2) {
-        return None;
-    }
-    let n_entries = operands.len() / 2;
-    if n_entries > MAX_COMPOUND_ELEMENTS {
-        return None;
-    }
-    let mut entries = Vec::with_capacity(n_entries);
-    for i in 0..n_entries {
-        let k = operands[i * 2]?.clone();
-        let v = operands[i * 2 + 1]?.clone();
-        entries.push((k, v));
-    }
-    Some(ConstVal::Dict(entries))
+    Some(ConstVal::Tuple(elements.into()))
 }
 
 /// Evaluate a binary arithmetic op on int or float operands.
@@ -192,22 +195,40 @@ fn eval_binary(
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Int(x), ConstVal::Int(y)) => int_op(*x, *y).map(ConstVal::Int),
-        (ConstVal::Float(x), ConstVal::Float(y)) => float_op(*x, *y).map(ConstVal::Float),
+        (ConstVal::Float(x), ConstVal::Float(y)) => {
+            float_op(*x, *y).and_then(float_arithmetic_result)
+        }
         _ => None,
     }
+}
+
+fn float_arithmetic_result(value: f64) -> Option<ConstVal> {
+    // IEEE arithmetic does not establish a cross-target NaN sign/payload.
+    // Keep those computations executable; comparisons and bit-preserving
+    // operand selections can still fold without inventing a new NaN value.
+    (!value.is_nan()).then_some(ConstVal::Float(value))
 }
 
 fn eval_binary_div(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
-        (ConstVal::Int(x), ConstVal::Int(y)) if *y != 0 => {
-            // Python `/` on ints returns float
+        (ConstVal::Int(x), ConstVal::Int(y))
+            if *y != 0 && exactly_representable_i64(*x) && exactly_representable_i64(*y) =>
+        {
+            // Python rounds the exact integer ratio, not separately rounded
+            // operands. Host division is admitted only when both casts are exact.
             Some(ConstVal::Float(*x as f64 / *y as f64))
         }
-        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => Some(ConstVal::Float(*x / *y)),
+        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => float_arithmetic_result(*x / *y),
         _ => None,
     }
+}
+
+fn exactly_representable_i64(value: i64) -> bool {
+    // Widen the round-trip comparison: an i64 cast would saturate 2^63 back
+    // to i64::MAX and incorrectly admit that rounded endpoint.
+    (value as f64) as i128 == i128::from(value)
 }
 
 fn eval_binary_floordiv(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
@@ -215,9 +236,9 @@ fn eval_binary_floordiv(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Int(x), ConstVal::Int(y)) => py_i64_floordiv(*x, *y).map(ConstVal::Int),
-        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
-            Some(ConstVal::Float((*x / *y).floor()))
-        }
+        // Python float divmod uses a shared quotient/remainder correction;
+        // floor(x / y) is not equivalent (for example, 1.0 // 0.1 is 9.0).
+        // Preserve float evaluation until a target-semantic primitive exists.
         _ => None,
     }
 }
@@ -227,16 +248,8 @@ fn eval_binary_mod(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Int(x), ConstVal::Int(y)) => py_i64_mod(*x, *y).map(ConstVal::Int),
-        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
-            // Python modulo semantics
-            let r = *x % *y;
-            let result = if r != 0.0 && r.signum() != y.signum() {
-                r + *y
-            } else {
-                r
-            };
-            Some(ConstVal::Float(result))
-        }
+        // A host remainder plus sign adjustment is not Python float divmod:
+        // signed zero and quotient correction require the shared primitive.
         _ => None,
     }
 }
@@ -257,30 +270,9 @@ fn eval_binary_pow(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
                 None
             }
         }
-        (ConstVal::Float(x), ConstVal::Float(y)) => {
-            // `float ** float` may diverge from a real, finite float — and SCCP's
-            // `ConstVal` lattice cannot represent those results, so folding them
-            // would be a silent miscompile. CPython's `float.__pow__`:
-            //   * `0.0 ** negative`  → raises ZeroDivisionError (observable)
-            //   * `negative ** non-integer` → returns `complex` (NOT a float)
-            //   * any result that is inf/NaN (overflow / domain edge) likewise
-            //     cannot be trusted to match CPython's value/exception contract.
-            // Refuse to fold in every one of those cases (return None → the op
-            // stays as Bottom and the runtime evaluates it). Only a finite real
-            // float result that the IEEE `powf` reproduces exactly is folded.
-            if *x == 0.0 && *y < 0.0 {
-                return None; // ZeroDivisionError at runtime
-            }
-            if *x < 0.0 && y.fract() != 0.0 {
-                return None; // complex result at runtime
-            }
-            let result = x.powf(*y);
-            if result.is_finite() {
-                Some(ConstVal::Float(result))
-            } else {
-                None
-            }
-        }
+        // Finite host powf output does not prove target rounding, Python's
+        // exception behavior, or complex-result selection. Preserve float Pow
+        // until a shared target semantic primitive establishes those facts.
         _ => None,
     }
 }

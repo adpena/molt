@@ -31,6 +31,11 @@
 // molt's ABI is missing or exports under a different name. See the module doc.
 mod discovery_stubs;
 
+// Discovery loads extensions but has no compiler-generated application image.
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-cext-discovery"
+));
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;

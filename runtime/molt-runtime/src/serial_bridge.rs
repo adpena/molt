@@ -536,8 +536,11 @@ fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
 extern "C" fn bridge_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::state::cache::intern_bridge_protocol_name(_py, key)
-            .unwrap_or_else(|| unsupported_serial_intern_name(_py, key))
+        match crate::state::cache::intern_bridge_protocol_name(_py, key) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => unsupported_serial_intern_name(_py, key),
+            Err(()) => MoltObject::none().bits(),
+        }
     })
 }
 

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from .primitive_effects import (
+    comparison_warning_pairs,
+    PRIMITIVE_FRONTEND_TYPES,
+    frontend_operator_map,
+    render_primitive_effects_py,
+)
+
 from .validate import (
     _frontend_effect_class_map,
-    _frontend_raising_nothrow_on_primitives,
 )
 
 
@@ -22,6 +28,44 @@ def _render_py_frozenset(name: str, values: list[str]) -> str:
     return "".join(out)
 
 
+def _frontend_truthiness_control_kinds(data: dict) -> set[str]:
+    control = {row["kind"] for row in data.get("simpleir_control_kind", [])}
+    return {
+        kind.upper()
+        for kind in data.get("simpleir_truthiness_semantics_kinds", [])
+        if kind in control
+    }
+
+
+def _frontend_arbitrary_heap_map(data: dict) -> dict[str, bool]:
+    """Project opcode callback/global-memory effects to frontend op kinds."""
+
+    opcodes = {
+        row["name"]: row.get("may_access_arbitrary_heap", row["purity"] == "impure")
+        for row in data.get("opcode", [])
+    }
+    effects: dict[str, bool] = {}
+    for row in data.get("kind", []):
+        if row.get("mapper_opcode") not in opcodes:
+            continue
+        for spelling in [row["canonical"], *row.get("aliases", [])]:
+            effects[spelling.upper()] = opcodes[row["mapper_opcode"]]
+    for table in ("frontend_raising_kind", "frontend_check_exception_skip"):
+        for row in data.get(table, []):
+            if row.get("opcode") in opcodes:
+                effects[row["kind"]] = opcodes[row["opcode"]]
+    for kind, effect in _frontend_effect_class_map(data).items():
+        effects.setdefault(kind, effect == "writes_heap")
+    for row in data.get("frontend_effect_kind", []):
+        if row["effect"] == "writes_heap":
+            effects[row["kind"]] = True
+    # Frontend-only CFG condition ops execute Python truthiness on dynamic
+    # operands. Their membership is derived from the existing semantic and
+    # control authorities; there is no parallel callback-control list.
+    effects.update(dict.fromkeys(_frontend_truthiness_control_kinds(data), True))
+    return effects
+
+
 def _render_py_binary_image_fact_sets(data: dict) -> str:
     heap_roots = set(
         _canonical_kinds_for_opcodes(
@@ -32,9 +76,8 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
     heap_roots.update(data.get("classifier_exception_creation_ref", []))
     heap_roots.update(row["kind"] for row in data.get("absorbing_kind", []))
 
-    stack_roots = set(
-        _canonical_kinds_for_opcodes(data, {"StackAlloc", "ObjectNewBoundStack"})
-    )
+    stack_roots = set(_canonical_kinds_for_opcodes(data, {"StackAlloc"}))
+    heap_roots.difference_update(stack_roots)
     ref_retain = set(
         _canonical_kinds_for_opcodes(
             data, set(data.get("refcount_balance_inc_opcodes", []))
@@ -65,13 +108,12 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
     )
     ref_release.update(_canonical_kinds_for_opcodes(data, {"Free"}))
 
-    heap_exposure = set(
+    local_only_operands = set(
         _canonical_kinds_for_opcodes(
-            data, set(data.get("refcount_heap_exposure_opcodes", []))
+            data, set(data.get("opcode_has_local_only_operands_opcodes", []))
         )
     )
-    heap_exposure.update(row["kind"] for row in data.get("absorbing_kind", []))
-    heap_exposure.update(row["kind"] for row in data.get("absorbing_operand_kind", []))
+    local_only_operands.update(data.get("classifier_no_heap_move", []))
 
     out: list[str] = []
     out.append("# Binary-image allocation/ownership analysis categories. These are\n")
@@ -98,7 +140,9 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
         _render_py_frozenset("BINARY_IMAGE_REF_RELEASE_KINDS", sorted(ref_release))
     )
     out.append(
-        _render_py_frozenset("BINARY_IMAGE_HEAP_EXPOSURE_KINDS", sorted(heap_exposure))
+        _render_py_frozenset(
+            "BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS", sorted(local_only_operands)
+        )
     )
     return "".join(out)
 
@@ -119,6 +163,35 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append("FRONTEND_EFFECT_CLASS: dict[str, str] = {\n")
     for kind in sorted(effects):
         out.append(f'    "{kind}": "{effects[kind]}",\n')
+    out.append("}\n\n")
+    out.append(
+        "# Control operations whose condition executes Python truthiness. Derived\n"
+    )
+    out.append(
+        "# as simpleir_truthiness_semantics_kinds intersect simpleir_control_kind.\n"
+    )
+    out.append(
+        _render_py_frozenset(
+            "FRONTEND_TRUTHINESS_CONTROL_KINDS",
+            sorted(_frontend_truthiness_control_kinds(data)),
+        )
+    )
+    out.append(
+        "# Coarse callback/global-memory axis projected from each mapped opcode's\n"
+    )
+    out.append(
+        "# OpcodeEffects.may_access_arbitrary_heap fact. This stays independent of\n"
+    )
+    out.append(
+        "# FRONTEND_EFFECT_CLASS so control operations can invalidate heap/guard\n"
+    )
+    out.append("# facts without losing their structural control classification.\n")
+    out.append(
+        "# Explicit false differs from an unregistered kind, which fails closed.\n"
+    )
+    out.append("FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {\n")
+    for kind, may_access in sorted(_frontend_arbitrary_heap_map(data).items()):
+        out.append(f'    "{kind}": {may_access},\n')
     out.append("}\n\n")
 
     protected_gateway_callables = sorted(
@@ -257,7 +330,13 @@ from __future__ import annotations
 
 def render_py(data: dict) -> str:
     kinds = data.get("kind", [])
-    out: list[str] = [_PY_HEADER]
+    out: list[str] = [_PY_HEADER, render_primitive_effects_py(data)]
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_STRUCTURAL_KINDS",
+            [row["kind"] for row in data["simpleir_control_kind"] if row["structural"]],
+        )
+    )
     out.append(
         _render_py_frozenset(
             "FRONTEND_REPOLL_KINDS",
@@ -279,6 +358,14 @@ def render_py(data: dict) -> str:
         if row.get("mapper_opcode") in comparison_by_opcode
         for spelling in (row["canonical"], *row.get("aliases", []))
     }
+    callback_operators = set(frontend_operator_map(data)) | set(comparisons)
+    for row in data["binary_op"]:
+        callback_operators.update((row["binop_kind"], row["augassign_kind"]))
+    out.append(
+        _render_py_frozenset(
+            "FRONTEND_CALLBACK_OPERATOR_KINDS", sorted(callback_operators)
+        )
+    )
     out.append("FRONTEND_PREDICATE_SEMANTICS: dict[str, str] = {\n")
     for spelling, category in sorted(comparisons.items()):
         out.append(f"    {spelling!r}: {category!r},\n")
@@ -303,6 +390,19 @@ def render_py(data: dict) -> str:
     )
     out.append("    if category == 'containment':\n        return False, False\n")
     out.append("    left, right = operands\n")
+    warning_pairs = sorted(
+        {
+            pair
+            for a, b in comparison_warning_pairs(data)
+            for pair in (
+                (PRIMITIVE_FRONTEND_TYPES[a], PRIMITIVE_FRONTEND_TYPES[b]),
+                (PRIMITIVE_FRONTEND_TYPES[b], PRIMITIVE_FRONTEND_TYPES[a]),
+            )
+        }
+    )
+    out.append(
+        f"    if category == 'equality' and (left, right) in {tuple(warning_pairs)!r}:\n        return False, False\n"
+    )
     out.append(
         "    lhs = COMPARISON_SCALAR_DOMAINS.get(left) if left is not None else None\n"
     )
@@ -311,6 +411,32 @@ def render_py(data: dict) -> str:
     )
     out.append("    if lhs is None or rhs is None:\n        return False, False\n")
     out.append("    return True, category == 'equality' or (lhs == rhs and lhs[1])\n\n")
+    commutative = {
+        row["opcode"]: row["domain"] for row in data["canonicalize_commutative_reorder"]
+    }
+    frontend_commutative = {
+        spelling.upper(): commutative[row["mapper_opcode"]]
+        for row in kinds
+        if row.get("mapper_opcode") in commutative
+        for spelling in (row["canonical"], *row.get("aliases", []))
+    }
+    out.append(
+        f"FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {dict(sorted(frontend_commutative.items()))!r}\n\n"
+    )
+    out.append(
+        "def frontend_can_reorder_commutative(kind: str, *operands: str | None) -> bool:\n"
+    )
+    out.append("    if len(operands) != 2:\n        return False\n")
+    out.append(
+        "    left, right = operands\n    domain = FRONTEND_COMMUTATIVE_DOMAINS.get(kind)\n"
+    )
+    out.append(
+        "    if domain == 'numeric':\n        return left in ('int', 'float') and right in ('int', 'float')\n"
+    )
+    out.append("    if domain == 'i64':\n        return left == right == 'int'\n")
+    out.append(
+        "    return domain == 'unboxed_scalar' and left == right and left in ('int', 'float', 'bool', 'None')\n\n"
+    )
     intrinsic_types = {
         row["name"]: row["operand_independent_result_types"][0]
         for row in data["opcode"]
@@ -319,7 +445,7 @@ def render_py(data: dict) -> str:
         in {"i64", "f64", "bool", "str", "bytes", "none"}
     }
     exact_to_frontend = {
-        ty: domain["frontend_types"][0]
+        ty: PRIMITIVE_FRONTEND_TYPES[ty]
         for domain in data["comparison_scalar_domains"]
         for ty in domain["tir_types"]
     }
@@ -338,6 +464,10 @@ def render_py(data: dict) -> str:
         hint = {"i64": "int", "f64": "float", "none": "None"}.get(scalar, scalar)
         for spelling in (row["canonical"], *row.get("aliases", [])):
             out.append(f"    {spelling.upper()!r}: {hint!r},\n")
+    for row in data.get("frontend_effect_kind", []):
+        if "exact_scalar_result_type" in row:
+            hint = PRIMITIVE_FRONTEND_TYPES[row["exact_scalar_result_type"]]
+            out.append(f"    {row['kind']!r}: {hint!r},\n")
     out.append("}\n\n")
 
     intrinsic_arities = {
@@ -352,6 +482,11 @@ def render_py(data: dict) -> str:
                 out.append(
                     f"    {spelling.upper()!r}: {intrinsic_arities[row['mapper_opcode']]},\n"
                 )
+    for row in data.get("frontend_effect_kind", []):
+        if "exact_scalar_result_type" in row:
+            out.append(
+                f"    {row['kind']!r}: {row['frontend_intrinsic_scalar_arity']},\n"
+            )
     out.append("}\n\n")
 
     out.append("CANONICAL_KIND: dict[str, str] = {\n")
@@ -420,18 +555,6 @@ def render_py(data: dict) -> str:
     out.append("    {\n")
     for row in raising:
         out.append(f'        "{row["kind"]}",\n')
-    out.append("    }\n")
-    out.append(")\n\n")
-
-    nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
-    out.append("# Raising kinds whose raise is disproved when all value operands are\n")
-    out.append("# primitive int/float/bool constants.\n")
-    out.append(
-        "FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS: frozenset[str] = frozenset(\n"
-    )
-    out.append("    {\n")
-    for kind in sorted(nothrow_on_primitives):
-        out.append(f'        "{kind}",\n')
     out.append("    }\n")
     out.append(")\n\n")
 

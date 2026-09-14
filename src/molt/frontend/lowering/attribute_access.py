@@ -310,7 +310,6 @@ class AttributeAccessMixin(_MixinBase):
         value: MoltValue,
         expected_class: str,
         *,
-        use_init: bool = False,
         assume_exact: bool = False,
         obj_name: str | None = None,
     ) -> None:
@@ -355,10 +354,9 @@ class AttributeAccessMixin(_MixinBase):
                     # Emit a direct field store even when the class_ref is
                     # not available in the current scope (class defined
                     # inside a function).
-                    setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
                     self.emit(
                         MoltOp(
-                            kind=setattr_kind,
+                            kind="SETATTR",
                             args=[obj, attr, value, expected_class],
                             result=MoltValue("none"),
                         )
@@ -381,10 +379,9 @@ class AttributeAccessMixin(_MixinBase):
 
         assumption = self._loop_guard_assumption(name, expected_class)
         if assumption is True:
-            setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
             self.emit(
                 MoltOp(
-                    kind=setattr_kind,
+                    kind="SETATTR",
                     args=[obj, attr, value, expected_class],
                     result=MoltValue("none"),
                 )
@@ -401,10 +398,9 @@ class AttributeAccessMixin(_MixinBase):
             return
         if self._class_layout_stable(expected_class):
             if assume_exact or self.exact_locals.get(name) == expected_class:
-                setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
                 self.emit(
                     MoltOp(
-                        kind=setattr_kind,
+                        kind="SETATTR",
                         args=[obj, attr, value, expected_class],
                         result=MoltValue("none"),
                     )
@@ -421,10 +417,9 @@ class AttributeAccessMixin(_MixinBase):
                     result=expected_version,
                 )
             )
-            setattr_kind = "GUARDED_SETATTR_INIT" if use_init else "GUARDED_SETATTR"
             self.emit(
                 MoltOp(
-                    kind=setattr_kind,
+                    kind="GUARDED_SETATTR",
                     args=[
                         obj,
                         class_ref,
@@ -439,10 +434,9 @@ class AttributeAccessMixin(_MixinBase):
             return
 
         self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
-        setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
         self.emit(
             MoltOp(
-                kind=setattr_kind,
+                kind="SETATTR",
                 args=[obj, attr, value, expected_class],
                 result=MoltValue("none"),
             )

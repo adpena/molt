@@ -43,7 +43,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let native_eh_enabled = self.native_eh_enabled;
         let tail_call_enabled = self.tail_call_enabled;
         let tail_call_eligible = frame.tail_call_eligible();
-        let arena_local = frame.arena_local();
         let tail_call_count = self.tail_call_count;
 
         // Call-boundary retention is a path-local value-epoch fact, unlike RC
@@ -88,7 +87,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 locals,
                 scalar_plan,
                 reloc_enabled,
-                arena_local,
                 ops,
                 op_idx,
             ) {
@@ -138,7 +136,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 table_relocations: &mut backend.table_relocations,
                 tail_call_enabled,
                 tail_call_eligible,
-                arena_local,
                 tail_call_count,
                 // Call-site adjacency remains function-wide even when
                 // stateful/jumpful emission presents one slice at a time.
@@ -208,7 +205,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     label_depths,
                     reloc_enabled,
                     native_eh_enabled,
-                    arena_local,
                     op_idx,
                 },
                 func,

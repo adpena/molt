@@ -5,7 +5,6 @@
 //! Iterates to a fixpoint (at most 10 rounds) to handle cascading removals.
 //! Also removes blocks that are unreachable (no predecessors, excluding entry).
 
-mod classify;
 mod engine;
 mod uses;
 

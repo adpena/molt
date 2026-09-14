@@ -30,7 +30,6 @@ use crate::tir::op_kinds_generated::{
     opcode_swapped_comparison_for_canonicalize_table,
 };
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
-use crate::tir::type_refine::extract_type_map;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -39,7 +38,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         name: "canonicalize",
         ..Default::default()
     };
-    let type_map = extract_type_map(func);
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Build constant map: ValueId → i64 for ConstInt, ValueId → bool for ConstBool.
@@ -94,14 +92,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
 
             let result = op.results[0];
-            let type_map = if crate::tir::op_kinds_generated::opcode_predicate_semantics(op.opcode)
-                .is_some()
-            {
-                &exact_scalar_types
-            } else {
-                &type_map
-            };
-
             // --- Rule 5: Commutative ordering (constants on the right) ---
             if op.operands.len() == 2
                 && let Some(domain) = opcode_canonicalize_commutative_domain_table(op.opcode)
@@ -112,7 +102,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
                 if lhs_is_const
                     && !rhs_is_const
-                    && can_reorder_commutative(domain, lhs, rhs, type_map)
+                    && can_reorder_commutative(domain, lhs, rhs, &exact_scalar_types)
                 {
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -127,7 +117,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let rhs = op.operands[1];
                 let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
-                if lhs_is_const && !rhs_is_const && can_reorder_comparison(lhs, rhs, type_map) {
+                if lhs_is_const
+                    && !rhs_is_const
+                    && can_reorder_comparison(lhs, rhs, &exact_scalar_types)
+                {
                     op.opcode = swapped;
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -163,6 +156,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     // Neg(Neg(x)) → Copy(x)
                     if op.opcode == OpCode::Neg
                         && let Some(&inner_src) = neg_source.get(&operand)
+                        && matches!(
+                            (
+                                exact_scalar_types.get(&inner_src),
+                                exact_scalar_types.get(&operand),
+                            ),
+                            (Some(TirType::I64), Some(TirType::I64))
+                                | (Some(TirType::F64), Some(TirType::F64))
+                        )
                     {
                         let old = op.clone();
                         let mut replacement = TirOp {
@@ -211,7 +212,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let rhs_bool = bool_consts.get(&rhs).copied();
 
             if apply_canonicalize_binary_rules(
-                op, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, result, type_map,
+                op,
+                lhs,
+                rhs,
+                lhs_int,
+                rhs_int,
+                lhs_bool,
+                rhs_bool,
+                result,
+                &exact_scalar_types,
             ) {
                 stats.values_changed += 1;
             }
@@ -479,16 +488,32 @@ mod tests {
         }
     }
 
+    fn make_unop(opcode: OpCode, operand: ValueId, result: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![operand],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    fn make_copy(source: ValueId, result: ValueId) -> TirOp {
+        make_unop(OpCode::Copy, source, result)
+    }
+
     #[test]
     fn add_zero_eliminated() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-        let param = ValueId(0);
+        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let input = func.fresh_value();
         let zero = func.fresh_value();
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(7, input));
         entry.ops.push(make_const_int(0, zero));
-        entry.ops.push(make_binop(OpCode::Add, param, zero, result));
+        entry.ops.push(make_binop(OpCode::Add, input, zero, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -497,21 +522,22 @@ mod tests {
         assert!(stats.values_changed > 0);
 
         // The Add should be replaced with a Copy from param.
-        let add_op = &func.blocks[&func.entry_block].ops[1];
+        let add_op = &func.blocks[&func.entry_block].ops[2];
         assert_eq!(add_op.opcode, OpCode::Copy);
-        assert_eq!(add_op.operands[0], param);
+        assert_eq!(add_op.operands[0], input);
     }
 
     #[test]
     fn mul_zero_folded() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-        let param = ValueId(0);
+        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let input = func.fresh_value();
         let zero = func.fresh_value();
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(7, input));
         entry.ops.push(make_const_int(0, zero));
-        entry.ops.push(make_binop(OpCode::Mul, param, zero, result));
+        entry.ops.push(make_binop(OpCode::Mul, input, zero, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -519,8 +545,29 @@ mod tests {
         let stats = run(&mut func);
         assert!(stats.values_changed > 0);
 
-        let mul_op = &func.blocks[&func.entry_block].ops[1];
+        let mul_op = &func.blocks[&func.entry_block].ops[2];
         assert_eq!(mul_op.opcode, OpCode::ConstInt);
+    }
+
+    #[test]
+    fn arithmetic_identity_does_not_trust_positive_parameter_annotation() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+        let annotated = ValueId(0);
+        let zero = func.fresh_value();
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(0, zero));
+        entry
+            .ops
+            .push(make_binop(OpCode::Add, annotated, zero, result));
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let stats = run(&mut func);
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(func.blocks[&func.entry_block].ops[1].opcode, OpCode::Add);
     }
 
     #[test]
@@ -585,14 +632,15 @@ mod tests {
 
     #[test]
     fn sub_self_is_zero() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-        let param = ValueId(0);
+        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let input = func.fresh_value();
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(7, input));
         entry
             .ops
-            .push(make_binop(OpCode::Sub, param, param, result));
+            .push(make_binop(OpCode::Sub, input, input, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -600,21 +648,24 @@ mod tests {
         let stats = run(&mut func);
         assert!(stats.values_changed > 0);
 
-        let sub_op = &func.blocks[&func.entry_block].ops[0];
+        let sub_op = &func.blocks[&func.entry_block].ops[1];
         assert_eq!(sub_op.opcode, OpCode::ConstInt);
     }
 
     #[test]
     fn commutative_ordering() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
-        let param = ValueId(0);
+        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
         let one = func.fresh_value();
+        let source = func.fresh_value();
+        let input = func.fresh_value();
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_const_int(1, one));
-        // 1 + param → should be canonicalized to param + 1
-        entry.ops.push(make_binop(OpCode::Add, one, param, result));
+        entry.ops.push(make_const_int(2, source));
+        entry.ops.push(make_copy(source, input));
+        // 1 + exact-input → should be canonicalized to exact-input + 1.
+        entry.ops.push(make_binop(OpCode::Add, one, input, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -622,8 +673,41 @@ mod tests {
         let stats = run(&mut func);
         assert!(stats.values_changed > 0);
 
-        let add_op = &func.blocks[&func.entry_block].ops[1];
-        assert_eq!(add_op.operands[0], param);
+        let add_op = &func.blocks[&func.entry_block].ops[3];
+        assert_eq!(add_op.operands[0], input);
         assert_eq!(add_op.operands[1], one);
+    }
+
+    #[test]
+    fn double_negation_requires_exact_builtin_provenance() {
+        let mut exact = TirFunction::new("exact".into(), vec![], TirType::I64);
+        let input = exact.fresh_value();
+        let inner = exact.fresh_value();
+        let result = exact.fresh_value();
+        let entry = exact.blocks.get_mut(&exact.entry_block).unwrap();
+        entry.ops.push(make_const_int(7, input));
+        entry.ops.push(make_unop(OpCode::Neg, input, inner));
+        entry.ops.push(make_unop(OpCode::Neg, inner, result));
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        assert!(run(&mut exact).values_changed > 0);
+        assert_eq!(exact.blocks[&exact.entry_block].ops[2].opcode, OpCode::Copy);
+
+        let mut annotated = TirFunction::new("annotated".into(), vec![TirType::I64], TirType::I64);
+        let input = ValueId(0);
+        let inner = annotated.fresh_value();
+        let result = annotated.fresh_value();
+        let entry = annotated.blocks.get_mut(&annotated.entry_block).unwrap();
+        entry.ops.push(make_unop(OpCode::Neg, input, inner));
+        entry.ops.push(make_unop(OpCode::Neg, inner, result));
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        assert_eq!(run(&mut annotated).values_changed, 0);
+        assert_eq!(
+            annotated.blocks[&annotated.entry_block].ops[1].opcode,
+            OpCode::Neg
+        );
     }
 }

@@ -13,9 +13,7 @@ pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     let alloc_kinds = ["alloc_class"];
     let allowed_use_kinds = [
         "store",
-        "store_init",
         "guarded_field_set",
-        "guarded_field_init",
         "object_set_class",
     ];
 

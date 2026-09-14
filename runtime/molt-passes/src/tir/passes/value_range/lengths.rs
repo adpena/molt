@@ -125,19 +125,9 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                     }
                 }
                 ValueRangeContainerLengthRule::LenCall => {
-                    let name = op
-                        .attrs
-                        .get("name")
-                        .and_then(|v| match v {
-                            AttrValue::Str(s) => Some(s.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    if name == "len" && op.operands.len() == 1 {
-                        let container = result.resolve(op.operands[0]);
-                        for &r in &op.results {
-                            result.record_len_of(r, container);
-                        }
+                    if let Some(argument) = op.length_argument() {
+                        let container = result.resolve(argument);
+                        result.record_len_of(op.results[0], container);
                     }
                 }
                 ValueRangeContainerLengthRule::None => {}

@@ -14,6 +14,14 @@ pub fn validate_runtime_target_contract(
     let supported_requirements = target_info.supported_runtime_semantics;
     for function in &ir.functions {
         for (index, op) in function.ops.iter().enumerate() {
+            if op.kind == "stack_alloc" {
+                return Err(format!(
+                    "{target} target rejected before source generation: {}:op#{index} `{}`: {}",
+                    function.name,
+                    op.kind,
+                    crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED,
+                ));
+            }
             let Some(requirements) = op.runtime_requirements() else {
                 return Err(format!(
                     "{target} target rejected before source generation: {}:op#{index} `{}`: operation is unclassified in the generated runtime semantic authority",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntFlag
 from typing import Any, Protocol, Sequence
 
 
@@ -28,6 +29,14 @@ class ControlMaps:
     try_end_to_start: dict[int, int]
 
 
+class CFGEdgeKind(IntFlag):
+    """Coalesced edges retain every execution mode they represent."""
+
+    NORMAL = 1
+    EXCEPTION = 2
+    RESUME = 4
+
+
 @dataclass(frozen=True)
 class CFGGraph:
     blocks: list[BasicBlock]
@@ -36,6 +45,7 @@ class CFGGraph:
     block_entry_label: dict[int, str]
     control: ControlMaps
     successors: dict[int, list[int]]
+    edge_kinds: dict[tuple[int, int], CFGEdgeKind]
     predecessors: dict[int, list[int]]
     reachable: set[int]
     dominators: dict[int, set[int]]
@@ -173,10 +183,11 @@ def _compute_successors(
     index_to_block: dict[int, int],
     label_to_block: dict[str, int],
     control: ControlMaps,
-) -> dict[int, list[int]]:
+) -> tuple[dict[int, list[int]], dict[tuple[int, int], CFGEdgeKind]]:
     successors: dict[int, list[int]] = {block.id: [] for block in blocks}
+    edge_kinds: dict[tuple[int, int], CFGEdgeKind] = {}
     if not blocks:
-        return successors
+        return successors, edge_kinds
 
     # Collect resume-target blocks: blocks immediately following a STATE_YIELD.
     # These are only reachable via STATE_SWITCH dispatch, not via normal
@@ -195,13 +206,19 @@ def _compute_successors(
         if op.kind == "STATE_LABEL":
             state_yield_resume_blocks.append(block.id)
 
-    def add_succ(block_id: int, succ: int | None) -> None:
+    def add_succ(
+        block_id: int,
+        succ: int | None,
+        kind: CFGEdgeKind = CFGEdgeKind.NORMAL,
+    ) -> None:
         if succ is None:
             return
         if succ < 0 or succ >= len(blocks):
             return
         if succ not in successors[block_id]:
             successors[block_id].append(succ)
+        edge = (block_id, succ)
+        edge_kinds[edge] = edge_kinds.get(edge, CFGEdgeKind(0)) | kind
 
     def block_for_index(idx: int | None) -> int | None:
         if idx is None:
@@ -281,6 +298,7 @@ def _compute_successors(
             add_succ(
                 block_id,
                 block_for_index(None if try_end_idx is None else try_end_idx + 1),
+                CFGEdgeKind.EXCEPTION,
             )
             # Model the implicit exception edge to the handler. `TRY_START`'s
             # `args[0]` is the handler label: ANY op in the try region may raise
@@ -294,12 +312,12 @@ def _compute_successors(
             # cannot anchor the handler. Without this edge the entire `except`
             # clause is silently dropped and the exception escapes uncaught.
             handler_label = str(op.args[0]) if op.args else ""
-            add_succ(block_id, label_to_block.get(handler_label))
+            add_succ(block_id, label_to_block.get(handler_label), CFGEdgeKind.EXCEPTION)
             continue
         if op.kind == "CHECK_EXCEPTION":
             add_succ(block_id, next_block)
             target = str(op.args[0]) if op.args else ""
-            add_succ(block_id, label_to_block.get(target))
+            add_succ(block_id, label_to_block.get(target), CFGEdgeKind.EXCEPTION)
             continue
         if op.kind == "RETURN":
             continue
@@ -330,14 +348,14 @@ def _compute_successors(
         if op.kind == "STATE_SWITCH":
             # STATE_SWITCH dispatches to any resume block in the function:
             # blocks after STATE_YIELD ops and STATE_LABEL blocks.
-            add_succ(block_id, next_block)
+            add_succ(block_id, next_block, CFGEdgeKind.RESUME)
             for resume_block in state_yield_resume_blocks:
-                add_succ(block_id, resume_block)
+                add_succ(block_id, resume_block, CFGEdgeKind.RESUME)
             continue
 
         add_succ(block_id, next_block)
 
-    return successors
+    return successors, edge_kinds
 
 
 def _compute_predecessors(successors: dict[int, list[int]]) -> dict[int, list[int]]:
@@ -407,7 +425,7 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     blocks, index_to_block, label_to_block, block_entry_label = _build_basic_blocks(
         ops, control
     )
-    successors = _compute_successors(
+    successors, edge_kinds = _compute_successors(
         ops=ops,
         blocks=blocks,
         index_to_block=index_to_block,
@@ -428,6 +446,7 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
         block_entry_label=block_entry_label,
         control=control,
         successors=successors,
+        edge_kinds=edge_kinds,
         predecessors=predecessors,
         reachable=reachable,
         dominators=dominators,

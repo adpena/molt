@@ -78,9 +78,7 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         "await",
         "raise",
         "store",
-        "store_init",
         "guarded_field_set",
-        "guarded_field_init",
         "object_set_class",
     ]
     .iter()

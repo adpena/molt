@@ -50,26 +50,19 @@ impl ConstDataCache {
             .map(|entry| entry.bits)
     }
 
-    fn insert(&mut self, py: &PyToken<'_>, data_ptr: usize, len: usize, bits: u64) {
+    fn insert(&mut self, data_ptr: usize, len: usize, bits: u64) -> Option<u64> {
         let idx = Self::slot_index(data_ptr, len);
-        if let Some(prev) = self.slots[idx].take() {
-            dec_ref_bits(py, prev.bits);
-        }
-        inc_ref_bits(py, bits);
-        mark_bits_immortal(bits);
+        let previous = self.slots[idx].take().map(|entry| entry.bits);
         self.slots[idx] = Some(ConstDataCacheEntry {
             data_ptr,
             len,
             bits,
         });
+        previous
     }
 
-    fn clear(&mut self, py: &PyToken<'_>) {
-        for slot in self.slots.iter_mut() {
-            if let Some(prev) = slot.take() {
-                dec_ref_bits(py, prev.bits);
-            }
-        }
+    fn take_entries(&mut self) -> [Option<ConstDataCacheEntry>; CONST_DATA_CACHE_SIZE] {
+        std::mem::replace(&mut self.slots, ConstDataCache::new().slots)
     }
 }
 
@@ -139,49 +132,80 @@ pub(crate) fn const_data_literal_insert(
     len: usize,
     bits: u64,
 ) {
-    with_cache(kind, |cache| cache.insert(py, data_ptr, len, bits));
+    // Publish the incoming owner before displacing the old cache edge. Any
+    // release happens after the TLS borrow or WASM mutex guard is gone.
+    inc_ref_bits(py, bits);
+    mark_bits_immortal(bits);
+    let previous = with_cache(kind, |cache| cache.insert(data_ptr, len, bits));
+    if let Some(previous) = previous {
+        dec_ref_bits(py, previous);
+    }
 }
 
-pub(crate) fn clear_const_data_literal_caches(py: &PyToken<'_>) {
+/// Detach this execution context's owned literal-cache edges and report whether
+/// any existed.
+pub(crate) fn clear_const_data_literal_caches(py: &PyToken<'_>) -> bool {
+    let mut detached = false;
     for kind in [
         ConstDataLiteralKind::String,
         ConstDataLiteralKind::Bytes,
         ConstDataLiteralKind::BigInt,
     ] {
-        clear_const_data_literal_cache(py, kind);
+        detached |= clear_const_data_literal_cache(py, kind);
     }
+    detached
 }
 
-fn clear_const_data_literal_cache(py: &PyToken<'_>, kind: ConstDataLiteralKind) {
+fn clear_const_data_literal_cache(py: &PyToken<'_>, kind: ConstDataLiteralKind) -> bool {
     #[cfg(target_arch = "wasm32")]
     {
-        match kind {
+        let previous = match kind {
             ConstDataLiteralKind::String => {
                 let cache = CONST_STR_WASM.get_or_init(|| Mutex::new(ConstDataCache::new()));
-                cache.lock().unwrap().clear(py);
+                cache.lock().unwrap().take_entries()
             }
             ConstDataLiteralKind::Bytes => {
                 let cache = CONST_BYTES_WASM.get_or_init(|| Mutex::new(ConstDataCache::new()));
-                cache.lock().unwrap().clear(py);
+                cache.lock().unwrap().take_entries()
             }
             ConstDataLiteralKind::BigInt => {
                 let cache = CONST_BIGINT_WASM.get_or_init(|| Mutex::new(ConstDataCache::new()));
-                cache.lock().unwrap().clear(py);
+                cache.lock().unwrap().take_entries()
             }
+        };
+        let mut detached = false;
+        for entry in previous.into_iter().flatten() {
+            detached = true;
+            dec_ref_bits(py, entry.bits);
         }
+        detached
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        match kind {
+        let previous = match kind {
             ConstDataLiteralKind::String => {
-                let _ = CONST_STR_TLS.try_with(|cell| cell.borrow_mut().clear(py));
+                CONST_STR_TLS
+                    .try_with(|cell| cell.borrow_mut().take_entries())
+                    .ok()
             }
             ConstDataLiteralKind::Bytes => {
-                let _ = CONST_BYTES_TLS.try_with(|cell| cell.borrow_mut().clear(py));
+                CONST_BYTES_TLS
+                    .try_with(|cell| cell.borrow_mut().take_entries())
+                    .ok()
             }
             ConstDataLiteralKind::BigInt => {
-                let _ = CONST_BIGINT_TLS.try_with(|cell| cell.borrow_mut().clear(py));
+                CONST_BIGINT_TLS
+                    .try_with(|cell| cell.borrow_mut().take_entries())
+                    .ok()
+            }
+        };
+        let mut detached = false;
+        if let Some(previous) = previous {
+            for entry in previous.into_iter().flatten() {
+                detached = true;
+                dec_ref_bits(py, entry.bits);
             }
         }
+        detached
     }
 }

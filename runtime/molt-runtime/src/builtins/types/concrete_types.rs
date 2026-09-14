@@ -12,115 +12,96 @@ unsafe fn mappingproxy_set_mapping_bits(ptr: *mut u8, bits: u64) {
 }
 
 pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(
+    let state = types_state(_py);
+    let methods = [
+        RuntimeClassMethodSpec::fixed(
+            "__new__",
+            &state.mappingproxy_new_fn,
+            molt_types_mappingproxy_new as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__init__",
+            &state.mappingproxy_init_fn,
+            molt_types_mappingproxy_init as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__getitem__",
+            &state.mappingproxy_getitem_fn,
+            molt_types_mappingproxy_getitem as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__iter__",
+            &state.mappingproxy_iter_fn,
+            molt_types_mappingproxy_iter as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__len__",
+            &state.mappingproxy_len_fn,
+            molt_types_mappingproxy_len as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__contains__",
+            &state.mappingproxy_contains_fn,
+            molt_types_mappingproxy_contains as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::with_signature(
+            "get",
+            &state.mappingproxy_get_fn,
+            molt_types_mappingproxy_get as *const () as usize as u64,
+            3,
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "keys",
+            &state.mappingproxy_keys_fn,
+            molt_types_mappingproxy_keys as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "items",
+            &state.mappingproxy_items_fn,
+            molt_types_mappingproxy_items as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "values",
+            &state.mappingproxy_values_fn,
+            molt_types_mappingproxy_values as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__repr__",
+            &state.mappingproxy_repr_fn,
+            molt_types_mappingproxy_repr as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__setitem__",
+            &state.mappingproxy_setitem_fn,
+            molt_types_mappingproxy_setitem as *const () as usize as u64,
+            3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__delitem__",
+            &state.mappingproxy_delitem_fn,
+            molt_types_mappingproxy_delitem as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
-        &types_state(_py).mappingproxy_class,
+        &state.mappingproxy_class,
         "mappingproxy",
         16,
-    );
-    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-        && !unsafe {
-            crate::object::class_set_instance_shape_id(
-                class_ptr,
-                crate::object::ObjectShapeId::TypesMappingProxy,
-            )
-        }
-    {
-        return MoltObject::none().bits();
-    }
-    let new_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_new_fn,
-        molt_types_mappingproxy_new as *const () as usize as u64,
-        2,
-    );
-    let init_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_init_fn,
-        molt_types_mappingproxy_init as *const () as usize as u64,
-        2,
-    );
-    let getitem_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_getitem_fn,
-        molt_types_mappingproxy_getitem as *const () as usize as u64,
-        2,
-    );
-    let iter_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_iter_fn,
-        molt_types_mappingproxy_iter as *const () as usize as u64,
-        1,
-    );
-    let len_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_len_fn,
-        molt_types_mappingproxy_len as *const () as usize as u64,
-        1,
-    );
-    let contains_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_contains_fn,
-        molt_types_mappingproxy_contains as *const () as usize as u64,
-        2,
-    );
-    let get_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_get_fn,
-        molt_types_mappingproxy_get as *const () as usize as u64,
-        3,
-    );
-    let keys_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_keys_fn,
-        molt_types_mappingproxy_keys as *const () as usize as u64,
-        1,
-    );
-    let items_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_items_fn,
-        molt_types_mappingproxy_items as *const () as usize as u64,
-        1,
-    );
-    let values_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_values_fn,
-        molt_types_mappingproxy_values as *const () as usize as u64,
-        1,
-    );
-    let repr_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_repr_fn,
-        molt_types_mappingproxy_repr as *const () as usize as u64,
-        1,
-    );
-    let setitem_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_setitem_fn,
-        molt_types_mappingproxy_setitem as *const () as usize as u64,
-        3,
-    );
-    let delitem_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).mappingproxy_delitem_fn,
-        molt_types_mappingproxy_delitem as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__new__", new_bits);
-    set_class_method(_py, class_bits, "__init__", init_bits);
-    set_class_method(_py, class_bits, "__getitem__", getitem_bits);
-    set_class_method(_py, class_bits, "__iter__", iter_bits);
-    set_class_method(_py, class_bits, "__len__", len_bits);
-    set_class_method(_py, class_bits, "__contains__", contains_bits);
-    set_class_method(_py, class_bits, "get", get_bits);
-    set_class_method(_py, class_bits, "keys", keys_bits);
-    set_class_method(_py, class_bits, "items", items_bits);
-    set_class_method(_py, class_bits, "values", values_bits);
-    set_class_method(_py, class_bits, "__repr__", repr_bits);
-    set_class_method(_py, class_bits, "__setitem__", setitem_bits);
-    set_class_method(_py, class_bits, "__delitem__", delitem_bits);
-    mark_vararg_method(_py, get_bits, true);
-    class_bits
+        Some(crate::object::ObjectShapeId::TypesMappingProxy),
+        &methods,
+    )
 }
 
 pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
@@ -128,78 +109,77 @@ pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &types_state(_py).method_class, "method", 16);
-    let new_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).method_new_fn,
-        molt_types_method_new as *const () as usize as u64,
-        3,
-    );
-    let init_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).method_init_fn,
-        molt_types_method_init as *const () as usize as u64,
-        3,
-    );
-    set_class_method(_py, class_bits, "__new__", new_bits);
-    set_class_method(_py, class_bits, "__init__", init_bits);
-    class_bits
+    let state = types_state(_py);
+    let methods = [
+        RuntimeClassMethodSpec::fixed(
+            "__new__",
+            &state.method_new_fn,
+            molt_types_method_new as *const () as usize as u64,
+            3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__init__",
+            &state.method_init_fn,
+            molt_types_method_init as *const () as usize as u64,
+            3,
+        ),
+    ];
+    init_cached_runtime_class(_py, &state.method_class, "method", 16, None, &methods)
 }
 
 pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(
+    let state = types_state(_py);
+    let methods = [
+        RuntimeClassMethodSpec::with_signature(
+            "__init__",
+            &state.simplenamespace_init_fn,
+            molt_types_simplenamespace_init as *const () as usize as u64,
+            3,
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__repr__",
+            &state.simplenamespace_repr_fn,
+            molt_types_simplenamespace_repr as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            &state.simplenamespace_eq_fn,
+            molt_types_simplenamespace_eq as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class(
         _py,
-        &types_state(_py).simplenamespace_class,
+        &state.simplenamespace_class,
         "SimpleNamespace",
         8,
-    );
-    let init_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).simplenamespace_init_fn,
-        molt_types_simplenamespace_init as *const () as usize as u64,
-        3,
-    );
-    let repr_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).simplenamespace_repr_fn,
-        molt_types_simplenamespace_repr as *const () as usize as u64,
-        1,
-    );
-    let eq_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).simplenamespace_eq_fn,
-        molt_types_simplenamespace_eq as *const () as usize as u64,
-        2,
-    );
-    set_class_method(_py, class_bits, "__init__", init_bits);
-    set_class_method(_py, class_bits, "__repr__", repr_bits);
-    set_class_method(_py, class_bits, "__eq__", eq_bits);
-    mark_vararg_method(_py, init_bits, true);
-    class_bits
+        None,
+        &methods,
+    )
 }
 
 pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &types_state(_py).capsule_class, "capsule", 8);
-    let new_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).capsule_new_fn,
+    let state = types_state(_py);
+    let methods = [RuntimeClassMethodSpec::fixed(
+        "__new__",
+        &state.capsule_new_fn,
         molt_types_capsule_new as *const () as usize as u64,
         1,
-    );
-    set_class_method(_py, class_bits, "__new__", new_bits);
-    class_bits
+    )];
+    init_cached_runtime_class(_py, &state.capsule_class, "capsule", 8, None, &methods)
 }
 
 pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &types_state(_py).cell_class, "cell", 8);
-    let new_bits = builtin_func_bits(
-        _py,
-        &types_state(_py).cell_new_fn,
+    let state = types_state(_py);
+    let methods = [RuntimeClassMethodSpec::fixed(
+        "__new__",
+        &state.cell_new_fn,
         molt_types_cell_new as *const () as usize as u64,
         1,
-    );
-    set_class_method(_py, class_bits, "__new__", new_bits);
-    class_bits
+    )];
+    init_cached_runtime_class(_py, &state.cell_class, "cell", 8, None, &methods)
 }
 
 #[unsafe(no_mangle)]

@@ -13,12 +13,11 @@ pub extern "C" fn molt_header_size() -> u64 {
 }
 
 #[unsafe(no_mangle)]
+/// Allocate compiler-owned boxed fields, not arbitrary raw bytes. The same
+/// generated shape owns field traversal, cycle detachment and terminal release.
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(size) = usize_from_bits(size_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(total_size) = raw_payload_total_or_null(size) else {
+        let Some(total_size) = crate::object::boxed_object_total_size(_py, size_bits) else {
             return MoltObject::none().bits();
         };
         let obj_ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
@@ -92,8 +91,9 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return Some(inst_bits);
         };
-        let _ =
-            crate::object::ops_slice::dataclass_init_class_unpublished(_py, inst_ptr, class_bits);
+        let _ = crate::object::ops_slice::dataclass_finish_construction_unpublished(
+            _py, inst_ptr, class_bits,
+        );
         if exception_pending(_py) {
             dec_ref_bits(_py, inst_bits);
             return Some(MoltObject::none().bits());
@@ -104,7 +104,13 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { alloc_class_instance(_py, size_bits, class_bits) })
+    crate::with_gil_entry_nopanic!(_py, {
+        // The ABI carries a raw byte extent, never a boxed Python integer.
+        let Some(size) = usize_from_bits(size_bits) else {
+            return MoltObject::none().bits();
+        };
+        alloc_class_instance(_py, size, class_bits)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -127,7 +133,8 @@ pub extern "C" fn molt_object_publish_initialized(obj_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits: u64) -> u64 {
+/// Allocate with a native byte extent; only the external ABI decodes raw u64 sizes.
+pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u64) -> u64 {
     let mut type_id = TYPE_ID_OBJECT;
     if class_bits != 0 {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
@@ -137,12 +144,22 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
             }
+            if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+                return MoltObject::none().bits();
+            }
             type_id = crate::object::class_instance_type_id(class_ptr);
         }
     }
-    let Some(size) = usize_from_bits(size_bits) else {
-        return MoltObject::none().bits();
-    };
+    if let Some(class) = obj_from_bits(class_bits).as_ptr()
+        && unsafe { super::layout::class_cached_layout_size(class) }
+            .is_some_and(|required| size < required)
+    {
+        return raise_exception::<u64>(
+            _py,
+            "SystemError",
+            "instance allocation is smaller than sealed class layout",
+        );
+    }
     let Some(total_size) = raw_payload_total_or_null(size) else {
         return MoltObject::none().bits();
     };
@@ -164,6 +181,20 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits
                 class_bits,
                 ClassEdgeOwnership::Owned,
             )
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        if !super::layout::wrapper_initialize_prefix_unpublished(_py, obj_ptr) {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "wrapper instance allocation cannot initialize its native prefix",
+            );
+        }
+        if let Some(class) = obj_from_bits(class_bits).as_ptr()
+            && super::field_storage::initialize_fields(_py, obj_ptr, class, size).is_err()
         {
             dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             return MoltObject::none().bits();
@@ -1084,11 +1115,11 @@ pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_list_with_capacity(_py, elems, cap)
 }
 
-fn alloc_tuple_exact(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
+fn alloc_tuple_exact_unpublished(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
     let Some(total) = crate::object::layout::TupleStorage::object_size(elems.len()) else {
         return std::ptr::null_mut();
     };
-    let ptr = alloc_object_with_aux(
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
         _py,
         total,
         TYPE_ID_TUPLE,
@@ -1111,6 +1142,87 @@ fn alloc_tuple_exact(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
         }
     }
     ptr
+}
+
+fn alloc_tuple_exact(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
+    let ptr = alloc_tuple_exact_unpublished(_py, elems, owned);
+    if !ptr.is_null() {
+        unsafe {
+            crate::object::gc::gc_publish_initialized(_py, ptr);
+        }
+    }
+    ptr
+}
+
+/// Seal and admit the one physical layout that can back tuple-subclass values.
+/// Public constructors call this before evaluating an iterable; allocation
+/// calls it again at the ownership boundary without duplicating the predicate.
+pub(crate) unsafe fn admit_tuple_subclass_layout(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    unsafe {
+        if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+            return false;
+        }
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let tuple_class = builtin_classes(_py).tuple;
+        let tuple_payload = crate::object::layout::TupleStorage::object_size(0)
+            .and_then(|total| total.checked_sub(std::mem::size_of::<MoltHeader>()));
+        // Native instance-kind policy deliberately describes only the generic
+        // Object/Class allocator. Tuple subclasses use this constructor-owned
+        // variable-tail allocation instead, so their physical authority is the
+        // sealed tuple ancestry plus the exact tuple prefix and payload shape.
+        let owns_tuple_layout = issubclass_bits(class_bits, tuple_class)
+            && crate::object::class_instance_shape_id(class_ptr)
+                == crate::object::ObjectShapeId::Plain
+            && tuple_payload.is_some_and(|payload| {
+                crate::object::layout::class_cached_layout_size(class_ptr) == Some(payload)
+            });
+        if !owns_tuple_layout {
+            let _ = raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "tuple subclass requires the sealed tuple instance layout",
+            );
+            return false;
+        }
+        true
+    }
+}
+
+/// Construct a fresh tuple-subclass payload and publish its owned class edge
+/// as one transaction. Exact tuples (especially the immortal empty singleton)
+/// are never retagged, and the target class must own the physical tuple layout.
+pub(crate) unsafe fn alloc_tuple_subclass(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    elems: &[u64],
+) -> u64 {
+    unsafe {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "tuple.__new__ expects type");
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return raise_exception::<_>(_py, "TypeError", "tuple.__new__ expects type");
+        }
+        if !admit_tuple_subclass_layout(_py, class_ptr) {
+            return MoltObject::none().bits();
+        }
+
+        let ptr = alloc_tuple_exact_unpublished(_py, elems, false);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
+            dec_ref_bits(_py, bits);
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "tuple subclass class edge initialization failed",
+            );
+        }
+        crate::object::gc::gc_publish_initialized(_py, ptr);
+        bits
+    }
 }
 
 /// Allocate a fixed-length tuple whose slots begin as the invalid zero
@@ -1561,28 +1673,46 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         return std::ptr::null_mut();
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let bases_bits = MoltObject::none().bits();
-    let mro_bits = MoltObject::none().bits();
-    // Eight object-reference/layout slots, one atomic cold-policy word, then
-    // an internal write-once payload-size cache. The cache is not a
-    // Python attribute and cannot be forged through the class namespace.
-    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
+    let ptr = alloc_class_obj_with_namespace(_py, name_bits, dict_bits);
+    dec_ref_bits(_py, dict_bits);
+    ptr
+}
+
+/// Allocate the fully initialized class payload around an already copied
+/// namespace. The caller lends the dictionary; the class owns its own edge.
+pub(crate) fn alloc_class_obj_with_namespace(
+    _py: &PyToken<'_>,
+    name_bits: u64,
+    dict_bits: u64,
+) -> *mut u8 {
+    inc_ref_bits(_py, dict_bits);
+    // Typed reference slots, layout epoch, atomic cold policy and write-once
+    // payload size. The slot authority also owns private layout provenance.
+    let total = std::mem::size_of::<MoltHeader>()
+        + super::layout::CLASS_PAYLOAD_WORDS * std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_TYPE, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
         dec_ref_bits(_py, dict_bits);
         return ptr;
     }
-    let qualname_bits = name_bits;
     unsafe {
-        *(ptr as *mut u64) = name_bits;
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bases_bits;
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = mro_bits;
+        use super::class_storage::ClassReferenceSlot;
+        inc_ref_bits(_py, name_bits);
+        inc_ref_bits(_py, name_bits); // independent name and qualname owners
+        for slot in ClassReferenceSlot::ALL {
+            let bits = match slot {
+                ClassReferenceSlot::Name | ClassReferenceSlot::Qualname => name_bits,
+                ClassReferenceSlot::Dictionary => dict_bits,
+                ClassReferenceSlot::Bases
+                | ClassReferenceSlot::Mro
+                | ClassReferenceSlot::Annotate => MoltObject::none().bits(),
+                ClassReferenceSlot::Annotations
+                | ClassReferenceSlot::SlotDeclaration
+                | ClassReferenceSlot::FieldOffsets => 0,
+            };
+            slot.initialize_owned(ptr, bits);
+        }
         *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        let none_bits = MoltObject::none().bits();
-        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
-        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = qualname_bits;
         std::ptr::write(
             ptr.add(8 * std::mem::size_of::<u64>()) as *mut MoltAuxWord,
             MoltAuxWord::new(0),
@@ -1591,37 +1721,63 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
             ptr.add(9 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicUsize,
             std::sync::atomic::AtomicUsize::new(0),
         );
-        inc_ref_bits(_py, name_bits);
-        inc_ref_bits(_py, bases_bits);
-        inc_ref_bits(_py, mro_bits);
-        inc_ref_bits(_py, none_bits);
-        inc_ref_bits(_py, qualname_bits);
     }
     ptr
 }
 
+fn alloc_exact_wrapper(_py: &PyToken<'_>, kind: super::layout::WrapperKind) -> *mut u8 {
+    // Exact wrapper allocation can occur only after the builtin class anchor is
+    // published. A recursive `builtin_classes()` call while the anchor is being
+    // built would deadlock its initialization lock, so fail closed instead.
+    let Some(classes) = crate::builtins::classes::builtin_classes_for_wrapper_allocation(_py)
+    else {
+        return std::ptr::null_mut();
+    };
+    let class_bits = match kind {
+        super::layout::WrapperKind::Classmethod => classes.classmethod,
+        super::layout::WrapperKind::Staticmethod => classes.staticmethod,
+        super::layout::WrapperKind::Property => classes.property,
+    };
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return std::ptr::null_mut();
+    };
+    let Some(size) = (unsafe { super::layout::class_cached_layout_size(class_ptr) }) else {
+        return std::ptr::null_mut();
+    };
+    debug_assert_eq!(
+        unsafe { crate::object::class_instance_type_id(class_ptr) },
+        kind.type_id()
+    );
+    debug_assert!(size >= kind.prefix_size() + std::mem::size_of::<u64>());
+    obj_from_bits(alloc_class_instance(_py, size, class_bits))
+        .as_ptr()
+        .unwrap_or(std::ptr::null_mut())
+}
+
 pub(crate) fn alloc_classmethod_obj(_py: &PyToken<'_>, func_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_CLASSMETHOD);
-    if ptr.is_null() {
-        return ptr;
-    }
-    unsafe {
-        *(ptr as *mut u64) = func_bits;
-        inc_ref_bits(_py, func_bits);
+    let ptr = alloc_exact_wrapper(_py, super::layout::WrapperKind::Classmethod);
+    if !ptr.is_null() {
+        unsafe {
+            if !super::layout::classmethod_replace_func_bits(_py, ptr, func_bits) {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
+            }
+            crate::object::gc::gc_publish_initialized(_py, ptr);
+        }
     }
     ptr
 }
 
 pub(crate) fn alloc_staticmethod_obj(_py: &PyToken<'_>, func_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_STATICMETHOD);
-    if ptr.is_null() {
-        return ptr;
-    }
-    unsafe {
-        *(ptr as *mut u64) = func_bits;
-        inc_ref_bits(_py, func_bits);
+    let ptr = alloc_exact_wrapper(_py, super::layout::WrapperKind::Staticmethod);
+    if !ptr.is_null() {
+        unsafe {
+            if !super::layout::staticmethod_replace_func_bits(_py, ptr, func_bits) {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
+            }
+            crate::object::gc::gc_publish_initialized(_py, ptr);
+        }
     }
     ptr
 }
@@ -1632,18 +1788,81 @@ pub(crate) fn alloc_property_obj(
     set_bits: u64,
     del_bits: u64,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_PROPERTY);
+    let ptr = alloc_exact_wrapper(_py, super::layout::WrapperKind::Property);
+    if !ptr.is_null() {
+        unsafe {
+            if !super::layout::property_replace_get_bits(_py, ptr, get_bits)
+                || !super::layout::property_replace_set_bits(_py, ptr, set_bits)
+                || !super::layout::property_replace_del_bits(_py, ptr, del_bits)
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
+            }
+            // `doc`, `name`, and `getter_doc` retain the prefix defaults here.
+            // The shared property initializer derives and publishes metadata.
+            crate::object::gc::gc_publish_initialized(_py, ptr);
+        }
+    }
+    ptr
+}
+
+/// Allocate one immutable builtin member/getset descriptor. Public type
+/// identity is an owned class edge; every portable callback is a retained
+/// Python callable rather than a host function pointer in object storage.
+pub(crate) fn alloc_native_descriptor_obj(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    flavor: super::layout::NativeDescriptorFlavor,
+    owner_bits: u64,
+    name_bits: u64,
+    doc_bits: u64,
+    getter_bits: u64,
+    setter_bits: u64,
+    deleter_bits: u64,
+) -> *mut u8 {
+    let references = [
+        owner_bits,
+        name_bits,
+        doc_bits,
+        getter_bits,
+        setter_bits,
+        deleter_bits,
+    ];
+    if references.contains(&0) {
+        return std::ptr::null_mut();
+    }
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return std::ptr::null_mut();
+    };
+    if unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return std::ptr::null_mut();
+    }
+    let Some(total) =
+        crate::object::checked_object_total_size(super::layout::NATIVE_DESCRIPTOR_PREFIX_SIZE)
+    else {
+        return std::ptr::null_mut();
+    };
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_NATIVE_DESCRIPTOR,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        *(ptr as *mut u64) = get_bits;
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = set_bits;
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = del_bits;
-        inc_ref_bits(_py, get_bits);
-        inc_ref_bits(_py, set_bits);
-        inc_ref_bits(_py, del_bits);
+        if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        }
+        for (index, bits) in references.into_iter().enumerate() {
+            inc_ref_bits(_py, bits);
+            *ptr.cast::<u64>().add(index) = bits;
+        }
+        *ptr.cast::<u64>()
+            .add(super::layout::NATIVE_DESCRIPTOR_REFERENCE_WORDS) = flavor as u64;
+        crate::object::gc::gc_publish_initialized(_py, ptr);
     }
     ptr
 }
@@ -1674,9 +1893,35 @@ pub(crate) fn alloc_super_obj(
 
 // Frame stack helpers moved to runtime/molt-runtime/src/builtins/exceptions.rs.
 
-pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: u32) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + len;
-    let ptr = alloc_object(_py, total, type_id);
+/// The only heap kinds whose payload is an inline length followed by bytes.
+/// Bytearray owns a Vec and must use `alloc_bytearray[_with_len]` instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InlineBytesKind {
+    String,
+    Bytes,
+}
+
+impl InlineBytesKind {
+    fn type_id(self) -> u32 {
+        match self {
+            Self::String => TYPE_ID_STRING,
+            Self::Bytes => TYPE_ID_BYTES,
+        }
+    }
+}
+
+pub(crate) fn alloc_inline_bytes_with_len(
+    _py: &PyToken<'_>,
+    len: usize,
+    kind: InlineBytesKind,
+) -> *mut u8 {
+    let Some(total) = len
+        .checked_add(std::mem::size_of::<usize>())
+        .and_then(raw_payload_total_or_null)
+    else {
+        return std::ptr::null_mut();
+    };
+    let ptr = alloc_object(_py, total, kind.type_id());
     if ptr.is_null() {
         return ptr;
     }
@@ -1687,11 +1932,11 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
     ptr
 }
 
-fn canonical_bytes_like(
+fn canonical_inline_bytes(
     _py: &PyToken<'_>,
     slot: &std::sync::atomic::AtomicPtr<u8>,
     bytes: &[u8],
-    type_id: u32,
+    kind: InlineBytesKind,
     interned: bool,
 ) -> *mut u8 {
     let cached = slot.load(std::sync::atomic::Ordering::Acquire);
@@ -1707,7 +1952,7 @@ fn canonical_bytes_like(
     if !cached.is_null() {
         return cached;
     }
-    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), type_id);
+    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), kind);
     if ptr.is_null() {
         return ptr;
     }
@@ -1735,14 +1980,14 @@ fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
         return None;
     }
     let slot = &runtime_state(_py).canonical_objects.ascii_chars[byte as usize];
-    let raw = canonical_bytes_like(_py, slot, bytes, TYPE_ID_STRING, true);
+    let raw = canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::String, true);
     if raw.is_null() { None } else { Some(raw) }
 }
 
 pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         let slot = &runtime_state(_py).canonical_objects.empty_string;
-        return canonical_bytes_like(_py, slot, bytes, TYPE_ID_STRING, true);
+        return canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::String, true);
     }
     if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
         return ptr;
@@ -1755,7 +2000,7 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
     if let Some(&raw) = pool.get(bytes) {
         return raw as *mut u8;
     }
-    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), InlineBytesKind::String);
     if ptr.is_null() {
         return ptr;
     }
@@ -1799,7 +2044,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         return alloc_interned_string(_py, bytes);
     }
 
-    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), InlineBytesKind::String);
     if ptr.is_null() {
         return ptr;
     }
@@ -1821,7 +2066,7 @@ pub(crate) fn alloc_string_nointern(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
     if bytes.is_empty() {
         return alloc_string(_py, bytes);
     }
-    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), InlineBytesKind::String);
     if ptr.is_null() {
         return ptr;
     }
@@ -1832,8 +2077,8 @@ pub(crate) fn alloc_string_nointern(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
     ptr
 }
 
-pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) -> *mut u8 {
-    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), type_id);
+fn alloc_inline_bytes(_py: &PyToken<'_>, bytes: &[u8], kind: InlineBytesKind) -> *mut u8 {
+    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), kind);
     if ptr.is_null() {
         return ptr;
     }
@@ -1847,9 +2092,9 @@ pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) ->
 pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         let slot = &runtime_state(_py).canonical_objects.empty_bytes;
-        return canonical_bytes_like(_py, slot, bytes, TYPE_ID_BYTES, false);
+        return canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::Bytes, false);
     }
-    alloc_bytes_like(_py, bytes, TYPE_ID_BYTES)
+    alloc_inline_bytes(_py, bytes, InlineBytesKind::Bytes)
 }
 
 pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::RuntimeState) {
@@ -2065,6 +2310,44 @@ mod tests {
 
     extern "C" fn allocator_inert_function_target() -> u64 {
         MoltObject::none().bits()
+    }
+
+    #[test]
+    fn byte_storage_constructors_admit_only_their_physical_payload_kind() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for kind in [
+                super::InlineBytesKind::String,
+                super::InlineBytesKind::Bytes,
+            ] {
+                let ptr = super::alloc_inline_bytes(py, b"storage payload", kind);
+                assert!(!ptr.is_null());
+                unsafe {
+                    assert_eq!(object_type_id(ptr), kind.type_id());
+                    assert_eq!(*(ptr as *const usize), b"storage payload".len());
+                    assert_eq!(
+                        std::slice::from_raw_parts(
+                            ptr.add(std::mem::size_of::<usize>()),
+                            b"storage payload".len(),
+                        ),
+                        b"storage payload",
+                    );
+                }
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                assert!(super::alloc_inline_bytes_with_len(py, usize::MAX, kind).is_null());
+            }
+            let ptr = super::alloc_bytearray(py, b"storage payload");
+            assert!(!ptr.is_null());
+            unsafe {
+                assert_eq!(object_type_id(ptr), crate::TYPE_ID_BYTEARRAY);
+                assert_eq!(
+                    (*crate::bytearray_vec_ptr(ptr)).as_slice(),
+                    b"storage payload"
+                );
+            }
+            dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+            assert!(!crate::exception_pending(py));
+        });
     }
 
     #[test]
