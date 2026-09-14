@@ -47,15 +47,15 @@ def _parse_arguments():
 
 
 _arguments = _parse_arguments() if __name__ == "__main__" else None
-if _arguments is not None and _arguments.capture_runtime:
-    from molt.python_runtime_identity import (  # noqa: E402
-        capture_current_python_runtime as capture_current_python_runtime,
-    )
-elif _arguments is not None and _arguments.locate_active_environment:
+if _arguments is not None and _arguments.locate_active_environment:
     from molt.python_environment_location import (  # noqa: E402
         locate_current_python_environment as locate_current_python_environment,
     )
 else:
+    # Runtime and environment captures must observe the same probe import
+    # context. A lighter runtime-only import lane changes the loaded native
+    # image census, making an identical interpreter acquire different recipe
+    # identities during planning and environment attestation.
     from molt.python_capture import (  # noqa: E402
         PYTHON_CAPTURE_SCHEMA as PYTHON_CAPTURE_SCHEMA,
         validate_python_capture as validate_python_capture,
@@ -106,6 +106,9 @@ def python_capture_authority_paths() -> tuple[Path, ...]:
         "_version",
         "_host_exit",
         "pytest_memory_guard_bootstrap",
+        "temporary_artifacts",
+        "file_deletion",
+        "file_locks",
         "memory_guard_paths",
         "process_spawn",
         "dx",

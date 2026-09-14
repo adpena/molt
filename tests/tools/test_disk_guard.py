@@ -8,8 +8,8 @@ Proves (M05 -- a gate that cannot fail certifies nothing):
     reclaimed, by ``ensure_free`` and by the pure planner;
   * the AGENT-SAFETY source scan finds ZERO process-actuation tokens in the
     module's executable code (no kill / Popen / signal / taskkill / subprocess);
-  * the guard is IDEMPOTENT (a second call above the threshold is a no-op) and
-    FAIL-OPEN (a raising internal -> the build proceeds, logged, no raise);
+  * reclamation is IDEMPOTENT (a second call above threshold is a no-op),
+    and measurement failures remain visible to callers;
   * per-lane GC collects a registered dir past its TTL but not one within it;
   * the self-test canaries are all LIVE (gate-liveness).
 """
@@ -506,7 +506,7 @@ def test_agent_safety_scanner_has_teeth():
     assert {"subprocess", "signal", "kill", "Popen", "SIGTERM"} <= caught
 
 
-# --- 4. idempotent + fail-open ----------------------------------------------
+# --- 4. idempotence and visible measurement failures -----------------------
 
 
 def test_idempotent_above_high_water_is_noop(tmp_path):
@@ -525,30 +525,6 @@ def test_idempotent_above_high_water_is_noop(tmp_path):
         assert result.triggered is False
         assert result.reclaimed == []
         assert d.exists()
-
-
-def test_fail_open_on_raising_internal(capsys):
-    """A raising internal -> ensure_free_fail_open returns None, never raises."""
-
-    def boom() -> int:
-        raise RuntimeError("simulated disk-usage failure")
-
-    # Must NOT raise; the caller (a build) proceeds.
-    out = dg.ensure_free_fail_open(
-        root="C:/Molt" if os.name == "nt" else "/",
-        free_bytes_fn=boom,
-        env={},
-    )
-    assert out is None
-    err = capsys.readouterr().err
-    assert "disk_guard" in err and "fail-open" in err
-
-
-def test_fail_open_on_unresolvable_root(capsys):
-    out = dg.ensure_free_fail_open(root=None, env={})  # no root resolvable
-    # Either it resolved a real root (returned a result) or failed open (None);
-    # in NEITHER case may it raise.
-    assert out is None or isinstance(out, dg.ReclaimResult)
 
 
 # --- 5. per-lane GC (registry-driven TTL collection) ------------------------

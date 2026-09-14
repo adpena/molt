@@ -19,6 +19,7 @@ from molt.cargo_execution_policy import (
     sccache_compiler_wrappers,
     without_sccache_compiler_wrappers,
 )
+from molt.disk_capacity import require_build_capacity
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
     _memory_bounded_cargo_jobs,
@@ -476,6 +477,77 @@ def _cargo_attempt(
 _TempfileCargoRunner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
+def _resolved_cargo_output_path(raw: str, *, cwd: Path, label: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"Cargo execution requires a non-empty {label}")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = cwd / path
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"cannot resolve Cargo {label} {raw!r}: {exc}") from exc
+
+
+def _command_target_dirs(cmd: Sequence[str]) -> tuple[str, ...]:
+    declarations: list[str] = []
+    index = 1
+    while index < len(cmd):
+        argument = cmd[index]
+        if argument == "--":
+            break
+        if argument == "--target-dir":
+            index += 1
+            if index >= len(cmd) or not cmd[index]:
+                raise ValueError("Cargo --target-dir requires a non-empty path")
+            declarations.append(cmd[index])
+        elif argument.startswith("--target-dir="):
+            value = argument.partition("=")[2]
+            if not value:
+                raise ValueError("Cargo --target-dir= requires a non-empty path")
+            declarations.append(value)
+        index += 1
+    return tuple(declarations)
+
+
+def _declared_cargo_output_paths(
+    cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+) -> tuple[Path, ...]:
+    raw_target = env.get("CARGO_TARGET_DIR")
+    if raw_target is None:
+        raise ValueError(
+            "Cargo capacity admission requires an explicit CARGO_TARGET_DIR in "
+            "the resolved execution environment"
+        )
+    target = _resolved_cargo_output_path(
+        raw_target,
+        cwd=cwd,
+        label="CARGO_TARGET_DIR",
+    )
+    for command_target in _command_target_dirs(cmd):
+        resolved_command_target = _resolved_cargo_output_path(
+            command_target,
+            cwd=cwd,
+            label="--target-dir",
+        )
+        if resolved_command_target != target:
+            raise ValueError(
+                "Cargo --target-dir conflicts with the resolved "
+                f"CARGO_TARGET_DIR: {resolved_command_target} != {target}"
+            )
+
+    outputs = [target]
+    if "CARGO_BUILD_BUILD_DIR" in env:
+        outputs.append(
+            _resolved_cargo_output_path(
+                env["CARGO_BUILD_BUILD_DIR"],
+                cwd=cwd,
+                label="CARGO_BUILD_BUILD_DIR",
+            )
+        )
+    return tuple(outputs)
+
+
 def _run_cargo_attempt(
     cmd: list[str],
     *,
@@ -489,6 +561,8 @@ def _run_cargo_attempt(
     normalized_env = (
         dict(env) if resolved_environment else normalize_cargo_environment(env)[0]
     )
+    output_paths = _declared_cargo_output_paths(cmd, cwd=cwd, env=normalized_env)
+    require_build_capacity(output_paths, env=normalized_env)
     if tempfile_runner is not None:
         return tempfile_runner(
             cmd,

@@ -100,6 +100,26 @@ def test_stale_or_mismatched_execution_result_is_not_read(
     assert observed.text == ""
 
 
+def test_live_transcript_rejects_boolean_numeric_envelope_substitution(
+    tmp_path: Path,
+) -> None:
+    row, request_path, result_path, request, result, streams = _execution(tmp_path)
+    envelope = {"schema": command_admission.ENVELOPE_SCHEMA, "purpose": True}
+    row["command_envelope_json"] = json.dumps(envelope)
+    request["envelope"] = {**envelope, "purpose": 1}
+    result["envelope"] = {**envelope, "purpose": 1}
+    streams["stderr"].write_text("error[E0133]: rejected output\n", encoding="utf-8")
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    observed = evidence._live_command_evidence(row)
+
+    assert (
+        observed.unavailable_reason == "execution request/result/row identity mismatch"
+    )
+    assert observed.text == ""
+
+
 @pytest.mark.parametrize(
     "substitution", ["path", "inode", "missing", "command", "result_path"]
 )

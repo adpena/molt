@@ -377,6 +377,7 @@ def write_summary_json(
         "peak_total": _rss_record_payload(result.peak_total),
         "peak_job_commit_bytes": result.peak_job_commit_bytes,
         "windows_job_cleanup": windows_job_cleanup_payload(result.windows_job_cleanup),
+        "temporary_artifacts": result.temporary_artifacts,
         "timed_out": result.timed_out,
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),

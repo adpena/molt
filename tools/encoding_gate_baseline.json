@@ -117,8 +117,6 @@
     "tools/memory_guard_core/process_model.py::subprocess-text-no-encoding": 1,
     "tools/memory_guard_core/windows_snapshot.py::subprocess-text-no-encoding": 1,
     "tools/molt_dev_common.py::subprocess-text-no-encoding": 1,
-    "tools/molt_ssd_janitor.py::read_text-no-encoding": 1,
-    "tools/molt_ssd_janitor.py::subprocess-text-no-encoding": 1,
     "tools/mutation_test.py::read_text-no-encoding": 1,
     "tools/mutation_test.py::write_text-no-encoding": 1,
     "tools/output_startup_size_audit.py::write_text-no-encoding": 1,

@@ -4,11 +4,166 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
 import subprocess
 
 import pytest
 
 from molt import toolchain_identity as identity
+
+
+@pytest.mark.parametrize("consumer", ["command", "executable", "find"])
+def test_user_tool_selectors_use_captured_home_not_ambient(
+    tmp_path, monkeypatch, consumer
+):
+    name = "compiler.exe" if os.name == "nt" else "compiler"
+    selected = tmp_path / "selected home"
+    tool = selected / "tool directory" / name
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"selected compiler")
+    tool.chmod(0o755)
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    environment = {home_key: str(selected), "PATHEXT": ".EXE"}
+    monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
+    before = dict(os.environ)
+    raw = f"~/tool directory/{name}"
+    if consumer == "command":
+        assert identity.resolve_explicit_tool_command(
+            f'"{raw}" -c', label="compiler", environment=environment
+        ) == (str(tool), "-c")
+    elif consumer == "executable":
+        assert (
+            identity.resolve_executable(raw, label="compiler", environment=environment)
+            == tool
+        )
+    else:
+        assert identity.find_executable(raw, environment=environment) == tool
+    assert dict(os.environ) == before
+
+
+def test_default_user_path_expansion_matches_pathlib(tmp_path, monkeypatch):
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(home_key, str(tmp_path))
+    assert identity.expand_user_path("~/bin") == Path("~/bin").expanduser()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows captured home contract")
+def test_captured_windows_home_precedence_and_named_user(tmp_path, monkeypatch):
+    parent = tmp_path / "Users"
+    selected = parent / "selected"
+    environment = {
+        "UserProfile": str(selected),
+        "UserName": "selected",
+        "HomeDrive": "Z:",
+        "HomePath": "\\unused",
+        "HOME": "ignored",
+    }
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "ambient"))
+    assert (
+        identity.expand_user_path("~/bin", environment=environment) == selected / "bin"
+    )
+    assert (
+        identity.expand_user_path("~selected/bin", environment=environment)
+        == selected / "bin"
+    )
+    assert (
+        identity.expand_user_path("~other/bin", environment=environment)
+        == parent / "other" / "bin"
+    )
+    assert (
+        identity.expand_user_path(
+            "~/bin",
+            environment={
+                "HOMEDRIVE": selected.drive,
+                "HOMEPATH": str(selected)[len(selected.drive) :],
+            },
+        )
+        == selected / "bin"
+    )
+    with pytest.raises(ValueError, match="no user home"):
+        identity.expand_user_path("~/bin", environment={})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX account database contract")
+def test_captured_posix_home_and_named_account_have_separate_authorities(
+    tmp_path, monkeypatch
+):
+    import pwd
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
+    monkeypatch.setattr(
+        pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_dir=str(tmp_path / "system"))
+    )
+    monkeypatch.setattr(
+        pwd, "getpwnam", lambda _name: SimpleNamespace(pw_dir=str(tmp_path / "named"))
+    )
+    environment = {"HOME": str(tmp_path / "selected")}
+    assert (
+        identity.expand_user_path("~/bin", environment=environment)
+        == tmp_path / "selected" / "bin"
+    )
+    assert (
+        identity.expand_user_path("~/bin", environment={})
+        == tmp_path / "system" / "bin"
+    )
+    assert (
+        identity.expand_user_path("~other/bin", environment=environment)
+        == tmp_path / "named" / "bin"
+    )
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_tool_command_exact_path_with_spaces_uses_captured_cwd(
+    tmp_path, monkeypatch, relative
+):
+    selected_cwd = tmp_path / "selected"
+    tool = selected_cwd / "tool directory" / "compiler.exe"
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"selected compiler")
+    ambient_cwd = tmp_path / "ambient"
+    ambient_cwd.mkdir()
+    monkeypatch.chdir(ambient_cwd)
+    raw = str(tool.relative_to(selected_cwd)) if relative else str(tool)
+    assert identity.resolve_explicit_tool_command(
+        raw, label="compiler", environment={}, cwd=selected_cwd
+    ) == (str(tool),)
+    assert identity.resolve_explicit_tool_command(
+        f'"{raw}" --target wasm32-wasip1',
+        label="compiler",
+        environment={},
+        cwd=selected_cwd,
+    ) == (str(tool), "--target", "wasm32-wasip1")
+
+
+def test_tool_command_relative_search_roots_use_captured_not_ambient_cwd(
+    tmp_path, monkeypatch
+):
+    selected_cwd = tmp_path / "selected"
+    name = "compiler.exe" if os.name == "nt" else "compiler"
+    tool = selected_cwd / "bin" / name
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"selected compiler")
+    tool.chmod(0o755)
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+    monkeypatch.setenv("PATH", str(ambient))
+    command = identity.resolve_explicit_tool_command(
+        name + " -c",
+        label="compiler",
+        cwd=selected_cwd,
+        environment={"PATH": "bin", "PATHEXT": ".EXE"},
+    )
+    assert command == (str(tool), "-c")
+
+
+@pytest.mark.parametrize("value", ["", '"', "bad\x00command"])
+def test_tool_command_rejects_malformed_input(tmp_path, value):
+    with pytest.raises(ValueError, match="compiler"):
+        identity.resolve_explicit_tool_command(
+            value, label="compiler", environment={}, cwd=tmp_path
+        )
 
 
 @pytest.mark.parametrize(

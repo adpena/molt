@@ -28,7 +28,6 @@ from molt import python_environment_identity
 from molt.python_environment_identity import (
     PYTHON_MARKER_ENVIRONMENT_FIELDS,
     PythonEnvironmentIdentityError,
-    capture_current_python_runtime,
     environment_matches_lock_closure,
     selected_uv_lock_group_closure,
     validate_python_environment_identity,
@@ -140,10 +139,11 @@ def active_source_build_requirements(
 
 
 def _python_identity() -> dict[str, object]:
-    try:
-        return capture_current_python_runtime()
-    except PythonEnvironmentIdentityError as exc:
-        raise SourceBuildEnvironmentError(str(exc)) from exc
+    # The caller's imported extensions (for example proof_queue's sqlite3)
+    # are not the interpreter recipe. Capture through the same isolated probe
+    # used to attest provisioned environments, before arbitrary client imports.
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    return _probe_source_build_python(Path(base).resolve(strict=True))
 
 
 def _uv_identity() -> tuple[Path, dict[str, str]]:
@@ -286,6 +286,14 @@ def _probe_environment_identity(
 ) -> dict[str, object]:
     """Capture the selected environment through the shared content authority."""
 
+    return _probe_source_build_python(python_executable, root=root)
+
+
+def _probe_source_build_python(
+    python_executable: Path, *, root: Path | None = None
+) -> dict[str, object]:
+    """One isolated bootstrap for recipe and realized-environment identities."""
+
     probe_environment = os.environ.copy()
     probe_environment.pop("PYTHONHOME", None)
     probe_environment.pop("PYTHONPATH", None)
@@ -295,11 +303,21 @@ def _probe_environment_identity(
     probe_argv = [
         str(python_executable),
         "-I",
-        str(probe_source),
-        "--capture-environment",
-        str(root.resolve()),
-        "--admit-virtualenv-bootstrap",
     ]
+    if root is None:
+        # A recipe addresses the base interpreter, not installed site startup
+        # hooks. Realized environment bootstrap is admitted separately below.
+        probe_argv.extend(("-S", str(probe_source), "--capture-runtime"))
+    else:
+        probe_argv.extend(
+            (
+                str(probe_source),
+                "--capture-environment",
+                str(root.resolve()),
+                "--admit-virtualenv-bootstrap",
+            )
+        )
+    kind = "runtime" if root is None else "environment"
     result = process_guard.run_completed_command(
         probe_argv,
         capture_output=True,
@@ -308,24 +326,29 @@ def _probe_environment_identity(
         errors="replace",
         check=False,
         env=probe_environment,
+        timeout=120,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise SourceBuildEnvironmentError(
-            "cannot attest provisioned source-build environment content: "
+            f"cannot attest source-build {kind} content: "
             f"{detail or f'returncode={result.returncode}'}"
         )
     try:
         payload = loads_exact(result.stdout)
     except (json.JSONDecodeError, ExactJsonError) as exc:
         raise SourceBuildEnvironmentError(
-            "source-build environment probe returned invalid JSON"
+            f"source-build {kind} probe returned invalid JSON"
         ) from exc
     try:
-        return validate_python_environment_identity(payload)
+        return (
+            validate_python_runtime_identity(payload)
+            if root is None
+            else validate_python_environment_identity(payload)
+        )
     except PythonEnvironmentIdentityError as exc:
         raise SourceBuildEnvironmentError(
-            f"source-build environment probe returned an invalid payload: {exc}"
+            f"source-build {kind} probe returned an invalid payload: {exc}"
         ) from exc
 
 
@@ -551,6 +574,9 @@ def _provision_source_build_environment(
             )
 
         environment = os.environ.copy()
+        # This sync has an exact destination; the launcher's active venv is not
+        # a second environment selector (nor a useful uv mismatch warning).
+        environment.pop("VIRTUAL_ENV", None)
         environment["UV_PROJECT_ENVIRONMENT"] = str(root)
         raw_base = getattr(sys, "_base_executable", None) or sys.executable
         # uv is the provisioner for the environment that will subsequently

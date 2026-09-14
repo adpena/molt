@@ -23,7 +23,6 @@ def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1 :]
 
 
-
 _PROOF_COMMAND_SUBCOMMANDS = frozenset({"exec", "cargo"})
 
 _GLOBAL_OPTIONS_WITH_VALUES = frozenset(
@@ -49,7 +48,6 @@ _PROOF_COMMAND_OPTIONS_WITH_VALUES = frozenset(
 _HELP_OPTIONS = frozenset({"-h", "--help"})
 
 
-
 def _proof_command_subcommand_index(raw: list[str]) -> int | None:
     index = 0
     while index < len(raw):
@@ -70,7 +68,6 @@ def _proof_command_subcommand_index(raw: list[str]) -> int | None:
     return None
 
 
-
 def _split_proof_command_argv(
     raw: list[str],
     *,
@@ -87,7 +84,6 @@ def _split_proof_command_argv(
             f"proof_queue.py {subcommand} requires a proof command after `--`."
         )
     return before, command
-
 
 
 def _proof_command_help_requested(raw: list[str]) -> bool:
@@ -110,7 +106,6 @@ def _proof_command_help_requested(raw: list[str]) -> bool:
     return False
 
 
-
 def _reject_pre_delimiter_remainder(
     args: argparse.Namespace,
     *,
@@ -129,7 +124,6 @@ def _reject_pre_delimiter_remainder(
         "or another metadata option lost shell quoting; refusing to run with "
         "possibly dropped queue metadata."
     )
-
 
 
 def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
@@ -159,7 +153,6 @@ def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-
 def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> None:
     parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument(
@@ -178,7 +171,6 @@ def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> 
     )
     execution.add_argument("--detach", action="store_true")
     parser.add_argument("--print-spec", action="store_true")
-
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = _build_parser()
         args = parser.parse_args(raw)
     return int(args.func(args))
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -323,6 +316,18 @@ def _build_parser() -> argparse.ArgumentParser:
     status_p = sub.add_parser("status", help="show active and recent proof runs")
     status_p.add_argument("--recent", type=int, default=20)
     status_p.set_defaults(func=commands._cmd_status)
+
+    reclaim_p = sub.add_parser(
+        "reclaim-cargo-generation",
+        help="inspect one terminal run's Cargo generation; retain legacy or ambiguous artifacts",
+    )
+    reclaim_p.add_argument("--run-id", required=True)
+    reclaim_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="reclaim only receipt-bound unsealed output, preserving evidence and owner tombstone",
+    )
+    reclaim_p.set_defaults(func=commands._cmd_reclaim_cargo_generation)
 
     evidence_p = sub.add_parser(
         "evidence", help="export machine-readable proof evidence"
@@ -460,6 +465,30 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_accept_p.set_defaults(
         func=_dispatch_pact_command,
         pact_handler="_cmd_pact_witness_acceptance",
+    )
+
+    source_extension_p = sub.add_parser(
+        "source-extension-produce",
+        help="produce a registered source-extension set under queue custody",
+        description=(
+            "Provision its locked environment before the proof, then execute "
+            "the exact interpreter with target-derived compiler custody."
+        ),
+    )
+    from molt.cli.source_extension_invocation import (
+        add_source_extension_set_build_arguments,
+    )
+
+    add_source_extension_set_build_arguments(
+        source_extension_p, command="produce-set", include_prepared=False
+    )
+    _add_named_lane_args(
+        source_extension_p,
+        note_help="append context to the source-extension producer run",
+    )
+    source_extension_p.set_defaults(
+        func=_dispatch_pact_command,
+        pact_handler="_cmd_source_extension_produce",
     )
 
     pact_oracle_p = sub.add_parser(

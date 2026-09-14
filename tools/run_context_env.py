@@ -58,15 +58,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--session-scoped-uv-project-env",
-        action="store_true",
-        help=(
-            "Keep UV_PROJECT_ENVIRONMENT tied to MOLT_SESSION_ID. The default "
-            "--dx behavior uses a stable purpose+Python environment so repeated "
-            "bootstrap commands do not rebuild the project venv."
-        ),
-    )
-    parser.add_argument(
         "--prefer-external-artifacts",
         action="store_true",
         help="Prefer a healthy external artifact root when MOLT_EXT_ROOT is unset.",
@@ -92,14 +83,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     base_env = dict(os.environ)
     if args.session_id:
         base_env["MOLT_SESSION_ID"] = args.session_id
-    # ONE authority owns the stable-vs-session uv project env decision
-    # (dx.uv_project_env_dir). The CLI only wires its knobs into the env that
-    # authority reads, so --dx emits the stable `dx__py3.12` env by default and
-    # --session-scoped-uv-project-env opts back into MOLT_SESSION_ID isolation —
-    # no separate CLI override lane that could drift from the authority.
     if args.dx:
-        if args.session_scoped_uv_project_env:
-            base_env["MOLT_UV_PROJECT_ENV_SESSION_SCOPED"] = "1"
         base_env.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
         base_env.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
     env = (

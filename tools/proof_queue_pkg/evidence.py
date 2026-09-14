@@ -13,7 +13,9 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from molt.exact_json import canonical_json_bytes, loads_exact
 from tools.proof_queue_pkg import (
+    cargo_cache_custody,
     command_admission,
     diagnostic_engine,
     state,
@@ -184,6 +186,113 @@ def _queue_peak_rss_bytes(summary_path: object) -> int:
     return 0
 
 
+def _validate_terminal_envelope(
+    row: sqlite3.Row | Mapping[str, Any], context: Mapping[str, Any]
+) -> None:
+    try:
+        envelope = loads_exact(str(state._row_value(row, "command_envelope_json")))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("proof run admission envelope is not exact JSON") from exc
+    if not isinstance(envelope, dict) or (
+        canonical_json_bytes(context.get("command_envelope"))
+        != canonical_json_bytes(envelope)
+    ):
+        raise ValueError(
+            "terminal proof receipt envelope differs from immutable admission"
+        )
+    envelope_digest = hashlib.sha256(
+        json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if context.get("command_envelope_sha256") != envelope_digest:
+        raise ValueError("terminal proof receipt envelope digest mismatch")
+
+
+def _validate_terminal_evidence(
+    row: sqlite3.Row | Mapping[str, Any], context: Mapping[str, Any]
+) -> None:
+    """Verify persisted terminal identity for proof and artifact consumers alike."""
+    if row["status"] not in {"passed", "failed", "non-evidence"}:
+        raise ValueError("proof run has no completed terminal status")
+    if not state._row_value(row, "finished_at") or type(row["returncode"]) is not int:
+        raise ValueError("proof run has no completed terminal result")
+    outcome = supervisor_custody.validate_queue_terminal(context.get("queue_terminal"))
+    if outcome["status"] != row["status"] or outcome["returncode"] != row["returncode"]:
+        raise ValueError(
+            "terminal proof final queue outcome differs from persisted result"
+        )
+    if context.get("run_id") != row["run_id"]:
+        raise ValueError("terminal proof receipt has a substituted run identity")
+    nonce_hash = context.get("execution_nonce_sha256")
+    if not isinstance(nonce_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce_hash):
+        raise ValueError("terminal proof run has no execution nonce digest")
+    _validate_terminal_envelope(row, context)
+    terminal_digest = context.get("terminal_evidence_sha256")
+    if not isinstance(terminal_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", terminal_digest
+    ):
+        raise ValueError("terminal proof run has no terminal evidence digest")
+    if terminal_digest != supervisor_custody.terminal_evidence_sha256(
+        context, run_id=str(row["run_id"]), returncode=row["returncode"]
+    ):
+        raise ValueError("terminal proof run terminal evidence digest mismatch")
+
+
+def _cargo_generation_terminal(
+    row: sqlite3.Row | Mapping[str, Any],
+    context: Mapping[str, Any],
+    *,
+    required: bool = False,
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    """Bind immutable generation evidence to its parent-validated proof context."""
+    derived = context.get("derived_root_custody")
+    prelaunch = derived.get("prelaunch", []) if isinstance(derived, dict) else []
+    generations = (
+        [
+            entry
+            for entry in prelaunch
+            if isinstance(entry, dict)
+            and entry.get("schema") == cargo_cache_custody.SCHEMA
+        ]
+        if isinstance(prelaunch, list)
+        else []
+    )
+    lifecycle = context.get("cargo_generation_lifecycle")
+    if not generations:
+        if lifecycle is not None:
+            raise ValueError(
+                "proof has terminal Cargo lifecycle without an admitted generation"
+            )
+        if required:
+            raise ValueError(
+                "proof has no owned Cargo generation; legacy artifacts are retained"
+            )
+        return None
+    if len(generations) != 1 or not isinstance(lifecycle, dict):
+        raise ValueError("Cargo proof has no unique terminal generation custody")
+    provenance = generations[0]
+    terminal = cargo_cache_custody.validate_terminal_receipt(
+        result_root=Path(str(row["log_path"])).parent,
+        projection=lifecycle,
+        provenance=provenance,
+        run_id=str(row["run_id"]),
+        execution_nonce_sha256=context.get("execution_nonce_sha256"),
+    )
+    outcome = supervisor_custody.validate_queue_terminal(context.get("queue_terminal"))
+    if (
+        terminal.get("process_cleanup_safe") is not True
+        or outcome["status"] != row["status"]
+        or outcome["returncode"] != row["returncode"]
+        or terminal.get("queue_terminal") != outcome
+        or terminal.get("command_returncode") != outcome["command_returncode"]
+        or terminal.get("execution_custody_sha256")
+        != context.get("execution_custody_sha256")
+        or terminal.get("guard_receipt") != context.get("guard_receipt")
+        or terminal.get("process_supervisor") != context.get("process_supervisor")
+    ):
+        raise ValueError("Cargo generation terminal receipt differs from proof custody")
+    return provenance, lifecycle
+
+
 def _queue_proof_receipt(
     row: sqlite3.Row | Mapping[str, Any],
 ) -> dict[str, object]:
@@ -199,20 +308,14 @@ def _queue_proof_receipt(
     if not isinstance(context, dict):
         raise ValueError("proof run receipt context is malformed")
     envelope_raw = state._row_value(row, "command_envelope_json")
-    envelope = json.loads(str(envelope_raw))
+    try:
+        envelope = loads_exact(str(envelope_raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("proof run admission envelope is not exact JSON") from exc
     if not isinstance(envelope, dict):
         raise ValueError("proof run admission envelope is malformed")
-    context_envelope = context.get("command_envelope")
     if context.get("terminal_evidence_sha256") is not None:
-        if context_envelope != envelope:
-            raise ValueError(
-                "terminal proof receipt envelope differs from immutable admission"
-            )
-        envelope_digest = hashlib.sha256(
-            json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        if context.get("command_envelope_sha256") != envelope_digest:
-            raise ValueError("terminal proof receipt envelope digest mismatch")
+        _validate_terminal_evidence(row, context)
     if succeeded:
         requested_toolchains = (
             envelope.get("toolchains") if isinstance(envelope, dict) else None
@@ -230,22 +333,10 @@ def _queue_proof_receipt(
             raise ValueError(
                 "passed proof run has no complete stable toolchain closure"
             )
-        terminal_digest = context.get("terminal_evidence_sha256")
         source_custody = context.get("source_custody")
         guard_receipt = context.get("guard_receipt")
         process_closure = envelope.get("process_closure")
         platform_custody = context.get("platform_process_custody")
-        if not isinstance(terminal_digest, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", terminal_digest
-        ):
-            raise ValueError("passed proof run has no terminal evidence digest")
-        if context.get("run_id") != row["run_id"]:
-            raise ValueError("passed proof run receipt has a substituted run identity")
-        nonce_hash = context.get("execution_nonce_sha256")
-        if not isinstance(nonce_hash, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", nonce_hash
-        ):
-            raise ValueError("passed proof run has no execution nonce digest")
         if (
             not isinstance(source_custody, dict)
             or source_custody.get("evidence_eligible") is not True
@@ -269,13 +360,8 @@ def _queue_proof_receipt(
             raise ValueError(
                 "passed proof run has no stable platform process-image custody"
             )
-        expected_terminal = supervisor_custody.terminal_evidence_sha256(
-            context,
-            run_id=str(row["run_id"]),
-            returncode=int(returncode),
-        )
-        if terminal_digest != expected_terminal:
-            raise ValueError("passed proof run terminal evidence digest mismatch")
+        _validate_terminal_evidence(row, context)
+        _cargo_generation_terminal(row, context)
     environment = context.get("environment")
     if not isinstance(environment, dict):
         raise ValueError("proof run receipt environment is malformed")
@@ -338,7 +424,10 @@ def _row_to_payload(
     }
     authority_raw = state._row_value(row, "command_envelope_json")
     if isinstance(authority_raw, str) and authority_raw:
-        authority = json.loads(authority_raw)
+        try:
+            authority = loads_exact(authority_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("proof run admission envelope is not exact JSON") from exc
         if isinstance(authority, dict) and authority:
             payload["command_envelope"] = authority
     # A submission projection records intent, not execution evidence. Fingerprinting
@@ -535,6 +624,17 @@ def _fail_preexecution_run(
     phase: str,
 ) -> int:
     now = state._utc_now()
+    from molt.disk_capacity import DiskCapacityError
+
+    context: dict[str, object] = dict(
+        state._unattested_receipt_context(
+            status="not-executed",
+            phase=phase,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+    )
+    if isinstance(exc, DiskCapacityError):
+        context["disk_capacity_admission"] = dict(exc.diagnostic)
     state._update_run(
         conn,
         run_id,
@@ -544,11 +644,7 @@ def _fail_preexecution_run(
         finished_at=now,
         elapsed_s=0.0,
         receipt_context_json=json.dumps(
-            state._unattested_receipt_context(
-                status="not-executed",
-                phase=phase,
-                reason=f"{type(exc).__name__}: {exc}",
-            ),
+            context,
             sort_keys=True,
         ),
     )

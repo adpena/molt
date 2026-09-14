@@ -32,12 +32,15 @@ if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
 from molt import file_locks  # noqa: E402
+from molt import disk_capacity  # noqa: E402
+from molt.exact_json import read_exact  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
     command_identity,
     cargo_cache_custody,
+    cargo_output_environment,
     custody_cas,
     execution_custody,
     execution_environment as environment,
@@ -120,7 +123,9 @@ def _supervisor_build_environment(
 
 def execute_guarded_request(request_path: Path) -> int:
     """Run identity, preflight, proof, and completion custody under one guard."""
-    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request = read_exact(
+        request_path, max_bytes=16 * 1024 * 1024, label="proof execution request"
+    )
     if not isinstance(request, dict):
         raise ValueError("proof execution request must be an object")
     if request.get("schema") != admission.EXECUTION_SCHEMA:
@@ -178,6 +183,9 @@ def execute_guarded_request(request_path: Path) -> int:
         requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
+            result["disk_capacity_admission"] = disk_capacity.require_build_capacity(
+                (result_path.parent,), env=inherited_env
+            ).as_dict()
             inherited_env, applied_cargo_policies = normalize_cargo_environment(
                 inherited_env
             )
@@ -249,6 +257,31 @@ def execute_guarded_request(request_path: Path) -> int:
         supervisor_binary = Path(str(supervisor_binary_artifact["path"])).resolve(
             strict=True
         )
+        supervisor_required_environment = supervisor.required_execution_environment(
+            binary=supervisor_binary,
+            mode=(
+                "leaf"
+                if process_closure.get("descendants") == "forbidden"
+                else "declared-tree"
+            ),
+            cwd=cwd,
+            env=execution_env,
+        )
+        execution_env, environment_contract = (
+            environment._deterministic_execution_environment(
+                inherited_env,
+                override_names=[
+                    *[str(name) for name in override_names],
+                    *sorted(canonical_env),
+                ],
+                required_environment=supervisor_required_environment,
+            )
+        )
+        execution_env, environment_contract = (
+            environment._bind_cargo_build_tool_environment(
+                envelope, execution_env, environment_contract, cwd=cwd
+            )
+        )
         environment_fingerprint_key = secrets.token_bytes(32)
         exact = command_identity._exact_command(envelope, cwd=cwd, env=execution_env)
         payload_executable_pre = command_identity._payload_executable_identity(
@@ -277,6 +310,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 "proof command or overlay input has unavailable content identity"
             )
         pre_source = environment._git_snapshot(effective_cwd, execution_env)
+        environment.validate_typed_source_root(envelope, pre_source)
         plan = proof_plan.ProofPlan.load()
         located_roots, policy_identities, location_telemetry = (
             environment._locate_toolchain_watch_roots(
@@ -336,6 +370,7 @@ def execute_guarded_request(request_path: Path) -> int:
         custody_authority_paths = [
             Path(execution_custody.__file__).resolve(strict=True),
             Path(cargo_cache_custody.__file__).resolve(strict=True),
+            Path(cargo_output_environment.__file__).resolve(strict=True),
             Path(custody_cas.__file__).resolve(strict=True),
             Path(execution_receipt_details.__file__).resolve(strict=True),
             Path(command_identity.__file__).resolve(strict=True),
@@ -371,6 +406,30 @@ def execute_guarded_request(request_path: Path) -> int:
                 for name in (
                     "node_child_custody.cjs",
                     "node_child_custody_worker.cjs",
+                )
+            )
+        if envelope.get("typed_command") is not None:
+            custody_authority_paths.extend(
+                (
+                    admission._REPO_ROOT
+                    / "tools"
+                    / "proof_queue_pkg"
+                    / "target_derived_toolchains.py",
+                    admission._REPO_ROOT
+                    / "src"
+                    / "molt"
+                    / "cli"
+                    / "source_extension_invocation.py",
+                    admission._REPO_ROOT
+                    / "src"
+                    / "molt"
+                    / "cli"
+                    / "source_extension_link_inputs.py",
+                    admission._REPO_ROOT
+                    / "src"
+                    / "molt"
+                    / "cli"
+                    / "source_extension_compiler_inputs.py",
                 )
             )
         custody_authorities_pre = [
@@ -451,7 +510,7 @@ def execute_guarded_request(request_path: Path) -> int:
             exact,
             cwd=cwd,
             env=execution_env,
-            source_root=effective_cwd,
+            source_root=source_root_path,
             hash_workers=plan.inventory_hash_workers,
             located_toolchains=policy_identities,
         )
@@ -468,12 +527,16 @@ def execute_guarded_request(request_path: Path) -> int:
             "cargo" in envelope.get("toolchains", [])
             and process_closure.get("descendants") != "forbidden"
         ):
+            cargo_outputs = (
+                cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
+            )
             source_content, source_content_telemetry, verify_source_content = (
                 environment.capture_source_content(
                     source_root=Path(source_root_raw),
                     env=execution_env,
                     overlays=overlay_paths,
                     cas_root=result_path.parent / "custody-cas",
+                    hash_workers=plan.inventory_hash_workers,
                 )
             )
             cargo_cache = cargo_cache_custody.acquire(
@@ -481,14 +544,31 @@ def execute_guarded_request(request_path: Path) -> int:
                 source_root=Path(source_root_raw),
                 toolchains=toolchains_full,
                 command=execution_command,
+                outputs=cargo_outputs,
                 env=execution_env,
                 requested_target=requested_cargo_target,
                 run_id=run_id,
+                execution_nonce_sha256=hashlib.sha256(
+                    execution_nonce.encode()
+                ).hexdigest(),
                 timeout_s=execution_deadline - time.monotonic() - shutdown_reserve,
                 source_snapshot=pre_source,
                 source_content=source_content,
             )
-            execution_env["CARGO_TARGET_DIR"] = str(cargo_cache.target)
+            result["cargo_cache"] = cargo_cache.provenance
+            supervisor._atomic_json(result_path, result)
+            execution_env, environment_contract = (
+                environment._cargo_output_environment_contract(
+                    cargo_cache.environment,
+                    environment_contract,
+                    outputs=cargo_outputs,
+                    target=cargo_cache.target,
+                )
+            )
+            passed_names = cast(list[str], environment_contract["passed_names"])
+            override_names_contract = cast(
+                list[str], environment_contract["override_names"]
+            )
             print(
                 "cargo_target_selection="
                 + json.dumps(cargo_cache.provenance, sort_keys=True),
@@ -497,7 +577,7 @@ def execute_guarded_request(request_path: Path) -> int:
         derived_root_provenance = supervisor._derived_root_provenance(
             descendants=process_closure.get("descendants"),
             env=execution_env,
-            source_root=effective_cwd,
+            source_root=source_root_path,
             result_path=result_path,
             cargo_cache=cargo_cache.provenance if cargo_cache is not None else None,
         )
@@ -520,11 +600,28 @@ def execute_guarded_request(request_path: Path) -> int:
             child_policy, sort_keys=True, separators=(",", ":")
         )
         execution_env.update(child_event_server.environment())
-        for name in (
+        published_custody_names = [
             execution_custody.CHILD_POLICY_ENV,
             execution_custody.CHILD_ENDPOINT_ENV,
             execution_custody.CHILD_TOKEN_ENV,
-        ):
+        ]
+        if envelope.get("typed_command") is not None:
+            execution_env["MOLT_PROOF_SOURCE_ROOT"] = str(source_root_path)
+            published_custody_names.append("MOLT_PROOF_SOURCE_ROOT")
+            captured_extension = toolchains_full.get("source-extension")
+            if (
+                not isinstance(captured_extension, Mapping)
+                or "link_inputs" not in captured_extension
+            ):
+                raise ValueError(
+                    "typed producer has no captured source-extension link inputs"
+                )
+            link_inputs_name = command_identity.SOURCE_EXTENSION_LINK_INPUTS_ENV
+            execution_env[link_inputs_name] = json.dumps(
+                captured_extension["link_inputs"], sort_keys=True, separators=(",", ":")
+            )
+            published_custody_names.append(link_inputs_name)
+        for name in published_custody_names:
             if name not in passed_names:
                 passed_names.append(name)
             if name not in override_names_contract:
@@ -532,6 +629,20 @@ def execute_guarded_request(request_path: Path) -> int:
         passed_names.sort(key=str.casefold)
         override_names_contract.sort(key=str.casefold)
         custody_session.bind_child_server(child_event_server)
+        if cargo_cache is not None:
+            # Check the actual final environment before any command runs. The
+            # parent repeats this same check against the sealed native policy.
+            cargo_cache_custody.validate_prelaunch(
+                cargo_cache.provenance,
+                cas_root=result_path.parent / "custody-cas",
+                command=execution_command,
+                outputs=cargo_outputs,
+                env=execution_env,
+                toolchains=toolchains_full,
+                source_root=str(source_root_raw),
+                source_snapshot=pre_source,
+                source_content=source_content,
+            )
         proof_python = toolchains.get("python")
         if proof_python is not None and not isinstance(proof_python, dict):
             raise ValueError("compact Python toolchain summary is malformed")
@@ -707,6 +818,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 "binary_artifact": supervisor_binary_artifact,
                 "policy": supervisor_policy_identity,
                 "provision_telemetry": supervisor_provision_telemetry,
+                "required_environment": supervisor_required_environment,
             },
             "custody_authorities": {"prelaunch": custody_authorities_pre},
             "live_input_custody": {
@@ -790,19 +902,10 @@ def execute_guarded_request(request_path: Path) -> int:
         transcript["identity_sha256"] = hashlib.sha256(
             json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        if int(
-            completed.returncode
-        ) == 0 and command_identity._requires_structured_test_counts(envelope):
-            if not any(
-                isinstance(value, Mapping)
-                and value.get("structured_test_output") is True
-                for key, value in transcript.items()
-                if key in {"stdout", "stderr"}
-            ):
-                raise ValueError(
-                    "successful test command produced no structured test-count authority"
-                )
         context["command_transcript"] = transcript
+        command_identity.validate_structured_test_counts(
+            envelope, transcript, returncode=int(completed.returncode)
+        )
         custody_session.mark_verifying()
         post_source = environment._git_snapshot(effective_cwd, execution_env)
         if verify_source_content is not None:
@@ -1074,6 +1177,40 @@ def execute_guarded_request(request_path: Path) -> int:
             supervisor._atomic_json(result_path, result)
         return int(completed.returncode)
     except BaseException as exc:
+        if isinstance(exc, toolchain_capture.RustLinkCaptureError):
+            try:
+                artifact = custody_cas.put_json(
+                    result_path.parent / "custody-cas",
+                    {
+                        "schema": custody_cas.ARTIFACT_SCHEMA,
+                        "kind": exc.diagnostic["schema"],
+                        "diagnostic": exc.diagnostic,
+                    },
+                ).as_dict()
+                result["rust_link_capture_failure"] = {
+                    "unit": exc.diagnostic["unit"],
+                    "phase": exc.diagnostic["phase"],
+                    "artifact": artifact,
+                }
+                print(
+                    "Rust linker capture diagnostic: " + str(artifact["path"]),
+                    file=sys.stderr,
+                )
+            except Exception as diagnostic_exc:
+                # Keep the primary probe failure; failed evidence publication
+                # is an additional visible failure, never a successful capture.
+                result["rust_link_capture_failure"] = {
+                    "unit": exc.diagnostic["unit"],
+                    "phase": exc.diagnostic["phase"],
+                    "publication_error": f"{type(diagnostic_exc).__name__}: {diagnostic_exc}",
+                }
+                print(
+                    "Rust linker capture diagnostic publication failed: "
+                    + str(result["rust_link_capture_failure"]["publication_error"]),
+                    file=sys.stderr,
+                )
+        if isinstance(exc, disk_capacity.DiskCapacityError):
+            result["disk_capacity_admission"] = dict(exc.diagnostic)
         if isinstance(exc, cargo_cache_custody.CargoInputClosureUnproven):
             result["cargo_cache_admission"] = exc.diagnostic
         if custody_session is not None and custody_session.state != "DRAINED":
@@ -1097,7 +1234,24 @@ def execute_guarded_request(request_path: Path) -> int:
         return 2
     finally:
         if cargo_cache is not None:
-            cargo_cache.close()
+            try:
+                cargo_cache.close()
+            except BaseException as exc:
+                result["cargo_cache_lifecycle_error"] = f"{type(exc).__name__}: {exc}"
+                print(
+                    f"Cargo generation closure failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                raise
+            finally:
+                outcome = cargo_cache.publication_outcome
+                if (
+                    outcome != result.get("cargo_cache_publication")
+                    or "cargo_cache_lifecycle_error" in result
+                ):
+                    if outcome is not None:
+                        result["cargo_cache_publication"] = dict(outcome)
+                    supervisor._atomic_json(result_path, result)
 
 
 def _main(argv: Sequence[str] | None = None) -> int:

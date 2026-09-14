@@ -3,12 +3,39 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 import pytest
 
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
+
+
+@pytest.mark.parametrize(
+    "component", ["site-packages", "dist-packages", "Site-Packages", "DIST-PACKAGES"]
+)
+def test_runtime_import_candidates_exclude_environment_distribution_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str
+) -> None:
+    stdlib = tmp_path / "lib"
+    distributions = stdlib / component
+    nested = distributions / "editable"
+    nested.mkdir(parents=True)
+    archive = distributions / "extra.zip"
+    archive.write_bytes(b"fixture; contents not read")
+    absent = (
+        distributions
+        / f"python{runtime.sys.version_info.major}{runtime.sys.version_info.minor}.zip"
+    )
+    monkeypatch.setattr(
+        runtime.sys,
+        "path",
+        [str(stdlib), str(distributions), str(nested), str(archive), str(absent)],
+    )
+    directories, archives = runtime._runtime_import_candidates(tmp_path)
+    assert directories == [("import-directory-0", stdlib.resolve(), 0)]
+    assert archives == []
 
 
 def _reseal(payload: dict[str, Any]) -> None:

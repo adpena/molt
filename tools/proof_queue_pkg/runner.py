@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Mapping, TextIO, TypeGuard
 
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
+from molt import disk_capacity
+from molt.exact_json import ExactJsonError, loads_exact, read_exact, write_exact
 from tools.command_execution import CommandExecutor
 from tools.memory_guard_core import repro_context as guard_repro_context
 from molt.memory_guard_paths import pytest_guard_summary_dir
@@ -23,6 +25,7 @@ from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
     cargo_cache_custody,
+    cargo_output_environment,
     execution_environment as environment_authority,
     execution_receipt_details,
     supervisor_custody,
@@ -134,6 +137,142 @@ def _validated_guard_receipt(
         ).encode()
     ).hexdigest()
     return receipt
+
+
+def _record_cargo_generation_terminal(
+    *,
+    execution_record: Mapping[str, object],
+    execution_path: Path,
+    run_id: str,
+    execution_nonce: str,
+    receipt_context: Mapping[str, object] | None,
+    process_cleanup_safe: bool,
+) -> dict[str, object] | None:
+    """Project parent-validated terminal custody into the generation owner."""
+    provenance = execution_record.get("cargo_cache")
+    if not _is_receipt_object(provenance):
+        return None  # No generation was acquired, including prelaunch refusal.
+    nonce_hash = hashlib.sha256(execution_nonce.encode()).hexdigest()
+    if (
+        provenance.get("generation_run_id") != run_id
+        or provenance.get("execution_nonce_sha256") != nonce_hash
+    ):
+        raise ValueError("Cargo generation owner differs from execution identity")
+    context = dict(receipt_context or {})
+    process_supervisor = None
+    if process_cleanup_safe:
+        derived = context.get("derived_root_custody")
+        prelaunch = derived.get("prelaunch") if _is_receipt_object(derived) else None
+        if not isinstance(prelaunch, list) or provenance not in prelaunch:
+            raise ValueError(
+                "Cargo generation differs from validated derived output custody"
+            )
+        process_supervisor = context.get("process_supervisor")
+    terminal = {
+        "schema": cargo_cache_custody.TERMINAL_RECEIPT_SCHEMA,
+        "run_id": run_id,
+        "execution_nonce_sha256": nonce_hash,
+        "input_sha256": provenance.get("input_sha256"),
+        "generation_id": provenance.get("generation_id"),
+        "target": provenance.get("path"),
+        "command_returncode": execution_record.get("command_returncode"),
+        "queue_terminal": context.get("queue_terminal"),
+        "command_started": execution_record.get("command_started"),
+        "cargo_cache_publication": execution_record.get("cargo_cache_publication"),
+        "execution_custody_sha256": context.get("execution_custody_sha256"),
+        "guard_receipt": context.get("guard_receipt"),
+        "process_supervisor": process_supervisor,
+        "process_cleanup_safe": process_cleanup_safe,
+        "execution_error": execution_record.get("error"),
+    }
+    return cargo_cache_custody.record_terminal_receipt(
+        result_root=execution_path.parent,
+        provenance=provenance,
+        terminal_receipt=terminal,
+    )
+
+
+def _finalize_execution_receipt(
+    *,
+    execution_record: dict[str, object] | None,
+    execution_path: Path,
+    run_id: str,
+    execution_nonce: str,
+    receipt_context: dict[str, object] | None,
+    process_cleanup_safe: bool,
+    status: str,
+    returncode: int | None,
+    execution_error: str | None,
+) -> tuple[supervisor_custody.QueueTerminalOutcome, dict[str, object]]:
+    """Choose one final queue result before binding any terminal projection.
+
+    Command execution and proof eligibility are separate facts. The child owns
+    command_returncode; this parent owns queue_terminal. A cleanly terminated
+    command can be ineligible proof while its unsealed outputs remain safely
+    reclaimable. Publication failures propagate without retrying or resealing a
+    generation under a different result.
+    """
+    context = dict(
+        receipt_context
+        or state._unattested_receipt_context(
+            status="non-evidence",
+            phase="guarded command envelope",
+            reason=execution_error or "guarded execution produced no receipt context",
+        )
+    )
+    source = context.get("source_custody")
+    if (
+        process_cleanup_safe
+        and status == "passed"
+        and not (_is_receipt_object(source) and source.get("evidence_eligible") is True)
+    ):
+        status, returncode = "non-evidence", 2
+        execution_error = execution_error or (
+            "source custody is not evidence eligible between prelaunch "
+            "and postcompletion"
+        )
+    command_rc = (
+        execution_record.get("command_returncode") if execution_record else None
+    )
+    if command_rc is not None and type(command_rc) is not int:
+        raise ValueError("terminal execution has an invalid command return code")
+    outcome: supervisor_custody.QueueTerminalOutcome = {
+        "schema": supervisor_custody.QUEUE_TERMINAL_SCHEMA,
+        "status": status,
+        "returncode": returncode,
+        "command_returncode": command_rc,
+        "execution_error": execution_error,
+    }
+    supervisor_custody.validate_queue_terminal(outcome)
+    context["queue_terminal"] = outcome
+    # Neither a child-supplied digest nor a stale parent projection is authority.
+    context.pop("terminal_evidence_sha256", None)
+    context.pop("cargo_generation_lifecycle", None)
+    if execution_record is not None:
+        generation = _record_cargo_generation_terminal(
+            execution_record=execution_record,
+            execution_path=execution_path,
+            run_id=run_id,
+            execution_nonce=execution_nonce,
+            receipt_context=context,
+            process_cleanup_safe=process_cleanup_safe,
+        )
+        if generation is not None:
+            context["cargo_generation_lifecycle"] = generation
+    if process_cleanup_safe:
+        if type(returncode) is not int:
+            raise ValueError("validated execution has no final queue return code")
+        context["terminal_evidence_sha256"] = (
+            supervisor_custody.terminal_evidence_sha256(
+                context, run_id=run_id, returncode=returncode
+            )
+        )
+    if execution_record is not None:
+        # Preserve the child's command result; persist the same final context
+        # that the caller will commit to the queue database.
+        execution_record["receipt_context"] = context
+        supervisor_custody._atomic_json(execution_path, execution_record)
+    return outcome, context
 
 
 def _validated_execution_context(
@@ -390,9 +529,17 @@ def _validated_execution_context(
     ):
         raise ValueError("native process supervisor event artifact binding is invalid")
     try:
-        policy_payload = json.loads(policy_path.read_text(encoding="utf-8"))
-        receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        policy_payload = read_exact(
+            policy_path,
+            max_bytes=16 * 1024 * 1024,
+            label="native proof supervisor policy",
+        )
+        receipt_payload = read_exact(
+            receipt_path,
+            max_bytes=16 * 1024 * 1024,
+            label="native proof supervisor receipt",
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ExactJsonError) as exc:
         raise ValueError("native process supervisor authority is unreadable") from exc
     expected_mode = (
         "leaf" if closure.get("descendants") == "forbidden" else "declared-tree"
@@ -546,6 +693,13 @@ def _validated_execution_context(
         raise ValueError("native process supervisor policy binding is invalid")
     for derived in derived_root_prelaunch:
         if derived.get("schema") == cargo_cache_custody.SCHEMA:
+            if (
+                derived.get("generation_run_id") != run_id
+                or derived.get("execution_nonce_sha256") != expected_nonce_hash
+            ):
+                raise ValueError(
+                    "Cargo generation provenance differs from admitted run/nonce"
+                )
             source_snapshot = source_custody.get("prelaunch")
             source_content = source_custody.get("content")
             if not isinstance(source_snapshot, Mapping) or not isinstance(
@@ -558,6 +712,9 @@ def _validated_execution_context(
                 derived,
                 cas_root=execution_path.parent / "custody-cas",
                 command=policy_command,
+                outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                    envelope
+                ),
                 env={str(key): str(value) for key, value in policy_environment.items()},
                 toolchains=full_toolchains,
                 source_root=str(source_snapshot.get("root")),
@@ -581,6 +738,31 @@ def _validated_execution_context(
         raise ValueError(
             "native process supervisor receipt failed independent verification"
         )
+    try:
+        verification_payload = loads_exact(verified_supervisor.stdout)
+    except (ExactJsonError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "native process supervisor verification response is not exact JSON"
+        ) from exc
+    verification_capability = (
+        verification_payload.get("capability")
+        if _is_receipt_object(verification_payload)
+        else None
+    )
+    try:
+        verified_required_environment = supervisor_custody.decode_supervisor_capability(
+            verification_capability, mode=expected_mode
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "native process supervisor verification capability is invalid"
+        ) from exc
+    supervisor_custody.validate_required_environment_binding(
+        required_environment=verified_required_environment,
+        supervisor_metadata=supervisor.get("required_environment"),
+        policy_environment=policy_environment,
+        supervisor_owned_names=environment_prelaunch.get("supervisor_owned_names", []),
+    )
     expected_custody = supervisor_custody.execution_custody_sha256(
         wire_context,
         run_id=run_id,
@@ -616,6 +798,9 @@ def _validated_execution_context(
     ).hexdigest()
     if transcript.get("identity_sha256") != transcript_digest:
         raise ValueError("guarded command transcript digest mismatch")
+    command_identity.validate_structured_test_counts(
+        envelope, transcript, returncode=returncode
+    )
 
 
 def _write_execution_request(
@@ -630,7 +815,10 @@ def _write_execution_request(
     summary_path: Path,
     timeout_seconds: float,
 ) -> tuple[Path, Path, dict[str, object], str]:
-    envelope = json.loads(str(row["command_envelope_json"]))
+    try:
+        envelope = loads_exact(str(row["command_envelope_json"]))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("proof row command envelope is not exact JSON") from exc
     if not _is_receipt_object(envelope):
         raise ValueError("proof row command envelope is malformed")
     command_admission.validate_envelope(envelope, command)
@@ -658,16 +846,16 @@ def _write_execution_request(
         "env_override_names": sorted(env_override_names, key=str.casefold),
         "timeout_seconds": timeout_seconds,
     }
-    request_path.write_text(
-        json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_exact(request_path, request)
     return request_path, result_path, envelope, execution_nonce
 
 
 def _read_execution_record(path: Path) -> dict[str, object]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = read_exact(
+            path, max_bytes=16 * 1024 * 1024, label="guarded proof execution record"
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ExactJsonError) as exc:
         raise ValueError(
             f"guarded proof execution record is unavailable: {exc}"
         ) from exc
@@ -1064,24 +1252,6 @@ def _record_policy_rejection(
     return 2
 
 
-def _ensure_disk_headroom_before_build() -> None:
-    """Preemptive, AGENT-SAFE disk reclaim before launching a queued build.
-
-    A heavy Cargo/witness build is exactly the point where C: filled to 0 bytes.
-    The disk guard reclaims ONLY stale build-artifact dirs (never a process, never
-    an active/lock-held dir) and is a fast no-op above the high-water mark.
-    Fail-open: a guard error must never block the build.
-    """
-    if any(os.environ.get(k) for k in ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")):
-        return  # never reclaim real artifacts during a test run
-    try:
-        from tools import disk_guard
-
-        disk_guard.ensure_free_fail_open()
-    except Exception:
-        pass
-
-
 def _run_one(
     args: argparse.Namespace,
     *,
@@ -1214,6 +1384,7 @@ def _run_one(
             log_path=log_path,
             policy_error=policy_error,
         )
+    capacity_admission = None
     try:
         session_id = state._proof_session_id(resource_family, contention_key)
         admitted_envelope = command_admission.envelope_for_command(command)
@@ -1221,6 +1392,12 @@ def _run_one(
         if not _is_string_list(requested_toolchains):
             raise ValueError("admitted command has malformed toolchain names")
         uses_cargo = "cargo" in requested_toolchains
+        if uses_cargo:
+            # The queue owns Cargo and derived output below the result root.
+            # Reject before environment provisioning, capture, or child launch.
+            capacity_admission = disk_capacity.require_build_capacity(
+                (logs_root,), env={**os.environ, **env_overrides}
+            ).as_dict()
         env = development_artifact_env(
             repo_root,
             os.environ,
@@ -1322,6 +1499,12 @@ def _run_one(
                 file=log,
             )
         print(f"proof_session_id={session_id}", file=log)
+        if capacity_admission is not None:
+            print(
+                "disk_capacity_admission="
+                + json.dumps(capacity_admission, sort_keys=True),
+                file=log,
+            )
         print(f"requested_cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
         print(
             "command_envelope=" + json.dumps(envelope, sort_keys=True),
@@ -1378,6 +1561,8 @@ def _run_one(
         log.close()
     receipt_context: dict[str, object] | None = None
     execution_error: str | None = None
+    execution_record: dict[str, object] | None = None
+    process_cleanup_safe = False
     try:
         execution_record = _read_execution_record(execution_path)
         if execution_record.get("run_id") != run_id:
@@ -1415,31 +1600,7 @@ def _run_one(
                 guard_pid=proc.pid,
             )
             receipt_context["guard_receipt"] = guard_receipt
-            receipt_context["terminal_evidence_sha256"] = (
-                supervisor_custody.terminal_evidence_sha256(
-                    receipt_context,
-                    run_id=run_id,
-                    returncode=command_rc,
-                )
-            )
-            execution_record["receipt_context"] = receipt_context
-            supervisor_custody._atomic_json(execution_path, execution_record)
-            source_custody = (
-                receipt_context.get("source_custody")
-                if receipt_context is not None
-                else None
-            )
-            eligible = (
-                _is_receipt_object(source_custody)
-                and source_custody.get("evidence_eligible") is True
-            )
-            if status == "passed" and not eligible:
-                status = "non-evidence"
-                rc = 2
-                execution_error = (
-                    "source custody changed or was unavailable between prelaunch "
-                    "and postcompletion"
-                )
+            process_cleanup_safe = True
         elif status == "passed":
             raise ValueError(
                 "memory guard passed without a complete command execution record"
@@ -1451,13 +1612,32 @@ def _run_one(
         if status == "passed":
             status = "failed"
             rc = 2
-    if receipt_context is None:
+    try:
+        outcome, receipt_context = _finalize_execution_receipt(
+            execution_record=execution_record,
+            execution_path=execution_path,
+            run_id=run_id,
+            execution_nonce=execution_nonce,
+            receipt_context=receipt_context,
+            process_cleanup_safe=process_cleanup_safe,
+            status=status,
+            returncode=rc,
+            execution_error=execution_error,
+        )
+        status = str(outcome["status"])
+        rc = outcome["returncode"]
+        execution_error = outcome["execution_error"]
+    except Exception as exc:
+        # A partial publication is retained, never rebound under a second
+        # result. Without the exact terminal context no consumer may reclaim it.
+        detail = f"terminal custody publication failed: {type(exc).__name__}: {exc}"
+        execution_error = f"{execution_error}; {detail}" if execution_error else detail
+        status, rc = "failed", 2
         receipt_context = dict(
             state._unattested_receipt_context(
                 status="non-evidence",
-                phase="guarded command envelope",
-                reason=execution_error
-                or "guarded execution produced no receipt context",
+                phase="terminal custody publication",
+                reason=execution_error,
             )
         )
     if execution_error:

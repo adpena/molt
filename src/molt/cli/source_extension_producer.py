@@ -42,6 +42,7 @@ from molt.cli.source_extension_input_custody import (
     stage_source_extension_manifest_inputs,
     validate_source_extension_manifest_input_custody,
 )
+from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -96,6 +97,7 @@ from molt.cli.source_extension_set_identity import (
     _source_extension_reproduction_comparison,
 )
 from molt.cli.source_extension_set_registry import (
+    SourceExtensionRegistry,
     SourceExtensionSet,
     SourceExtensionVariant,
     load_source_extension_registry,
@@ -291,6 +293,7 @@ def _verify_recursive_submodules(
     result = _run_process(
         (
             "git",
+            "--no-optional-locks",
             "-c",
             "core.longpaths=true",
             "-C",
@@ -317,6 +320,7 @@ def _verify_recursive_submodules(
     identities = _run_process(
         (
             "git",
+            "--no-optional-locks",
             "-c",
             "core.longpaths=true",
             "-C",
@@ -325,7 +329,7 @@ def _verify_recursive_submodules(
             "foreach",
             "--recursive",
             "--quiet",
-            'printf "%s\\t%s\\n" "$displaypath" "$(git rev-parse HEAD)"',
+            'printf "%s\\t%s\\n" "$displaypath" "$(git --no-optional-locks rev-parse HEAD)"',
         ),
         cwd=source_root,
     )
@@ -366,6 +370,7 @@ def _verify_recursive_submodules(
         tracked = _run_process(
             (
                 "git",
+                "--no-optional-locks",
                 "-c",
                 "core.longpaths=true",
                 "-C",
@@ -415,9 +420,41 @@ def _provision_recursive_submodules(source_root: Path) -> None:
         )
 
 
+def prepare_source_extension_prerequisites(
+    extension_set: SourceExtensionSet,
+    source_root: Path,
+    *,
+    repo_root: Path,
+    planned_environment: LockedSourceBuildEnvironment,
+    registry: SourceExtensionRegistry | None = None,
+) -> LockedSourceBuildEnvironment:
+    """Own setup mutations before a prepared producer takes immutable custody."""
+    verify_source_extension_checkout(extension_set, source_root, registry=registry)
+    _provision_recursive_submodules(source_root)
+    _verify_recursive_submodules(source_root)
+    realized = source_build_environment(
+        repo_root, extension_set.build_dependency_group, provision=True
+    )
+    for field in ("root", "python_executable", "manifest_path"):
+        expected = Path(os.path.abspath(getattr(planned_environment, field)))
+        actual = Path(os.path.abspath(getattr(realized, field)))
+        if actual != expected:
+            raise SourceExtensionProducerError(
+                "source-extension setup changed its content-addressed environment "
+                f"{field}: expected {expected}, got {actual}"
+            )
+    if not realized.python_executable.is_file():
+        raise SourceExtensionProducerError(
+            "provisioned source-build interpreter is unavailable: "
+            f"{realized.python_executable}"
+        )
+    return realized
+
+
 def _git_head(source_root: Path) -> str:
     result = _run_process(
-        ("git", "-C", str(source_root), "rev-parse", "HEAD"), cwd=source_root
+        ("git", "--no-optional-locks", "-C", str(source_root), "rev-parse", "HEAD"),
+        cwd=source_root,
     )
     head = result.stdout.strip()
     if result.returncode != 0 or not head:
@@ -439,7 +476,50 @@ def _require_fresh_build_root(build_root: Path) -> None:
                 f"cannot mix with a prior configuration: {build_root}"
             )
     else:
-        build_root.parent.mkdir(parents=True, exist_ok=True)
+        ancestor = next(path for path in build_root.parents if path.exists())
+        if not ancestor.is_dir():
+            raise SourceExtensionProducerError(
+                f"Meson build root parent is not a directory: {ancestor}"
+            )
+
+
+def resolve_source_extension_destination(
+    extension_set: SourceExtensionSet,
+    *,
+    variant: SourceExtensionVariant,
+    source_root: Path,
+    build_root: Path,
+    candidate_output: str | None = None,
+    registry: SourceExtensionRegistry | None = None,
+) -> Path:
+    """Validate output topology without setup, locks or filesystem mutation.
+
+    Publication/transaction state is checked later under exclusive custody;
+    immutable input/output separation and fresh build storage precede setup.
+    """
+    source_root = source_root.resolve()
+    build_root = build_root.resolve()
+    if source_root.is_relative_to(build_root) or build_root.is_relative_to(source_root):
+        raise SourceExtensionProducerError(
+            "Meson build root must be disjoint from the source checkout"
+        )
+    _require_fresh_build_root(build_root)
+    destination = (
+        resolve_source_extension_candidate_custody_path(candidate_output)
+        if candidate_output is not None
+        else source_extension_set_root(
+            extension_set, variant=variant, registry=registry
+        )
+    ).resolve()
+    if any(
+        destination.is_relative_to(root) or root.is_relative_to(destination)
+        for root in (source_root, build_root)
+    ):
+        raise SourceExtensionProducerError(
+            "extension-set destination must be disjoint from the source checkout "
+            "and build root"
+        )
+    return destination
 
 
 def _source_build_requirements(
@@ -552,65 +632,11 @@ def _ensure_source_build_environment(
 def _run_locked_source_extension_producer(
     environment: LockedSourceBuildEnvironment,
     *,
-    package: str,
-    package_version: str,
-    module_set: str,
-    python_version: str,
-    source: str,
-    build_root: str,
-    target: str,
-    abi_tier: str,
-    json_output: bool,
-    command: Literal["produce-set", "attest-set-candidate"] = "produce-set",
-    candidate_output: str | None = None,
-    expected_identity_sha256: str | None = None,
-    expected_candidate_identity_sha256: str | None = None,
+    invocation: SourceExtensionSetInvocation,
 ) -> int:
-    argv = [
-        str(environment.python_executable),
-        "-P",
-        "-m",
-        "molt.cli",
-        "extension",
-        command,
-        "--package",
-        package,
-        "--package-version",
-        package_version,
-        "--module-set",
-        module_set,
-        "--python-version",
-        python_version,
-        "--source",
-        source,
-        "--build-root",
-        build_root,
-        "--target",
-        target,
-        "--abi-tier",
-        abi_tier,
-    ]
-    if command == "attest-set-candidate":
-        if candidate_output is None:
-            raise SourceExtensionProducerError(
-                "candidate attestation re-exec requires an output root"
-            )
-        argv.extend(("--output", candidate_output))
-    elif candidate_output is not None:
-        raise SourceExtensionProducerError(
-            "registered publication cannot receive candidate-only output custody"
-        )
-    if json_output:
-        argv.append("--json")
-    if expected_identity_sha256 is not None:
-        argv.extend(("--expected-identity-sha256", expected_identity_sha256))
-    if expected_candidate_identity_sha256 is not None:
-        argv.extend(
-            (
-                "--expected-candidate-identity-sha256",
-                expected_candidate_identity_sha256,
-            )
-        )
+    argv = replace(invocation, prepared=True).module_argv(
+        str(environment.python_executable)
+    )
     child_environment = os.environ.copy()
     current_src = str((_REPO_ROOT / "src").resolve())
     child_environment["PYTHONPATH"] = current_src
@@ -2147,6 +2173,7 @@ def _build_source_extension_set(
     expected_identity_sha256: str | None = None,
     expected_candidate_identity_sha256: str | None = None,
     json_output: bool = False,
+    prepared: bool = False,
 ) -> int:
     candidate_mode = candidate_output is not None
     command: Literal["produce-set", "attest-set-candidate"] = (
@@ -2213,51 +2240,66 @@ def _build_source_extension_set(
                     f"expected {registered_candidate_identity_sha256}, got "
                     f"{expected_candidate_identity_sha256}"
                 )
-        locked_environment = source_build_environment(
-            _REPO_ROOT, extension_set.build_dependency_group, provision=True
+        invocation = SourceExtensionSetInvocation(
+            command=command,
+            prepared=prepared,
+            package=package,
+            package_version=package_version,
+            module_set=module_set,
+            python_version=python_version,
+            source=str(source_root),
+            build_root=str(resolved_build_root),
+            target=target,
+            abi_tier=abi_tier,
+            json_output=json_output,
+            candidate_output=candidate_output,
+            expected_identity_sha256=expected_identity_sha256,
+            expected_candidate_identity_sha256=expected_candidate_identity_sha256,
         )
-        if not locked_environment.active:
-            return _run_locked_source_extension_producer(
-                locked_environment,
-                package=package,
-                package_version=package_version,
-                module_set=module_set,
-                python_version=python_version,
-                source=str(source_root),
-                build_root=str(resolved_build_root),
-                target=target,
-                abi_tier=abi_tier,
-                command=command,
-                candidate_output=candidate_output,
-                expected_identity_sha256=expected_identity_sha256,
-                expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
-                json_output=json_output,
-            )
-        if candidate_mode:
-            assert candidate_output is not None
-            resolved_candidate_output = resolve_source_extension_candidate_custody_path(
-                candidate_output
-            )
-            if any(
-                left == right
-                or left.is_relative_to(right)
-                or right.is_relative_to(left)
-                for left, right in (
-                    (resolved_candidate_output, source_root),
-                    (resolved_candidate_output, resolved_build_root),
-                )
-            ):
-                raise SourceExtensionProducerError(
-                    "candidate output must be disjoint from the source checkout "
-                    "and build root"
-                )
-            destination = resolved_candidate_output
-        else:
-            destination = source_extension_set_root(
+        if not prepared:
+            destination = resolve_source_extension_destination(
                 extension_set,
                 variant=variant,
+                source_root=source_root,
+                build_root=resolved_build_root,
+                candidate_output=candidate_output,
                 registry=registry,
             )
+            if candidate_mode:
+                invocation = replace(invocation, candidate_output=str(destination))
+        locked_environment = source_build_environment(
+            _REPO_ROOT, extension_set.build_dependency_group, provision=False
+        )
+        if not prepared:
+            locked_environment = prepare_source_extension_prerequisites(
+                extension_set,
+                source_root,
+                repo_root=_REPO_ROOT,
+                planned_environment=locked_environment,
+                registry=registry,
+            )
+            return _run_locked_source_extension_producer(
+                locked_environment,
+                invocation=replace(invocation, prepared=True),
+            )
+        if not locked_environment.active:
+            raise SourceExtensionProducerError(
+                "prepared source-extension execution requires the active locked "
+                "source-build interpreter; run setup before proof custody"
+            )
+        verify_source_extension_checkout(extension_set, source_root, registry=registry)
+        submodules = _verify_recursive_submodules(source_root)
+        verify_source_extension_abi_headers(variant, repo_root=_REPO_ROOT)
+        destination = resolve_source_extension_destination(
+            extension_set,
+            variant=variant,
+            source_root=source_root,
+            build_root=resolved_build_root,
+            candidate_output=candidate_output,
+            registry=registry,
+        )
+        if candidate_mode:
+            resolved_candidate_output = destination
         destination.parent.mkdir(parents=True, exist_ok=True)
         lock_role = "candidate" if candidate_mode else "producer"
         lock_path = destination.parent / f".{destination.name}.{lock_role}.lock"
@@ -2311,14 +2353,6 @@ def _build_source_extension_set(
             raise SourceExtensionProducerError(
                 "--expected-identity-sha256 requires an incumbent canonical seal"
             )
-        verify_source_extension_checkout(
-            extension_set,
-            source_root,
-            registry=registry,
-        )
-        _provision_recursive_submodules(source_root)
-        submodules = _verify_recursive_submodules(source_root)
-        verify_source_extension_abi_headers(variant, repo_root=_REPO_ROOT)
         build_environment = _ensure_source_build_environment(
             source_root, custody=locked_environment.custody
         )
@@ -2350,6 +2384,7 @@ def _build_source_extension_set(
                 f"got {actual_config_tools!r}"
             )
         _require_fresh_build_root(resolved_build_root)
+        resolved_build_root.parent.mkdir(parents=True, exist_ok=True)
 
         transaction_root = Path(
             tempfile.mkdtemp(
@@ -2813,6 +2848,7 @@ def attest_source_extension_set_candidate(
     target: str,
     abi_tier: str = "cpython-abi",
     json_output: bool = False,
+    prepared: bool = False,
 ) -> int:
     """Build and validate a detached candidate without publication custody."""
 
@@ -2827,6 +2863,7 @@ def attest_source_extension_set_candidate(
         abi_tier=abi_tier,
         candidate_output=output,
         json_output=json_output,
+        prepared=prepared,
     )
 
 
@@ -2886,6 +2923,7 @@ def produce_source_extension_set(
     expected_identity_sha256: str | None = None,
     expected_candidate_identity_sha256: str | None = None,
     json_output: bool = False,
+    prepared: bool = False,
 ) -> int:
     """Reproduce and publish a variant whose exact identity is registered."""
 
@@ -2901,4 +2939,5 @@ def produce_source_extension_set(
         expected_identity_sha256=expected_identity_sha256,
         expected_candidate_identity_sha256=expected_candidate_identity_sha256,
         json_output=json_output,
+        prepared=prepared,
     )

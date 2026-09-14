@@ -10,10 +10,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import functools
 import os
-import shutil
 from pathlib import Path
 
 from molt.cli.command_runtime import _run_completed_command
+from molt.toolchain_identity import (
+    executable_environment_value,
+    expand_user_path,
+    find_executable,
+    stable_executable_probe,
+)
+from molt.rust_toolchain import resolve_rustup_proxy
 from molt.wasi_sysroot import (
     WASI_TARGET_INCLUDE_DIRS as _WASI_TARGET_INCLUDE_DIRS,
     WASI_TARGET_LIB_DIRS as _WASI_SYSROOT_LIB_SUBDIRS,
@@ -61,7 +67,7 @@ def wasi_libcxx_include_dir(
 def _wasi_sdk_sysroot_candidates(raw: str | None) -> list[Path]:
     if not raw:
         return []
-    sdk_root = Path(raw).expanduser()
+    sdk_root = Path(raw)
     return [
         sdk_root,
         sdk_root / "share" / "wasi-sysroot",
@@ -76,15 +82,17 @@ def _resolve_wasi_sysroot_cached(
     wasi_sdk_path: str | None,
     wasi_sdk_prefix: str | None,
     molt_target_root: str | None,
+    program_files: str | None,
+    local_app_data: str | None,
 ) -> Path | None:
     candidates: list[Path] = []
     for raw in (molt_wasi_sysroot, wasi_sysroot):
         if raw:
-            candidates.append(Path(raw).expanduser())
+            candidates.append(Path(raw))
     candidates.extend(_wasi_sdk_sysroot_candidates(wasi_sdk_path))
     candidates.extend(_wasi_sdk_sysroot_candidates(wasi_sdk_prefix))
     if molt_target_root:
-        target_root = Path(molt_target_root).expanduser()
+        target_root = Path(molt_target_root)
         target_toolchains = target_root / "toolchains"
         candidates.extend(
             [
@@ -99,8 +107,6 @@ def _resolve_wasi_sysroot_cached(
         if target_toolchains.exists():
             candidates.extend(sorted(target_toolchains.glob("wasi-sysroot-*")))
     if os.name == "nt":
-        program_files = os.environ.get("ProgramFiles")
-        local_app_data = os.environ.get("LOCALAPPDATA")
         for root in (program_files, local_app_data):
             if root:
                 candidates.extend(
@@ -133,12 +139,27 @@ def _resolve_wasi_sysroot_cached(
 
 def resolve_wasi_sysroot(*, env: Mapping[str, str] | None = None) -> Path | None:
     environment = os.environ if env is None else env
+    # Cache expanded absolute selectors, so home changes and relative-root cwd
+    # changes cannot reuse a result selected under another environment.
+    roots = (
+        executable_environment_value(environment, key)
+        for key in (
+            "MOLT_WASI_SYSROOT",
+            "WASI_SYSROOT",
+            "WASI_SDK_PATH",
+            "WASI_SDK_PREFIX",
+            "MOLT_TARGET_ROOT",
+            "ProgramFiles",
+            "LOCALAPPDATA",
+        )
+    )
     return _resolve_wasi_sysroot_cached(
-        environment.get("MOLT_WASI_SYSROOT"),
-        environment.get("WASI_SYSROOT"),
-        environment.get("WASI_SDK_PATH"),
-        environment.get("WASI_SDK_PREFIX"),
-        environment.get("MOLT_TARGET_ROOT"),
+        *(
+            str(expand_user_path(root, environment=environment).absolute())
+            if root
+            else None
+            for root in roots
+        ),
     )
 
 
@@ -150,18 +171,50 @@ def _wasi_sdk_root_for_sysroot(sysroot: Path) -> Path | None:
     return None
 
 
-@functools.lru_cache(maxsize=8)
-def rust_target_libdir(target_triple: str) -> Path | None:
-    rustc = shutil.which("rustc")
+def rust_target_libdir(
+    target_triple: str,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> Path | None:
+    selected = dict(os.environ if environment is None else environment)
+    cwd = Path.cwd().resolve()
+    rustc = find_executable(
+        executable_environment_value(selected, "RUSTC", "rustc"),
+        cwd=cwd,
+        environment=selected,
+    )
     if rustc is None:
         return None
+    rustc = resolve_rustup_proxy(rustc, role="rustc", root=cwd, env=selected)
+    with stable_executable_probe(rustc, label="Rust target-library selection") as (
+        entrypoint,
+        identity,
+    ):
+        return _rust_target_libdir_cached(
+            target_triple,
+            str(entrypoint),
+            identity.sha256,
+            str(cwd),
+            tuple(sorted(selected.items())),
+        )
+
+
+@functools.lru_cache(maxsize=8)
+def _rust_target_libdir_cached(
+    target_triple: str,
+    rustc: str,
+    generation: str,
+    cwd: str,
+    environment: tuple[tuple[str, str], ...],
+) -> Path | None:
+    del generation  # The selected compiler generation participates in cache identity.
     try:
         result = _run_completed_command(
             [rustc, "--print", "target-libdir", "--target", target_triple],
             capture_output=True,
             timeout=30,
-            env=None,
-            cwd=None,
+            env=dict(environment),
+            cwd=Path(cwd),
             memory_guard_prefix="MOLT_BUILD",
         )
     except OSError:
@@ -171,14 +224,23 @@ def rust_target_libdir(target_triple: str) -> Path | None:
     path_text = result.stdout.strip()
     if not path_text:
         return None
-    return Path(path_text)
+    if len(path_text.splitlines()) != 1 or not Path(path_text).is_absolute():
+        raise ValueError("selected rustc target-libdir must be one absolute path")
+    return Path(path_text).resolve(strict=False)
+
+
+def clear_rust_target_libdir_cache() -> None:
+    _rust_target_libdir_cached.cache_clear()
 
 
 def wasm_wasi_libc_archive(
-    target_triple: str = "wasm32-wasip1", *, target_libdir: Path | None = None
+    target_triple: str = "wasm32-wasip1",
+    *,
+    target_libdir: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> Path | None:
     if target_libdir is None:
-        target_libdir = rust_target_libdir(target_triple)
+        target_libdir = rust_target_libdir(target_triple, environment=environment)
     if target_libdir is None:
         return None
     libc_archive = target_libdir / "self-contained" / "libc.a"
@@ -188,19 +250,24 @@ def wasm_wasi_libc_archive(
 
 
 def wasm_compiler_builtins_archive(
-    target_triple: str = "wasm32-wasip1", *, target_libdir: Path | None = None
+    target_triple: str = "wasm32-wasip1",
+    *,
+    target_libdir: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> Path | None:
     if target_libdir is None:
-        target_libdir = rust_target_libdir(target_triple)
+        target_libdir = rust_target_libdir(target_triple, environment=environment)
     if target_libdir is None:
         return None
     candidates = sorted(target_libdir.glob("libcompiler_builtins-*.rlib"))
-    if candidates:
-        return candidates[0]
     unversioned = target_libdir / "libcompiler_builtins.rlib"
     if unversioned.exists():
-        return unversioned
-    return None
+        candidates.append(unversioned)
+    if len(candidates) > 1:
+        raise ValueError(
+            f"selected Rust target has ambiguous compiler-builtins archives: {target_libdir}"
+        )
+    return candidates[0] if candidates else None
 
 
 def wasm_cxx_runtime_archives(

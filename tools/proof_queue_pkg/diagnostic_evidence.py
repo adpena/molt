@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping
 
-from molt.exact_json import read_exact
+from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
 from tools.proof_queue_pkg import command_admission, command_identity, custody, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
@@ -109,6 +109,9 @@ def _live_command_evidence(row: sqlite3.Row) -> LiveCommandEvidence:
         )
         if not isinstance(request, dict) or not isinstance(result, dict):
             raise ValueError("execution authority is not an object")
+        row_envelope = loads_exact(row["command_envelope_json"])
+        request_envelope = request.get("envelope")
+        result_envelope = result.get("envelope")
         nonce = request.get("execution_nonce")
         if (
             request.get("schema") != command_admission.EXECUTION_SCHEMA
@@ -120,8 +123,10 @@ def _live_command_evidence(row: sqlite3.Row) -> LiveCommandEvidence:
             or result.get("execution_nonce") != nonce
             or request.get("result_path") != str(result_path)
             or request.get("command") != json.loads(row["command_json"])
-            or request.get("envelope") != json.loads(row["command_envelope_json"])
-            or result.get("envelope") != request.get("envelope")
+            or canonical_json_bytes(request_envelope)
+            != canonical_json_bytes(row_envelope)
+            or canonical_json_bytes(result_envelope)
+            != canonical_json_bytes(request_envelope)
         ):
             raise ValueError("execution request/result/row identity mismatch")
         if result.get("phase") != "command":
@@ -178,9 +183,13 @@ def _live_command_evidence(row: sqlite3.Row) -> LiveCommandEvidence:
             "live_command_transcript",
         )
         if (
-            current_request != request
+            canonical_json_bytes(current_request) != canonical_json_bytes(request)
             or not isinstance(current_result, dict)
-            or any(current_result.get(key) != result.get(key) for key in identity_keys)
+            or any(
+                canonical_json_bytes(current_result.get(key))
+                != canonical_json_bytes(result.get(key))
+                for key in identity_keys
+            )
         ):
             raise ValueError(
                 "execution authority changed during transcript observation"

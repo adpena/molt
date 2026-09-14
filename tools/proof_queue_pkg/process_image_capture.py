@@ -175,6 +175,12 @@ def toolchain_images(
 ) -> list[dict[str, object]]:
     """Project one toolchain identity into its sole exact-image authority."""
 
+    if identity.get("identity_kind") == "target-derived":
+        from tools.proof_queue_pkg.target_derived_toolchains import (
+            family_process_images,
+        )
+
+        return family_process_images(identity)
     raw_images = identity.get("process_images")
     if name == "python" and raw_images is None:
         raw_path = identity.get("executable")

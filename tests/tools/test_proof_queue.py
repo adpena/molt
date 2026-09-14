@@ -31,7 +31,7 @@ from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
-from molt.exact_json import canonical_json_sha256
+from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import build_environment_manifest
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
@@ -125,6 +125,119 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 }
 
 
+def test_rust_explicit_cargo_configuration_file_enters_toolchain_custody(tmp_path):
+    configuration = tmp_path / "selected.toml"
+    configuration.write_text("[build]\nincremental=false\n", encoding="utf-8")
+    identities = command_identity._tool_configuration_identities(
+        "rustc",
+        cwd=tmp_path,
+        env={},
+        command_argv=[
+            "cargo",
+            "rustc",
+            "--config",
+            "selected.toml",
+            "--",
+            "--print",
+            "sysroot",
+        ],
+    )
+    selected = next(
+        row for row in identities if row["path"] == str(configuration.resolve())
+    )
+    assert selected["sha256"] == hashlib.sha256(configuration.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "status,returncode,command_rc",
+    [("running", 0, 0), ("passed", True, 0), ("passed", 0, 1), ("failed", 0, 0)],
+)
+def test_finalization_rejects_malformed_outcome_before_publication(
+    tmp_path, monkeypatch, status, returncode, command_rc
+):
+    def forbidden(**kwargs):
+        pytest.fail("invalid outcomes must be rejected before terminal publication")
+
+    monkeypatch.setattr(runner, "_record_cargo_generation_terminal", forbidden)
+    with pytest.raises(ValueError, match="final queue outcome"):
+        runner._finalize_execution_receipt(
+            execution_record={"command_returncode": command_rc},
+            execution_path=tmp_path / "execution.json",
+            run_id="invalid-outcome",
+            execution_nonce="fixture",
+            receipt_context={"source_custody": {"evidence_eligible": True}},
+            process_cleanup_safe=True,
+            status=status,
+            returncode=returncode,
+            execution_error=None,
+        )
+    assert not (tmp_path / "execution.json").exists()
+
+
+def test_finalization_publication_failure_is_not_rebound_or_retried(
+    tmp_path, monkeypatch
+):
+    calls = []
+    record = {"command_returncode": 0}
+
+    def fail(**kwargs):
+        calls.append(copy.deepcopy(kwargs["receipt_context"]["queue_terminal"]))
+        raise OSError("terminal publication unavailable")
+
+    monkeypatch.setattr(runner, "_record_cargo_generation_terminal", fail)
+    with pytest.raises(OSError, match="terminal publication unavailable"):
+        runner._finalize_execution_receipt(
+            execution_record=record,
+            execution_path=tmp_path / "execution.json",
+            run_id="publication-failure",
+            execution_nonce="fixture",
+            receipt_context={"source_custody": {"evidence_eligible": False}},
+            process_cleanup_safe=True,
+            status="passed",
+            returncode=0,
+            execution_error=None,
+        )
+    assert len(calls) == 1
+    assert calls[0]["status"] == "non-evidence"
+    assert calls[0]["returncode"] == 2
+    assert calls[0]["command_returncode"] == 0
+    assert record == {"command_returncode": 0}
+    assert not (tmp_path / "execution.json").exists()
+
+
+def test_finalization_unvalidated_execution_never_gains_terminal_evidence(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def retain(**kwargs):
+        calls.append(kwargs)
+        return {"state": "terminal-indeterminate-retained"}
+
+    monkeypatch.setattr(runner, "_record_cargo_generation_terminal", retain)
+    outcome, context = runner._finalize_execution_receipt(
+        execution_record={"command_returncode": 0},
+        execution_path=tmp_path / "execution.json",
+        run_id="unvalidated-execution",
+        execution_nonce="fixture",
+        receipt_context={"terminal_evidence_sha256": "stale-child-value"},
+        process_cleanup_safe=False,
+        status="failed",
+        returncode=2,
+        execution_error="guard custody validation failed",
+    )
+    assert outcome["status"] == "failed"
+    assert outcome["returncode"] == 2 and outcome["command_returncode"] == 0
+    assert len(calls) == 1 and calls[0]["process_cleanup_safe"] is False
+    assert "terminal_evidence_sha256" not in context
+    assert (
+        context["cargo_generation_lifecycle"]["state"]
+        == "terminal-indeterminate-retained"
+    )
+    record = json.loads((tmp_path / "execution.json").read_text(encoding="utf-8"))
+    assert record["receipt_context"] == context
+
+
 def _terminalize_synthetic_run(
     conn: sqlite3.Connection,
     run_id: str,
@@ -198,6 +311,13 @@ def _terminalize_synthetic_run(
             ),
             "identical": True,
         }
+        receipt_context["queue_terminal"] = {
+            "schema": supervisor_custody.QUEUE_TERMINAL_SCHEMA,
+            "status": status,
+            "returncode": returncode,
+            "command_returncode": returncode,
+            "execution_error": None,
+        }
         receipt_context["terminal_evidence_sha256"] = (
             supervisor_custody.terminal_evidence_sha256(
                 receipt_context,
@@ -216,8 +336,21 @@ def _terminalize_synthetic_run(
         run_id,
         status=status,
         returncode=returncode,
+        finished_at=state._utc_now(),
         receipt_context_json=json.dumps(receipt_context, sort_keys=True),
     )
+
+
+def test_terminal_envelope_rejects_boolean_numeric_substitution() -> None:
+    envelope = {"schema": command_admission.ENVELOPE_SCHEMA, "prepared": True}
+    row = {"command_envelope_json": json.dumps(envelope)}
+    context = {"command_envelope": {**envelope, "prepared": 1}}
+
+    with pytest.raises(
+        ValueError,
+        match="terminal proof receipt envelope differs from immutable admission",
+    ):
+        evidence_module._validate_terminal_envelope(row, context)
 
 
 def _write_synthetic_guarded_execution(
@@ -289,10 +422,17 @@ def _write_synthetic_guarded_execution(
         "process_supervisor": v3["supervisor"],
         "execution_environment": {
             "prelaunch": {
-                "passed_names": [],
+                "passed_names": sorted(
+                    supervisor_policy["environment"], key=str.casefold
+                ),
+                "supervisor_owned_names": sorted(
+                    v3["supervisor"]["required_environment"], key=str.casefold
+                ),
                 "identity_sha256": "e" * 64,
                 "canonical_values_sha256": (
-                    execution_environment._canonical_environment_sha256({})
+                    execution_environment._canonical_environment_sha256(
+                        supervisor_policy["environment"]
+                    )
                 ),
             },
             "postcompletion_identity_sha256": "e" * 64,
@@ -1289,6 +1429,32 @@ def test_environment_selected_executable_inputs_are_content_bound(
         before["RUSTC_WRAPPER"]["executable"]["sha256"]
         != after["RUSTC_WRAPPER"]["executable"]["sha256"]
     )
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_environment_tool_paths_with_spaces_share_execution_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: bool
+) -> None:
+    selected_cwd = tmp_path / "build-cwd"
+    tool = selected_cwd / "tool directory" / Path(sys.executable).name
+    tool.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, tool)
+    ambient_cwd = tmp_path / "ambient"
+    ambient_cwd.mkdir()
+    monkeypatch.chdir(ambient_cwd)
+    raw = str(tool.relative_to(selected_cwd)) if relative else str(tool)
+    environment = dict.fromkeys(
+        ("CC", "CC_wasm32_wasip1", "CXX_aarch64_unknown_linux_gnu", "AR_wasm32_wasip1"),
+        raw,
+    )
+    identities = execution_environment._execution_environment_executable_identities(
+        environment, cwd=selected_cwd
+    )
+    assert set(identities) == set(environment)
+    for record in identities.values():
+        assert record["argument_count"] == 0
+        assert record["executable"]["path"] == str(tool)
+        assert record["executable"]["sha256"] == command_identity._hash_file(tool)
 
 
 def test_node_tool_identity_binds_runtime_versions_configuration_and_global_paths(
@@ -2369,6 +2535,32 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
     assert second_nonce != first_nonce
 
 
+def test_execution_request_rejects_duplicate_json_envelope_keys(tmp_path: Path) -> None:
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    serialized = json.dumps(envelope, sort_keys=True)
+    duplicate = '{"schema":"substituted",' + serialized[1:]
+    row = {"command_envelope_json": duplicate}
+
+    with pytest.raises(ValueError, match="not exact JSON"):
+        runner._write_execution_request(
+            row=row,  # type: ignore[arg-type]
+            command=command,
+            repo_root=tmp_path,
+            resource_family="python-tests",
+            run_id="duplicate-envelope",
+            env_override_names=[],
+            log_path=tmp_path / "run.log",
+            summary_path=tmp_path / "memory-guard.json",
+            timeout_seconds=30.0,
+        )
+
+    request_path = tmp_path / "duplicate-request.json"
+    request_path.write_text('{"schema":"a","schema":"b"}', encoding="utf-8")
+    with pytest.raises(ExactJsonError, match="duplicate JSON key"):
+        guarded_execution.execute_guarded_request(request_path)
+
+
 def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
     tmp_path: Path,
 ) -> None:
@@ -3006,7 +3198,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 
 
 @pytest.mark.slow
-def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody(
+def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3095,7 +3287,11 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
         toolchain_capture.compact_toolchains(full_toolchains) == context["toolchains"]
     )
     rustc = full_toolchains["rustc"]
-    assert rustc["link_selection"]["selection_probe_count"] == 1
+    assert rustc["link_selection"]["selection_probe_count"] == 2
+    assert [unit["unit"] for unit in rustc["link_selection"]["units"]] == [
+        "target",
+        "host-proc-macro",
+    ]
     assert any(row["role"] == "rust-linker" for row in rustc["process_images"])
     git = full_toolchains["git"]
     assert git["process_image_inventories"][0]["observed_image_count"] >= 1
@@ -3243,6 +3439,97 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
     assert record["command_started"] is False
     assert "TimeoutExpired" in record["error"]
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("publication_fails", [False, True])
+def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_details(
+    tmp_path, monkeypatch, capsys, publication_fails
+):
+    repo = tmp_path / "capture-failure-repo"
+    repo.mkdir()
+    result = tmp_path / "capture-failure.execution.json"
+    command = [sys.executable, "-c", "raise SystemExit(99)"]
+    request = result.with_suffix(".request.json")
+    request.write_text(
+        json.dumps(
+            {
+                "schema": command_admission.EXECUTION_SCHEMA,
+                "run_id": "rust-capture-failure",
+                "execution_nonce": "b" * 64,
+                "env_override_names": [],
+                "command": command,
+                "envelope": command_admission.envelope_for_command(command),
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    failure = toolchain_capture.RustLinkCaptureError(
+        "synthetic Rust linker selection returned 0 commands",
+        unit="target",
+        probes=[
+            {
+                "unit": "target",
+                "phase": "link-selection",
+                "argv": ["rustc", "--print", "link-args"],
+                "cwd": str(repo),
+                "compiler_cwd": str(repo),
+                "returncode": 0,
+                "stdout": "full compiler stdout\n" * 1000,
+                "stderr": "full compiler stderr\n",
+            }
+        ],
+    )
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    # Exercise the real guarded failure boundary before unrelated Git/Python
+    # capture and supervisor provisioning. Publication itself is never mocked
+    # in the successful variant, and no process should need to launch here.
+    monkeypatch.setattr(
+        execution_environment, "_deterministic_execution_environment", fail
+    )
+    if publication_fails:
+
+        def fail_publication(*args, **kwargs):
+            raise OSError("diagnostic storage unavailable")
+
+        monkeypatch.setattr(custody_cas, "put_json", fail_publication)
+    assert guarded_execution.execute_guarded_request(request) == 2
+    record = json.loads(result.read_text(encoding="utf-8"))
+    assert record["command_started"] is False and record["phase"] == "failed", record
+    assert "returned 0 commands" in record["error"], record
+    detail = record["rust_link_capture_failure"]
+    assert detail["unit"] == "target" and detail["phase"] == "link-selection", detail
+    output = capsys.readouterr().err
+    assert "full compiler stdout" not in output
+    if publication_fails:
+        assert "diagnostic storage unavailable" in detail.get(
+            "publication_error", ""
+        ), detail
+        assert "diagnostic publication failed" in output, {
+            "detail": detail,
+            "stderr": output,
+        }
+    else:
+        assert "artifact" in detail, {
+            "detail": detail,
+            "error": record["error"],
+            "stderr": output,
+        }
+        payload = custody_cas.read_ref(
+            detail["artifact"], expected_root=tmp_path / "custody-cas"
+        )
+        assert payload == {
+            "schema": custody_cas.ARTIFACT_SCHEMA,
+            "kind": failure.diagnostic["schema"],
+            "diagnostic": failure.diagnostic,
+        }, payload
+        assert detail["artifact"]["path"] in output
 
 
 def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
@@ -8255,6 +8542,13 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         ),
         "identical": True,
     }
+    receipt_context["queue_terminal"] = {
+        "schema": supervisor_custody.QUEUE_TERMINAL_SCHEMA,
+        "status": "passed",
+        "returncode": 0,
+        "command_returncode": 0,
+        "execution_error": None,
+    }
     receipt_context["terminal_evidence_sha256"] = (
         supervisor_custody.terminal_evidence_sha256(
             receipt_context,
@@ -8268,6 +8562,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         rows[0]["run_id"],
         status="passed",
         returncode=0,
+        finished_at=state._utc_now(),
         receipt_context_json=json.dumps(receipt_context, sort_keys=True),
     )
     conn.row_factory = sqlite3.Row

@@ -8,20 +8,23 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import stat
 import sys
 import time
+import tomllib
 from typing import Callable, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_sha256
 from molt import file_publication
+from molt.toolchain_identity import resolve_explicit_tool_command
+from molt.rust_toolchain import cargo_config_arguments
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     validate_python_environment_location,
 )
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
+from tools.proof_queue_pkg import cargo_output_environment
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg import process_image_capture
@@ -90,12 +93,20 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
 
 
 def _deterministic_execution_environment(
-    inherited: Mapping[str, str], *, override_names: Sequence[str]
+    inherited: Mapping[str, str],
+    *,
+    override_names: Sequence[str],
+    required_environment: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, str], dict[str, object]]:
+    required = dict(required_environment or {})
+    required_names = {name.casefold() for name in required}
     override_keys = [name.casefold() for name in override_names]
     if len(override_keys) != len(set(override_keys)):
         raise ValueError("environment overrides contain case-ambiguous names")
     overrides = set(override_keys)
+    if overrides & required_names:
+        raise ValueError("native supervisor launch environment cannot be overridden")
+    inherited = supervisor_custody.bind_required_environment(inherited, required)
     selected: dict[str, str] = {}
     omitted: list[str] = []
     seen_names: set[str] = set()
@@ -104,11 +115,25 @@ def _deterministic_execution_environment(
         if folded in seen_names:
             raise ValueError(f"execution environment has case-ambiguous name {name!r}")
         seen_names.add(folded)
-        classification = _environment_name_class(name)
+        if name.upper() in {
+            "MOLT_PROOF_SOURCE_ROOT",
+            command_identity.SOURCE_EXTENSION_LINK_INPUTS_ENV,
+        }:
+            # Only captured source/toolchain authority may publish these values.
+            omitted.append(name)
+            continue
+        classification = (
+            "supervisor-owned-launch"
+            if folded in required_names
+            else _environment_name_class(name)
+        )
         if classification in {
             None,
             "denied-nondeterministic",
-        } or command_identity._SECRET_ENV_NAME.search(name):
+        } or (
+            classification != "queue-owned-custody"
+            and command_identity._SECRET_ENV_NAME.search(name)
+        ):
             omitted.append(name)
             continue
         selected[name] = str(value)
@@ -130,6 +155,8 @@ def _deterministic_execution_environment(
         ),
         "omitted_names": sorted(omitted, key=str.casefold),
     }
+    if required:
+        contract["supervisor_owned_names"] = sorted(required, key=str.casefold)
     return selected, contract
 
 
@@ -141,12 +168,19 @@ def _execution_environment_authority(
     contract: Mapping[str, object],
 ) -> dict[str, object]:
     names = sorted(env, key=str.casefold)
+    supervisor_owned_names = contract.get("supervisor_owned_names", [])
+    if not isinstance(supervisor_owned_names, list) or not all(
+        isinstance(name, str) for name in supervisor_owned_names
+    ):
+        raise ValueError("supervisor-owned environment names must be strings")
     values: dict[str, object] = {}
     for name in names:
         normalized = str(env[name]).replace("\\", "/")
         values[name] = {
             "class": (
-                "queue-owned-custody"
+                "supervisor-owned-launch"
+                if name in supervisor_owned_names
+                else "queue-owned-custody"
                 if name.upper() == "PYTHONPATH"
                 else _environment_name_class(name)
             ),
@@ -170,6 +204,160 @@ def _execution_environment_authority(
     return payload
 
 
+def _bind_cargo_build_tool_environment(
+    envelope: Mapping[str, object],
+    env: Mapping[str, str],
+    contract: Mapping[str, object],
+    *,
+    cwd: Path,
+) -> tuple[dict[str, str], dict[str, object]]:
+    """Publish Cargo build-tool selection before any executable/input capture."""
+    selected = dict(env)
+    bound_contract = dict(contract)
+    closure = envelope.get("process_closure")
+    if "cargo" not in envelope.get("toolchains", []) or (
+        isinstance(closure, Mapping) and closure.get("descendants") == "forbidden"
+    ):
+        return selected, bound_contract
+    command = [str(value) for value in envelope["argv"]]
+    command = admission._nested_command(command) or command
+    invocation = admission.parse_cargo_invocation(command)
+    if invocation.toolchain_selector is not None:
+        selected = {
+            name: value
+            for name, value in selected.items()
+            if (name.upper() if os.name == "nt" else name) != "RUSTUP_TOOLCHAIN"
+        }
+        # Rustup's leading +selector overrides inherited RUSTUP_TOOLCHAIN.
+        # Publish that context before every Rust/formatter/toolchain capture,
+        # not merely to the build script's formatter selection.
+        selected["RUSTUP_TOOLCHAIN"] = invocation.toolchain_selector
+    outputs = cargo_output_environment.CargoOutputEnvironment.for_invocation(invocation)
+    _require_cargo_build_tool_environment_context(
+        command, outputs=outputs, cwd=cwd, env=selected
+    )
+    updates, selection = toolchain_capture.select_cargo_build_tool_environment(
+        cwd=cwd,
+        env=selected,
+        rustdoc_required=invocation.requires_documenter,
+    )
+    folded = {name.casefold() for name in updates}
+    selected = {
+        name: value for name, value in selected.items() if name.casefold() not in folded
+    }
+    selected.update(updates)
+    bound_contract["passed_names"] = sorted(selected, key=str.casefold)
+    overrides = contract.get("override_names", [])
+    if not isinstance(overrides, list):
+        raise ValueError("environment override-name contract is malformed")
+    override_keys = {str(name).casefold() for name in overrides}
+    bound_contract["override_names"] = sorted(
+        (name for name in selected if name.casefold() in override_keys),
+        key=str.casefold,
+    )
+    bound_contract["build_tool_selection"] = selection
+    return selected, bound_contract
+
+
+def _cargo_output_environment_contract(
+    env: Mapping[str, str],
+    contract: Mapping[str, object],
+    *,
+    outputs: cargo_output_environment.CargoOutputEnvironment,
+    target: Path,
+) -> tuple[dict[str, str], dict[str, object]]:
+    """Project the lease's already-bound output environment into final custody."""
+    selected, bound_contract = dict(env), dict(contract)
+    names = set(outputs.names)
+    supervisor_names = contract.get("supervisor_owned_names", [])
+    if not isinstance(supervisor_names, list) or not all(
+        isinstance(name, str) for name in supervisor_names
+    ):
+        raise ValueError("supervisor-owned environment names must be strings")
+    if any(outputs.owns(name) for name in supervisor_names):
+        raise ValueError("Cargo output conflicts with supervisor-owned environment")
+    outputs.validate(selected, target=target)
+    bound_contract["passed_names"] = sorted(selected, key=str.casefold)
+    bound_contract["override_names"] = sorted(
+        {
+            str(name)
+            for name in contract.get("override_names", [])
+            if not outputs.owns(str(name))
+        }
+        | names,
+        key=str.casefold,
+    )
+    bound_contract["cargo_output_environment"] = outputs.identity()
+    return selected, bound_contract
+
+
+def _require_cargo_build_tool_environment_context(
+    command: Sequence[str],
+    *,
+    outputs: cargo_output_environment.CargoOutputEnvironment,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> None:
+    """Reject unresolved Cargo-owned tool selection, not model its precedence.
+
+    Config custody already owns the file set. This check only detects a
+    supported driver hook whose effective Cargo value we cannot obtain yet;
+    it is not a second Cargo configuration resolver. Other [env] entries do
+    not affect this process-selection boundary.
+    """
+    arguments = cargo_config_arguments(command, cwd=cwd)[1::2]
+    definitions: list[tuple[str, object]] = []
+    for row in command_identity._tool_configuration_identities(
+        "cargo", cwd=cwd, env=env, command_argv=command
+    ):
+        path = Path(str(row["path"]))
+        definitions.append((str(path), tomllib.loads(path.read_text(encoding="utf-8"))))
+    for index, value in enumerate(arguments, start=1):
+        if "=" in value:
+            definitions.append((f"Cargo --config entry {index}", tomllib.loads(value)))
+    inherited_keys = {name.upper() if os.name == "nt" else name for name in env}
+    protected_environment = {
+        "CLANG_PATH",
+        "LLVM_CONFIG_PATH",
+        "RUSTFMT",
+        "RUSTDOC",
+        "CARGO_BUILD_RUSTDOC",
+        "PATH",
+        *cargo_output_environment.TEMPORARY_VARIABLE_NAMES,
+        *outputs.names,
+    }
+    for origin, payload in definitions:
+        build = payload.get("build") if isinstance(payload, Mapping) else None
+        if (
+            isinstance(build, Mapping)
+            and "rustdoc" in build
+            and not any(
+                (name.upper() if os.name == "nt" else name) == "RUSTDOC" and value
+                for name, value in env.items()
+            )
+        ):
+            raise ValueError(
+                f"unsupported Cargo build-tool environment context: {origin} defines build.rustdoc; "
+                "select the documentation tool through explicit RUSTDOC before capture"
+            )
+        environment = payload.get("env") if isinstance(payload, Mapping) else None
+        if not isinstance(environment, Mapping):
+            continue
+        for name, value in environment.items():
+            key = str(name).upper() if os.name == "nt" else str(name)
+            if key not in protected_environment:
+                continue
+            if key in inherited_keys and not (
+                isinstance(value, Mapping) and value.get("force") is True
+            ):
+                continue
+            raise ValueError(
+                f"unsupported Cargo build-tool environment context: {origin} defines env.{name}; "
+                "the effective driver requires Cargo-owned build-script environment selection "
+                "before capture, and must not be replaced by an inherited toolchain choice"
+            )
+
+
 def _canonical_environment_sha256(env: Mapping[str, str]) -> str:
     """Bind every admitted environment value without publishing those values."""
     canonical = {name: str(env[name]) for name in sorted(env, key=str.casefold)}
@@ -191,14 +379,10 @@ def _execution_environment_executable_identities(
             continue
         if not value:
             continue
-        try:
-            parts = shlex.split(value, posix=os.name != "nt")
-        except ValueError as exc:
-            raise ValueError(f"executable environment {name} is malformed") from exc
-        if not parts:
-            raise ValueError(f"executable environment {name} is empty")
-        token = parts[0].strip('"')
-        path = command_identity._resolve_outer_executable(token, cwd=cwd, env=env)
+        parts = resolve_explicit_tool_command(
+            value, label=f"executable environment {name}", environment=env, cwd=cwd
+        )
+        path = Path(parts[0])
         identity = command_identity._executable_identity(path)
         if not command_identity._content_identity_available(identity):
             raise ValueError(f"executable environment {name} has no content identity")
@@ -294,6 +478,25 @@ def _capture_toolchains(
     return proof_python, toolchains
 
 
+def validate_typed_source_root(
+    envelope: Mapping[str, object], source_snapshot: Mapping[str, object]
+) -> None:
+    """Reject a foreign checkout before capturing or launching typed producers."""
+    if envelope.get("typed_command") is None:
+        return
+    root = source_snapshot.get("root")
+    if not isinstance(root, str) or not Path(root).is_absolute():
+        raise ValueError("typed producer has no canonical Git source root")
+    source_root = Path(root).resolve(strict=True)
+    if (
+        source_root != admission._REPO_ROOT.resolve(strict=True)
+        or Path(root) != source_root
+    ):
+        raise ValueError(
+            "typed producer Git source root differs from its bootstrap checkout"
+        )
+
+
 def _locate_toolchain_watch_roots(
     envelope: Mapping[str, object],
     exact: Sequence[str],
@@ -314,6 +517,15 @@ def _locate_toolchain_watch_roots(
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     roots: list[Path] = []
     policy_identities: dict[str, object] = {}
+    typed = envelope.get("typed_command")
+    if (
+        isinstance(typed, Mapping)
+        and typed.get("family") == "source-extension-producer"
+    ):
+        source = Path(str(typed["source"])).resolve(strict=True)
+        if not source.is_dir():
+            raise ValueError("source-extension source watch root is not a directory")
+        roots.append(source)
     if "python" in requested:
         python_envelope = envelope
         python_exact = list(exact)
@@ -598,11 +810,13 @@ def capture_source_content(
     env: Mapping[str, str],
     overlays: Sequence[Path],
     cas_root: Path,
+    hash_workers: int,
 ) -> tuple[dict[str, object], dict[str, object], Callable[[], None]]:
     """Capture Git-admitted source and explicit overlays, never local caches."""
     from molt.python_file_node_custody import PythonFileCaptureContext
 
     started = time.perf_counter()
+    capture = PythonFileCaptureContext(hash_workers=hash_workers)
     root = file_publication.resolve_owned_path(source_root)
     selected = _git_source_paths(root, env, include_untracked=True)
     paths = sorted(set(selected) | set(overlays), key=lambda path: path.as_posix())
@@ -628,7 +842,6 @@ def capture_source_content(
         hardlinks[key] = count + 1, links
     if any(count != links for count, links in hardlinks.values()):
         raise ValueError("source input has aliases outside admitted source content")
-    capture = PythonFileCaptureContext(hash_workers=1)
     capture.prepare(regular, label="proof source input")
     files: list[dict[str, object]] = []
     for path, metadata in regular:
@@ -666,6 +879,7 @@ def capture_source_content(
             "file_count": len(files),
             "bytes_hashed": sum(int(row["size"]) for row in files),
             "capture_s": time.perf_counter() - started,
+            "inventory_profile": capture.inventory_profile(),
         },
         capture.verify,
     )
@@ -683,4 +897,20 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
         raw_root = package.get("root") if isinstance(package, Mapping) else None
         if isinstance(raw_root, str) and Path(raw_root).is_dir():
             roots.append(Path(raw_root).resolve(strict=True))
+        sysroot = identity.get("sysroot_custody")
+        if isinstance(sysroot, Mapping):
+            raw_sysroot = sysroot.get("root")
+            if not isinstance(raw_sysroot, str) or not Path(raw_sysroot).is_dir():
+                raise ValueError("captured sysroot watch root is unavailable")
+            roots.append(Path(raw_sysroot).resolve(strict=True))
+        link_inputs = identity.get("link_inputs")
+        if isinstance(link_inputs, Mapping):
+            archive = link_inputs.get("compiler_builtins")
+            if isinstance(archive, Mapping):
+                path = Path(str(archive["path"]))
+                if not path.is_absolute() or not path.is_file():
+                    raise ValueError(
+                        "captured compiler-builtins watch root is unavailable"
+                    )
+                roots.append(path.resolve(strict=True).parent)
     return list(dict.fromkeys(roots))

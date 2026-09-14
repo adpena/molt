@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -143,35 +142,25 @@ def stable_uv_project_env_dir(
     source_root: Path,
 ) -> Path:
     source = source_root.expanduser().resolve()
-    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
+    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
+        :12
+    ]
     source_name = uv_project_env_component(source.name)[:24]
     name = (
         f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
         f"__src-{source_name}-{source_digest}"
     )
-    return (
-        artifact_root.expanduser().resolve() / "tmp" / "uv-project-envs" / name
-    ).resolve()
+    return (artifact_root.expanduser().resolve() / "uv-project-envs" / name).resolve()
 
 
 # The uv project environment (installed deps + editable molt) is a pure function
 # of (project source, purpose, python) — NOT of the session — so it is stable
 # within one checkout and cannot be overwritten by a sibling worktree. It is shared
-# across sessions by default; only the Cargo target dir is session-scoped (build
-# isolation). Session-scoping the uv env too churns a fresh `.venv` per proof and
-# was the DX lock-churn source. `MOLT_UV_PROJECT_ENV_SESSION_SCOPED` is the opt-in
-# for the rare case that genuinely needs an isolated uv env.
+# across sessions; only the Cargo target dir may be session-scoped for build
+# isolation. Managed uv environments are durable caches. Callers that need a
+# different environment must set an explicit `UV_PROJECT_ENVIRONMENT`.
 DEFAULT_UV_PROJECT_PURPOSE = "dx"
 DEFAULT_UV_PROJECT_PYTHON = "3.12"
-
-
-def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
-    return env.get("MOLT_UV_PROJECT_ENV_SESSION_SCOPED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def stable_uv_project_env_from_env(
@@ -493,12 +482,6 @@ def _memory_bounded_cargo_jobs() -> int | None:
     )
 
 
-# Fire the SSD janitor at most once per this many hours per artifact root, so the
-# molt volume stays tidy BY DEFAULT wherever it runs — stale per-session cargo
-# targets / tmp / scratch never pile up again (they hit 881 dirs before this).
-_JANITOR_THROTTLE_HOURS = 6.0
-
-
 def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
     source = os.environ if env is None else env
     return any(
@@ -509,123 +492,6 @@ def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
             "MOLT_PYTEST_OUTER_GUARD_REEXEC",
         )
     )
-
-
-def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
-    """Opportunistically reclaim stale build artifacts. Best-effort + throttled.
-
-    Spawns ``tools/molt_ssd_janitor.py --apply`` DETACHED (never blocks or slows a
-    build) at most once per :data:`_JANITOR_THROTTLE_HOURS` per artifact root. The
-    janitor is age-based and protects anything live (registered worktrees, the
-    current session, recently-touched dirs), so it only removes obsolete cruft.
-    Set ``MOLT_DISABLE_AUTO_JANITOR=1`` to opt out. Never raises.
-    """
-    try:
-        if os.environ.get("MOLT_DISABLE_AUTO_JANITOR", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
-            return
-        if _running_under_pytest():
-            return
-        marker = ext_root / ".molt_janitor_last_run"
-        now = time.time()
-        try:
-            last = marker.stat().st_mtime
-        except OSError:
-            last = 0.0
-        if now - last < _JANITOR_THROTTLE_HOURS * 3600:
-            return
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(str(now), encoding="utf-8")  # claim the slot first
-        janitor = (
-            Path(__file__).resolve().parent.parent.parent
-            / "tools"
-            / "molt_ssd_janitor.py"
-        )
-        if not janitor.exists():
-            return
-        creationflags = 0
-        if os.name == "nt":
-            # DETACHED_PROCESS | CREATE_NO_WINDOW — outlive this process, no console.
-            creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen(
-            [
-                sys.executable,
-                str(janitor),
-                "--root",
-                str(ext_root),
-                "--apply",
-                "--no-sizes",
-                "--free-below-gb",
-                "80",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
-            cwd=str(Path(__file__).resolve().parent.parent.parent),
-        )
-    except Exception:
-        # Cleanup is best-effort — never break a build over it.
-        pass
-
-
-def _maybe_ensure_disk_headroom(ext_root: Path) -> None:
-    """Preemptive, agent-SAFE disk reclamation before a build. Never raises.
-
-    Spawns ``tools/disk_guard.py --ensure-free`` DETACHED (never blocks or slows
-    a build). The disk guard reclaims ONLY stale build-artifact dirs (per-lane
-    ``target/*`` builds, ``target/sessions/*``, cargo-incremental quarantine) in
-    age order, never an active/lock-held/current-session dir, and NEVER touches a
-    process. It exists because the C: NVMe filled to 0 bytes mid-session when the
-    only disk sweep was disabled by ``MOLT_DISABLE_AUTO_JANITOR=1`` (set to
-    protect agents from the DANGEROUS orphan-process reaper it was bundled with).
-
-    Gate: ``MOLT_DISABLE_DISK_GUARD`` (defaults OFF == guard ON) -- INDEPENDENT
-    of ``MOLT_DISABLE_AUTO_JANITOR`` on purpose, so protecting agents never again
-    disables disk protection. This is the decoupling fix.
-    """
-    try:
-        if os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
-            return
-        if _running_under_pytest():
-            return
-        guard = (
-            Path(__file__).resolve().parent.parent.parent / "tools" / "disk_guard.py"
-        )
-        if not guard.exists():
-            return
-        creationflags = 0
-        if os.name == "nt":
-            # DETACHED_PROCESS | CREATE_NO_WINDOW — outlive this process, no console.
-            creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen(
-            [
-                sys.executable,
-                str(guard),
-                "--root",
-                str(ext_root),
-                "--ensure-free",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
-            cwd=str(Path(__file__).resolve().parent.parent.parent),
-        )
-    except Exception:
-        # Disk protection is best-effort — a guard error must never break a build.
-        pass
 
 
 def _maybe_register_lane_target(ext_root: Path, target_dir: Path) -> None:
@@ -1649,9 +1515,6 @@ class RunContext:
         if explicit:
             return self._resolve_env_path(explicit)
         ext_root = self._resolve_env_path(env.get("MOLT_EXT_ROOT", str(self.root)))
-        if uv_project_env_session_scoped(env):
-            session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
-            return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
         return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def canonical_env(
@@ -1703,15 +1566,6 @@ class RunContext:
             # Windows C: root, downstream guards must receive the same policy
             # attestation instead of re-litigating the old non-C default.
             env["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] = "1"
-        if create_dirs:
-            # Keep the artifact volume tidy BY DEFAULT — throttled, detached,
-            # best-effort. Only in real (create_dirs) contexts, never in tests.
-            _maybe_sweep_stale_artifacts(Path(ext_root))
-            # PREEMPTIVE disk protection, DECOUPLED from the agent-reaper flag:
-            # keep C: free above the high-water mark before a build so the volume
-            # can never fill to 0 mid-session again (gated only by
-            # MOLT_DISABLE_DISK_GUARD, NOT MOLT_DISABLE_AUTO_JANITOR).
-            _maybe_ensure_disk_headroom(Path(ext_root))
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
@@ -1895,9 +1749,6 @@ class DxProject:
         if not artifact_root.is_absolute():
             artifact_root = self.root / artifact_root
         artifact_root = artifact_root.resolve()
-        if uv_project_env_session_scoped(env):
-            session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
-            return (artifact_root / "tmp" / "uv-project-envs" / session).resolve()
         return stable_uv_project_env_from_env(env, artifact_root, self.root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:

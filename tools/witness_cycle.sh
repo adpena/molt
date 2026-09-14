@@ -20,7 +20,6 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 if [ -z "${MOLT_EXT_ROOT:-}" ] || [ -z "${CARGO_TARGET_DIR:-}" ] || [ -z "${MOLT_TARGET_ROOT:-}" ]; then
   eval "$(molt_run_context_env "$SHELL_ROOT" \
     --session-prefix witness \
-    --session-scoped-uv-project-env \
     --prefer-external-artifacts \
     --dx \
     --format posix)"
