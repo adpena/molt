@@ -72,6 +72,11 @@ for the crate-extraction and incremental-build routing plan.
   Windows write-through replacement or Unix parent-directory sync, and preserves
   `PublicationState::Unchanged` versus `Replaced` through errors and cleanup.
   A post-replacement durability failure must not be interpreted as rollback.
+  Its shared Windows namespace codec normalizes ordinary paths before resolving
+  only their parents to long-path form, preserving the final directory entry
+  (including a symlink) and lossless Unicode. The standalone proof supervisor
+  consumes this codec while retaining its additional directory flush boundary;
+  no caller depends on the host executable opting into long paths.
   Its unit tests own the publication/error-state contract independently of
   backend feature selection; backend tests retain their consumer obligations.
 - Remaining structural work: finish runtime facade composition, finish per-crate

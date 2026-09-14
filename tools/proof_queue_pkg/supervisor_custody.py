@@ -13,6 +13,7 @@ import tempfile
 import time
 from typing import Mapping, Sequence, TypedDict, cast
 
+from molt import cargo_workspace
 from molt.exact_json import ExactJsonError, encode_exact, loads_exact, read_exact
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
@@ -24,6 +25,32 @@ def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     custody_cas.atomic_write_bytes(
         path,
         encode_exact(payload),
+    )
+
+
+def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
+    """Bind native supervisor sources and their declared local dependencies.
+
+    Workspace inheritance is a manifest input, not permission to include the
+    whole runtime workspace. Cargo still owns actual dependency resolution.
+    """
+    source = repo_root / "tools" / "proof_supervisor"
+    facts = cargo_workspace.workspace_manifest_facts(source)
+    crate_roots = {source.resolve()}
+    crate_roots.update(edge.dependency_manifest.parent for edge in facts.dependencies)
+    paths = {
+        *facts.input_manifests,
+        source / "build.py",
+        source / "Cargo.lock",
+        Path(cargo_workspace.__file__),
+    }
+    for crate_root in crate_roots:
+        paths.update((crate_root / "src").rglob("*"))
+        build_script = crate_root / "build.rs"
+        if build_script.is_file():
+            paths.add(build_script)
+    return tuple(
+        sorted({path.resolve(strict=True) for path in paths if not path.is_dir()})
     )
 
 
