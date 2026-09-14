@@ -1831,13 +1831,16 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     for opcode in ("ConstInt", "BuildList"):
         assert f"OpCode::{opcode} => TypeRefineOperandTypeRule::None," in operand_block
 
-    production = _rs_production_source(type_refine)
+    production = _rust_tokens(_rs_production_source(type_refine))
     assert "opcode_type_refine_attr_result_type_rule_table(opcode)" in production
     assert "opcode_type_refine_operand_type_rule_table(opcode)" in production
-    assert "attr_result_type_override(op.opcode, &op.attrs)" in production
+    assert "attr_result_type_override(op.opcode, &op.attrs, &op.operands)" in production
+    override_body = _rust_fn_body(production, "fn attr_result_type_override")
+    assert "builtin_call_view(opcode, attrs, operands)" in override_body
     infer_body = production.split("fn infer_single_result_type_with_attrs", maxsplit=1)[
         1
     ].split("fn fresh_value_kind_result_type", maxsplit=1)[0]
+    assert "attr_result_type_override(opcode, attrs, operand_types)" in infer_body
     assert "match opcode {" not in infer_body
     assert "OpCode::Add | OpCode::InplaceAdd" not in infer_body
     assert "OpCode::Copy =>" not in infer_body
