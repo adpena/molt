@@ -171,7 +171,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e6a6a7417dae952b248bdaf384cb379c704ae5c1f602506209689114a3806d6e",
+  "authority_sha256": "5ece052a32090525122aba128591994e1033a36d68f8a53b1755047d3c2a32c7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3104,6 +3104,12 @@
         "-m",
         "not slow",
         "tests/test_python_binding_flow.py",
+        "tests/test_python_binding_completion_flow.py",
+        "tests/test_frontend_condition_flow.py",
+        "tests/cli/test_cli_python_source_closure.py",
+        "tests/cli/test_runtime_import_scan_custody.py",
+        "tests/cli/test_frontend_source_snapshot_authority.py",
+        "tests/cli/test_source_scan_authority_closure.py",
         "tests/test_frontend_ir_alias_ops.py",
         "tests/test_frontend_package_composition.py",
         "tests/cli/test_cli_python_import_authority.py",
@@ -3204,7 +3210,8 @@
         "pytest",
         "-q",
         "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe",
-        "tests/test_runtime_build_python.py"
+        "tests/test_runtime_build_python.py",
+        "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
@@ -3216,7 +3223,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -4006,7 +4013,7 @@
         "projected_makespan_seconds": 1500,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1500,
-          "python-tests": 60
+          "python-tests": 150
         }
       },
       "python_security": {

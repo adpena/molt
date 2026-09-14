@@ -12,6 +12,7 @@ from molt.compiler_analysis.python_binding_facts import (
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
+    python_ast_digest,
 )
 from molt.compiler_analysis.python_effects_generated import (
     INVOKES_COMPARISON_CALLBACK,
@@ -21,6 +22,174 @@ from molt.compiler_analysis.python_effects_generated import (
 
 def _join_events(left: frozenset[str], right: frozenset[str]) -> frozenset[str]:
     return left | right
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (False, 0),
+        (1, 1.0),
+        (0.0, -0.0),
+        (0j, complex(-0.0, 0.0)),
+        ("value", b"value"),
+        (None, Ellipsis),
+        ([1], (1,)),
+        ((1, 2), (2, 1)),
+    ],
+)
+def test_ast_identity_frames_scalar_types_and_container_order(
+    left: object, right: object
+) -> None:
+    assert python_ast_digest(ast.Constant(value=left)) != python_ast_digest(
+        ast.Constant(value=right)
+    )
+
+
+def test_ast_identity_owns_spans_fields_and_unordered_constant_members() -> None:
+    left = ast.parse("value = 1\n", filename="first.py")
+    right = ast.parse("value = 1\n", filename="second.py")
+    assert python_ast_digest(left) == python_ast_digest(right)
+    ast.increment_lineno(right)
+    assert python_ast_digest(left) != python_ast_digest(right)
+    assert python_ast_digest(ast.Constant(value=frozenset((1, "a", (2, 3))))) == (
+        python_ast_digest(ast.Constant(value=frozenset(((2, 3), "a", 1))))
+    )
+    missing = ast.Constant()
+    present = ast.Constant(value=None)
+    assert python_ast_digest(missing) != python_ast_digest(present)
+    with pytest.raises(TypeError, match="unsupported Python AST identity value"):
+        python_ast_digest(ast.Constant(value=object()))
+
+
+@pytest.mark.parametrize("cycle", ["ast", "list", "tuple"])
+def test_ast_identity_rejects_cycles_in_synthetic_inputs(cycle: str) -> None:
+    tree = ast.UnaryOp(op=ast.UAdd(), operand=ast.Constant(value=1))
+    if cycle == "ast":
+        tree.operand = tree
+    else:
+        values: list[object] = []
+        values.append(values if cycle == "list" else (values,))
+        tree.operand = ast.Constant(value=values)
+    with pytest.raises(ValueError, match="cyclic Python AST identity value"):
+        python_ast_digest(tree)
+
+
+def test_ast_identity_shared_subtrees_have_value_identity() -> None:
+    child = ast.Constant(value=1)
+    shared = ast.Tuple(elts=[child, child], ctx=ast.Load())
+    distinct = ast.Tuple(
+        elts=[ast.Constant(value=1), ast.Constant(value=1)], ctx=ast.Load()
+    )
+    assert python_ast_digest(shared) == python_ast_digest(distinct)
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_deep_elif_chain_preserves_every_fact_and_terminal_tail(
+    target: tuple[int, int],
+) -> None:
+    source = (
+        "def select(value):\n"
+        + "".join(
+            f"    {'if' if value == 0 else 'elif'} value == {value}:\n"
+            f"        return {value}\n"
+            for value in range(384)
+        )
+        + "    else:\n        return -1\n    unreachable()\n"
+    )
+    # This is ordinary parser/compiler-accepted Python, not a synthetic AST
+    # beyond the host language's supported source nesting.
+    compile(source, "<deep-elif>", "exec")
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    conditionals = [node for node in ast.walk(tree) if isinstance(node, ast.If)]
+    assert len(conditionals) == 384
+    for node in conditionals:
+        fact = index.statement_fact(node)
+        assert fact is not None
+        assert fact.completions & Completion.RETURN
+        assert not fact.completions & Completion.NORMAL
+        assert index.expression_fact(node.test) is not None
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    assert index.statement_fact(function.body[-1]) is None
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_deep_body_conditionals_share_the_stack_safe_scheduler(
+    target: tuple[int, int],
+) -> None:
+    depth = 96
+    source = (
+        "def nested(flag):\n"
+        + "".join(
+            "    " * level + "if flag is None:\n" for level in range(1, depth + 1)
+        )
+        + "    " * (depth + 1)
+        + "return 1\n    return 2\n    unreachable()\n"
+    )
+    compile(source, "<deep-body>", "exec")
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            fact = index.statement_fact(node)
+            assert fact is not None
+            assert fact.completions & (Completion.NORMAL | Completion.RETURN) == (
+                Completion.NORMAL | Completion.RETURN
+            )
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    assert index.statement_fact(function.body[-2]) is not None
+    assert index.statement_fact(function.body[-1]) is None
+
+
+def test_conditional_alternatives_do_not_share_successor_bindings() -> None:
+    source = (
+        "def choose(flag):\n"
+        "    value = 'before'\n"
+        "    if flag is None:\n"
+        "        value = 'body'\n"
+        "    else:\n"
+        "        return value\n"
+        "    return value\n"
+    )
+    tree = ast.parse(source)
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    conditional = function.body[1]
+    assert isinstance(conditional, ast.If)
+    alternative = conditional.orelse[0]
+    tail = function.body[-1]
+    assert isinstance(alternative, ast.Return) and alternative.value is not None
+    assert isinstance(tail, ast.Return) and tail.value is not None
+    index = analyze_python_source_bindings(source)
+    assert index.static_value(alternative.value) == "before"
+    assert index.static_value(tail.value) == "body"
+
+
+def test_conditional_test_failure_precedes_branch_observations() -> None:
+    source = (
+        "def choose(flag):\n"
+        "    value = 'before'\n"
+        "    try:\n"
+        "        if flag:\n"
+        "            value = 'body'\n"
+        "    except:\n"
+        "        return value\n"
+    )
+    tree = ast.parse(source)
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    attempt = function.body[1]
+    assert isinstance(attempt, ast.Try)
+    returned = attempt.handlers[0].body[0]
+    assert isinstance(returned, ast.Return) and returned.value is not None
+    index = analyze_python_source_bindings(source)
+    assert index.static_value(returned.value) == "before"
 
 
 @pytest.mark.parametrize("incoming", list(Completion))
