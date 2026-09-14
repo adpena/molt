@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 
 #[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
-use crate::backend_process::atomic_publish::write_bytes_atomically;
+use molt_artifact_publish::write_bytes_atomically;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BackendOutputKind {

@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 
 use super::super::cli_args::WasmCliOptions;
-use crate::backend_process::atomic_publish::write_bytes_atomically;
+use molt_artifact_publish::write_bytes_atomically;
 
 pub(crate) fn validate_wasm_module_catalog(
     ir: &SimpleIR,

@@ -4,6 +4,7 @@ import inspect
 
 import molt.cli as cli
 from molt.cli import native_link_command
+from molt import toolchain_identity
 
 _NATIVE_LINK_COMMAND_NAMES = (
     "_build_native_link_plan",
@@ -20,6 +21,16 @@ _NATIVE_LINK_COMMAND_DEFINITIONS = (
     "def _resolve_dev_linker(",
     "def _resolve_native_linker_hint(",
 )
+
+
+def test_native_link_resolver_uses_shared_toolchain_authority() -> None:
+    from molt.cli import llvm_wasi_tools
+
+    assert (
+        native_link_command.resolve_explicit_tool_command
+        is toolchain_identity.resolve_explicit_tool_command
+    )
+    assert not hasattr(llvm_wasi_tools, "resolve_explicit_tool_command")
 
 
 def test_cli_native_link_command_authority_is_single_home() -> None:

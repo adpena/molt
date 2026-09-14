@@ -51,14 +51,12 @@ pub(super) fn build_wasi_ctx(
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdio();
     builder.envs(&envs);
-    if guest_args.is_empty() {
-        builder.inherit_args();
-    } else {
-        // Pass only the guest-facing args: ["app", route, query, ...]
-        let mut wasi_args: Vec<String> = vec!["app".to_string()];
-        wasi_args.extend(guest_args.iter().cloned());
-        builder.args(&wasi_args);
-    }
+    // Keep host flags and the selected manifest/module path out of guest argv,
+    // including the zero-tail case. Both application and command execution use
+    // this single canonical guest-facing argv authority.
+    let mut wasi_args: Vec<String> = vec!["app".to_string()];
+    wasi_args.extend(guest_args.iter().cloned());
+    builder.args(&wasi_args);
     builder.preopened_dir(".", ".", DirPerms::all(), FilePerms::all())?;
     Ok(builder.build_p1())
 }

@@ -17,8 +17,8 @@ from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
     llvm_named_tool_candidates,
     llvm_tool_candidates,
-    resolve_explicit_tool_command,
 )
+from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import (
     LlvmLinkerRole,
     executable_entrypoint_name,

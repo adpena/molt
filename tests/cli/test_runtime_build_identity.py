@@ -1288,6 +1288,7 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
         (
             (
                 str(executable),
+                "-B",
                 "-I",
                 "-S",
                 str(

@@ -20,7 +20,7 @@ interpreter lane.
 | Strict v2 manifest envelope, resources, audit, I/O, mounts, and digest | `src/molt/capability_manifest.py` |
 | Runtime enforcement and audit events | `runtime/molt-runtime` and `runtime/molt-runtime-audit` |
 | Protobuf wire support | `runtime/molt-runtime-protobuf` |
-| Snapshots | `runtime/molt-snapshot` |
+| Snapshot metadata templates | `src/molt/cli/non_native_output.py` (non-restorable v2 producer) |
 | Compiler/runtime ABI | generated manifests under `runtime/`; never this roadmap |
 
 The capability manifest intentionally has no Monty-specific section. Execution

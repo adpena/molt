@@ -55,6 +55,47 @@ def test_backend_manifest_does_not_depend_on_obj_model() -> None:
     assert "molt-obj-model" not in dependencies
 
 
+def test_backend_publication_is_owned_by_the_shared_artifact_crate() -> None:
+    workspace = _load_workspace_manifest()
+    assert "runtime/molt-artifact-publish" in workspace["workspace"]["members"]
+    dependency = _load_backend_manifest()["dependencies"]["molt-artifact-publish"]
+    assert dependency == {"path": "../molt-artifact-publish"}
+    crate = ROOT / "runtime/molt-artifact-publish"
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    assert not manifest.get("dependencies")
+    assert not manifest.get("features")
+    assert set(manifest["target"]) == {"cfg(windows)"}
+    assert set(manifest["target"]["cfg(windows)"]["dependencies"]) == {"windows-sys"}
+    backend = ROOT / "runtime/molt-backend/src"
+    assert not (backend / "backend_process/atomic_publish.rs").exists()
+    for source in backend.rglob("*.rs"):
+        text = source.read_text(encoding="utf-8")
+        assert "atomic_publish::" not in text, source
+        assert "mod atomic_publish" not in text, source
+        assert not re.search(
+            r"pub(?:\([^)]*\))?\s+use\s+molt_artifact_publish", text
+        ), source
+    authority = (crate / "src/lib.rs").read_text(encoding="utf-8")
+    assert 'feature = ' not in authority
+    assert "pub enum PublicationState" in authority
+    plan = tomllib.loads((ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8"))
+    commands = {command["id"]: command for command in plan["command"]}
+    compiler_argv = commands["rust.test.compiler-authorities"]["argv"]
+    assert "molt-artifact-publish" in {
+        compiler_argv[index + 1]
+        for index, argument in enumerate(compiler_argv[:-1])
+        if argument == "-p"
+    }
+    rules = {rule["name"]: rule for rule in plan["rule"]}
+    for consumer in ("backend-native", "wasm-host"):
+        assert "runtime/molt-artifact-publish/**/*.rs" in rules[consumer]["globs"]
+        assert "runtime/molt-artifact-publish/Cargo.toml" in rules[consumer]["globs"]
+    assert any(
+        "cargo test" in gate and "-p molt-artifact-publish" in gate
+        for gate in rules["backend-native"]["gates"]
+    )
+
+
 def test_backend_manifest_keeps_wasmparser_test_only() -> None:
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]

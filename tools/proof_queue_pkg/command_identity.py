@@ -21,6 +21,7 @@ from molt.python_environment_identity import (
     PYTHON_CAPTURE_SCHEMA,
     PythonEnvironmentIdentityError,
     python_environment_executable_files,
+    python_identity_probe_arguments,
     validate_python_capture,
     validate_python_environment_location,
 )
@@ -346,28 +347,22 @@ def _python_auxiliary_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
     *,
-    authority: Path,
     arguments: Sequence[str],
-    isolated: bool = False,
     no_site: bool = False,
 ) -> list[str] | None:
     python = envelope.get("python")
     if not isinstance(python, Mapping):
         return None
     kind = python.get("kind")
-    if no_site and not isolated:
-        raise ValueError("Python no-site probe execution requires isolation")
-    isolation = ["-I"] if isolated else []
-    if no_site:
-        isolation.append("-S")
+    probe = python_identity_probe_arguments(arguments, no_site=no_site)
     if kind == "direct":
-        return [exact[0], *isolation, str(authority), *arguments]
+        return [exact[0], *probe]
     if kind == "py-launcher":
         command = [exact[0]]
         selector = python.get("selector")
         if isinstance(selector, str) and selector:
             command.append(selector)
-        return [*command, *isolation, str(authority), *arguments]
+        return [*command, *probe]
     if kind in {"uv", "uv-console-script"}:
         prefix = python.get("prefix")
         if not isinstance(prefix, list) or len(prefix) < 2:
@@ -375,9 +370,7 @@ def _python_auxiliary_command(
         return [
             *exact[: len(prefix)],
             "python",
-            *isolation,
-            str(authority),
-            *arguments,
+            *probe,
         ]
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
@@ -397,7 +390,6 @@ def _python_probe_command(
     return _python_auxiliary_command(
         envelope,
         exact,
-        authority=admission._PYTHON_IDENTITY_PROBE,
         arguments=(
             "--capture-active-environment",
             "--with-custody",
@@ -410,7 +402,6 @@ def _python_probe_command(
                 for value in ("--admit-external-root", str(root))
             ),
         ),
-        isolated=True,
     )
 
 

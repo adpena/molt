@@ -1,7 +1,11 @@
 use super::*;
+use molt_wasm_host::sha256_digest_hex;
+use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 #[derive(Debug, Deserialize)]
 struct RuntimeManifest {
+    version: u32,
     mode: String,
     modules: RuntimeManifestModules,
 }
@@ -23,9 +27,107 @@ struct RuntimeManifestModule {
 #[derive(Debug)]
 pub(super) struct ResolvedExecutionModules {
     pub(super) manifest_path: PathBuf,
-    pub(super) main_path: PathBuf,
-    pub(super) runtime_path: Option<PathBuf>,
+    pub(super) main: ModuleSource,
+    pub(super) runtime: Option<ModuleSource>,
     pub(super) linked: bool,
+}
+
+/// One owned byte sequence for validation, fact scanning and compilation.
+/// Reopening the path after manifest admission would discard that admission.
+#[derive(Debug)]
+pub(super) struct ModuleSource {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    sha256: OnceLock<[u8; 32]>,
+}
+
+impl ModuleSource {
+    pub(super) fn read(path: PathBuf, label: &str, expected_size: Option<u64>) -> Result<Self> {
+        let path = std::path::absolute(path).context("resolve module input path")?;
+        let started = Instant::now();
+        // Reject devices/pipes before open. On POSIX, nonblocking open also
+        // prevents a concurrent regular-file-to-FIFO substitution from hanging.
+        if !fs::metadata(&path)
+            .with_context(|| format!("inspect {label} module {}", path.display()))?
+            .is_file()
+        {
+            bail!("{label} module is not a file: {}", path.display());
+        }
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options
+            .open(&path)
+            .with_context(|| format!("open {label} module {}", path.display()))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            bail!("{label} module is not a file: {}", path.display());
+        }
+        if let Some(expected) = expected_size
+            && metadata.len() != expected
+        {
+            bail!(
+                "{label} size mismatch: manifest={expected} actual={}",
+                metadata.len()
+            );
+        }
+        let expected = expected_size.unwrap_or(metadata.len());
+        let bound = expected
+            .checked_add(1)
+            .context("module size exceeds read bound")?;
+        let mut bytes = Vec::new();
+        let size = usize::try_from(bound).context("module size exceeds host address space")?;
+        bytes
+            .try_reserve_exact(size)
+            .context("allocate module source buffer")?;
+        // Read at most the admitted size plus one sentinel byte. A concurrently
+        // growing file cannot turn a bounded artifact read into an endless one.
+        file.take(bound)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("read {label} module {}", path.display()))?;
+        if bytes.len() as u64 != expected {
+            bail!(
+                "{label} size changed while reading: expected={expected} actual={}",
+                bytes.len()
+            );
+        }
+        log::debug!("read {label} module in {:?}", started.elapsed());
+        Ok(Self {
+            path,
+            bytes,
+            sha256: OnceLock::new(),
+        })
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// One lazy identity of the admitted bytes, independent of later path changes.
+    pub(super) fn sha256(&self) -> &[u8; 32] {
+        self.sha256
+            .get_or_init(|| Sha256::digest(&self.bytes).into())
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum ExecutionRequest {
+    MoltApplication { manifest: Option<String> },
+    WasiCommand { module: String },
+}
+
+#[derive(Debug)]
+pub(super) enum ResolvedExecution {
+    MoltApplication(ResolvedExecutionModules),
+    WasiCommand { module: ModuleSource },
 }
 
 pub(super) fn select_manifest_path(
@@ -41,11 +143,21 @@ fn resolve_manifest_module(
     manifest_path: &Path,
     descriptor: Option<&RuntimeManifestModule>,
     label: &str,
-) -> Result<PathBuf> {
+) -> Result<ModuleSource> {
     let descriptor =
         descriptor.with_context(|| format!("runtime manifest missing modules.{label}"))?;
     if descriptor.path.is_empty() {
         bail!("runtime manifest modules.{label}.path is empty");
+    }
+    // Manifest assets are portable adjacent file names, not host-specific
+    // absolute paths, traversal components or Windows drive/stream selectors.
+    if descriptor.path.contains(['/', '\\', ':'])
+        || Path::new(&descriptor.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(descriptor.path.as_str())
+    {
+        bail!("runtime manifest modules.{label}.path must name an adjacent file");
     }
     if descriptor.sha256.len() != 64
         || !descriptor
@@ -59,56 +171,23 @@ fn resolve_manifest_module(
         .parent()
         .context("runtime manifest path has no parent directory")?;
     let module_path = manifest_dir.join(&descriptor.path);
-    let metadata = fs::metadata(&module_path).with_context(|| {
-        format!(
-            "runtime manifest modules.{label}.path is unreadable: {}",
-            module_path.display()
-        )
-    })?;
-    if !metadata.is_file() {
-        bail!(
-            "runtime manifest modules.{label}.path is not a file: {}",
-            module_path.display()
-        );
-    }
-    if metadata.len() != descriptor.size {
-        bail!(
-            "{label} size mismatch: manifest={} actual={}",
-            descriptor.size,
-            metadata.len()
-        );
-    }
-    let mut file = fs::File::open(&module_path)
-        .with_context(|| format!("failed to open {label}: {}", module_path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to hash {label}: {}", module_path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let actual = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let source = ModuleSource::read(module_path, label, Some(descriptor.size))?;
+    let actual = sha256_digest_hex(source.sha256());
     if actual != descriptor.sha256 {
         bail!(
             "{label} SHA-256 mismatch: manifest={} actual={actual}",
             descriptor.sha256
         );
     }
-    Ok(module_path)
+    Ok(source)
 }
 
 pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedExecutionModules> {
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let env_path = env::var_os("MOLT_WASM_MANIFEST_PATH").map(PathBuf::from);
-    let manifest_path = select_manifest_path(arg.map(PathBuf::from), env_path, &cwd);
+    let manifest_path =
+        std::path::absolute(select_manifest_path(arg.map(PathBuf::from), env_path, &cwd))
+            .context("resolve runtime manifest path")?;
     if manifest_path.extension().and_then(|value| value.to_str()) != Some("json") {
         bail!(
             "molt-wasm-host accepts a runtime manifest path, not a module path; pass manifest.json"
@@ -126,7 +205,10 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
             manifest_path.display()
         )
     })?;
-    let (main_path, runtime_path, linked) = match manifest.mode.as_str() {
+    if manifest.version != 2 {
+        bail!("runtime manifest must use version 2");
+    }
+    let (main, runtime, linked) = match manifest.mode.as_str() {
         "linked" => (
             resolve_manifest_module(&manifest_path, manifest.modules.linked.as_ref(), "linked")?,
             None,
@@ -145,10 +227,26 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
     };
     Ok(ResolvedExecutionModules {
         manifest_path,
-        main_path,
-        runtime_path,
+        main,
+        runtime,
         linked,
     })
+}
+
+pub(super) fn resolve_execution(request: ExecutionRequest) -> Result<ResolvedExecution> {
+    match request {
+        ExecutionRequest::MoltApplication { manifest } => Ok(ResolvedExecution::MoltApplication(
+            resolve_execution_modules(manifest)?,
+        )),
+        ExecutionRequest::WasiCommand { module } => {
+            if module.is_empty() {
+                bail!("--wasi-command module path is empty");
+            }
+            Ok(ResolvedExecution::WasiCommand {
+                module: ModuleSource::read(PathBuf::from(module), "WASI command", None)?,
+            })
+        }
+    }
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -219,4 +317,27 @@ pub(super) fn resolve_timeout_ms() -> u64 {
         return val;
     }
     250
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_source_digest_is_lazy_and_uses_owned_bytes() {
+        let source = ModuleSource {
+            path: PathBuf::from("unopened-module-source.wasm"),
+            bytes: b"abc".to_vec(),
+            sha256: OnceLock::new(),
+        };
+        assert!(source.sha256.get().is_none());
+        let digest = source.sha256();
+        assert_eq!(
+            sha256_digest_hex(digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(std::ptr::eq(digest, source.sha256.get().unwrap()));
+        assert!(std::ptr::eq(digest, source.sha256()));
+        assert_eq!(source.bytes(), b"abc");
+    }
 }

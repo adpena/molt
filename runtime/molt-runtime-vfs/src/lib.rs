@@ -7,7 +7,6 @@ pub mod bundle;
 pub mod caps;
 pub mod dev;
 pub mod file;
-pub mod snapshot;
 pub mod tmp;
 
 use std::borrow::Cow;

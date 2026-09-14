@@ -70,8 +70,8 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--linked / --no-linked` | Emit linked WASM artifact alongside output. |
 | `--split-runtime` | Produce separate runtime and app WASM modules. |
 | `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev defaults to `O1`; release deployment profiles select their shipping level. |
-| `--precompile` | Produce a precompiled `.cwasm` for faster startup. |
-| `--snapshot` | Generate snapshot header for sub-millisecond cold starts. |
+| `--precompile` | Have `molt-wasm-host` publish source-bound precompiled containers for faster startup. |
+| `--snapshot` | Generate a non-restorable `molt.snapshot.json` metadata template; live runtime state and pause/resume are not supported. |
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
 | `--deterministic / --no-deterministic` | Require deterministic inputs (lockfiles). |
 | `--build-profile {dev,release}` | Build profile for backend/runtime. |
@@ -682,7 +682,7 @@ Produces a WebAssembly module. Runs in wasmtime, browsers, or edge platforms.
 molt build app.py --target wasm          # Standard WASM module
 molt build app.py --target wasm --split-runtime  # Split runtime + app
 molt build app.py --target wasm --profile cloudflare  # Cloudflare-optimized
-molt build app.py --target wasm --precompile  # Precompiled .cwasm
+molt build app.py --target wasm --linked --precompile  # Host-produced precompiled container
 ```
 
 **Size optimization:**

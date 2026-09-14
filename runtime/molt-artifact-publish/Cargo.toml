@@ -1,0 +1,14 @@
+[package]
+name = "molt-artifact-publish"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Shared atomic artifact publication and durability state for Molt producers"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }

@@ -9,7 +9,7 @@ use super::super::{
     stdlib_cache_temp_publish_path,
 };
 use super::request::NativeStdlibCachePrepare;
-use crate::backend_process::atomic_publish::cleanup_temporary_after_error;
+use molt_artifact_publish::cleanup_temporary_after_error;
 
 pub(crate) fn materialize_stdlib_cache(
     ir: &mut SimpleIR,

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::sidecars::{remove_shared_stdlib_cache_artifacts, write_shared_stdlib_cache_sidecars};
-use crate::backend_process::atomic_publish::{
+use molt_artifact_publish::{
     AtomicPublicationError, PublicationState, cleanup_temporary_after_error,
     commit_existing_file_atomically,
 };

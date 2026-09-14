@@ -204,9 +204,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "After linking, run wasmtime compile to produce a precompiled "
-            ".cwasm artifact plus source-binding custody manifest for faster "
-            "startup in production."
+            "After canonical manifest production, ask molt-wasm-host to publish "
+            "a source-bound precompiled container for faster startup."
         ),
     )
     build_parser.add_argument(

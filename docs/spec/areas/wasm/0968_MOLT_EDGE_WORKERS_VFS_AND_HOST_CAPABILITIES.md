@@ -240,33 +240,66 @@ These MUST remain explicit host services in v0.1.
 ## 7. Snapshot artifact: `molt.snapshot`
 
 ### 7.1 Purpose
-`molt.snapshot` captures post-init runtime state for faster startup in edge and Worker deployments.
+`molt.snapshot.json` version 2 is currently a deployment metadata template for a
+future cross-machine pause/resume artifact. It records the execution and host
+policy context that a complete snapshot must bind, but it contains no runtime
+state and is not restorable. The CLI and host MUST NOT present this template as
+an executable cold-start snapshot.
 
 ### 7.2 Required fields
 - `snapshot_version`
+- `artifact_kind`
+- `restorable`
+- `state_scope`
 - `abi_version`
 - `target_profile`
-- `module_hash`
-- `schema_registry_hash`
+- `execution_identity`
 - `mount_plan`
 - `capability_manifest`
 - `determinism_stamp`
-- `init_state_blob`
+- `init_state_size`
+- `payload_hash`
+- `integrity_hash`
+
+The only admitted version-2 artifact kind is `metadata-template`. It MUST set
+`restorable` to `false`, `state_scope`, `payload_hash`, and `integrity_hash` to
+`null`, and `init_state_size` to zero. `execution_identity` is `null` when no
+complete adjacent execution manifest exists; producers MUST NOT substitute an
+unknown or partial digest.
+
+When a verified execution manifest is present, identity uses one fixed encoding:
+
+- linked: `molt.snapshot.execution.v2|linked|linked=sha256:<digest>`
+- split runtime: `molt.snapshot.execution.v2|split-runtime|app=sha256:<digest>|runtime=sha256:<digest>`
+
+Roles and order are part of the encoding. A split-runtime identity binds both
+the application and runtime module bytes.
 
 ### 7.3 Snapshot rules
-- Snapshot generation MUST occur after deterministic init only.
+- The current metadata template MUST be rejected by every restore path.
+- `molt-wasm-host` MUST reject executable capture and restore options until one
+  production authority captures a real continuation plus linear memory,
+  mutable globals, tables, and host-resource state.
+- A future executable snapshot MUST be created only at an explicit resumable
+  boundary, not after completed `molt_main` execution.
+- Future snapshot generation MUST occur after deterministic initialization only.
 - Secrets MUST NOT be captured by default.
-- Snapshot validity MUST be tied to wasm/module/runtime compatibility hashes.
-- Hosts MAY reject snapshots that exceed policy limits.
+- Future snapshot validity MUST be tied to the complete linked or split-runtime
+  execution identity and the active mount/capability context.
+- Hosts MAY reject future snapshots that exceed policy limits.
 
 ### 7.4 Cloudflare deployment model
 For `wasm_worker_cloudflare`, the intended lifecycle is:
 
 1. package code and resources
 2. perform init/import work
-3. freeze deterministic init state
-4. deploy wasm + snapshot + manifest
-5. restore snapshot during isolate startup
+3. reach an explicit resumable boundary
+4. capture all execution and host-resource state required by the contract
+5. deploy wasm + executable snapshot + manifest
+6. validate the complete identity/context before restoring any state
+
+Steps 3–6 are future requirements. The version-2 metadata template does not
+claim that this executable lifecycle is implemented.
 
 ---
 
@@ -291,9 +324,13 @@ Every host profile MUST run a parity suite covering:
 ### 9.2 Snapshot tests
 Edge/Workers targets MUST verify:
 
-- snapshot determinism
-- snapshot restore correctness
-- cold-start delta reporting
+- metadata-template determinism
+- fail-closed rejection of every executable capture/restore option
+- linked and split-runtime execution-identity binding
+
+A future executable snapshot implementation MUST add restore correctness and
+cold-start delta gates only after it owns continuation, linear-memory,
+mutable-global, table, and host-resource state.
 
 ### 9.3 Platform integration tests
 `wasm_worker_cloudflare` MUST add real or emulated host integration coverage for:

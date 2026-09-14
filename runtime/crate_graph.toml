@@ -100,6 +100,12 @@ layer = 0
 role = "WASM link-fact vocabulary and callable-table attestation shared by backend and host"
 
 [[crate]]
+name = "molt-artifact-publish"
+runtime_layer = "outside"
+layer = 0
+role = "atomic artifact publication and durability state shared by backend and host"
+
+[[crate]]
 name = "molt-harness"
 runtime_layer = "outside"
 layer = 0
@@ -110,12 +116,6 @@ name = "molt-runtime-protobuf"
 runtime_layer = "outside"
 layer = 0
 role = "protobuf codec primitive"
-
-[[crate]]
-name = "molt-snapshot"
-runtime_layer = "outside"
-layer = 0
-role = "snapshot primitive"
 
 [[crate]]
 name = "molt-runtime-platform"

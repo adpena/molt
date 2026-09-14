@@ -1,3 +1,9 @@
+//! Same-directory atomic artifact publication shared by Molt producers.
+//!
+//! A successful replacement transfers namespace ownership even if the following
+//! durability barrier fails. Preserve [`PublicationState`] through error chains;
+//! callers must never treat [`PublicationState::Replaced`] as a rollback.
+
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{self, BufWriter, Write};
@@ -9,13 +15,13 @@ static PUBLICATION_NONCE: AtomicU64 = AtomicU64::new(0);
 /// Replacement and durability are separate state transitions. A failed parent
 /// directory sync cannot undo a successful replacement or restore its old bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PublicationState {
+pub enum PublicationState {
     Unchanged,
     Replaced,
 }
 
 #[derive(Debug)]
-pub(crate) struct AtomicPublicationError {
+pub struct AtomicPublicationError {
     destination: PathBuf,
     state: PublicationState,
     source: io::Error,
@@ -23,7 +29,7 @@ pub(crate) struct AtomicPublicationError {
 }
 
 impl AtomicPublicationError {
-    pub(crate) fn new(destination: &Path, state: PublicationState, source: io::Error) -> Self {
+    pub fn new(destination: &Path, state: PublicationState, source: io::Error) -> Self {
         Self {
             destination: destination.to_path_buf(),
             state,
@@ -32,11 +38,11 @@ impl AtomicPublicationError {
         }
     }
 
-    pub(crate) fn state(&self) -> PublicationState {
+    pub fn state(&self) -> PublicationState {
         self.state
     }
 
-    pub(crate) fn record_cleanup_error(&mut self, error: io::Error) {
+    pub fn record_cleanup_error(&mut self, error: io::Error) {
         self.cleanup_errors.push(error.to_string());
     }
 
@@ -85,7 +91,7 @@ impl From<AtomicPublicationError> for io::Error {
 
 /// Keep cleanup evidence without replacing the primary error or its source
 /// chain. Callers own the temporary; this helper never touches the destination.
-pub(crate) fn cleanup_temporary_after_error(temporary: &Path, error: io::Error) -> io::Error {
+pub fn cleanup_temporary_after_error(temporary: &Path, error: io::Error) -> io::Error {
     match remove_publication_temporary(temporary) {
         Ok(()) => error,
         Err(cleanup) => {
@@ -137,7 +143,7 @@ fn remove_publication_temporary(temporary: &Path) -> io::Result<()> {
 /// payload is flushed and synced before replacement, then the containing
 /// directory is synced where the platform exposes that durability primitive.
 /// Dropping an uncommitted publication removes its private temporary file.
-pub(crate) struct AtomicFilePublication {
+pub struct AtomicFilePublication {
     destination: PathBuf,
     temporary: PathBuf,
     writer: Option<BufWriter<File>>,
@@ -145,7 +151,7 @@ pub(crate) struct AtomicFilePublication {
 }
 
 impl AtomicFilePublication {
-    pub(crate) fn new(destination: &Path) -> io::Result<Self> {
+    pub fn new(destination: &Path) -> io::Result<Self> {
         let parent = publication_parent(destination);
         std::fs::create_dir_all(parent)?;
         let inherited_permissions = destination_permissions(destination)?;
@@ -158,13 +164,13 @@ impl AtomicFilePublication {
         })
     }
 
-    pub(crate) fn writer(&mut self) -> &mut BufWriter<File> {
+    pub fn writer(&mut self) -> &mut BufWriter<File> {
         self.writer
             .as_mut()
             .expect("atomic publication writer is unavailable after commit")
     }
 
-    pub(crate) fn commit(self) -> Result<(), AtomicPublicationError> {
+    pub fn commit(self) -> Result<(), AtomicPublicationError> {
         self.commit_with_sync(sync_parent_directory)
     }
 
@@ -203,7 +209,7 @@ impl AtomicFilePublication {
         Ok(())
     }
 
-    pub(crate) fn abort(mut self, source: io::Error) -> AtomicPublicationError {
+    pub fn abort(mut self, source: io::Error) -> AtomicPublicationError {
         // Close before unlinking (required on Windows); do not retry a buffered
         // write while aborting. No failed payload may become a publication.
         if let Some(writer) = self.writer.take() {
@@ -229,7 +235,7 @@ impl Drop for AtomicFilePublication {
                 // Explicit error paths report through their Result. Drop also
                 // covers unwinding and abandonment, where no Result is possible.
                 eprintln!(
-                    "MOLT_BACKEND: abandoned publication temporary cleanup failed for '{}': {error}",
+                    "MOLT_ARTIFACT_PUBLISH: abandoned publication temporary cleanup failed for '{}': {error}",
                     self.temporary.display()
                 );
             }
@@ -237,11 +243,11 @@ impl Drop for AtomicFilePublication {
     }
 }
 
-pub(crate) fn write_bytes_atomically(destination: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_bytes_atomically(destination: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomically(destination, |writer| writer.write_all(bytes))
 }
 
-pub(crate) fn write_atomically<T>(
+pub fn write_atomically<T>(
     destination: &Path,
     write: impl FnOnce(&mut BufWriter<File>) -> io::Result<T>,
 ) -> io::Result<T> {
@@ -254,28 +260,20 @@ pub(crate) fn write_atomically<T>(
     Ok(value)
 }
 
-#[cfg(any(
-    feature = "native-backend",
-    feature = "luau-backend",
-    feature = "rust-backend",
-    test
-))]
-pub(crate) fn write_text_atomically(destination: &Path, contents: &str) -> io::Result<()> {
+pub fn write_text_atomically(destination: &Path, contents: &str) -> io::Result<()> {
     write_bytes_atomically(destination, contents.as_bytes())
 }
 
 /// Commit a producer-owned temporary file through the same durability
-/// boundary used by direct backend output. The producer must place the file on
+/// boundary used by direct artifact output. The producer must place the file on
 /// the destination filesystem so replacement stays atomic.
-#[cfg(any(feature = "native-backend", test))]
-pub(crate) fn commit_existing_file_atomically(
+pub fn commit_existing_file_atomically(
     temporary: &Path,
     destination: &Path,
 ) -> Result<(), AtomicPublicationError> {
     commit_existing_file_with_sync(temporary, destination, sync_parent_directory)
 }
 
-#[cfg(any(feature = "native-backend", test))]
 fn commit_existing_file_with_sync(
     temporary: &Path,
     destination: &Path,
