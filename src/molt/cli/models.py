@@ -890,9 +890,7 @@ class _RuntimeImportScanCustody:
             raise ValueError(
                 "runtime import custody requires a nonempty unique catalog"
             )
-        for name, path in self.catalog:
-            if not name or not path.is_absolute() or not path.is_file():
-                raise ValueError(f"runtime import custody requires a source: {name!r}")
+        self._validate_sources()
         if not self.owners or len(dict(self.owners)) != len(self.owners):
             raise ValueError("runtime import custody requires unique source owners")
         for name, path in self.owners:
@@ -936,12 +934,18 @@ class _RuntimeImportScanCustody:
         return True
 
     def validate_graph(self, graph: Mapping[str, Path]) -> None:
+        self._validate_sources()
         for name, path in self.catalog:
             actual = graph.get(name)
             if actual is None or actual.resolve() != path:
                 raise ValueError(
                     f"runtime import catalog lost source authority: {name!r}"
                 )
+
+    def _validate_sources(self) -> None:
+        for name, path in self.catalog:
+            if not name or not path.is_absolute() or not path.is_file():
+                raise ValueError(f"runtime import custody requires a source: {name!r}")
 
 
 @dataclass(frozen=True)

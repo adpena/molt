@@ -1479,6 +1479,8 @@ def _finalize_runtime_import_closure(
         )
         for name, path in sorted(owners.items())
     )
+    owner_sources = tuple(sorted(owners.items()))
+    registry_enabled = _module_registry_target_enabled(target)
     prior = previous_custody
     while True:
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
@@ -1507,18 +1509,24 @@ def _finalize_runtime_import_closure(
                 }.items()
             )
         )
-        custody = (
-            _RuntimeImportScanCustody(
-                tuple(sorted(owners.items())), catalog, owner_digests
+        if (
+            registry_enabled
+            and prior is not None
+            and prior.owners == owner_sources
+            and prior.catalog == catalog
+            and prior.owner_ast_digests == owner_digests
+        ):
+            # One immutable owner survives a fixed point. Revalidate live source
+            # availability and graph membership without reconstructing its maps.
+            prior.validate_graph(module_graph)
+            return _RuntimeImportClosure(
+                policy, prior, frozenset(runtime_roots | set(prior.modules))
             )
-            if _module_registry_target_enabled(target)
+        custody = (
+            _RuntimeImportScanCustody(owner_sources, catalog, owner_digests)
+            if registry_enabled
             else None
         )
-        if custody is not None and custody == prior:
-            custody.validate_graph(module_graph)
-            return _RuntimeImportClosure(
-                policy, custody, frozenset(runtime_roots | set(custody.modules))
-            )
         before = (frozenset(module_graph.items()), frozenset(runtime_roots))
         closure = _graph_discovery._extend_module_graph_with_closure(
             module_graph,

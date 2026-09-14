@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+from molt.cli.models import (
+    ImportScanMode,
+    _ModuleGraphScanAuthority,
+    _RuntimeImportScanCustody,
+)
 from molt.cli.module_import_scanner import (
     _collect_import_star_modules,
     _collect_imports,
@@ -131,11 +135,21 @@ def test_custodied_scan_does_not_populate_strict_memory_cache(tmp_path: Path) ->
         )
 
 
-def test_runtime_owners_require_full_depth_closure(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "scope,message",
+    [
+        ("partial", "full-depth owner scans"),
+        ("missing", "requires enclosing source scan authority"),
+        ("empty", "lacks enclosing source scan authority"),
+    ],
+)
+def test_runtime_owners_require_full_depth_and_enclosing_authority(
+    tmp_path: Path, scope: str, message: str
+) -> None:
     from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
 
     owner, custody = _custody(tmp_path)
-    with pytest.raises(ValueError, match="full-depth owner scans"):
+    with pytest.raises(ValueError, match=message):
         _discover_module_graph_from_paths(
             (owner,),
             [tmp_path],
@@ -143,8 +157,11 @@ def test_runtime_owners_require_full_depth_closure(tmp_path: Path) -> None:
             tmp_path / "stdlib",
             None,
             set(),
-            full_scan_roots=False,
+            full_scan_roots=scope != "partial",
             runtime_import_custody=custody,
+            enclosing_scan_authority=(
+                _ModuleGraphScanAuthority() if scope == "empty" else None
+            ),
         )
 
 
@@ -165,6 +182,13 @@ def test_runtime_catalog_requires_source_and_survives_graph_unchanged(
             catalog=(("missing", tmp_path / "missing.py"),),
             owner_ast_digests=(("missing", "missing"),),
         )
+    # Reusing an immutable catalog must not reuse its old filesystem observation.
+    dict(custody.catalog)["admitted.target"].unlink()
+    with pytest.raises(ValueError, match="requires a source"):
+        custody.validate_graph(dict(custody.catalog))
+    dict(custody.catalog)["admitted.target"].mkdir()
+    with pytest.raises(ValueError, match="requires a source"):
+        custody.validate_graph(dict(custody.catalog))
 
 
 def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:

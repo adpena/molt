@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import struct
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
@@ -1169,6 +1170,23 @@ class _HistorySummary:
                 # as replace an existing one. Deferred overlays retain both.
                 value |= OTHER_IDENTITY
         return value
+
+
+@dataclass(slots=True)
+class _StatementSequenceFrame:
+    body: Sequence[ast.stmt]
+    flow: PythonCompletionFlow[int]
+    position: int = 0
+
+
+@dataclass(slots=True)
+class _ConditionalStatementFrame:
+    node: ast.If
+    prefix: PythonCompletionFlow[int]
+    branches: tuple[Sequence[ast.stmt], ...]
+    observation_before: int
+    flow: PythonCompletionFlow[int] = field(default_factory=PythonCompletionFlow)
+    position: int = 0
 
 
 class _Analyzer:
@@ -2885,26 +2903,100 @@ class _Analyzer:
     def exec_statements(
         self, body: Sequence[ast.stmt], state_id: int, scope: _Scope
     ) -> PythonCompletionFlow[int]:
-        flow = PythonCompletionFlow(normal=state_id)
-        for statement in body:
-            if flow.normal is None:
-                break
-            flow = flow.sequence(
-                lambda normal: self.exec_statement(statement, normal, scope),
-                join_states=self.states.join,
-            )
-        return flow
-
-    def exec_statement(
-        self, node: ast.stmt, state_id: int, scope: _Scope
-    ) -> PythonCompletionFlow[int]:
-        observation_before = self._namespace_observation_epoch
-        observed = [state_id]
-        self._observed_stack.append(observed)
+        # Python represents an elif chain as nested If nodes. Schedule both
+        # branches and their statement sequences explicitly: source depth must
+        # not become Python evaluator call depth. Other compound statements
+        # retain their own completion semantics and enter this same scheduler.
+        frames: list[_StatementSequenceFrame | _ConditionalStatementFrame] = [
+            _StatementSequenceFrame(body, PythonCompletionFlow(normal=state_id))
+        ]
+        observation_depth = len(self._observed_stack)
         try:
-            flow = self._exec_statement(node, state_id, scope)
+            while frames:
+                frame = frames[-1]
+                if isinstance(frame, _StatementSequenceFrame):
+                    if frame.flow.normal is not None and frame.position < len(
+                        frame.body
+                    ):
+                        node = frame.body[frame.position]
+                        frame.position += 1
+                        incoming = frame.flow.normal
+                        observation_before = self._namespace_observation_epoch
+                        self._observed_stack.append([incoming])
+                        if isinstance(node, ast.If):
+                            test = self._eval_truth_test(node.test, incoming, scope)
+                            truth = self._known_expression_result(node.test).truth
+                            if truth is None and test.identities == int(
+                                PythonIdentity.STATIC_FALSE
+                            ):
+                                truth = False
+                            # Capture test failures before either branch can
+                            # contribute states to the enclosing observation.
+                            prefix = self._normal_flow(test.state_id, test.effects)
+                            branches = (
+                                (node.body if truth else node.orelse,)
+                                if truth is not None
+                                else (node.body, node.orelse)
+                            )
+                            frames.append(
+                                _ConditionalStatementFrame(
+                                    node, prefix, branches, observation_before
+                                )
+                            )
+                            continue
+                        try:
+                            flow = self._exec_statement(node, incoming, scope)
+                        finally:
+                            self._observed_stack.pop()
+                        self._record_statement_flow(
+                            node, scope, flow, observation_before
+                        )
+                        frame.flow = self._merge_flows(
+                            frame.flow.without_normal(), flow
+                        )
+                        continue
+                    flow = frame.flow
+                else:
+                    if frame.prefix.normal is not None and frame.position < len(
+                        frame.branches
+                    ):
+                        branch = frame.branches[frame.position]
+                        frame.position += 1
+                        # Alternatives share the test's normal input, never
+                        # the preceding alternative's output state.
+                        frames.append(
+                            _StatementSequenceFrame(
+                                branch,
+                                PythonCompletionFlow(normal=frame.prefix.normal),
+                            )
+                        )
+                        continue
+                    flow = self._merge_flows(frame.prefix.without_normal(), frame.flow)
+                    self._observed_stack.pop()
+                    self._record_statement_flow(
+                        frame.node, scope, flow, frame.observation_before
+                    )
+                frames.pop()
+                if not frames:
+                    return flow
+                parent = frames[-1]
+                if isinstance(parent, _StatementSequenceFrame):
+                    parent.flow = self._merge_flows(parent.flow.without_normal(), flow)
+                else:
+                    parent.flow = self._merge_flows(parent.flow, flow)
         finally:
-            self._observed_stack.pop()
+            # An exception in a test, branch, or consumer must not leak any
+            # suspended conditional observations into the enclosing analysis.
+            del self._observed_stack[observation_depth:]
+        raise AssertionError("statement scheduler lost its root completion")
+
+    def _record_statement_flow(
+        self,
+        node: ast.stmt,
+        scope: _Scope,
+        flow: PythonCompletionFlow[int],
+        observation_before: int,
+    ) -> None:
         if not flow.completions & PythonCompletion.NORMAL:
             self._module_import_flow_required = True
         key = self._node_key(node)
@@ -2919,7 +3011,6 @@ class _Analyzer:
             | (previous.completions if previous is not None else PythonCompletion.NONE),
             self.iterations.get(key),
         )
-        return flow
 
     def _exec_statement(
         self, node: ast.stmt, state_id: int, scope: _Scope
@@ -3082,26 +3173,6 @@ class _Analyzer:
                     scope,
                 )
                 effects |= bind_effects
-        elif isinstance(node, ast.If):
-            test = self._eval_truth_test(node.test, state_id, scope)
-            truth = self._known_expression_result(node.test).truth
-            if truth is None and test.identities == int(PythonIdentity.STATIC_FALSE):
-                truth = False
-            prefix = self._normal_flow(test.state_id, test.effects)
-            branches = (
-                (node.body if truth else node.orelse,)
-                if truth is not None
-                else (node.body, node.orelse)
-            )
-            return prefix.sequence(
-                lambda normal: self._merge_flows(
-                    *(
-                        self.exec_statements(branch, normal, scope)
-                        for branch in branches
-                    )
-                ),
-                join_states=self.states.join,
-            )
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             return self._exec_loop(node, state_id, scope)
         elif isinstance(node, (ast.With, ast.AsyncWith)):
@@ -3951,14 +4022,123 @@ def python_source_digest(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def python_ast_digest(tree: ast.AST) -> str:
-    """Return a filename- and object-identity-independent AST/spans key."""
+@dataclass(frozen=True, slots=True)
+class _AstDigestBoundary:
+    kind: bytes
+    labels: tuple[bytes, ...]
+    owner: object
+    unordered: bool = False
 
-    # PythonBindingIndex lookup keys include source spans.  Excluding attributes
-    # here aliases location-shifted trees to an index whose call/expression keys
-    # cannot match the new nodes.
-    serialized = ast.dump(tree, annotate_fields=True, include_attributes=True)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+def python_ast_digest(tree: ast.AST) -> str:
+    """Return a stack-safe, typed AST/spans key, independent of filename/id.
+
+    Iterative postorder hashing avoids both ast.dump's recursive traversal and
+    its repeated construction of enclosing subtree strings. The v2 domain
+    invalidates old textual keys. Source attributes remain identity-bearing:
+    shifted trees must not reuse facts indexed by the old source locations.
+    Shared subtrees have value identity; cycles in synthetic inputs are rejected.
+    """
+    if not isinstance(tree, ast.AST):
+        raise TypeError("Python AST identity requires an AST root")
+    domain = b"molt.python-ast.v2\0"
+    pending: list[tuple[object, bool]] = [(tree, False)]
+    digests: list[bytes] = []
+    active: set[int] = set()
+    while pending:
+        value, finishing = pending.pop()
+        if finishing:
+            assert isinstance(value, _AstDigestBoundary)
+            active.remove(id(value.owner))
+            count = len(value.labels)
+            children = digests[-count:] if count else []
+            if count:
+                del digests[-count:]
+            if value.unordered:
+                children.sort()
+            digest = hashlib.sha256(domain + value.kind + b"\0")
+            digest.update(count.to_bytes(8, "big"))
+            for label, child in zip(value.labels, children, strict=True):
+                digest.update(len(label).to_bytes(8, "big"))
+                digest.update(label)
+                digest.update(child)
+            digests.append(digest.digest())
+            continue
+        if isinstance(value, ast.AST) or type(value) in (list, tuple, frozenset):
+            identity = id(value)
+            if identity in active:
+                raise ValueError(
+                    f"cyclic Python AST identity value: {type(value).__name__}"
+                )
+            # The finishing boundary retains its owner until all descendants
+            # finish, preventing identity reuse without rejecting shared siblings.
+            active.add(identity)
+        if isinstance(value, ast.AST):
+            fields = [
+                (group + name.encode("utf-8"), getattr(value, name))
+                for group, names in (
+                    (b"field:", value._fields),
+                    (b"attr:", value._attributes),
+                )
+                for name in names
+                if hasattr(value, name)
+            ]
+            pending.append(
+                (
+                    _AstDigestBoundary(
+                        b"ast:" + type(value).__name__.encode("utf-8"),
+                        tuple(name for name, _child in fields),
+                        value,
+                    ),
+                    True,
+                )
+            )
+            pending.extend((child, False) for _name, child in reversed(fields))
+            continue
+        if type(value) in (list, tuple, frozenset):
+            values = cast(list[object] | tuple[object, ...] | frozenset[object], value)
+            pending.append(
+                (
+                    _AstDigestBoundary(
+                        type(value).__name__.encode("ascii"),
+                        (b"",) * len(values),
+                        value,
+                        type(value) is frozenset,
+                    ),
+                    True,
+                )
+            )
+            pending.extend((child, False) for child in reversed(tuple(values)))
+            continue
+        kind = type(value)
+        if value is None or value is Ellipsis:
+            payload = b""
+        elif kind is bool:
+            payload = b"1" if value else b"0"
+        elif kind is int:
+            integer = cast(int, value)
+            payload = (b"-" if integer < 0 else b"+") + abs(integer).to_bytes(
+                max(1, (abs(integer).bit_length() + 7) // 8), "big"
+            )
+        elif kind is float:
+            payload = struct.pack("!d", cast(float, value))
+        elif kind is complex:
+            number = cast(complex, value)
+            payload = struct.pack("!dd", number.real, number.imag)
+        elif kind is str:
+            payload = cast(str, value).encode("utf-8", errors="surrogatepass")
+        elif kind is bytes:
+            payload = cast(bytes, value)
+        else:
+            raise TypeError(f"unsupported Python AST identity value: {kind.__name__}")
+        digests.append(
+            hashlib.sha256(
+                domain + b"scalar:" + kind.__name__.encode("ascii") + b"\0" + payload
+            ).digest()
+        )
+    if len(digests) != 1:
+        raise AssertionError("AST identity traversal lost its root")
+    return digests[0].hex()
 
 
 def analyze_python_bindings(

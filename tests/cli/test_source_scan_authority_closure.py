@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -250,6 +251,8 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    extend = Mock(wraps=discovery._extend_module_graph_with_closure)
+    monkeypatch.setattr(discovery, "_extend_module_graph_with_closure", extend)
     entry = _source(tmp_path / "entry.py", "import leaf\n")
     leaf = _source(tmp_path / "leaf.py", "pass\n")
     owner = _source(tmp_path / "stdlib" / "runtime_owner.py", "pass\n")
@@ -277,6 +280,15 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
         dispatch_roots={"leaf"},
     )
     assert first.custody is not None
+    extensions = extend.call_count
+    stable = graphs._finalize_runtime_import_closure(
+        **common,
+        explicit_imports={"leaf"},
+        dispatch_roots=first.dispatch_roots,
+        previous_custody=first.custody,
+    )
+    assert stable.custody is first.custody
+    assert extend.call_count == extensions
     late = _source(tmp_path / "late.py", "pass\n")
     discovery._merge_discovered_module_graph(
         graph, roles, _discover(late, tmp_path, full=True)
@@ -288,9 +300,47 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
         previous_custody=first.custody,
     )
     assert second.custody is not None and second.custody != first.custody
+    assert extend.call_count > extensions
+    assert any(
+        call.kwargs["runtime_import_custody"] is second.custody
+        for call in extend.call_args_list
+    )
     assert second.custody.catalog_by_module["late"] == late
     second.custody.validate_graph(graph)
     assert set(second.custody.modules) <= second.dispatch_roots
+    extensions = extend.call_count
+    stable = graphs._finalize_runtime_import_closure(
+        **common,
+        explicit_imports={"leaf", "late"},
+        dispatch_roots=second.dispatch_roots,
+        previous_custody=second.custody,
+    )
+    assert stable.custody is second.custody
+    assert extend.call_count == extensions
+
+    # Source/AST retention is operation-scoped: changing an owner after discovery
+    # must not combine the new custody generation with the old retained parse.
+    owner.write_text("OWNER_REVISION = 2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime import custody source AST changed"):
+        graphs._finalize_runtime_import_closure(
+            **common,
+            explicit_imports={"leaf", "late"},
+            dispatch_roots=second.dispatch_roots,
+            previous_custody=second.custody,
+        )
+    # A fresh operation may admit the changed source, never the prior owner.
+    common["module_resolution_cache"] = _ModuleResolutionCache()
+    changed = graphs._finalize_runtime_import_closure(
+        **common,
+        explicit_imports={"leaf", "late"},
+        dispatch_roots=second.dispatch_roots,
+        previous_custody=second.custody,
+    )
+    assert changed.custody is not None and changed.custody != second.custody
+    assert changed.custody.owners == second.custody.owners
+    assert changed.custody.catalog == second.custody.catalog
+    assert changed.custody.owner_ast_digests != second.custody.owner_ast_digests
+    assert extend.call_count > extensions
 
 
 def test_generated_native_slice_carries_one_source_for_both_scan_projections(

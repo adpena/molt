@@ -8,6 +8,25 @@ for the crate-extraction and incremental-build routing plan.
 
 ## Live State Snapshot (2026-06-27)
 
+- Shared Python binding analysis schedules conditional branches and statement
+  sequences with an explicit continuation stack. Both nested bodies and Python's
+  nested-AST `elif` representation use this authority; frontend and tooling import
+  closure do not maintain separate traversal or recursion-limit policies. Test
+  effects precede alternative execution, alternatives share only their input,
+  and each source statement retains its observation and five-way completion fact.
+  Loops, context managers and exception handlers retain their existing completion
+  owners and enter the same conditional scheduler for their suites.
+  Lexical collectors share an ordered-child visitor; static emission projections
+  select children without reimplementing recursion or changing lexical declarations.
+  AST identity uses a domain-versioned iterative typed hash of node fields and
+  source attributes, not recursive textual dumps or object identities. Shared
+  subtrees retain value identity; cyclic synthetic inputs fail with a diagnostic.
+  Runtime import fixed points retain their immutable custody owner only when
+  source owners, catalog and freshly captured owner AST digests all match. Live
+  source availability and graph membership are revalidated before reuse; changed
+  inputs create a new owner and rescan under that authority. Owner source changes
+  during an operation cannot mix fresh custody with retained source/AST snapshots;
+  that mismatch fails closed, while a fresh operation can admit the new source.
 - Runtime leaf crates already exist and are wired from
   `runtime/molt-runtime/Cargo.toml`, including core, collections, math, text,
   serial, crypto, compression, net, asyncio, regex, path, itertools, difflib,
