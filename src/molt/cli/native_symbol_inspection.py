@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Sequence, cast
 
@@ -38,6 +38,7 @@ from molt.llvm_toolchain import (
 
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
 _MOLT_ROOT = Path(__file__).resolve().parents[3]
+_NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +117,18 @@ class _NativeSymbolReaderCandidate:
 @dataclass(frozen=True, slots=True)
 class _NativeSymbolReader:
     candidates: tuple[_NativeSymbolReaderCandidate, ...]
-    cache_identity: tuple[str, ...]
+    input_identity: tuple[str, ...]
     requirement: NativeSymbolRequirement
+    cache_identity: tuple[str, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Object sidecars and central archive facts share one parsing protocol
+        # generation, independently of their persistence envelope versions.
+        object.__setattr__(
+            self,
+            "cache_identity",
+            (_NATIVE_SYMBOL_FACTS_PROTOCOL, *self.input_identity),
+        )
 
 
 @functools.lru_cache(maxsize=8)
@@ -383,10 +394,25 @@ def _nm_line_reports_no_symbols(
     if not line.endswith(": no symbols"):
         return False
     owner = line[: -len(": no symbols")]
-    return any(
-        owner == prefix or (owner.startswith(prefix + "(") and owner.endswith(")"))
-        for prefix in {artifact, Path(artifact).name}
-    )
+    for prefix in {artifact, Path(artifact).name}:
+        if owner == prefix:
+            return True
+        if not owner.startswith(prefix):
+            continue
+        suffix = owner[len(prefix) :]
+        if suffix.startswith("(") and suffix.endswith(")"):
+            member = suffix[1:-1]
+        elif suffix.startswith(":"):
+            # LLVM uses archive:member, GNU/BSD use archive(member). Match the
+            # known input first: colons inside Windows paths are not separators.
+            member = suffix[1:]
+        else:
+            continue
+        # Diagnostic separators (': ') and missing members are not archive
+        # ownership. Do not promote a nested error to a benign empty-member row.
+        if member and member == member.strip() and ": " not in member:
+            return True
+    return False
 
 
 def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> bool:

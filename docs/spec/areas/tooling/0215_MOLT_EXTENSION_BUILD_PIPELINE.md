@@ -181,6 +181,11 @@ are bound to the exact inspected bytes, including when content is restored after
 a transient mutation. Native and WASM object/archive symbol-fact caches also bind
 the ordered reader commands and executable content generations; every invocation
 fences the lexical entrypoint and resolved executable before and after execution.
+One shared parsing-protocol identity also binds both cache forms. GNU/BSD
+`archive(member)` and LLVM `archive:member` empty-member diagnostics are matched
+against the exact input before parsing delimiters, including Windows drive paths.
+Successful archives may contain empty members; unknown diagnostics, malformed
+members and nonzero partial symbol output never become complete symbol evidence.
 
 Candidate journals survive bundle installation and are completed or recovered
 under the candidate-name lock. Shared publication recovery handles both producer

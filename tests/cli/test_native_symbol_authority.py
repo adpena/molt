@@ -67,11 +67,24 @@ def _tool(monkeypatch, *, code=0, stdout="", stderr=""):
     "code,stdout,stderr",
     [
         (1, "00000000 T present\n", "archive.a(member.o): no symbols\n"),
+        (1, "00000000 T present\n", "archive.a:member.o: no symbols\n"),
         (1, "", "archive.a: no symbols\nllvm-nm: error: unreadable member\n"),
         (124, "", "archive.a: no symbols\n"),
         (0, "", "llvm-nm: error: failed to decode\n"),
         (0, "not a symbol row\n", ""),
         (0, "00000000 ? unknown\n", ""),
+        (0, "0000 T present\n", "foreign.a:member.o: no symbols\n"),
+        (0, "0000 T present\n", "archive.a.backup:member.o: no symbols\n"),
+        (0, "0000 T present\n", "foreign-nm: archive.a:member.o: no symbols\n"),
+        (0, "0000 T present\n", "archive.a:: no symbols\n"),
+        (0, "0000 T present\n", "archive.a(): no symbols\n"),
+        (0, "0000 T present\n", "archive.a: error: no symbols\n"),
+        (0, "0000 T present\n", "archive.a:member.o: error: no symbols\n"),
+        (
+            0,
+            "0000 T present\n",
+            "archive.a:empty.o: no symbols\nllvm-nm: error: unreadable member\n",
+        ),
     ],
 )
 def test_incomplete_or_malformed_tool_evidence_is_never_symbol_success(
@@ -93,6 +106,7 @@ def test_incomplete_or_malformed_tool_evidence_is_never_symbol_success(
         (0, "", ""),
         (1, "", "archive.a: no symbols\n"),
         (1, "", "llvm-nm: archive.a: no symbols\n"),
+        (1, "", "llvm-nm: archive.a:empty.o: no symbols\n"),
         (0, "member.o:\n", "archive.a(member.o): no symbols\n"),
     ],
 )
@@ -108,15 +122,66 @@ def test_legitimate_empty_artifact_has_successful_empty_facts(
     )
 
 
-def test_successful_archive_can_contain_empty_members(monkeypatch):
+@pytest.mark.parametrize(
+    "target",
+    [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "wasm32-wasip1",
+    ],
+)
+@pytest.mark.parametrize("archive", ["archive.a", "dir/archive.a", r"C:\Molt\libc.a"])
+@pytest.mark.parametrize(
+    "member",
+    ["(empty.o)", ":empty.o", r":C:\build\empty.obj", ":dir with spaces/empty.o"],
+)
+@pytest.mark.parametrize("channel", ["stdout", "stderr"])
+def test_successful_archive_can_contain_empty_members(
+    monkeypatch, target, archive, member, channel
+):
+    path = Path(archive)
+    diagnostic = f"llvm-nm: {path}{member}: no symbols\n"
     _tool(
         monkeypatch,
-        stdout="member.o:\n00000000 T provider\n",
-        stderr="llvm-nm: archive.a(empty.o): no symbols\n",
+        stdout="member.o:\n00000000 T provider\n"
+        + (diagnostic if channel == "stdout" else ""),
+        stderr=diagnostic if channel == "stderr" else "",
+    )
+    reader = native_symbol_inspection._native_symbol_reader(
+        nm_command=("llvm-nm",), target_triple=None
     )
     assert native_symbol_inspection._read_native_global_symbol_facts(
-        Path("archive.a"), timeout=1
+        path, timeout=1, target_triple=target, _reader=reader
     ).defined == {"provider"}
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        native_symbol_inspection._native_object_global_symbol_facts,
+        native_symbol_inspection._native_archive_global_symbol_facts,
+    ],
+)
+def test_object_and_archive_caches_share_parsing_protocol_identity(
+    tmp_path, monkeypatch, reader
+):
+    artifact = tmp_path / "archive.a"
+    artifact.write_bytes(b"symbol-protocol-input")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    _tool(monkeypatch, stdout="0000 T before\n")
+    assert reader(artifact).defined == {"before"}
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    _tool(monkeypatch, stdout="0000 T after\n")
+    # Persistent facts remain reusable under the exact existing protocol.
+    assert reader(artifact).defined == {"before"}
+    monkeypatch.setattr(
+        native_symbol_inspection, "_NATIVE_SYMBOL_FACTS_PROTOCOL", "test.next-protocol"
+    )
+    assert reader(artifact).defined == {"after"}
 
 
 def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(monkeypatch):
