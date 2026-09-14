@@ -1919,12 +1919,13 @@ id = "native.integration.python-custody"
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
+# Rust execution compiles only std-only generator harnesses, not Molt itself.
 resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe"]
-toolchains = ["python", "uv"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py"]
+toolchains = ["python", "uv", "rustc"]
 
 [[command]]
 id = "native.integration.bench-cli"

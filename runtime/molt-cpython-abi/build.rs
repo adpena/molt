@@ -2,30 +2,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "../build_support/build_python.rs"]
+mod build_python;
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
 mod wasi_sysroot;
-
-fn resolve_build_python() -> String {
-    println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
-    println!("cargo:rerun-if-env-changed=PYTHON");
-    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
-        if let Ok(value) = env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-    if cfg!(windows) {
-        "python".to_string()
-    } else {
-        "python3".to_string()
-    }
-}
 
 fn c_macro_int(preprocessor_output: &str, name: &str) -> i32 {
     let prefix = format!("#define {name} ");
@@ -94,7 +78,7 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let mut freestanding_libc_dir = None;
-    unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &resolve_build_python());
+    unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &build_python::resolve());
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();

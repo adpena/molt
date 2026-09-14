@@ -199,13 +199,13 @@ def _identity(
 ) -> tuple[RuntimeBuildIdentity, ...]:
     wasm = target.startswith("wasm32-")
     build_script = {
-        "schema": "molt.runtime-build-script-environment.v1",
+        "schema": "molt.runtime-build-script-environment.v2",
         "build_python": {
             "selected_by": "platform-default",
             "selectors": {"MOLT_BUILD_PYTHON": "unset", "PYTHON": "unset"},
             "content_digest": canonical_json_sha256(build_python_identity_fixture()),
         },
-        "PYTHONPATH": {"state": "unset"},
+        "python_import_policy": "isolated-no-site-v1",
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASM_LONGDOUBLE_ARCHIVE": {
