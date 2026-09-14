@@ -1,25 +1,9 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
-fn resolve_build_python() -> String {
-    println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
-    println!("cargo:rerun-if-env-changed=PYTHON");
-    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
-        if let Ok(value) = env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-    if cfg!(windows) {
-        "python".to_string()
-    } else {
-        "python3".to_string()
-    }
-}
+#[path = "../build_support/build_python.rs"]
+mod build_python;
 
 fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -31,17 +15,8 @@ fn main() {
 
 fn emit_errno_constants() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
-    let build_python = resolve_build_python();
-    let output = Command::new(&build_python)
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(mut stdin) = child.stdin.take() {
-                let script = r#"
+    let build_python = build_python::resolve();
+    let script = r#"
 import errno
 names = []
 for name in dir(errno):
@@ -55,23 +30,7 @@ for name in dir(errno):
 for name, val in sorted(set(names)):
     print(f"{name},{val}")
 "#;
-                stdin.write_all(script.as_bytes())?;
-            }
-            child.wait_with_output()
-        });
-    let output = match output {
-        Ok(out) => out,
-        Err(err) => {
-            panic!(
-                "failed to run build Python `{build_python}` to generate errno constants: {err}"
-            );
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("build Python `{build_python}` errno generation failed: {stderr}");
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = build_python::run_script(&build_python, script, "errno constants");
     let mut entries: Vec<(String, i64)> = Vec::new();
     for line in stdout.lines() {
         let name = line.trim();

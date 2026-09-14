@@ -79,6 +79,16 @@ for the crate-extraction and incremental-build routing plan.
   no caller depends on the host executable opting into long paths.
   Its unit tests own the publication/error-state contract independently of
   backend feature selection; backend tests retain their consumer obligations.
+- Runtime and CPython-ABI Unicode generators and the native errno generator use
+  one `runtime/build_support/build_python.rs` interpreter-selection and execution
+  authority. Its `-B -I -S` import policy matches the content-attested Python
+  probe: project cwd, `PYTHONPATH`, `PYTHONHOME`, and site startup cannot supply
+  Python modules. The v2 build-script environment identities bind this policy
+  and the selected interpreter's full runtime/native-dependency closure, not a
+  recursive inventory of ambient project or scratch trees. Native loader
+  environment remains subject to toolchain custody; import isolation is not a
+  claim of full process hermeticity. Source identity includes `build_support`
+  for every consumer; legacy ambient-import identities are rejected.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.

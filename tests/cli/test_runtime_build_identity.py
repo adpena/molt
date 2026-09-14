@@ -617,7 +617,9 @@ def test_build_script_environment_is_semantic_content_identity(
         publication="strip-final-link-metadata-v1",
         extra_env={**common, "PYTHONPATH": str(relocated)},
     )
-    assert changed_pythonpath.compile_digest != baseline.compile_digest
+    assert changed_pythonpath == baseline
+    assert build_script["python_import_policy"] == "isolated-no-site-v1"
+    assert "PYTHONPATH" not in build_script
 
     changed_exports = _resolve(
         identity_root,
@@ -630,6 +632,66 @@ def test_build_script_environment_is_semantic_content_identity(
         },
     )
     assert changed_exports.compile_digest != baseline.compile_digest
+
+
+@pytest.mark.parametrize("raw", [None, "", os.pathsep, "missing", "source-root"])
+def test_build_script_python_import_policy_never_enumerates_ambient_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    environment = {} if raw is None else {"PYTHONPATH": raw}
+    if raw == "source-root":
+        environment["PYTHONPATH"] = str(tmp_path)
+    monkeypatch.setattr(
+        identity,
+        "_tree_identity",
+        lambda *_args, **_kwargs: pytest.fail("ambient import roots were enumerated"),
+    )
+    result = identity._build_python_script_environment_identity(
+        environment, build_python_identity=build_python_identity_fixture()
+    )
+    assert result == identity._build_python_script_environment_identity(
+        {}, build_python_identity=build_python_identity_fixture()
+    )
+
+
+@pytest.mark.parametrize(
+    "script_schema",
+    [
+        "molt.runtime-build-script-environment",
+        "molt.cpython-abi-build-script-environment",
+    ],
+)
+def test_build_script_identity_rejects_retired_import_authority_and_policy_drift(
+    script_schema: str,
+) -> None:
+    build_python = build_python_identity_fixture()
+    payload = {
+        "schema": script_schema + ".v2",
+        **identity._build_python_script_environment_identity(
+            {}, build_python_identity=build_python
+        ),
+    }
+    if script_schema == "molt.runtime-build-script-environment":
+        payload.update(
+            {
+                "MOLT_WASM_CPYTHON_ABI_EXPORTS": "ignored-for-target",
+                "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "ignored-for-target",
+                "MOLT_WASM_LONGDOUBLE_ARCHIVE": {"state": "ignored-for-target"},
+                "MOLT_WASM_BUILTINS_ARCHIVE": {"state": "ignored-for-target"},
+            }
+        )
+    schema._validated_build_script_environment(
+        payload, target="x86_64-test-native", build_python=build_python
+    )
+    for changed, message in (
+        ({**payload, "schema": script_schema + ".v1"}, "schema"),
+        ({**payload, "PYTHONPATH": {"state": "unset"}}, "shape"),
+        ({**payload, "python_import_policy": "ambient"}, "import policy"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            schema._validated_build_script_environment(
+                changed, target="x86_64-test-native", build_python=build_python
+            )
 
 
 def test_build_script_environment_rejects_invalid_or_unowned_data_exports(
