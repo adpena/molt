@@ -337,10 +337,10 @@ fn alias_group_unknown_loop_header_source_terminates_without_promotion() {
         None,
         vec![
             const_int("zero", 0),
-            op("const_none", Some("none"), None, &[]),
+            op("const_none", Some("none_value"), None, &[]),
             const_int("one", 1),
             op("store_var", None, Some("_bb2_arg0"), &["zero"]),
-            op("store_var", None, Some("_bb2_arg0"), &["none"]),
+            op("store_var", None, Some("_bb2_arg0"), &["none_value"]),
             op("load_var", Some("_v19"), Some("_bb2_arg0"), &[]),
             op("add", Some("next"), None, &["one", "one"]),
             op("store_var", None, Some("_v19"), &["next"]),
