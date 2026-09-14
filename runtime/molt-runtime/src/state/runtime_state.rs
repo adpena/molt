@@ -497,6 +497,7 @@ pub(crate) struct RuntimeState {
     pub(crate) gc_running: AtomicBool,
     pub(crate) gc_last_failure: AtomicU8,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
+    pub(crate) cpython: crate::cpython_abi_hooks::CpythonRuntimeState,
     pub(crate) interned: InternedNames,
     pub(crate) runtime_static_names: RuntimeStaticNames,
     pub(crate) method_cache: MethodCache,
@@ -601,6 +602,7 @@ impl RuntimeState {
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            cpython: crate::cpython_abi_hooks::CpythonRuntimeState::new(),
             interned: InternedNames::new(),
             runtime_static_names: RuntimeStaticNames::new(),
             method_cache: MethodCache::new(),
@@ -776,13 +778,15 @@ pub(crate) fn runtime_extension_state_get_or_init(
     ptr
 }
 
-pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) {
+pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots: Vec<RuntimeExtensionStateSlot> = {
         let mut guard = state.extension_states.lock().unwrap();
         guard.drain().map(|(_, slot)| slot).collect()
     };
+    let changed = !slots.is_empty();
     clear_and_drop_extension_slots(slots);
+    changed
 }
 
 pub(crate) fn runtime_extension_state_clear_and_drop_key(state: &RuntimeState, key: &[u8]) -> bool {
@@ -1084,6 +1088,20 @@ fn runtime_ready_ptr() -> Option<*mut RuntimeState> {
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
+/// Process-static C shells cannot be rebound to an isolated RuntimeState.
+/// Resolve ownership from the lifecycle authority, including cold bootstrap
+/// and the private finalization owner, rather than a second global owner flag.
+pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
+    let phase = runtime_lifecycle().phase.lock().unwrap();
+    match *phase {
+        RuntimeLifecyclePhase::Ready { ptr } | RuntimeLifecyclePhase::Finalizing { ptr, .. } => {
+            std::ptr::eq(state, ptr as *const RuntimeState)
+        }
+        RuntimeLifecyclePhase::Initializing { owner } => owner == thread::current().id(),
+        RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => false,
+    }
+}
+
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
     if let Some(ptr) = runtime_ready_ptr() {
         return runtime_state_tls().or_else(|| Some(unsafe { &*ptr }));
@@ -1238,18 +1256,10 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             //    only survivors now are the immortal floor + genuine leaks. GIL
             //    still held; reads crate-static counters only, never touches
             //    `state`.
+            // The shared teardown transaction has already quiesced runtime/C
+            // TLS and retired exact static bindings before class destruction.
+            // Do not reenter the runtime in this callback-free process-exit tail.
             crate::object::ops::assert_no_true_leak_post_teardown(&py);
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // Windows `_exit` reaches `ExitProcess`, which runs native TLS
-                // destructors. Retire the managed CPython record explicitly
-                // while the finalization owner still holds the GIL and the
-                // persistent C-extension execution context; otherwise its TLS
-                // sentinel runs after the lifecycle is Shutdown and correctly
-                // rejects destruction without runtime custody.
-                molt_cpython_abi::api::object::detach_runtime_execution_thread();
-                molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
-            }
             let mut phase = lifecycle.phase.lock().unwrap();
             assert_eq!(
                 *phase,
@@ -1314,7 +1324,10 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     // call leaves the detached stub as a second, false initialization authority.
     let cpython_bootstrap_state =
         molt_cpython_abi::api::object::RuntimeInitializationThreadStateGuard::enter();
-    crate::cpython_abi_hooks::register_cpython_hooks();
+    assert!(
+        crate::cpython_abi_hooks::register_cpython_hooks(),
+        "primary runtime C-API bootstrap was rejected"
+    );
     drop(cpython_bootstrap_state);
     trace_runtime_init("cpython_abi_hooks");
 
@@ -1503,8 +1516,6 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
             reopen_runtime_execution_admission();
             return 0;
         }
-        let _drain_custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
-        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
     }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     *phase = RuntimeLifecyclePhase::Finalizing {
@@ -1516,10 +1527,9 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // The pre-finalization drain deliberately destroyed the embedding
-        // thread's retained record. Re-open an empty, lifetime-armed record for
-        // the teardown owner before attaching; lazy creation is forbidden so
-        // every record remains ordered behind the TLS cleanup sentinel.
+        // Preserve the existing embedding record for the one final drain.
+        // No callback-capable destruction may run while the lifecycle phase
+        // mutex is held or after the builtin class authority is dismantled.
         touch_tls_guard();
         molt_cpython_abi::api::object::attach_runtime_execution_thread();
     }
@@ -1529,9 +1539,9 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     runtime_teardown(&py, state);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        molt_cpython_abi::api::object::detach_runtime_execution_thread();
-        let _drain_custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
-        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
+        // Callback-capable teardown belongs before static-class retirement,
+        // never here after their builtin graph and singleton pools are gone.
+        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
         assert_eq!(
             molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
             0,
@@ -1828,241 +1838,229 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn finalizing_unpublishes_before_atexit_reentry_and_racing_entrants() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        if runtime_ready_ptr().is_some() {
-            assert_eq!(molt_runtime_shutdown(), 1);
-        }
-        molt_runtime_reset_for_testing();
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
-            0
-        );
-        assert_eq!(molt_runtime_init(), 1);
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
-            1
-        );
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+                0
+            );
+            assert_eq!(molt_runtime_init(), 1);
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+                1
+            );
 
-        let (init_start_tx, init_start_rx) = std::sync::mpsc::channel();
-        let (init_prepared_tx, init_prepared_rx) = std::sync::mpsc::channel();
-        let (init_started_tx, init_started_rx) = std::sync::mpsc::channel();
-        let (init_done_tx, init_done_rx) = std::sync::mpsc::channel();
-        let init_entrant = std::thread::spawn(move || {
-            let gil = GilGuard::new();
-            let _ = runtime_state(&gil.token());
-            drop(gil);
-            init_prepared_tx.send(()).unwrap();
-            init_start_rx.recv().unwrap();
-            init_started_tx.send(()).unwrap();
-            init_done_tx.send(molt_runtime_init()).unwrap();
+            let (init_start_tx, init_start_rx) = std::sync::mpsc::channel();
+            let (init_prepared_tx, init_prepared_rx) = std::sync::mpsc::channel();
+            let (init_started_tx, init_started_rx) = std::sync::mpsc::channel();
+            let (init_done_tx, init_done_rx) = std::sync::mpsc::channel();
+            let init_entrant = std::thread::spawn(move || {
+                let gil = GilGuard::new();
+                let _ = runtime_state(&gil.token());
+                drop(gil);
+                init_prepared_tx.send(()).unwrap();
+                init_start_rx.recv().unwrap();
+                init_started_tx.send(()).unwrap();
+                init_done_tx.send(molt_runtime_init()).unwrap();
+            });
+            init_prepared_rx.recv().unwrap();
+
+            let (shutdown_start_tx, shutdown_start_rx) = std::sync::mpsc::channel();
+            let (shutdown_started_tx, shutdown_started_rx) = std::sync::mpsc::channel();
+            let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::channel();
+            let shutdown_entrant = std::thread::spawn(move || {
+                shutdown_start_rx.recv().unwrap();
+                shutdown_started_tx.send(()).unwrap();
+                shutdown_done_tx.send(molt_runtime_shutdown()).unwrap();
+            });
+
+            let (recursive_tx, recursive_rx) = std::sync::mpsc::channel();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let release = Arc::new(std::sync::Barrier::new(2));
+            *RUNTIME_FINALIZE_ATEXIT_TEST_HOOK.lock().unwrap() =
+                Some(RuntimeFinalizeAtexitTestHook {
+                    results: recursive_tx,
+                    entered: entered_tx,
+                    release: Arc::clone(&release),
+                });
+
+            let owner = std::thread::spawn(|| molt_runtime_shutdown());
+            entered_rx.recv().unwrap();
+            assert_eq!(recursive_rx.recv().unwrap(), (0, 0));
+            assert!(runtime_ready_ptr().is_none());
+            assert!(matches!(
+                *runtime_lifecycle().phase.lock().unwrap(),
+                RuntimeLifecyclePhase::Finalizing { .. }
+            ));
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+                1
+            );
+
+            init_start_tx.send(()).unwrap();
+            shutdown_start_tx.send(()).unwrap();
+            init_started_rx.recv().unwrap();
+            shutdown_started_rx.recv().unwrap();
+            assert!(
+                init_done_rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err()
+            );
+            assert!(
+                shutdown_done_rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err()
+            );
+
+            release.wait();
+            assert_eq!(owner.join().unwrap(), 1);
+            assert_eq!(init_done_rx.recv().unwrap(), 0);
+            assert_eq!(shutdown_done_rx.recv().unwrap(), 0);
+            init_entrant.join().unwrap();
+            shutdown_entrant.join().unwrap();
+            assert!(matches!(
+                *runtime_lifecycle().phase.lock().unwrap(),
+                RuntimeLifecyclePhase::Shutdown
+            ));
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+                0
+            );
         });
-        init_prepared_rx.recv().unwrap();
-
-        let (shutdown_start_tx, shutdown_start_rx) = std::sync::mpsc::channel();
-        let (shutdown_started_tx, shutdown_started_rx) = std::sync::mpsc::channel();
-        let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::channel();
-        let shutdown_entrant = std::thread::spawn(move || {
-            shutdown_start_rx.recv().unwrap();
-            shutdown_started_tx.send(()).unwrap();
-            shutdown_done_tx.send(molt_runtime_shutdown()).unwrap();
-        });
-
-        let (recursive_tx, recursive_rx) = std::sync::mpsc::channel();
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let release = Arc::new(std::sync::Barrier::new(2));
-        *RUNTIME_FINALIZE_ATEXIT_TEST_HOOK.lock().unwrap() = Some(RuntimeFinalizeAtexitTestHook {
-            results: recursive_tx,
-            entered: entered_tx,
-            release: Arc::clone(&release),
-        });
-
-        let owner = std::thread::spawn(|| molt_runtime_shutdown());
-        entered_rx.recv().unwrap();
-        assert_eq!(recursive_rx.recv().unwrap(), (0, 0));
-        assert!(runtime_ready_ptr().is_none());
-        assert!(matches!(
-            *runtime_lifecycle().phase.lock().unwrap(),
-            RuntimeLifecyclePhase::Finalizing { .. }
-        ));
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
-            1
-        );
-
-        init_start_tx.send(()).unwrap();
-        shutdown_start_tx.send(()).unwrap();
-        init_started_rx.recv().unwrap();
-        shutdown_started_rx.recv().unwrap();
-        assert!(
-            init_done_rx
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err()
-        );
-        assert!(
-            shutdown_done_rx
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err()
-        );
-
-        release.wait();
-        assert_eq!(owner.join().unwrap(), 1);
-        assert_eq!(init_done_rx.recv().unwrap(), 0);
-        assert_eq!(shutdown_done_rx.recv().unwrap(), 0);
-        init_entrant.join().unwrap();
-        shutdown_entrant.join().unwrap();
-        assert!(matches!(
-            *runtime_lifecycle().phase.lock().unwrap(),
-            RuntimeLifecyclePhase::Shutdown
-        ));
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
-            0
-        );
     }
 
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn shutdown_refuses_attached_and_detached_foreign_thread_state_owners() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        if runtime_ready_ptr().is_some() {
-            assert_eq!(molt_runtime_shutdown(), 1);
-        }
-        molt_runtime_reset_for_testing();
-        assert_eq!(molt_runtime_init(), 1);
-        let retained_owner_baseline =
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count();
-        assert_eq!(
-            retained_owner_baseline, 0,
-            "runtime initialization prepares TLS lifetime but creates no state before admission"
-        );
-
-        let (leased_tx, leased_rx) = std::sync::mpsc::channel();
-        let (unlease_tx, unlease_rx) = std::sync::mpsc::channel();
-        let lease_holder = std::thread::spawn(move || {
-            assert_eq!(try_acquire_runtime_execution_lease(true), Some(true));
-            leased_tx.send(()).unwrap();
-            unlease_rx.recv().unwrap();
-            release_runtime_execution_lease();
-        });
-        leased_rx.recv().unwrap();
-        assert_eq!(active_runtime_execution_lease_count(), 1);
-        assert_eq!(
-            molt_runtime_shutdown(),
-            0,
-            "admission-to-attachment lifecycle lease must independently refuse shutdown"
-        );
-        assert!(runtime_ready_ptr().is_some());
-        unlease_tx.send(()).unwrap();
-        lease_holder.join().unwrap();
-
-        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let (detached_tx, detached_rx) = std::sync::mpsc::channel();
-        let (cleanup_tx, cleanup_rx) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            touch_tls_guard();
-            let gil = GilGuard::new();
-            molt_cpython_abi::api::object::attach_runtime_execution_thread();
-            drop(gil);
-            attached_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-            let gil = GilGuard::new();
-            molt_cpython_abi::api::object::detach_runtime_execution_thread();
-            drop(gil);
-            detached_tx.send(()).unwrap();
-            cleanup_rx.recv().unwrap();
-            let _gil = GilGuard::new();
-            molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
-        });
-        attached_rx.recv().unwrap();
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
-            1
-        );
-        assert_eq!(
-            molt_runtime_shutdown(),
-            0,
-            "live attachment must refuse shutdown"
-        );
-        assert!(
-            runtime_ready_ptr().is_some(),
-            "refused shutdown must leave the runtime published and usable"
-        );
-
-        release_tx.send(()).unwrap();
-        detached_rx.recv().unwrap();
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
-            0
-        );
-        assert_eq!(
-            molt_runtime_shutdown(),
-            0,
-            "a detached foreign PyThreadState may still own managed edges"
-        );
-        assert!(
-            runtime_ready_ptr().is_some(),
-            "refusing retained-state shutdown must reopen execution admission"
-        );
-
-        cleanup_tx.send(()).unwrap();
-        worker.join().unwrap();
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-            retained_owner_baseline
-        );
-
-        let exit_barrier = Arc::new(std::sync::Barrier::new(2));
-        let worker_barrier = Arc::clone(&exit_barrier);
-        let (retained_tx, retained_rx) = std::sync::mpsc::channel();
-        let tls_worker = std::thread::spawn(move || {
-            let guard = crate::concurrency::RuntimeExecutionGuard::enter();
-            unsafe {
-                molt_cpython_abi::api::errors::PyErr_SetString(
-                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError)
-                        .cast::<molt_cpython_abi::abi_types::PyObject>(),
-                    c"concurrent TLS destruction".as_ptr(),
-                );
-            }
-            drop(guard);
-            retained_tx.send(()).unwrap();
-            worker_barrier.wait();
-            // ThreadStateRecord::drop must acquire the non-attaching
-            // lifecycle/GIL destruction lane while shutdown races here.
-        });
-        retained_rx.recv().unwrap();
-        exit_barrier.wait();
-        let first_shutdown = molt_runtime_shutdown();
-        tls_worker.join().unwrap();
-        if first_shutdown == 0 {
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            assert_eq!(molt_runtime_init(), 1);
+            let retained_owner_baseline =
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count();
             assert_eq!(
-                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-                retained_owner_baseline,
-                "concurrent TLS destruction must retire only its foreign owner"
+                retained_owner_baseline, 0,
+                "runtime initialization prepares TLS lifetime but creates no state before admission"
+            );
+
+            let (leased_tx, leased_rx) = std::sync::mpsc::channel();
+            let (unlease_tx, unlease_rx) = std::sync::mpsc::channel();
+            let lease_holder = std::thread::spawn(move || {
+                assert_eq!(try_acquire_runtime_execution_lease(true), Some(true));
+                leased_tx.send(()).unwrap();
+                unlease_rx.recv().unwrap();
+                release_runtime_execution_lease();
+            });
+            leased_rx.recv().unwrap();
+            assert_eq!(active_runtime_execution_lease_count(), 1);
+            assert_eq!(
+                molt_runtime_shutdown(),
+                0,
+                "admission-to-attachment lifecycle lease must independently refuse shutdown"
             );
             assert!(runtime_ready_ptr().is_some());
-            assert_eq!(molt_runtime_shutdown(), 1);
-        } else {
-            assert_eq!(first_shutdown, 1);
-        }
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-            0,
-            "teardown owner state must be destroyed before RuntimeState is freed"
-        );
-        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-            0,
-            "post-shutdown raw exception cleanup must not reopen stale TLS"
-        );
+            unlease_tx.send(()).unwrap();
+            lease_holder.join().unwrap();
 
-        // RuntimeTestTransaction restores process-global exception/pending-call
-        // snapshots in Drop. Re-open a fresh test runtime only after every
-        // terminal-shutdown assertion above so that restoration does not
-        // attempt an ordinary execution entry against permanent Shutdown.
-        molt_runtime_reset_for_testing();
-        assert_eq!(molt_runtime_init(), 1);
+            let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (detached_tx, detached_rx) = std::sync::mpsc::channel();
+            let (cleanup_tx, cleanup_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                touch_tls_guard();
+                let gil = GilGuard::new();
+                molt_cpython_abi::api::object::attach_runtime_execution_thread();
+                drop(gil);
+                attached_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                let gil = GilGuard::new();
+                molt_cpython_abi::api::object::detach_runtime_execution_thread();
+                drop(gil);
+                detached_tx.send(()).unwrap();
+                cleanup_rx.recv().unwrap();
+                let _gil = GilGuard::new();
+                molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
+            });
+            attached_rx.recv().unwrap();
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                1
+            );
+            assert_eq!(
+                molt_runtime_shutdown(),
+                0,
+                "live attachment must refuse shutdown"
+            );
+            assert!(
+                runtime_ready_ptr().is_some(),
+                "refused shutdown must leave the runtime published and usable"
+            );
+
+            release_tx.send(()).unwrap();
+            detached_rx.recv().unwrap();
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                0
+            );
+            assert_eq!(
+                molt_runtime_shutdown(),
+                0,
+                "a detached foreign PyThreadState may still own managed edges"
+            );
+            assert!(
+                runtime_ready_ptr().is_some(),
+                "refusing retained-state shutdown must reopen execution admission"
+            );
+
+            cleanup_tx.send(()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                retained_owner_baseline
+            );
+
+            let exit_barrier = Arc::new(std::sync::Barrier::new(2));
+            let worker_barrier = Arc::clone(&exit_barrier);
+            let (retained_tx, retained_rx) = std::sync::mpsc::channel();
+            let tls_worker = std::thread::spawn(move || {
+                let guard = crate::concurrency::RuntimeExecutionGuard::enter();
+                unsafe {
+                    molt_cpython_abi::api::errors::PyErr_SetString(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError)
+                            .cast::<molt_cpython_abi::abi_types::PyObject>(),
+                        c"concurrent TLS destruction".as_ptr(),
+                    );
+                }
+                drop(guard);
+                retained_tx.send(()).unwrap();
+                worker_barrier.wait();
+                // ThreadStateRecord::drop must acquire the non-attaching
+                // lifecycle/GIL destruction lane while shutdown races here.
+            });
+            retained_rx.recv().unwrap();
+            exit_barrier.wait();
+            let first_shutdown = molt_runtime_shutdown();
+            tls_worker.join().unwrap();
+            if first_shutdown == 0 {
+                assert_eq!(
+                    molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                    retained_owner_baseline,
+                    "concurrent TLS destruction must retire only its foreign owner"
+                );
+                assert!(runtime_ready_ptr().is_some());
+                assert_eq!(molt_runtime_shutdown(), 1);
+            } else {
+                assert_eq!(first_shutdown, 1);
+            }
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0,
+                "teardown owner state must be destroyed before RuntimeState is freed"
+            );
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0,
+                "post-shutdown raw exception cleanup must not reopen stale TLS"
+            );
+        });
     }
 
     #[cfg(feature = "l7-attestation-probe")]
@@ -2089,56 +2087,52 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn concurrent_init_waits_for_ready_publication() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        if runtime_ready_ptr().is_some() {
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            *RUNTIME_INIT_TEST_GATE.lock().unwrap() =
+                Some((Arc::clone(&entered), Arc::clone(&release)));
+
+            let owner = std::thread::spawn(|| molt_runtime_init());
+            entered.wait();
+            assert!(runtime_ready_ptr().is_none());
+            assert!(matches!(
+                *runtime_lifecycle().phase.lock().unwrap(),
+                RuntimeLifecyclePhase::Initializing { .. }
+            ));
+
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx.send(molt_runtime_init()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(
+                done_rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err(),
+                "a racing initializer must not observe unpublished state as ready"
+            );
+
+            release.wait();
+            assert_eq!(owner.join().unwrap(), 1);
+            assert_eq!(done_rx.recv().unwrap(), 1);
+            waiter.join().unwrap();
+            *RUNTIME_INIT_TEST_GATE.lock().unwrap() = None;
+
+            let ready = runtime_ready_ptr().expect("runtime published after complete init");
+            assert!(matches!(
+                *runtime_lifecycle().phase.lock().unwrap(),
+                RuntimeLifecyclePhase::Ready { ptr } if ptr == ready as usize
+            ));
+            assert_eq!(
+                crate::object::gc::gc_registry_owner_identity(),
+                ready.expose_provenance(),
+                "racing initializers must converge on the one registry-owning runtime"
+            );
             assert_eq!(molt_runtime_shutdown(), 1);
-        }
-        molt_runtime_reset_for_testing();
-
-        let entered = Arc::new(std::sync::Barrier::new(2));
-        let release = Arc::new(std::sync::Barrier::new(2));
-        *RUNTIME_INIT_TEST_GATE.lock().unwrap() =
-            Some((Arc::clone(&entered), Arc::clone(&release)));
-
-        let owner = std::thread::spawn(|| molt_runtime_init());
-        entered.wait();
-        assert!(runtime_ready_ptr().is_none());
-        assert!(matches!(
-            *runtime_lifecycle().phase.lock().unwrap(),
-            RuntimeLifecyclePhase::Initializing { .. }
-        ));
-
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            done_tx.send(molt_runtime_init()).unwrap();
+            assert_eq!(crate::object::gc::gc_registry_owner_identity(), 0);
         });
-        started_rx.recv().unwrap();
-        assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err(),
-            "a racing initializer must not observe unpublished state as ready"
-        );
-
-        release.wait();
-        assert_eq!(owner.join().unwrap(), 1);
-        assert_eq!(done_rx.recv().unwrap(), 1);
-        waiter.join().unwrap();
-        *RUNTIME_INIT_TEST_GATE.lock().unwrap() = None;
-
-        let ready = runtime_ready_ptr().expect("runtime published after complete init");
-        assert!(matches!(
-            *runtime_lifecycle().phase.lock().unwrap(),
-            RuntimeLifecyclePhase::Ready { ptr } if ptr == ready as usize
-        ));
-        assert_eq!(
-            crate::object::gc::gc_registry_owner_identity(),
-            ready.expose_provenance(),
-            "racing initializers must converge on the one registry-owning runtime"
-        );
-        assert_eq!(molt_runtime_shutdown(), 1);
-        assert_eq!(crate::object::gc::gc_registry_owner_identity(), 0);
     }
 }

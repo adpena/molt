@@ -25,11 +25,9 @@
 //!   (promoted verbatim from `dead_store_elim`'s former inline `AliasState`),
 //! * a points-to / escape map (`escape: HashMap<ValueId, EscapeState>`, the
 //!   former `escape_analysis::analyze` result, now anchored here),
-//! * the [`MemRegion`] taxonomy classifying every memory-touching op's region,
-//! * the [`LoadPurity`] gate distinguishing a proven-pure typed-slot load
-//!   (`guarded_field_get` / `load` against a known concrete-class offset) from
-//!   an opaque attribute lookup (`get_attr*`) that **MayDispatch** a user
-//!   `__getattr__` / `__getattribute__` and is therefore opaque.
+//! * the [`MemRegion`] taxonomy classifying every memory-touching op's region.
+//!   Context-free field accesses remain opaque; the shared exact-site access
+//!   plan separately proves inline backing, presence and release neutrality.
 //!
 //! and exposes the queries its consumers need:
 //!
@@ -47,20 +45,16 @@
 //! > ∀ (op, value). `L(op, value)` ⇒ `Q(op, value)`
 //!
 //! (`Q` may be strictly more conservative — that only ever costs a missed
-//! optimization, never correctness.) The `MemRegion` / `LoadPurity` refinements
+//! optimization, never correctness.) The contextual field refinements
 //! are *additive precision* layered on top of the superset core; they never make
 //! a query *less* conservative than the old list it replaces.
 //!
 //! ### The Python-dunder soundness gate
 //!
-//! A `LoadAttr` / `Index` is classified [`LoadPurity::ProvenPure`] **only** when
-//! it is a typed-slot access against a statically-known concrete class with no
-//! `__getattr__` / `__getattribute__` override — i.e. its `_original_kind` is one
-//! of the offset-based field accessors (`guarded_field_get`, `load`) that the
-//! frontend emits exclusively for proven-concrete-class field reads. Every other
-//! attribute spelling (`get_attr`, `get_attr_name`, `get_attr_generic_*`) and
-//! every `Index` is [`LoadPurity::MayDispatch`]: it can run arbitrary user code
-//! and is treated as fully opaque (a barrier). Conservative-false on any doubt.
+//! Even a shape-valid fixed-offset load may consult dictionary backing or enter
+//! named lookup for a missing field. Only the exact-site access plan can prove
+//! these callback paths absent. Guarded and generic reads remain heap barriers;
+//! physical field identity by itself never establishes callback freedom.
 
 mod copy_kind;
 mod regions;
@@ -75,18 +69,17 @@ use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     AliasMemoryRegionClass, AliasSlotObservation, AliasTransparentAliasRole,
     opcode_alias_memory_region_table, opcode_alias_slot_observation_table,
-    opcode_alias_transparent_alias_role_table,
+    opcode_alias_transparent_alias_role_table, opcode_is_escape_alloc_site_table,
 };
 use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
 pub use super::escape_analysis::EscapeState;
 
-// Region taxonomy, load-purity gate, and barrier core live in `regions`;
-// `MemRegion` / `LoadPurity` are re-exported so external consumers keep using
-// the `alias_analysis::MemRegion` / `alias_analysis::LoadPurity` paths.
-pub use regions::{LoadPurity, MemRegion};
-use regions::{classify_load, opcode_is_rc_barrier, typed_slot_class, typed_slot_obj_offset};
+// Regions describe physical footprints. Contextual access admission lives in
+// typed_slot_access, not a second context-free load-purity authority here.
+pub use regions::MemRegion;
+use regions::{opcode_is_rc_barrier, typed_slot_obj_offset};
 
 // Copy-lowering ownership classifiers live in `copy_kind`; the crate-facing
 // classifiers are re-exported so external consumers keep using the
@@ -327,13 +320,21 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
     }
 }
 
-fn aliasing_op_may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> bool {
+fn aliasing_op_may_observe_slot(
+    op: &TirOp,
+    root: ValueId,
+    aliases: &AliasUnionFind,
+    typed_store_release_is_callback_free: bool,
+) -> bool {
     match opcode_alias_slot_observation_table(op.opcode) {
         AliasSlotObservation::DirectObserver | AliasSlotObservation::ConservativeObserver => true,
-        AliasSlotObservation::TypedSlotStore => match op.plain_typed_slot_store() {
-            Some((target, _)) => aliases.root(target) != root,
-            None => true,
-        },
+        AliasSlotObservation::TypedSlotStore if typed_store_release_is_callback_free => {
+            match op.plain_typed_slot_store() {
+                Some((target, _)) => aliases.root(target) != root,
+                None => true,
+            }
+        }
+        AliasSlotObservation::TypedSlotStore => true,
         AliasSlotObservation::TransparentAlias => transparent_alias_root(op, aliases).is_none(),
         AliasSlotObservation::NeverObserver => false,
     }
@@ -352,8 +353,8 @@ pub struct AliasAnalysisResult {
     pub aliases: AliasUnionFind,
     /// Points-to / escape lattice for every tracked allocation root.
     pub escape: HashMap<ValueId, EscapeState>,
-    /// Allocation roots tracked by the escape analysis (alloc-site results +
-    /// their transparent-move aliases).
+    /// Exact allocation-site roots, resolved through transparent aliases.
+    /// May-alias CFG parameters tracked by escape analysis are not identities.
     pub alloc_roots: HashSet<ValueId>,
 }
 
@@ -371,7 +372,13 @@ impl AliasAnalysisResult {
         // `escape_analysis::analyze`, anchored here as the points-to half of the
         // unified alias analysis. Opaque call boundaries conservatively escape.
         let escape = super::escape_analysis::analyze(func);
-        let alloc_roots: HashSet<ValueId> = escape.keys().copied().collect();
+        let alloc_roots = func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .filter(|op| opcode_is_escape_alloc_site_table(op.opcode))
+            .flat_map(|op| op.results.iter().map(|&value| aliases.root(value)))
+            .collect();
 
         Self {
             exact_scalar_types: crate::tir::type_refine::extract_exact_scalar_map(func),
@@ -403,6 +410,13 @@ impl AliasAnalysisResult {
         self.aliases.root(value)
     }
 
+    /// Exact producers exclude the internal missing singleton. An annotation,
+    /// unknown argument or opaque Copy does not. Reuse the existing scalar
+    /// provenance and allocation identities rather than a slot-local opcode list.
+    pub(super) fn is_known_present_value(&self, value: ValueId) -> bool {
+        self.exact_scalar_types.contains_key(&value) || self.alloc_roots.contains(&self.root(value))
+    }
+
     /// Replaces `refcount_elim::is_barrier`. True if `op` is a barrier that
     /// prevents IncRef/DecRef pairing across it: the op may capture, store, or
     /// observe a reference count. Operand-agnostic (an RC barrier blocks pairing
@@ -426,28 +440,87 @@ impl AliasAnalysisResult {
     /// slot value of object `root` (read it, escape it, or trigger a side effect
     /// that could). `root` is an alias root.
     ///
-    /// CONSERVATIVE SUPERSET of the old predicate (in fact byte-identical to it —
-    /// see `tests::dse_observe_is_conservative_superset_of_old_may_observe`, which
-    /// asserts equality on the aliasing arm). The op must alias `root` to be an
-    /// observer at all; given that, the per-opcode classification reproduces the
-    /// former allow-list exactly. The `LoadPurity` refinement is intentionally
-    /// NOT applied here: every aliasing `LoadAttr` is treated as a slot observer
-    /// regardless of whether it is a proven-pure typed-slot read, because a load
-    /// of the *same* slot still observes a pending store's value. Purity is only
-    /// consulted by callers that need to reorder the load itself.
+    /// Arbitrary-heap effects are operand-independent: a callback can observe a
+    /// captured object even when that object is absent from the op's operands.
+    /// Proven-local Copies retain operand-root disambiguation. Plain field
+    /// accesses need the separate exact-site plan to discharge callback paths.
     pub fn may_observe_slot(&self, op: &TirOp, root: ValueId) -> bool {
+        if op.is_async_work_poll() {
+            return true;
+        }
+        let effects = super::effects::op_effects_with_types(op, &self.exact_scalar_types);
+        let is_local_projection = op.opcode == crate::tir::ops::OpCode::Copy
+            && Self::copy_region(op) == MemRegion::ScalarRegister;
+        if effects.may_access_arbitrary_heap && !is_local_projection {
+            return true;
+        }
         if !self.aliases.operand_aliases_root(op, root) {
             return false;
         }
-        aliasing_op_may_observe_slot(op, root, &self.aliases)
+        aliasing_op_may_observe_slot(op, root, &self.aliases, false)
+    }
+
+    /// Contextual slot-observation query for a replacing typed-slot store whose
+    /// caller has proved that every release path caused by the overwrite is
+    /// callback-free.
+    ///
+    /// The old value must be neutral in its *boxed slot representation*, not
+    /// merely non-heap in the current SSA carrier: e.g. `RawI64FullDeopt` may
+    /// box to a heap BigInt. The caller must also prove a pristine allocation
+    /// root with no capture, observation, or materialized instance-dictionary
+    /// history, so dictionary synchronization cannot release a replaced value.
+    /// Only after all obligations are proved may the operation be treated like
+    /// a local same-root overwrite for DSE. No other opcode or target
+    /// relationship gains precision from this query.
+    pub fn may_observe_slot_with_boxed_neutral_old_value(&self, op: &TirOp, root: ValueId) -> bool {
+        if op.plain_typed_slot_store().is_some() {
+            if !self.aliases.operand_aliases_root(op, root) {
+                return false;
+            }
+            return aliasing_op_may_observe_slot(op, root, &self.aliases, true);
+        }
+        self.may_observe_slot(op, root)
     }
 
     /// The memory region a memory-touching op reads or writes, used for
     /// may-alias disambiguation (see [`MemRegion`]).
     pub fn region_of(&self, op: &TirOp) -> MemRegion {
-        match opcode_alias_memory_region_table(op.opcode) {
-            AliasMemoryRegionClass::TypedSlotAttr => self.typed_slot_region(op),
-            AliasMemoryRegionClass::CopyRefinement => Self::copy_region(op),
+        if op.is_async_work_poll() {
+            return MemRegion::GenericHeap;
+        }
+        let coarse = opcode_alias_memory_region_table(op.opcode);
+        if coarse == AliasMemoryRegionClass::CopyRefinement {
+            let region = Self::copy_region(op);
+            if region == MemRegion::ScalarRegister {
+                return region;
+            }
+        }
+
+        let effects = super::effects::op_effects_with_types(op, &self.exact_scalar_types);
+        if effects.may_access_arbitrary_heap {
+            return MemRegion::GenericHeap;
+        }
+
+        // A callback-free raw allocation writes fresh storage, not an arbitrary
+        // existing Python object. Give its write the same proven local root as
+        // subsequent field accesses. Reuse generated allocation identity and
+        // escape facts; neither a type annotation nor a constructor-like name
+        // proves this. Keep the effect floor above this refinement: class layout
+        // preparation, hashing constructors, and GC polls may execute Python.
+        if coarse == AliasMemoryRegionClass::GenericHeap
+            && opcode_is_escape_alloc_site_table(op.opcode)
+            && let [result] = op.results.as_slice()
+        {
+            let root = self.aliases.root(*result);
+            if self.is_local_allocation(root) {
+                return MemRegion::LocalAllocation { root };
+            }
+        }
+
+        match coarse {
+            AliasMemoryRegionClass::TypedSlotAttr | AliasMemoryRegionClass::CopyRefinement => {
+                MemRegion::GenericHeap
+            }
             AliasMemoryRegionClass::ContainerElement => MemRegion::ContainerElement,
             AliasMemoryRegionClass::ModuleDict => MemRegion::ModuleDict,
             AliasMemoryRegionClass::ScalarRegister => MemRegion::ScalarRegister,
@@ -455,15 +528,13 @@ impl AliasAnalysisResult {
         }
     }
 
-    fn typed_slot_region(&self, op: &TirOp) -> MemRegion {
+    pub(super) fn typed_slot_region(&self, op: &TirOp) -> MemRegion {
         if let Some((target, offset)) = typed_slot_obj_offset(op) {
             let root = self.aliases.root(target);
-            if self.is_stack_object(root) {
-                return MemRegion::StackObject { root };
-            }
-            if let Some(class) = typed_slot_class(op) {
-                return MemRegion::TypedField { class, offset };
-            }
+            return MemRegion::Field {
+                allocation: self.alloc_roots.contains(&root).then_some(root),
+                offset,
+            };
         }
         MemRegion::GenericHeap
     }
@@ -478,23 +549,14 @@ impl AliasAnalysisResult {
         }
     }
 
-    /// Load-purity gate (the Python-dunder soundness gate). [`LoadPurity::ProvenPure`]
-    /// only for a typed-slot `LoadAttr` against a proven concrete class.
-    #[inline]
-    pub fn load_purity(&self, op: &TirOp) -> LoadPurity {
-        classify_load(op)
-    }
-
-    /// True if `root` is a non-escaping stack object (rewritten or eligible to be
-    /// rewritten to a stack allocation). A value is stack-resident iff it is a
-    /// tracked allocation root that does not escape the function — i.e. its state
-    /// is `NoEscape`, or `ArgEscape` backed by an explicit non-capture proof,
-    /// mirroring `escape_analysis::apply`'s promotion set.
-    fn is_stack_object(&self, root: ValueId) -> bool {
-        matches!(
-            self.escape.get(&root),
-            Some(EscapeState::NoEscape) | Some(EscapeState::ArgEscape)
-        )
+    /// True if `root` is a tracked nonescaping allocation. This proves distinct
+    /// identity, not physical placement, callback freedom, or destruction lifetime.
+    fn is_local_allocation(&self, root: ValueId) -> bool {
+        self.alloc_roots.contains(&root)
+            && matches!(
+                self.escape.get(&root),
+                Some(EscapeState::NoEscape) | Some(EscapeState::ArgEscape)
+            )
     }
 
     /// True if `op` is a **transparent-alias producer**: a no-op `TypeGuard` or a

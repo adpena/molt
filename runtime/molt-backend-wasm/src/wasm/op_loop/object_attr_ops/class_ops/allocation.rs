@@ -42,31 +42,6 @@ pub(super) fn emit_object_new_bound(
     store_result_or_drop(func, op, locals);
 }
 
-pub(super) fn emit_object_new_bound_stack(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op
-        .args
-        .as_ref()
-        .expect("object_new_bound_stack requires class arg");
-    assert!(
-        op.value.is_some_and(|payload_size| payload_size > 0),
-        "object_new_bound_stack requires positive payload byte size"
-    );
-    let class_bits = locals[&args[0]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[WasmRuntimeImport::ObjectNewBound],
-    );
-    store_result_or_drop(func, op, locals);
-}
-
 pub(super) fn emit_object_set_class(
     func: &mut Function,
     op: &OpIR,

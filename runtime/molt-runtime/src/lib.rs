@@ -67,20 +67,14 @@ static GLOBAL: attestation_probe::CountingMiMalloc = attestation_probe::Counting
 #[cfg(test)]
 mod test_support;
 
-// Direct-link test and fuzz builds do not have compiler-emitted isolate
-// entrypoints. Provide fallback symbols for those harnesses only while
-// production binaries keep using generated symbols.
-#[cfg(any(test, fuzzing))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    molt_obj_model::MoltObject::none().bits()
-}
+pub use molt_runtime_core::app_bootstrap::AppBootstrapProvider;
+pub use molt_runtime_core::declare_app_bootstrap;
 
-// NOTE: the former `molt_isolate_import` test fallback is deleted with the
-// native string_eq dispatch chain (import bedrock, design doc 69 PR1): the
-// native runtime resolves module identity through the installed module
-// registry (`builtins::module_table`) and no longer references an app-owned
-// isolate-import symbol. wasm32 keeps its env import until PR3.
+// Only this crate's final libtest image owns this provider. Downstream tests,
+// fuzz targets and hosts must declare their own; production compiled images
+// use the compiler-emitted application initializer.
+#[cfg(test)]
+declare_app_bootstrap!(AppBootstrapProvider::Unavailable("molt-runtime libtest"));
 
 mod async_rt;
 #[cfg(feature = "stdlib_asyncio")]
@@ -579,18 +573,16 @@ pub(crate) use crate::builtins::attr::{
     apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
     attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
     class_attr_lookup, class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw,
-    descriptor_bind, descriptor_cache_lookup, descriptor_cache_store, descriptor_is_data,
-    descriptor_method_bits, descriptor_no_deleter, descriptor_no_setter,
-    dir_collect_from_class_bits, dir_collect_from_instance, instance_bits_for_call,
-    is_iterator_bits, module_attr_lookup, object_attr_lookup_raw, property_no_deleter,
-    property_no_setter, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
+    descriptor_bind, descriptor_is_data, dir_collect_from_class_bits, dir_collect_from_instance,
+    instance_bits_for_call, is_iterator_bits, module_attr_lookup, object_attr_lookup_raw,
+    raise_attr_name_type_error, setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
-    BuiltinClasses, builtin_classes, builtin_classes_break_cycles, builtin_classes_if_initialized,
-    builtin_classes_shutdown, builtin_type_bits, class_name_for_error, is_builtin_class_bits,
-    molt_builtin_class_lookup,
+    BuiltinClasses, builtin_classes, builtin_classes_if_initialized,
+    builtin_classes_retire_identities, builtin_classes_shutdown, builtin_type_bits,
+    class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
@@ -742,10 +734,7 @@ pub(crate) use crate::call::class_init::{
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
 };
-pub(crate) use crate::call::function::{
-    call_function_obj_bound_vec, call_function_obj_vec, call_function_obj1, call_function_obj2,
-    call_function_obj3, refresh_function_task_trampoline_cache,
-};
+pub(crate) use crate::call::function::{call_function_obj_bound_vec, call_function_obj_vec};
 pub(crate) use crate::call::lookup_call_attr;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
@@ -762,7 +751,7 @@ pub(crate) use crate::object::layout::{
     call_iter_set_cached_tuple, class_annotate_bits, class_annotations_bits, class_bases_bits,
     class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
     class_name_bits, class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits,
-    class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits, class_set_name_bits,
+    class_set_bases_bits, class_set_layout_version_bits, class_set_name_bits,
     class_set_qualname_bits, classmethod_func_bits, code_arg_names_bits, code_argcount,
     code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr, code_filename_bits,
     code_firstlineno, code_kwonly_names_bits, code_kwonlyargcount, code_linetable_bits,
@@ -852,8 +841,7 @@ pub(crate) use crate::object::{
     HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat,
     MemoryViewFormatKind, MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot,
     alloc_object, alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr,
-    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut,
-    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr,
+    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
     header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
     instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
     memoryview_base_bits, memoryview_data, memoryview_format_bits, memoryview_itemsize,

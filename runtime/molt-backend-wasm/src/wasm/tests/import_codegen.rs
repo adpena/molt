@@ -11,15 +11,8 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
             "object_new_bound_sized",
         ),
         (
-            "object_new_bound_with_static_stack_hint",
+            "object_new_bound_with_static_layout_hint",
             "object_new_bound",
-            Some(24),
-            "object_new_bound",
-            "object_new_bound_sized",
-        ),
-        (
-            "object_new_bound_stack_uses_class_owned_layout",
-            "object_new_bound_stack",
             Some(24),
             "object_new_bound",
             "object_new_bound_sized",

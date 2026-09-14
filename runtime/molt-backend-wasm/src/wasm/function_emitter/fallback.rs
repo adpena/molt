@@ -37,7 +37,7 @@ pub(super) fn emit_fallback_function_body(
         import_ids,
         ctx.const_str_scratch_segment,
     );
-    frame.emit_entry_initializers(&mut func, reloc_enabled, import_ids);
+    frame.emit_entry_initializers(&mut func);
 
     // Capture native_eh_enabled before the closure to avoid borrowing backend.
     // Native EH requires non-relocatable output because wasm-ld does not

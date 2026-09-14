@@ -4,8 +4,11 @@
 //! domain-specific twist: **representation-filtered live sets**. A value whose
 //! physical carrier holds no refcounted heap obligation — a bare `i64`
 //! (`Repr::RawI64Safe`), an inline bool (`Repr::Bool`), a bare `f64`
-//! (`Repr::FloatUnboxed`), the `None` singleton/sentinel, or an unreachable
-//! `Repr::Never` — is excluded from the live sets. The drop pass
+//! (`Repr::FloatUnboxed`), or the `None` singleton/sentinel — is excluded from
+//! the live sets. `Repr::Never` remains the representation lattice's join
+//! bottom, but is not exclusion evidence for a defined value: stale or
+//! manually-authored `TirType::Never` floors to `Repr::DynBox` until an exact
+//! producer proves a non-heap carrier. The drop pass
 //! consumes these sets to place `DecRef`s; a raw scalar carries no refcount, so
 //! including it would lead the drop pass to emit a `DecRef` on a register that is
 //! not a NaN-boxed pointer (a type confusion). Filtering here keeps the drop

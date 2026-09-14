@@ -11,14 +11,6 @@ use crate::tir::simple_value_names::value_var;
 /// Annotate a SimpleIR [`OpIR`] with non-semantic transport metadata that is
 /// still required by specific backend consumers.
 pub(super) fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
-    // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
-    // so the native backend can emit stack allocation instead of heap allocation.
-    // Also mark it as arena-eligible for the scope arena integration.
-    if tir_op.opcode == OpCode::StackAlloc {
-        opir.stack_eligible = Some(true);
-        opir.arena_eligible = Some(true);
-    }
-
     // Restore source-site coordinates for source/binary attribution and
     // traceback caret annotations. SourceSite is the only decoder for the
     // line/column attr family, so this boundary cannot drift on raw keys.

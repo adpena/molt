@@ -255,6 +255,12 @@ define_method_cache! {
     frozenset_len,
     frozenset_contains,
     tuple_new,
+    tuple_count,
+    tuple_index,
+    tuple_iter,
+    tuple_len,
+    tuple_getitem,
+    tuple_contains,
     list_append,
     list_extend,
     list_insert,
@@ -449,6 +455,19 @@ define_method_cache! {
     asyncgen_asend,
     asyncgen_athrow,
     asyncgen_aclose,
+    staticmethod_type_new,
+    staticmethod_init,
+    staticmethod_get,
+    staticmethod_call,
+    classmethod_type_new,
+    classmethod_init,
+    classmethod_get,
+    property_type_new,
+    property_init,
+    property_get,
+    property_set,
+    property_delete,
+    property_set_name,
     property_getter,
     property_setter,
     property_deleter,
@@ -727,7 +746,10 @@ pub(crate) fn intern_static_name(_py: &PyToken<'_>, slot: &AtomicU64, name: &'st
     init_atomic_bits(_py, slot, || {
         let ptr = alloc_string(_py, name);
         if ptr.is_null() {
-            MoltObject::none().bits()
+            if !crate::exception_pending(_py) {
+                crate::raise_exception::<u64>(_py, "MemoryError", "static name allocation failed");
+            }
+            0
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
@@ -755,7 +777,13 @@ pub(crate) fn intern_runtime_static_name(_py: &PyToken<'_>, name: &'static [u8])
 }
 
 #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
-pub(crate) fn intern_bridge_protocol_name(_py: &PyToken<'_>, key: &[u8]) -> Option<u64> {
+pub(crate) fn intern_bridge_protocol_name(
+    _py: &PyToken<'_>,
+    key: &[u8],
+) -> Result<Option<u64>, ()> {
+    if crate::exception_pending(_py) {
+        return Err(());
+    }
     let interned = &crate::runtime_state(_py).interned;
     let (slot, name): (&AtomicU64, &'static [u8]) = match key {
         b"__float__" => (&interned.float_name, b"__float__"),
@@ -768,26 +796,37 @@ pub(crate) fn intern_bridge_protocol_name(_py: &PyToken<'_>, key: &[u8]) -> Opti
         b"__bool__" => (&interned.bool_name, b"__bool__"),
         b"__abs__" => (&interned.abs_name, b"__abs__"),
         b"__len__" => (&interned.len_name, b"__len__"),
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some(intern_static_name(_py, slot, name))
-}
-
-#[cfg(feature = "stdlib_logging_ext")]
-pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Option<u64> {
-    match key {
-        b"write" => Some(intern_static_name(
-            _py,
-            &crate::runtime_state(_py).interned.write_name,
-            b"write",
-        )),
-        _ => None,
+    let bits = intern_static_name(_py, slot, name);
+    if bits == 0 || crate::exception_pending(_py) {
+        Err(())
+    } else {
+        Ok(Some(bits))
     }
 }
 
-pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) {
-    crate::gil_assert();
-    let bits = slot.swap(0, AtomicOrdering::AcqRel);
+#[cfg(feature = "stdlib_logging_ext")]
+pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Result<Option<u64>, ()> {
+    if crate::exception_pending(_py) {
+        return Err(());
+    }
+    if key != b"write" {
+        return Ok(None);
+    }
+    let bits = intern_static_name(
+        _py,
+        &crate::runtime_state(_py).interned.write_name,
+        b"write",
+    );
+    if bits == 0 || crate::exception_pending(_py) {
+        Err(())
+    } else {
+        Ok(Some(bits))
+    }
+}
+
+fn release_atomic_cache_owner(_py: &PyToken<'_>, bits: u64) {
     if bits != 0 {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             let flags = unsafe { (*header_from_obj_ptr(ptr)).load_metadata_flags() };
@@ -799,23 +838,44 @@ pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) {
     }
 }
 
-pub(crate) fn clear_atomic_slots(_py: &PyToken<'_>, slots: &[&AtomicU64]) {
+/// Return whether a populated slot was detached, including interned values
+/// whose physical lifetime remains owned by the shutdown singleton authority.
+pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) -> bool {
     crate::gil_assert();
-    for slot in slots {
-        clear_atomic_bits(_py, slot);
-    }
+    let bits = slot.swap(0, AtomicOrdering::AcqRel);
+    release_atomic_cache_owner(_py, bits);
+    bits != 0
 }
 
-pub(crate) fn clear_method_cache(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn clear_atomic_slots(_py: &PyToken<'_>, slots: &[&AtomicU64]) -> bool {
+    crate::gil_assert();
+    // Publish the entire empty cohort before a displaced owner's finalizer can
+    // reenter any sibling cache. New callback publications belong to the next
+    // shutdown fixed-point pass, not this detached snapshot.
+    let mut detached = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let bits = slot.swap(0, AtomicOrdering::AcqRel);
+        if bits != 0 {
+            detached.push(bits);
+        }
+    }
+    let changed = !detached.is_empty();
+    for bits in detached {
+        release_atomic_cache_owner(_py, bits);
+    }
+    changed
+}
+
+pub(crate) fn clear_method_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = state.method_cache.slots();
-    clear_atomic_slots(_py, &slots);
+    clear_atomic_slots(_py, &slots)
 }
 
-pub(crate) fn clear_runtime_static_names(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn clear_runtime_static_names(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = state.runtime_static_names.slots();
-    clear_atomic_slots(_py, &slots);
+    clear_atomic_slots(_py, &slots)
 }
 
 #[cfg(test)]
@@ -828,6 +888,40 @@ mod tests {
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(any(
+        feature = "stdlib_math",
+        feature = "stdlib_serial",
+        feature = "stdlib_logging_ext"
+    ))]
+    #[test]
+    fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
+            assert_eq!(
+                super::intern_bridge_protocol_name(py, b"unsupported-name"),
+                Ok(None)
+            );
+            #[cfg(feature = "stdlib_logging_ext")]
+            assert_eq!(
+                super::intern_bridge_write_name(py, b"unsupported-name"),
+                Ok(None)
+            );
+            crate::raise_exception::<u64>(py, "MemoryError", "original bridge allocation failure");
+            let original = crate::exception_last_bits_noinc(py);
+            #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
+            for key in [b"__float__".as_slice(), b"unsupported-name"] {
+                assert_eq!(super::intern_bridge_protocol_name(py, key), Err(()));
+            }
+            #[cfg(feature = "stdlib_logging_ext")]
+            for key in [b"write".as_slice(), b"unsupported-name"] {
+                assert_eq!(super::intern_bridge_write_name(py, key), Err(()));
+            }
+            assert_eq!(crate::exception_last_bits_noinc(py), original);
+            let _ = crate::molt_exception_clear();
+        });
+    }
 
     #[test]
     fn method_cache_slots_are_manifest_complete_and_unique() {

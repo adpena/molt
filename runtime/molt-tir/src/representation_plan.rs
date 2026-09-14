@@ -10,6 +10,7 @@ use crate::tir::op_kinds_generated::{
     SimpleIrReturnShape, simpleir_integer_semantics_table, simpleir_return_shape,
 };
 use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::passes::typed_slot_access::{self, TypedSlotStoreMode};
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
@@ -128,6 +129,8 @@ pub struct ScalarRepresentationPlan {
     /// see [`Self::primary_name_sets`].
     repr_by_name: PlanHashMap<String, Repr>,
     direct_numeric_op_reprs: PlanHashMap<usize, Repr>,
+    /// Current-stream indices projected only from unique matching store origins.
+    typed_slot_store_modes: BTreeMap<usize, TypedSlotStoreMode>,
     scalar_slot_exclusion_unsafe: PlanHashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -161,9 +164,10 @@ pub struct ScalarPrimaryNameSets {
 #[cfg(feature = "llvm")]
 pub struct LlvmReprFacts {
     /// The representation lattice element per TIR `ValueId`: the value-keyed
-    /// source of truth. Every value floors to [`Repr::default_for`] of its refined
-    /// `TirType`; inline-int47 carriers raise to [`Repr::RawI64Safe`], while
-    /// checked overflow-peel carriers raise to [`Repr::RawI64FullDeopt`].
+    /// source of truth. Exact scalar provenance authorizes Bool/Float carriers;
+    /// annotations alone stay boxed. Inline-int47 carriers raise to
+    /// [`Repr::RawI64Safe`], while checked overflow-peel carriers raise to
+    /// [`Repr::RawI64FullDeopt`].
     ///
     /// The raw-i64 tiers are seeded from value-range and checked-op proofs, then
     /// propagated across TIR SSA identity edges: through `Copy` chains and block
@@ -239,6 +243,7 @@ impl ScalarRepresentationPlan {
             container_storage_ops: plan_hash_map(op_count / 8 + 1),
             repr_by_name: plan_hash_map(name_capacity),
             direct_numeric_op_reprs: plan_hash_map(op_count / 4 + 1),
+            typed_slot_store_modes: BTreeMap::new(),
             scalar_slot_exclusion_unsafe: plan_hash_set(op_count / 4 + 1),
             scalar_store_targets_by_kind: BTreeMap::new(),
         }
@@ -259,6 +264,7 @@ impl ScalarRepresentationPlan {
         let mut tir_func = lower_to_tir_for_target(func_ir, target_info);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
+        let typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, &tir_func);
         let mut optimized_tir_func = None;
         let mut optimized_names = None;
         if crate::tir::verify::verify_function(&tir_func).is_ok() {
@@ -277,6 +283,7 @@ impl ScalarRepresentationPlan {
         let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
 
         let mut plan = Self::with_capacity(func_ir.ops.len());
+        plan.typed_slot_store_modes = typed_slot_store_modes;
         plan.seed_container_storage_from_tir(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
@@ -375,7 +382,7 @@ impl ScalarRepresentationPlan {
         let mut repr_by_name =
             plan_hash_map(self.facts_by_name.len().saturating_add(primary.int.len()));
         for (name, fact) in &self.facts_by_name {
-            repr_by_name.insert(name.clone(), Self::name_keyed_repr_floor(&fact.ty));
+            repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
         }
         // Raise inline-safe first, then full-deopt so the more precise checked
         // overflow tier wins when a name appears in both through alias/store
@@ -393,13 +400,6 @@ impl ScalarRepresentationPlan {
             repr_by_name.insert(name.clone(), Repr::FloatUnboxed);
         }
         self.repr_by_name = repr_by_name;
-    }
-
-    fn name_keyed_repr_floor(ty: &TirType) -> Repr {
-        match ty {
-            TirType::Bool | TirType::F64 => Repr::DynBox,
-            _ => Repr::default_for(ty),
-        }
     }
 
     pub fn scalar_name_sets(
@@ -966,6 +966,73 @@ impl ScalarRepresentationPlan {
 
     pub fn name_is_none_scalar(&self, name: &str) -> bool {
         self.name_has_scalar_kind(name, ScalarKind::NoneValue)
+    }
+
+    /// Field modes are a projection of current, unoptimized TIR slot facts.
+    /// They are not reconstructed from native name/type hints.
+    pub fn typed_slot_store_modes(&self) -> &BTreeMap<usize, TypedSlotStoreMode> {
+        &self.typed_slot_store_modes
+    }
+
+    fn project_typed_slot_store_modes(
+        func_ir: &FunctionIR,
+        tir_func: &TirFunction,
+    ) -> BTreeMap<usize, TypedSlotStoreMode> {
+        if !func_ir.ops.iter().any(|op| op.kind == "store") {
+            return BTreeMap::new();
+        }
+        let mut current_by_origin: BTreeMap<usize, Option<usize>> = BTreeMap::new();
+        for (index, op) in func_ir.ops.iter().enumerate() {
+            current_by_origin
+                .entry(op.source_op_index_or(index))
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
+        }
+        // More than one operation may share an origin after a round trip.
+        // Include non-store collisions too: neither first/last-wins nor an
+        // optimized-view fact is a valid join for current store admission.
+        let mut lifted_by_origin = BTreeMap::new();
+        for block in tir_func.blocks.values() {
+            for (index, op) in block.ops.iter().enumerate() {
+                if let Some(origin) = op.source_op_index() {
+                    lifted_by_origin
+                        .entry(origin)
+                        .and_modify(|entry| *entry = None)
+                        .or_insert(Some(((block.id, index), op)));
+                }
+            }
+        }
+        let facts = typed_slot_access::for_function(
+            tir_func,
+            &mut crate::tir::analysis::AnalysisManager::new(),
+        );
+        let mut modes = BTreeMap::new();
+        for (origin, current) in current_by_origin {
+            let Some(index) = current else { continue };
+            let Some(Some((site, lifted))) = lifted_by_origin.get(&origin) else {
+                continue;
+            };
+            let Some(fact) = facts.stores.get(site) else {
+                continue;
+            };
+            let current = &func_ir.ops[index];
+            let Some((_, offset)) = lifted.plain_typed_slot_store() else {
+                continue;
+            };
+            let original_kind = match lifted.attrs.get("_original_kind") {
+                Some(AttrValue::Str(kind)) => kind.as_str(),
+                _ => continue,
+            };
+            if current.kind != original_kind
+                || current.value != Some(offset)
+                || current.out.is_some()
+                || !current.args.as_ref().is_some_and(|args| args.len() == 2)
+            {
+                continue;
+            }
+            modes.insert(index, fact.lowering_mode());
+        }
+        modes
     }
 
     pub fn name_is_non_heap_scalar(&self, name: &str) -> bool {

@@ -108,16 +108,18 @@ pub extern "C" fn molt_codecs_lookup_error(name_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn codecs_clear_error_handlers(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn codecs_clear_error_handlers(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     let handlers = std::mem::take(
         &mut *state
             .codec_error_handlers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
+    let changed = !handlers.is_empty();
     for bits in handlers.into_values() {
         dec_ref_bits(_py, bits);
     }
+    changed
 }
 
 #[cfg(test)]

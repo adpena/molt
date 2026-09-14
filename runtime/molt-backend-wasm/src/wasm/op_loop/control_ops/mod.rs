@@ -26,7 +26,6 @@ pub(super) struct ControlOpContext<'a> {
     pub(super) label_depths: &'a mut BTreeMap<i64, usize>,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
-    pub(super) arena_local: Option<u32>,
     pub(super) op_idx: usize,
 }
 

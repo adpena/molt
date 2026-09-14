@@ -4,12 +4,9 @@
 use molt_obj_model::MoltObject;
 use std::sync::Once;
 
-// The runtime expects these symbols from the compiled Python module.
-// Provide stubs so integration tests can link.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/test_int"
+));
 
 // molt_runtime_init is pub extern "C" but not re-exported in the Rust API.
 unsafe extern "C" {

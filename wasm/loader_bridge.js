@@ -24,6 +24,20 @@
   const UTF8_DECODER = new TextDecoder('utf-8');
   const BIGINT_SIGNATURE_KINDS = new Set(['i64', 'u64', 's64', 'molt-object']);
 
+  // Canonical runtime ABI: molt_exception_pending is () -> u64 raw 0/1.
+  // A missing/wrong-shaped export is never evidence of successful execution.
+  const runtimeExceptionPending = (instance) => {
+    const pending = instance?.exports?.molt_exception_pending;
+    if (typeof pending !== 'function' || pending.length !== 0) {
+      throw new Error('missing or malformed molt_exception_pending startup status export');
+    }
+    const status = pending();
+    if (status !== 0n && status !== 1n) {
+      throw new Error('malformed molt_exception_pending status: expected i64 raw 0 or 1');
+    }
+    return status === 1n;
+  };
+
   const readVarUint = (view, offset) => {
     let result = 0;
     let shift = 0;
@@ -1254,6 +1268,7 @@
     remapDefaultAppRuntimeSharedTableIndex,
     resolveWasmTableBase,
     reservedRuntimeCallablesFromManifest,
+    runtimeExceptionPending,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,
     verifyCallableTableEntries,

@@ -216,11 +216,16 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     box_float_value(&mut *builder, neg_f, nbc)
                 }
             } else if op_prefers_int_lane(op) {
-                // -x == 0 - x; overflow deferred to boxing escape.
+                // -i64::MIN needs a BigInt; only a proven inline result can
+                // authorize unchecked negation into a raw integer home.
                 let src_name = &args[0];
                 let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
-                if let Some(src_raw) = src_raw {
+                if let Some(src_raw) = src_raw.filter(|_| {
+                    op.out
+                        .as_ref()
+                        .is_some_and(|out| representation_plan.is_inline_safe_int_name(out))
+                }) {
                     // Raw i64 primary negation: branchless.
                     let zero = builder.ins().iconst(types::I64, 0);
                     let negated = builder.ins().isub(zero, src_raw);
@@ -309,7 +314,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "pos" | "unary_pos" => {
@@ -342,7 +357,11 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             } else if op_prefers_int_lane(op) {
                 let src_name = &args[0];
                 if let Some(src_raw) =
-                    int_raw_value(&mut *builder, vars, representation_plan, src_name)
+                    int_raw_value(&mut *builder, vars, representation_plan, src_name).filter(|_| {
+                        op.out
+                            .as_ref()
+                            .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out))
+                    })
                 {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, src_raw);
@@ -394,17 +413,31 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "abs" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
-                // abs(x): select(x < 0, -x, x). Overflow deferred.
+                // abs(i64::MIN) needs a BigInt, just like unary negation.
                 let src_name = &args[0];
                 let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
-                if let Some(src_raw) = src_raw {
+                if let Some(src_raw) = src_raw.filter(|_| {
+                    op.out
+                        .as_ref()
+                        .is_some_and(|out| representation_plan.is_inline_safe_int_name(out))
+                }) {
                     // Raw i64 primary abs: branchless select.
                     let zero = builder.ins().iconst(types::I64, 0);
                     let is_neg = builder.ins().icmp(IntCC::SignedLessThan, src_raw, zero);
@@ -497,7 +530,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "invert" => {
@@ -507,7 +550,11 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 let src_name = &args[0];
                 let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
-                if let Some(src_raw) = src_raw {
+                if let Some(src_raw) = src_raw.filter(|_| {
+                    op.out
+                        .as_ref()
+                        .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out))
+                }) {
                     // Raw i64 primary invert: branchless, no overflow.
                     let minus_one = builder.ins().iconst(types::I64, -1i64);
                     let inverted = builder.ins().bxor(src_raw, minus_one);
@@ -594,7 +641,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "bool" | "cast_bool" | "builtin_bool" => {

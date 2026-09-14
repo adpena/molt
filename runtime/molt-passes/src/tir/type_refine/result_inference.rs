@@ -1,11 +1,11 @@
 use super::facts::{contains_bottom_type, is_bottom_type};
 use super::hints::{parse_guard_type, parse_return_type_str, structural_builtin_return_type};
 use crate::tir::op_kinds_generated::{
-    TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule, opcode_fixed_result_count_table,
+    TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule, opcode_accepts_shape,
     opcode_operand_independent_result_tir_type, opcode_type_refine_attr_result_type_rule_table,
     opcode_type_refine_operand_type_rule_table,
 };
-use crate::tir::ops::{AttrDict, AttrValue, OpCode};
+use crate::tir::ops::{AttrDict, AttrValue, OpCode, builtin_call_view};
 use crate::tir::types::TirType;
 
 pub(super) fn infer_result_facts_with_attrs(
@@ -14,6 +14,9 @@ pub(super) fn infer_result_facts_with_attrs(
     attrs: Option<&AttrDict>,
     result_count: usize,
 ) -> Vec<TirType> {
+    if !opcode_accepts_shape(opcode, operand_facts.len(), result_count) {
+        return vec![TirType::DynBox; result_count];
+    }
     if result_count == 0 {
         return vec![];
     }
@@ -48,7 +51,11 @@ fn dict_index_key_matches(dict_key_ty: &TirType, index_ty: &TirType) -> bool {
     matches!(dict_key_ty, TirType::DynBox) || dict_key_ty == index_ty
 }
 
-pub(super) fn attr_result_type_override(opcode: OpCode, attrs: &AttrDict) -> Option<TirType> {
+pub(super) fn attr_result_type_override<T>(
+    opcode: OpCode,
+    attrs: &AttrDict,
+    operands: &[T],
+) -> Option<TirType> {
     match opcode_type_refine_attr_result_type_rule_table(opcode) {
         TypeRefineAttrResultTypeRule::None => None,
         TypeRefineAttrResultTypeRule::ObjectTypeHint => match attrs.get("_type_hint") {
@@ -64,24 +71,22 @@ pub(super) fn attr_result_type_override(opcode: OpCode, attrs: &AttrDict) -> Opt
                 _ => None,
             })
         }
-        TypeRefineAttrResultTypeRule::CallBuiltinReturnType => attrs
-            .get("return_type")
-            .and_then(|v| match v {
-                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                _ => None,
-            })
-            .or_else(|| {
-                attrs.get("name").and_then(|v| match v {
-                    AttrValue::Str(s) => structural_builtin_return_type(s.as_str()),
-                    _ => None,
-                })
-            }),
+        TypeRefineAttrResultTypeRule::CallBuiltinReturnType => {
+            let call = builtin_call_view(opcode, attrs, operands)?;
+            if call.wire_kind != "call_builtin" {
+                return None;
+            }
+            structural_builtin_return_type(call.named_target()?)
+        }
         TypeRefineAttrResultTypeRule::TypeGuard => parse_guard_type(attrs),
         TypeRefineAttrResultTypeRule::CopyOriginalKind => {
             let original_kind = match attrs.get("_original_kind") {
                 Some(AttrValue::Str(k)) => Some(k.as_str()),
                 _ => None,
             };
+            if original_kind == Some("len") && operands.len() == 1 {
+                return Some(TirType::I64);
+            }
             crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind).or_else(
                 || {
                     original_kind
@@ -104,7 +109,7 @@ pub(super) fn infer_result_types_with_attrs(
     if result_count == 0 {
         return vec![];
     }
-    if opcode_fixed_result_count_table(opcode).is_some_and(|count| count != result_count) {
+    if !opcode_accepts_shape(opcode, operand_types.len(), result_count) {
         return vec![None; result_count];
     }
     (0..result_count)
@@ -130,57 +135,29 @@ fn infer_single_result_type_with_attrs(
     operand_types: &[TirType],
     attrs: Option<&AttrDict>,
 ) -> Option<TirType> {
-    if let Some(facts) = crate::tir::predicate_semantics::predicate_facts(opcode, operand_types) {
-        return Some(facts.result_type);
+    if let Some(result_type) = crate::tir::op_semantics::op_instance_facts(opcode, operand_types)
+        .and_then(|facts| facts.result_type)
+    {
+        return Some(result_type);
     }
     if let Some(attrs) = attrs
-        && let Some(ty) = attr_result_type_override(opcode, attrs)
+        && let Some(ty) = attr_result_type_override(opcode, attrs, operand_types)
     {
         return Some(ty);
     }
     match opcode_type_refine_operand_type_rule_table(opcode) {
-        // Add: numeric arithmetic + string concatenation + string/list repetition
-        TypeRefineOperandTypeRule::Add => match operand_types {
-            [TirType::Str, TirType::Str] => Some(TirType::Str), // "a" + "b"
-            _ => infer_numeric_arithmetic(operand_types),
-        },
-        // Mul: numeric arithmetic + string/list repetition (str * int, int * str)
-        TypeRefineOperandTypeRule::Mul => match operand_types {
-            [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
-            _ => infer_numeric_arithmetic(operand_types),
-        },
-        // Sub, Mod, FloorDiv: numeric only (str-str is TypeError in Python).
-        // InplaceSub mirrors Sub for typed scalars; mutable-type sequence
-        // ops (list -= ...) are TypeError in CPython for these opcodes.
-        TypeRefineOperandTypeRule::NumericArithmetic => infer_numeric_arithmetic(operand_types),
-        TypeRefineOperandTypeRule::TrueDivision => {
-            // Python: division always produces float unless both are DynBox.
-            match operand_types {
-                [TirType::I64, TirType::I64]
-                | [TirType::F64, TirType::F64]
-                | [TirType::I64, TirType::F64]
-                | [TirType::F64, TirType::I64] => Some(TirType::F64),
-                _ => infer_numeric_arithmetic(operand_types),
-            }
-        }
-        // Unary Neg/Pos
-        TypeRefineOperandTypeRule::UnaryNumeric => match operand_types {
-            [TirType::I64] => Some(TirType::I64),
-            [TirType::F64] => Some(TirType::F64),
-            _ => None,
-        },
-
-        // Bitwise ops other than shifts are closed over the inline I64 lane.
-        // Shifts can promote beyond the inline range and must stay boxed until
-        // the runtime operator decides whether bigint promotion is required.
-        TypeRefineOperandTypeRule::BitwiseI64 => match operand_types {
-            [TirType::I64, TirType::I64] => Some(TirType::I64),
-            _ => None,
-        },
-        TypeRefineOperandTypeRule::BitNotI64 => match operand_types {
-            [TirType::I64] => Some(TirType::I64),
-            _ => None,
-        },
+        // Operand-dependent operator result semantics are owned by
+        // op_semantics above. This match remains exhaustive so adding a new
+        // generated rule cannot silently create a second classifier here.
+        TypeRefineOperandTypeRule::Add
+        | TypeRefineOperandTypeRule::Mul
+        | TypeRefineOperandTypeRule::NumericArithmetic
+        | TypeRefineOperandTypeRule::TrueDivision
+        | TypeRefineOperandTypeRule::Power
+        | TypeRefineOperandTypeRule::UnaryNumeric
+        | TypeRefineOperandTypeRule::IntegerBitwise
+        | TypeRefineOperandTypeRule::IntegerShift
+        | TypeRefineOperandTypeRule::IntegerInvert => None,
 
         // Containers with operand-dependent element shape stay here.
         TypeRefineOperandTypeRule::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
@@ -231,7 +208,7 @@ fn infer_single_result_type_with_attrs(
             _ => None,
         },
 
-        // Value-select results are owned by predicate_semantics above.
+        // Value-select results are owned by op_semantics above.
         TypeRefineOperandTypeRule::BoolSelect | TypeRefineOperandTypeRule::None => None,
     }
 }
@@ -255,18 +232,5 @@ fn fresh_value_kind_result_type(kind: &str) -> TirType {
             TirType::Str
         }
         _ => TirType::DynBox,
-    }
-}
-
-/// Infer the result type of a numeric-only binary operation.
-/// Does NOT handle string concatenation or repetition — those are handled
-/// at the opcode level (Add for concat, Mul for repetition).
-fn infer_numeric_arithmetic(operand_types: &[TirType]) -> Option<TirType> {
-    match operand_types {
-        [TirType::I64, TirType::I64] => Some(TirType::I64),
-        [TirType::F64, TirType::F64] => Some(TirType::F64),
-        // Python numeric promotion: int op float → float
-        [TirType::I64, TirType::F64] | [TirType::F64, TirType::I64] => Some(TirType::F64),
-        _ => None,
     }
 }

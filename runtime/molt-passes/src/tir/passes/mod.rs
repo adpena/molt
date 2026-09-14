@@ -40,6 +40,7 @@ pub mod scev;
 pub mod sroa;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
+pub mod typed_slot_access;
 pub mod unboxing;
 pub mod value_identity;
 pub mod value_range;
@@ -207,7 +208,6 @@ mod tests {
                 "canonicalize_post",
                 "gvn",
                 "licm",
-                "escape_analysis",
                 "refcount_elim",
                 "dead_store_elim",
                 "mem_gvn",

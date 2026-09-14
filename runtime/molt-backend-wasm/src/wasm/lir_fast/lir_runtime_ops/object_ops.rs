@@ -1,21 +1,16 @@
 use super::super::lir_context::LirLowerCtx;
 use super::super::runtime_calls::LirRuntimeCall;
 use super::call_abi::{
-    LirRuntimeArg, emit_lir_runtime_call_with_args_and_result, emit_lir_runtime_result,
-    required_i64_attr,
+    LirRuntimeArg, emit_lir_runtime_call_with_args_and_result, required_i64_attr,
 };
-use crate::wasm::body::WasmLirFallbackReason;
 use molt_tir::tir::lir::LirOp;
-use molt_tir::tir::ops::AttrValue;
 
 pub(in crate::wasm::lir_fast) fn emit_lir_alloc(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if matches!(
-        op.tir_op.attrs.get("arena_eligible"),
-        Some(AttrValue::Bool(true))
-    ) {
-        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
-        emit_lir_runtime_result(ctx, op);
-        return;
+    if op.tir_op.attrs.contains_key("arena_eligible") {
+        panic!(
+            "{}",
+            crate::tir::target_info::COMPILER_ARENA_PLACEMENT_UNSUPPORTED
+        );
     }
     let size = required_i64_attr(op, "value", "Alloc");
     emit_lir_runtime_call_with_args_and_result(

@@ -311,33 +311,33 @@ metrics = "none"
 [[kind]]
 name = "CLASSMETHOD"
 id = 226
-layout = "fixed_bits"
-edges = "fixed"
+layout = "object"
+edges = "shape"
 cycle = "always"
-weakref = "deny"
-shape = "fixed"
+weakref = "class"
+shape = "class"
 drop = "classmethod"
 metrics = "none"
 
 [[kind]]
 name = "STATICMETHOD"
 id = 227
-layout = "fixed_bits"
-edges = "fixed"
+layout = "object"
+edges = "shape"
 cycle = "always"
-weakref = "deny"
-shape = "fixed"
+weakref = "class"
+shape = "class"
 drop = "staticmethod"
 metrics = "none"
 
 [[kind]]
 name = "PROPERTY"
 id = 228
-layout = "fixed_bits"
-edges = "fixed"
+layout = "object"
+edges = "shape"
 cycle = "always"
-weakref = "deny"
-shape = "fixed"
+weakref = "class"
+shape = "class"
 drop = "property"
 metrics = "none"
 
@@ -656,6 +656,17 @@ shape = "class"
 drop = "object_shape"
 metrics = "none"
 
+[[kind]]
+name = "NATIVE_DESCRIPTOR"
+id = 257
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "native_descriptor"
+metrics = "none"
+
 
 # Immutable OBJECT subshape ABI. Selected before publication and used directly
 # for visit/clear/terminal-drop dispatch; poll functions and class identities are
@@ -863,6 +874,12 @@ resource_slot0 = "websocket"
 name = "GENERIC_TASK_PAYLOAD"
 id = 33
 family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "BOXED_FIELDS"
+id = 34
+family = "boxed_fields"
 resource_slot0 = "none"
 
 [[object_shape]]

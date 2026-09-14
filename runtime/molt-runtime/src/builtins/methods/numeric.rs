@@ -7,7 +7,7 @@ use crate::object::ops_hash::{molt_float_hash_method, molt_int_hash_method};
 use crate::*;
 
 pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__abs__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.int_abs,
@@ -109,11 +109,11 @@ pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             ))
         }
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn int_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "from_bytes" => {
             let zero = MoltObject::from_int(0).bits();
             Some(builtin_classmethod_bits_with_defaults_tuple(
@@ -125,11 +125,11 @@ pub(crate) fn int_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             ))
         }
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn float_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__new__" => {
             let zero = MoltObject::from_float(0.0).bits();
             Some(builtin_func_bits_with_defaults_tuple(
@@ -177,11 +177,11 @@ pub(crate) fn float_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn float_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "fromhex" => Some(builtin_classmethod_bits(
             _py,
             &runtime_state(_py).method_cache.float_fromhex,
@@ -195,11 +195,11 @@ pub(crate) fn float_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn complex_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "from_number" if runtime_python_at_least(_py, 3, 14) => Some(builtin_classmethod_bits(
             _py,
             &runtime_state(_py).method_cache.complex_from_number,
@@ -207,11 +207,11 @@ pub(crate) fn complex_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn complex_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "conjugate" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.complex_conjugate,
@@ -219,5 +219,5 @@ pub(crate) fn complex_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> 
             1,
         )),
         _ => None,
-    }
+    })
 }

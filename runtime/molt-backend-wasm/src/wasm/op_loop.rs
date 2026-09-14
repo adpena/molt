@@ -142,8 +142,4 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
         self.frame.scalar_plan()
     }
-
-    pub(super) fn arena_local(&self) -> Option<u32> {
-        self.frame.arena_local()
-    }
 }

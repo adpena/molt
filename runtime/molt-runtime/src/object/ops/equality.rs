@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(in crate::object) unsafe fn eq_bool_from_bits(
     _py: &PyToken<'_>,
     lhs_bits: u64,
@@ -23,25 +26,27 @@ pub(in crate::object) enum BinaryDunderOutcome {
     Error,
 }
 
-pub(in crate::object) unsafe fn call_dunder_raw(
+unsafe fn call_dunder_raw(
     _py: &PyToken<'_>,
     raw_bits: u64,
     owner_ptr: *mut u8,
-    instance_ptr: Option<*mut u8>,
+    instance_bits: u64,
     arg_bits: u64,
 ) -> BinaryDunderOutcome {
     unsafe {
-        let Some(inst_ptr) = instance_ptr else {
-            return BinaryDunderOutcome::Missing;
-        };
-        let Some(bound_bits) = descriptor_bind(_py, raw_bits, owner_ptr, Some(inst_ptr)) else {
+        let Some(res_bits) = crate::builtins::attr::descriptor_special_call1(
+            _py,
+            raw_bits,
+            owner_ptr,
+            Some(instance_bits),
+            arg_bits,
+            crate::builtins::attr::DescriptorCallPolicy::Optional,
+        ) else {
             if exception_pending(_py) {
                 return BinaryDunderOutcome::Error;
             }
             return BinaryDunderOutcome::Missing;
         };
-        let res_bits = call_callable1(_py, bound_bits, arg_bits);
-        dec_ref_bits(_py, bound_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, res_bits);
             return BinaryDunderOutcome::Error;
@@ -54,6 +59,38 @@ pub(in crate::object) unsafe fn call_dunder_raw(
     }
 }
 
+/// Resolve and invoke one binary special method against the receiver's current
+/// type. The owner pin and raw descriptor lookup live only for this attempt;
+/// neither can become stale across an earlier user callback.
+unsafe fn call_current_binary_dunder(
+    _py: &PyToken<'_>,
+    receiver_bits: u64,
+    arg_bits: u64,
+    name_bits: u64,
+) -> BinaryDunderOutcome {
+    unsafe {
+        let owner_bits = type_of_bits(_py, receiver_bits);
+        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
+            return if exception_pending(_py) {
+                BinaryDunderOutcome::Error
+            } else {
+                BinaryDunderOutcome::Missing
+            };
+        };
+
+        // A descriptor hook may replace the receiver's __class__. Keep the
+        // owner passed to descriptor_call1 alive through that immediate call.
+        inc_ref_bits(_py, owner_bits);
+        let outcome = match class_attr_lookup_raw_mro(_py, owner_ptr, name_bits) {
+            Some(raw_bits) => call_dunder_raw(_py, raw_bits, owner_ptr, receiver_bits, arg_bits),
+            None if exception_pending(_py) => BinaryDunderOutcome::Error,
+            None => BinaryDunderOutcome::Missing,
+        };
+        dec_ref_bits(_py, owner_bits);
+        outcome
+    }
+}
+
 pub(in crate::object) unsafe fn call_binary_dunder(
     _py: &PyToken<'_>,
     lhs_bits: u64,
@@ -62,55 +99,54 @@ pub(in crate::object) unsafe fn call_binary_dunder(
     rop_name_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        let lhs_obj = obj_from_bits(lhs_bits);
-        let rhs_obj = obj_from_bits(rhs_bits);
-        let lhs_ptr = lhs_obj.as_ptr();
-        let rhs_ptr = rhs_obj.as_ptr();
-
-        let lhs_type_bits = type_of_bits(_py, lhs_bits);
-        let rhs_type_bits = type_of_bits(_py, rhs_bits);
-        let lhs_type_ptr = obj_from_bits(lhs_type_bits).as_ptr();
-        let rhs_type_ptr = obj_from_bits(rhs_type_bits).as_ptr();
-
-        let lhs_op_raw =
-            lhs_type_ptr.and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, op_name_bits));
-        let rhs_rop_raw =
-            rhs_type_ptr.and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits));
-
-        let rhs_is_subclass =
-            rhs_type_bits != lhs_type_bits && issubclass_bits(rhs_type_bits, lhs_type_bits);
-        let prefer_rhs = rhs_is_subclass
-            && rhs_rop_raw.is_some()
-            && lhs_op_raw.is_none_or(|lhs_raw| lhs_raw != rhs_rop_raw.unwrap());
+        // Snapshot identities only to choose CPython's reflected-subclass
+        // ordering. Every invocation below performs a fresh lookup.
+        let (different_types, prefer_rhs) = {
+            let lhs_type_bits = type_of_bits(_py, lhs_bits);
+            let rhs_type_bits = type_of_bits(_py, rhs_bits);
+            let different_types = rhs_type_bits != lhs_type_bits;
+            let rhs_is_subclass = different_types && issubclass_bits(rhs_type_bits, lhs_type_bits);
+            let prefer_rhs = if !rhs_is_subclass {
+                false
+            } else {
+                // Only an overridden reflected method gets subtype priority;
+                // compare __rop__ on both types, not lhs.__op__ to rhs.__rop__.
+                let lhs_rop_raw = obj_from_bits(lhs_type_bits)
+                    .as_ptr()
+                    .and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits));
+                if exception_pending(_py) {
+                    return Some(MoltObject::none().bits());
+                }
+                let rhs_rop_raw = obj_from_bits(rhs_type_bits)
+                    .as_ptr()
+                    .and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits));
+                if exception_pending(_py) {
+                    return Some(MoltObject::none().bits());
+                }
+                rhs_rop_raw.is_some()
+                    && lhs_rop_raw.is_none_or(|lhs_raw| lhs_raw != rhs_rop_raw.unwrap())
+            };
+            (different_types, prefer_rhs)
+        };
 
         let mut tried_rhs = false;
-        if prefer_rhs
-            && let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
-                (rhs_ptr, rhs_type_ptr, rhs_rop_raw)
-        {
+        if prefer_rhs {
             tried_rhs = true;
-            match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
+            match call_current_binary_dunder(_py, rhs_bits, lhs_bits, rop_name_bits) {
                 BinaryDunderOutcome::Value(bits) => return Some(bits),
                 BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
                 BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
             }
         }
 
-        if let (Some(lhs_ptr), Some(lhs_type_ptr), Some(lhs_raw)) =
-            (lhs_ptr, lhs_type_ptr, lhs_op_raw)
-        {
-            match call_dunder_raw(_py, lhs_raw, lhs_type_ptr, Some(lhs_ptr), rhs_bits) {
-                BinaryDunderOutcome::Value(bits) => return Some(bits),
-                BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
-                BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
-            }
+        match call_current_binary_dunder(_py, lhs_bits, rhs_bits, op_name_bits) {
+            BinaryDunderOutcome::Value(bits) => return Some(bits),
+            BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
+            BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
         }
 
-        if !tried_rhs
-            && let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
-                (rhs_ptr, rhs_type_ptr, rhs_rop_raw)
-        {
-            match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
+        if different_types && !tried_rhs {
+            match call_current_binary_dunder(_py, rhs_bits, lhs_bits, rop_name_bits) {
                 BinaryDunderOutcome::Value(bits) => return Some(bits),
                 BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
                 BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
@@ -458,11 +494,20 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if !l_desc.eq || !r_desc.eq {
                     return lp == rp;
                 }
-                if l_desc.name != r_desc.name || l_desc.field_names != r_desc.field_names {
+                if object_class_bits(lp) != object_class_bits(rp)
+                    || l_desc.name != r_desc.name
+                    || l_desc.field_names != r_desc.field_names
+                {
                     return false;
                 }
-                let l_vals = dataclass_fields_ref(lp);
-                let r_vals = dataclass_fields_ref(rp);
+                let Some(l_vals) = crate::object::field_storage::dataclass_snapshot(_py, lp, 0x2)
+                else {
+                    return false;
+                };
+                let Some(r_vals) = crate::object::field_storage::dataclass_snapshot(_py, rp, 0x2)
+                else {
+                    return false;
+                };
                 if l_vals.len() != r_vals.len() {
                     return false;
                 }

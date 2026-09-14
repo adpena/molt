@@ -31,6 +31,9 @@ struct TypeSubclassRegistry {
     live: HashMap<usize, u64>,
     subclasses: HashMap<TypeIdentity, SubclassIdentities>,
     bases_by_subclass: HashMap<TypeIdentity, HashSet<TypeIdentity>>,
+    // Process-owned builtin shells remain closed across runtime teardown.
+    // Only the next runtime bootstrap may reopen this exact cohort.
+    retired_statics: HashSet<usize>,
 }
 
 static TYPE_SUBCLASSES: Lazy<Mutex<TypeSubclassRegistry>> =
@@ -62,6 +65,9 @@ fn type_identity(
         return None;
     }
     let address = tp.addr();
+    if registry.retired_statics.contains(&address) {
+        return None;
+    }
     let generation = if let Some(generation) = registry.live.get(&address) {
         *generation
     } else {
@@ -138,6 +144,97 @@ pub(crate) fn unregister_type_address(address: usize) {
             }
         }
     }
+}
+
+/// Detach runtime-owned roots from an exact cohort of process-owned type shells.
+///
+/// This is not heap-type destruction or a foreign-type registry sweep. All
+/// shells lose their live subclass identities before the first decref can
+/// reenter the ABI. Runtime-derived readiness is invalidated; the boolean marks
+/// an ordinary bootstrap shell whose process-ready state can survive if it has
+/// no runtime-owned roots. The immutable C layout, base pointer, slot functions,
+/// and immortal object headers survive for the next runtime.
+///
+/// # Safety
+/// The caller must hold exclusive runtime teardown custody. Every non-null
+/// pointer must name a live process-owned type shell, and each non-null dict,
+/// bases, MRO, or cache field must own one reference in the still-live runtime.
+pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
+    {
+        let mut registry = TYPE_SUBCLASSES.lock();
+        registry.retired_statics.extend(
+            types
+                .iter()
+                .filter(|(tp, _)| !tp.is_null())
+                .map(|(tp, _)| tp.addr()),
+        );
+    }
+    let mut seen = HashSet::with_capacity(types.len());
+    let mut detached = Vec::with_capacity(types.len() * 4);
+    for &(tp, bootstrap_ready) in types {
+        if tp.is_null() || !seen.insert(tp.addr()) {
+            continue;
+        }
+        unsafe {
+            let first_root = detached.len();
+            // Deduplicate shells, never owned edges: two fields may own two
+            // references to the same object and must both be released.
+            for field in [
+                &raw mut (*tp).tp_dict,
+                &raw mut (*tp).tp_bases,
+                &raw mut (*tp).tp_mro,
+                &raw mut (*tp).tp_cache,
+            ] {
+                let root = field.replace(ptr::null_mut());
+                if !root.is_null() {
+                    detached.push(root);
+                }
+            }
+            let readiness = if bootstrap_ready && detached.len() == first_root {
+                0
+            } else {
+                Py_TPFLAGS_READY
+            };
+            (*tp).tp_flags &= !(readiness
+                | crate::abi_types::Py_TPFLAGS_READYING
+                | crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG);
+            (*tp).tp_version_tag = 0;
+            (*tp).tp_watched = 0;
+        }
+        // No decrefs or callbacks occur under the subclass registry lock.
+        // The process-wide generation and version counters remain monotonic.
+        unregister_type_address(tp.addr());
+    }
+    for root in detached {
+        unsafe { crate::api::refcount::Py_DECREF(root) };
+    }
+}
+
+/// Reopen only the supplied process-owned shells at the next runtime bootstrap.
+/// This does not resurrect old live identities, roots, version tags, or watches.
+pub(crate) fn reopen_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
+    let mut registry = TYPE_SUBCLASSES.lock();
+    for &(tp, _) in types {
+        registry.retired_statics.remove(&tp.addr());
+    }
+}
+
+struct TypeReadyingGuard(*mut PyTypeObject);
+
+impl Drop for TypeReadyingGuard {
+    fn drop(&mut self) {
+        unsafe { (*self.0).tp_flags &= !crate::abi_types::Py_TPFLAGS_READYING };
+    }
+}
+
+unsafe fn reject_type_readiness(message: &'static std::ffi::CStr) -> c_int {
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_RuntimeError).cast(),
+            message.as_ptr(),
+        );
+    }
+    -1
 }
 
 unsafe fn register_type_subclasses(tp: *mut PyTypeObject) {
@@ -276,6 +373,17 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     };
     crate::capi_trace::trace_call("PyType_Ready", Some(&label));
 
+    // Retirement closes the entire builtin cohort before releasing any root.
+    // A decref callback may use the old runtime, but cannot repopulate these
+    // shells. Do not hold registry custody while reporting a C exception.
+    let retired = TYPE_SUBCLASSES.lock().retired_statics.contains(&tp.addr());
+    if retired {
+        return unsafe { reject_type_readiness(c"builtin type belongs to a retired runtime") };
+    }
+    if unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_READYING != 0 {
+        return unsafe { reject_type_readiness(c"recursive PyType_Ready on an initializing type") };
+    }
+
     // Idempotent: a type readied once (numpy's builtin PyType_Ready(&PyBool_Type)
     // calls, or a re-entrant static-init) must not be re-processed. Still register
     // it in the bridge (idempotent) so an already-ready static type the extension
@@ -289,6 +397,11 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         }
         return 0;
     }
+
+    // READYING is the canonical recursion state, including allocation/error
+    // callbacks during startup. Every success and failure path clears it.
+    unsafe { (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING };
+    let _readying = TypeReadyingGuard(tp);
 
     unsafe {
         // (1) Default a missing base to `object` — every static type except
@@ -428,6 +541,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         // (7) Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
+    drop(_readying);
 
     // (7) Register the readied type object in the split-runtime object bridge so a
     //     C extension that hands the type back to the runtime — `PyModule_AddObject`
@@ -2181,6 +2295,9 @@ unsafe fn validate_type_watcher_id(watcher_id: c_int) -> bool {
 
 unsafe fn assign_type_version_tag(tp: *mut PyTypeObject, seen: &mut HashSet<usize>) -> bool {
     if tp.is_null() {
+        return false;
+    }
+    if TYPE_SUBCLASSES.lock().retired_statics.contains(&tp.addr()) {
         return false;
     }
     if unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG != 0 {
@@ -4369,6 +4486,209 @@ mod subclass_registry_tests {
         ty.tp_flags = Py_TPFLAGS_READY | Py_TPFLAGS_VALID_VERSION_TAG;
         ty.tp_version_tag = 41;
         ty
+    }
+
+    #[test]
+    fn static_retirement_detaches_the_whole_cohort_before_releasing_owned_edges() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        #[repr(C)]
+        struct RootProbe {
+            object: PyObject,
+            shells: [*mut PyTypeObject; 4],
+            calls: usize,
+            observed_detachment: bool,
+            rejected_reentry: bool,
+        }
+        unsafe extern "C" fn observe_detachment(object: *mut PyObject) {
+            let probe = unsafe { &mut *object.cast::<RootProbe>() };
+            probe.calls += 1;
+            let registry = TYPE_SUBCLASSES.lock();
+            probe.observed_detachment = probe.shells.iter().all(|&tp| unsafe {
+                (*tp).tp_dict.is_null()
+                    && (*tp).tp_bases.is_null()
+                    && (*tp).tp_mro.is_null()
+                    && (*tp).tp_cache.is_null()
+                    && !registry.live.contains_key(&tp.addr())
+            });
+            drop(registry);
+            probe.rejected_reentry = probe.shells.iter().all(|&tp| unsafe {
+                let rejected =
+                    PyType_Ready(tp) == -1 && !crate::api::errors::PyErr_Occurred().is_null();
+                crate::api::errors::PyErr_Clear();
+                rejected
+            });
+        }
+
+        let mut first = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        let mut second = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        let mut bootstrap = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        let mut empty_exception = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        let mut unrelated_base = blank_type(17);
+        let mut unrelated_child = blank_type(23);
+        let shells = [
+            &raw mut *first,
+            &raw mut *second,
+            &raw mut *bootstrap,
+            &raw mut *empty_exception,
+        ];
+        let base = &raw mut *unrelated_base;
+        let child = &raw mut *unrelated_child;
+        let mut root_type = blank_type(1);
+        root_type.tp_dealloc = Some(observe_detachment);
+        let mut early = RootProbe {
+            object: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut *root_type,
+            },
+            shells,
+            calls: 0,
+            observed_detachment: false,
+            rejected_reentry: false,
+        };
+        let mut shared = RootProbe {
+            object: PyObject {
+                ob_refcnt: 7,
+                ob_type: &raw mut *root_type,
+            },
+            shells,
+            calls: 0,
+            observed_detachment: false,
+            rejected_reentry: false,
+        };
+        first.tp_dict = (&raw mut early).cast();
+        first.tp_bases = (&raw mut shared).cast();
+        first.tp_mro = (&raw mut shared).cast();
+        first.tp_cache = (&raw mut shared).cast();
+        second.tp_dict = (&raw mut shared).cast();
+        second.tp_bases = (&raw mut shared).cast();
+        second.tp_mro = (&raw mut shared).cast();
+        second.tp_cache = (&raw mut shared).cast();
+        first.tp_base = base;
+        let type_name = c"retirement_probe".as_ptr();
+        first.tp_name = type_name;
+        first.tp_basicsize = 123;
+        first.tp_dealloc = Some(observe_detachment);
+        first.tp_flags |=
+            crate::abi_types::Py_TPFLAGS_READYING | crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE;
+        first.tp_watched = 3;
+        unsafe {
+            for shell in shells {
+                register_subclass(base, shell);
+            }
+            register_subclass(shells[0], shells[1]);
+            register_subclass(shells[1], child);
+            register_subclass(base, child);
+        }
+        let (old_generation, base_identity, child_identity) = {
+            let registry = TYPE_SUBCLASSES.lock();
+            (
+                registry.live[&shells[0].addr()],
+                TypeIdentity {
+                    address: base.addr(),
+                    generation: registry.live[&base.addr()],
+                },
+                TypeIdentity {
+                    address: child.addr(),
+                    generation: registry.live[&child.addr()],
+                },
+            )
+        };
+        let version_counter = NEXT_TYPE_VERSION_TAG.load(Ordering::Relaxed);
+        let cohort = [
+            (shells[0], false),
+            (shells[1], true),
+            (shells[2], true),
+            (shells[3], false),
+            (shells[0], false),
+            (ptr::null_mut(), false),
+        ];
+        unsafe { retire_static_type_runtime_roots(&cohort) };
+
+        assert_eq!((early.calls, shared.calls), (1, 1));
+        assert_eq!((early.object.ob_refcnt, shared.object.ob_refcnt), (0, 0));
+        assert!(early.observed_detachment && shared.observed_detachment);
+        assert!(early.rejected_reentry && shared.rejected_reentry);
+        assert_eq!(first.tp_flags, crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE);
+        assert_eq!(second.tp_flags, 0);
+        assert_eq!(bootstrap.tp_flags, Py_TPFLAGS_READY);
+        assert_eq!(empty_exception.tp_flags, 0);
+        assert_eq!((first.tp_version_tag, first.tp_watched), (0, 0));
+        assert_eq!(first.tp_base, base);
+        assert_eq!(first.tp_name, type_name);
+        assert_eq!(first.tp_basicsize, 123);
+        assert!(std::ptr::fn_addr_eq(
+            first.tp_dealloc.unwrap(),
+            observe_detachment as unsafe extern "C" fn(*mut PyObject)
+        ));
+        assert_eq!(
+            first.ob_base.ob_base.ob_refcnt,
+            crate::abi_types::IMMORTAL_REFCNT
+        );
+        {
+            let registry = TYPE_SUBCLASSES.lock();
+            assert_eq!(registry.live[&base.addr()], base_identity.generation);
+            assert_eq!(registry.live[&child.addr()], child_identity.generation);
+            assert_eq!(
+                registry.subclasses[&base_identity].members,
+                HashSet::from([child_identity])
+            );
+            assert_eq!(
+                registry.bases_by_subclass[&child_identity],
+                HashSet::from([base_identity])
+            );
+        }
+        unsafe { retire_static_type_runtime_roots(&cohort) };
+        assert_eq!(
+            (early.calls, shared.calls),
+            (1, 1),
+            "retirement is idempotent"
+        );
+        assert_eq!(unsafe { PyType_Ready(shells[2]) }, -1);
+        unsafe { crate::api::errors::PyErr_Clear() };
+        assert!(!unsafe { assign_type_version_tag(shells[2], &mut HashSet::new()) });
+        {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            assert!(type_identity(&mut registry, shells[0]).is_none());
+        }
+        reopen_static_type_runtime_roots(&cohort);
+        let new_generation = {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            type_identity(&mut registry, shells[0]).unwrap().generation
+        };
+        assert!(new_generation > old_generation);
+        assert!(NEXT_TYPE_VERSION_TAG.load(Ordering::Relaxed) >= version_counter);
+        assert!(unsafe { assign_type_version_tag(shells[2], &mut HashSet::new()) });
+
+        // A subsequent bootstrap can fail after publishing only a dict. Its
+        // unfinished roots and READYING state follow the same retirement path.
+        shared.object.ob_refcnt = 1;
+        first.tp_dict = (&raw mut shared).cast();
+        first.tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
+        unsafe { retire_static_type_runtime_roots(&cohort) };
+        assert_eq!((early.calls, shared.calls), (1, 2));
+        assert!(shared.observed_detachment && shared.rejected_reentry);
+        assert_eq!(first.tp_flags, crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE);
+        reopen_static_type_runtime_roots(&cohort);
+        unregister_type_address(shells[0].addr());
+        unregister_type_address(base.addr());
+        unregister_type_address(child.addr());
+    }
+
+    #[test]
+    fn recursive_type_readiness_fails_without_consuming_the_outer_guard() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        let mut ty = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        ty.tp_flags =
+            crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE | crate::abi_types::Py_TPFLAGS_READYING;
+        {
+            let _outer = TypeReadyingGuard(&raw mut *ty);
+            assert_eq!(unsafe { PyType_Ready(&raw mut *ty) }, -1);
+            assert!(!unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
+            assert!(ty.tp_dict.is_null() && ty.tp_mro.is_null());
+            assert_ne!(ty.tp_flags & crate::abi_types::Py_TPFLAGS_READYING, 0);
+            unsafe { crate::api::errors::PyErr_Clear() };
+        }
+        assert_eq!(ty.tp_flags, crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE);
     }
 
     #[test]

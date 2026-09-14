@@ -265,16 +265,12 @@ fn parameter_and_stack_roots_are_lattice_drop_eligibility_facts() {
         "entry block args are borrowed from the caller"
     );
     assert!(
-        root_facts.is_stack_value_root(stack),
-        "StackAlloc results carry no RC obligation"
-    );
-    assert!(
         !root_facts.is_drop_owned_root_candidate(param),
         "borrowed parameter roots are not function-owned drop candidates"
     );
     assert!(
-        !root_facts.is_drop_owned_root_candidate(stack),
-        "stack roots are not function-owned drop candidates"
+        root_facts.is_drop_owned_root_candidate(stack),
+        "unsupported boxed stack roots do not mint no-release facts"
     );
     assert!(
         root_facts.is_drop_owned_root_candidate(heap),
@@ -320,8 +316,8 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
         "borrowed parameter roots are not droppable"
     );
     assert!(
-        !eligibility.is_droppable(stack),
-        "stack roots carry no RC obligation"
+        eligibility.is_droppable(stack),
+        "boxed allocation roots retain RC obligations"
     );
     assert!(
         !eligibility.is_droppable(raw),
@@ -423,7 +419,10 @@ fn python_lifetime_facts_track_bound_slots_and_explicit_releases() {
         "DecRef and DeleteVar old-slot operands are explicit release roots"
     );
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
-    let drop_eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let liveness = crate::tir::analysis::AnalysisManager::new()
+        .get::<crate::tir::passes::liveness::TirLiveness>(&f)
+        .clone();
+    let drop_eligibility = DropEligibility::new(&aliases, &root_facts, &liveness.raw_scalars);
     assert!(
         facts.is_statement_release_boundary_root(statement_root, &drop_eligibility),
         "droppable non-slot roots can release at statement finalizer boundaries"
@@ -438,11 +437,16 @@ fn python_lifetime_facts_track_bound_slots_and_explicit_releases() {
     );
     assert!(
         !facts.is_statement_release_boundary_root(stack_root, &drop_eligibility),
-        "stack/no-RC roots are not statement release roots"
+        "local-store-bound roots are not statement release roots"
     );
     assert!(
         facts.is_return_boundary_deferred_root(deferred_root, &drop_eligibility),
         "bound_local attrs define Python return-boundary deferral roots"
+    );
+    assert_eq!(
+        facts.return_boundary_candidate_roots(&drop_eligibility),
+        [deferred_root].into_iter().collect(),
+        "only positively named, independently owned, non-slot roots reach the return planner"
     );
     assert!(
         !facts.is_return_boundary_deferred_root(bound_root, &drop_eligibility)
@@ -465,7 +469,7 @@ fn python_lifetime_facts_track_bound_slots_and_explicit_releases() {
     );
     assert!(
         !boundary_roots.contains(&stack_root),
-        "stack/no-RC local-store roots are not boundary release roots"
+        "non-finalizer local-store roots do not require scope-exit deferral"
     );
     assert!(
         !boundary_roots.contains(&conditional_root),

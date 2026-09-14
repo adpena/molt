@@ -31,6 +31,7 @@ use super::classify::{MemRole, classify};
 /// * **C** — a dominator-tree renaming walk binds each Use to its
 ///   region-aware reaching def and each Def to the version it flows through.
 pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> MemorySsaResult {
+    let slot_access = crate::tir::passes::typed_slot_access::for_alias(func, alias);
     // --- Shared CFG facts (full-CFG view, matching the S1 dominator analyses).
     let pred_map = dominators::build_pred_map(func);
     let idoms = dominators::compute_idoms(func, &pred_map);
@@ -43,6 +44,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     // version 0 = LIVE_ON_ENTRY. Allocate fresh versions from 1 upward.
     let mut next_version: u32 = 1;
     let mut result = MemorySsaResult {
+        slot_access,
         next_version,
         ..Default::default()
     };
@@ -52,8 +54,8 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     let mut def_blocks: HashSet<BlockId> = HashSet::new();
     for &bid in &rpo {
         let block = &func.blocks[&bid];
-        for op in &block.ops {
-            if classify(op, alias) == MemRole::Def {
+        for (index, op) in block.ops.iter().enumerate() {
+            if classify(op, alias, &result.slot_access, (bid, index)) == MemRole::Def {
                 def_blocks.insert(bid);
                 break;
             }
@@ -108,9 +110,9 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
         // Walk the block's ops, threading the current version.
         let block = &func.blocks[&bid];
         for (op_idx, op) in block.ops.iter().enumerate() {
-            match classify(op, alias) {
+            match classify(op, alias, &result.slot_access, (bid, op_idx)) {
                 MemRole::Use => {
-                    let region = alias.region_of(op);
+                    let region = result.slot_access.region_at(alias, (bid, op_idx), op);
                     // Region-aware reaching def: skip back through defs whose
                     // region does NOT may-alias this load's region. `current`
                     // and every version it flows through are the candidate
@@ -132,7 +134,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
                     );
                 }
                 MemRole::Def => {
-                    let region = alias.region_of(op);
+                    let region = result.slot_access.region_at(alias, (bid, op_idx), op);
                     let ver = MemVersion(next_version);
                     next_version += 1;
                     result.defs.insert(

@@ -4,19 +4,19 @@ use crate::tir::function::TirFunction;
 pub(super) fn emit_report(
     report: bool,
     func: &TirFunction,
-    raw_stack_allocs: usize,
+    fixed_layout_allocations: usize,
     candidates: usize,
     promoted: usize,
-    stores_removed: usize,
+    ops_removed: usize,
     diag: &[String],
 ) {
-    if !report || raw_stack_allocs == 0 {
+    if !report || fixed_layout_allocations == 0 {
         return;
     }
     let mut lines = Vec::with_capacity(diag.len() + 1);
     lines.push(format!(
-        "[SROA] fn={} stack_allocs={raw_stack_allocs} candidates={candidates} \
-         promoted={promoted} stores_removed={stores_removed}",
+        "[SROA] fn={} fixed_layout_allocations={fixed_layout_allocations} candidates={candidates} \
+         promoted={promoted} ops_removed={ops_removed}",
         func.name
     ));
     lines.extend(diag.iter().cloned());

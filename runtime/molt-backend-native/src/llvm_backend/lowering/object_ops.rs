@@ -1,6 +1,76 @@
 use super::*;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn field_value_is_pointer(
+        &self,
+        bits: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let tag = self
+            .backend
+            .builder
+            .build_and(
+                bits,
+                i64_ty.const_int(nanbox::QNAN_TAG_MASK_I64 as u64, false),
+                "field_tag",
+            )
+            .unwrap();
+        self.backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                tag,
+                i64_ty.const_int(nanbox::QNAN_TAG_PTR_I64 as u64, false),
+                "field_is_ptr",
+            )
+            .unwrap()
+    }
+
+    /// The caller must have admitted the receiver before this header read.
+    /// HAS_PTRS is sticky after instance dictionary materialization, so a clear
+    /// bit admits inline backing without duplicating runtime storage metadata.
+    fn field_needs_runtime(
+        &self,
+        obj_ptr_bits: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let builder = &self.backend.builder;
+        let i32_ty = self.backend.context.i32_type();
+        let i64_ty = self.backend.context.i64_type();
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        let obj_ptr = builder
+            .build_int_to_ptr(obj_ptr_bits, ptr_ty, "field_object")
+            .unwrap();
+        let header_offset =
+            i64_ty.const_int(molt_codegen_abi::HEADER_FLAGS_OFFSET as i64 as u64, true);
+        let flags_ptr = unsafe {
+            builder
+                .build_gep(
+                    self.backend.context.i8_type(),
+                    obj_ptr,
+                    &[header_offset],
+                    "field_flags_ptr",
+                )
+                .unwrap()
+        };
+        let flags = builder
+            .build_load(i32_ty, flags_ptr, "field_flags")
+            .unwrap()
+            .into_int_value();
+        let mask = i32_ty.const_int(u64::from(molt_codegen_abi::HEADER_FLAG_HAS_PTRS), false);
+        let has_ptrs = builder.build_and(flags, mask, "field_has_ptrs").unwrap();
+        builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                has_ptrs,
+                i32_ty.const_zero(),
+                "field_needs_runtime",
+            )
+            .unwrap()
+    }
+
     pub(super) fn emit_load_attr(&mut self, op: &TirOp) {
         let result_id = op.results[0];
         let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
@@ -32,20 +102,50 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .attrs
                 .get("value")
                 .and_then(|v| match v {
-                    AttrValue::Int(v) => Some(*v),
+                    AttrValue::Int(value) => Some(*value),
                     _ => None,
                 })
                 .unwrap_or(0);
             let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-            // Inline the field load: convert ptr to pointer type,
-            // GEP by byte offset, load i64, then inc_ref.
-            // This eliminates the runtime call (GIL + debug checks).
             let i64_ty = self.backend.context.i64_type();
-            let i8_ty = self.backend.context.i8_type();
             let ptr_ty = self
                 .backend
                 .context
                 .ptr_type(inkwell::AddressSpace::default());
+            let receiver_block = self.backend.builder.get_insert_block().unwrap();
+            let receiver_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, "field_receiver");
+            let load_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, "field_load");
+            let runtime_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, "field_runtime");
+            let merge_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, "field_load_merge");
+            self.all_llvm_blocks
+                .extend([receiver_bb, load_bb, runtime_bb, merge_bb]);
+            let receiver_is_pointer = self.field_value_is_pointer(obj_bits);
+            self.backend
+                .builder
+                .build_conditional_branch(receiver_is_pointer, receiver_bb, merge_bb)
+                .unwrap();
+
+            // Receiver admission dominates both header and payload accesses.
+            self.backend.builder.position_at_end(receiver_bb);
+            let needs_runtime = self.field_needs_runtime(obj_ptr_bits);
+            self.backend
+                .builder
+                .build_conditional_branch(needs_runtime, runtime_bb, load_bb)
+                .unwrap();
+
+            self.backend.builder.position_at_end(load_bb);
             let raw_ptr = self
                 .backend
                 .builder
@@ -55,21 +155,59 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let field_ptr = unsafe {
                 self.backend
                     .builder
-                    .build_in_bounds_gep(i8_ty, raw_ptr, &[offset_val], "field_ptr")
+                    .build_in_bounds_gep(
+                        self.backend.context.i8_type(),
+                        raw_ptr,
+                        &[offset_val],
+                        "field_ptr",
+                    )
                     .unwrap()
             };
+            // A clear HAS_PTRS excludes ordinary heap owners and dictionary
+            // backing, but virgin words can contain the immortal missing
+            // sentinel. Only an immediate value may return directly.
             let val = self
                 .backend
                 .builder
                 .build_load(i64_ty, field_ptr, "field_val")
                 .unwrap();
-            // inc_ref the loaded value (may be a heap pointer).
-            let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            let value_is_pointer = self.field_value_is_pointer(val.into_int_value());
             self.backend
                 .builder
-                .build_call(inc_fn, &[val.into()], "field_load_inc_ref")
+                .build_conditional_branch(value_is_pointer, runtime_bb, merge_bb)
                 .unwrap();
-            self.values.insert(result_id, val);
+
+            self.backend.builder.position_at_end(runtime_bb);
+            let get_fn = self.ensure_runtime_i64_fn("molt_object_field_get_ptr", 2);
+            let runtime_val = self
+                .backend
+                .builder
+                .build_call(
+                    get_fn,
+                    &[obj_ptr_bits.into(), offset_val.into()],
+                    "field_get_runtime",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic();
+            self.backend
+                .builder
+                .build_unconditional_branch(merge_bb)
+                .unwrap();
+
+            self.backend.builder.position_at_end(merge_bb);
+            let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+            let loaded = self
+                .backend
+                .builder
+                .build_phi(i64_ty, "field_load_value")
+                .unwrap();
+            loaded.add_incoming(&[
+                (&none, receiver_block),
+                (&val, load_bb),
+                (&runtime_val, runtime_bb),
+            ]);
+            self.values.insert(result_id, loaded.as_basic_value());
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
@@ -96,16 +234,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     _ => None,
                 })
                 .unwrap_or(0);
-            let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-            let get_fn = self.ensure_runtime_i64_fn("molt_guarded_field_get_ptr", 6);
+            let get_fn = self.ensure_runtime_i64_fn("molt_guarded_field_get", 6);
             let val = self
                 .backend
                 .builder
                 .build_call(
                     get_fn,
                     &[
-                        obj_ptr_bits.into(),
+                        obj_bits.into(),
                         class_bits.into(),
                         expected_version.into(),
                         self.backend
@@ -217,7 +354,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             return;
         }
-        if matches!(original_kind, Some("store_init")) && op.operands.len() >= 2 {
+        if matches!(original_kind, Some("store")) && op.operands.len() >= 2 {
             let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
             let val_bits = self.materialize_dynbox_operand(op.operands[1]);
             let offset = op
@@ -229,46 +366,52 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 })
                 .unwrap_or(0);
             let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-            // Inline store_init: direct store for immediate values,
-            // runtime call only for heap pointers (need inc_ref + mark_has_ptrs).
+            // A scalar write can be inline only while physical backing has
+            // no pointer owners or dictionary and the incoming value is immediate.
+            // Every other write uses the ordinary retain/publish/release contract.
             let i64_ty = self.backend.context.i64_type();
             let i8_ty = self.backend.context.i8_type();
             let ptr_ty = self
                 .backend
                 .context
                 .ptr_type(inkwell::AddressSpace::default());
-            // Check if val is a heap pointer: (val & TAG_MASK) == TAG_PTR
-            let tag_mask = i64_ty.const_int(nanbox::QNAN_TAG_MASK_I64 as u64, false);
-            let tag_bits = self
-                .backend
-                .builder
-                .build_and(val_bits, tag_mask, "init_tag")
-                .unwrap();
-            let ptr_tag = i64_ty.const_int(nanbox::QNAN_TAG_PTR_I64 as u64, false);
-            let is_ptr = self
-                .backend
-                .builder
-                .build_int_compare(inkwell::IntPredicate::EQ, tag_bits, ptr_tag, "is_ptr")
-                .unwrap();
+            let is_ptr = self.field_value_is_pointer(val_bits);
+            let receiver_is_ptr = self.field_value_is_pointer(obj_bits);
             let current_fn = self.llvm_fn;
+            let receiver_bb = self
+                .backend
+                .context
+                .append_basic_block(current_fn, "field_store_receiver");
             let fast_bb = self
                 .backend
                 .context
-                .append_basic_block(current_fn, "init_fast");
+                .append_basic_block(current_fn, "field_store_fast");
             let slow_bb = self
                 .backend
                 .context
-                .append_basic_block(current_fn, "init_slow");
+                .append_basic_block(current_fn, "field_store_slow");
             let merge_bb = self
                 .backend
                 .context
-                .append_basic_block(current_fn, "init_merge");
+                .append_basic_block(current_fn, "field_store_merge");
             self.all_llvm_blocks.push(fast_bb);
             self.all_llvm_blocks.push(slow_bb);
             self.all_llvm_blocks.push(merge_bb);
+            self.all_llvm_blocks.push(receiver_bb);
             self.backend
                 .builder
-                .build_conditional_branch(is_ptr, slow_bb, fast_bb)
+                .build_conditional_branch(receiver_is_ptr, receiver_bb, slow_bb)
+                .unwrap();
+            self.backend.builder.position_at_end(receiver_bb);
+            let backing_needs_runtime = self.field_needs_runtime(obj_ptr_bits);
+            let needs_runtime = self
+                .backend
+                .builder
+                .build_or(is_ptr, backing_needs_runtime, "field_store_needs_runtime")
+                .unwrap();
+            self.backend
+                .builder
+                .build_conditional_branch(needs_runtime, slow_bb, fast_bb)
                 .unwrap();
             // Fast path: immediate value — direct store.
             self.backend.builder.position_at_end(fast_bb);
@@ -292,19 +435,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_unconditional_branch(merge_bb)
                 .unwrap();
-            // Slow path: pointer value — runtime call.
+            // Slow path: owning value or dictionary backing — runtime call.
             self.backend.builder.position_at_end(slow_bb);
-            let set_fn = self.ensure_runtime_i64_fn("molt_object_field_init_ptr", 3);
+            let set_fn = self.ensure_runtime_i64_fn("molt_object_field_set", 3);
             self.backend
                 .builder
                 .build_call(
                     set_fn,
                     &[
-                        obj_ptr_bits.into(),
+                        obj_bits.into(),
                         i64_ty.const_int(offset as u64, true).into(),
                         val_bits.into(),
                     ],
-                    "field_init_slow",
+                    "field_store_slow",
                 )
                 .unwrap();
             self.backend
@@ -322,49 +465,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             return;
         }
-        if matches!(original_kind, Some("store")) && op.operands.len() >= 2 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let val_bits = self.materialize_dynbox_operand(op.operands[1]);
-            let offset = op
-                .attrs
-                .get("value")
-                .and_then(|v| match v {
-                    AttrValue::Int(v) => Some(*v),
-                    _ => None,
-                })
-                .unwrap_or(0);
-            let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-            let set_fn = self.ensure_runtime_i64_fn("molt_object_field_set_ptr", 3);
-            let result = self
-                .backend
-                .builder
-                .build_call(
-                    set_fn,
-                    &[
-                        obj_ptr_bits.into(),
-                        self.backend
-                            .context
-                            .i64_type()
-                            .const_int(offset as u64, true)
-                            .into(),
-                        val_bits.into(),
-                    ],
-                    "field_store",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            if !op.results.is_empty() {
-                self.values.insert(op.results[0], result);
-                self.value_types.insert(op.results[0], TirType::DynBox);
-            }
-            return;
-        }
-        if matches!(
-            original_kind,
-            Some("guarded_field_set") | Some("guarded_field_init")
-        ) && op.operands.len() >= 4
-        {
+        if matches!(original_kind, Some("guarded_field_set")) && op.operands.len() >= 4 {
             let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
             let class_bits = self.materialize_dynbox_operand(op.operands[1]);
             let expected_version = self.materialize_dynbox_operand(op.operands[2]);
@@ -388,21 +489,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     _ => None,
                 })
                 .unwrap_or(0);
-            let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-            let rt_name = if matches!(original_kind, Some("guarded_field_init")) {
-                "molt_guarded_field_init_ptr"
-            } else {
-                "molt_guarded_field_set_ptr"
-            };
-            let set_fn = self.ensure_runtime_i64_fn(rt_name, 7);
+            let set_fn = self.ensure_runtime_i64_fn("molt_guarded_field_set", 7);
             let result = self
                 .backend
                 .builder
                 .build_call(
                     set_fn,
                     &[
-                        obj_ptr_bits.into(),
+                        obj_bits.into(),
                         class_bits.into(),
                         expected_version.into(),
                         self.backend

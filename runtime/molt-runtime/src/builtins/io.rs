@@ -112,10 +112,23 @@ impl IoRuntimeState {
     }
 }
 
-pub(crate) fn io_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+pub(crate) fn io_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) -> bool {
     crate::gil_assert();
-    for slot in state.io.stdio_slots() {
-        let bits = slot.swap(0, Ordering::AcqRel);
+    let handles = state
+        .io
+        .stdio_slots()
+        .map(|slot| slot.swap(0, Ordering::AcqRel));
+    let writebacks = {
+        let mut registry = state.io.vfs_writebacks.lock().unwrap();
+        std::mem::take(&mut *registry)
+    };
+    let changed = handles.iter().any(|&bits| bits != 0) || !writebacks.is_empty();
+    // Detach the entire owner cohort before flush/decref or backend destruction
+    // can publish a replacement for the next shutdown fixed-point pass.
+    for bits in handles {
         if bits != 0 && !obj_from_bits(bits).is_none() {
             let _ = molt_file_flush(bits);
             if exception_pending(_py) {
@@ -124,7 +137,8 @@ pub(crate) fn io_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::Ru
             dec_ref_bits(_py, bits);
         }
     }
-    state.io.vfs_writebacks.lock().unwrap().clear();
+    drop(writebacks);
+    changed
 }
 
 #[cfg(test)]

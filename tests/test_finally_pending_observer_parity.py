@@ -195,13 +195,7 @@ def test_finally_pending_observer_native_wasm_parity(
     )
     require_wasm_toolchain()
 
-    custody_env = development_artifact_env(ROOT, os.environ)
-    artifact_root = (
-        Path(custody_env["MOLT_EXT_ROOT"])
-        / "tmp"
-        / "finally-pending-observer"
-        / f"{os.getpid()}-{tmp_path.name}"
-    )
+    artifact_root = tmp_path / "observer"
     artifact_root.mkdir(parents=True, exist_ok=True)
     env = _test_env(artifact_root)
     oracle = _run_cpython_oracle(artifact_root, env)

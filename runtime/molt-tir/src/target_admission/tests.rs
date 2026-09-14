@@ -16,6 +16,61 @@ fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
     }
 }
 
+#[test]
+fn raw_boxed_stack_allocation_is_rejected_on_every_target() {
+    let ir = function_ir(vec![OpIR {
+        kind: "stack_alloc".into(),
+        value: Some(16),
+        out: Some("object".into()),
+        ..OpIR::default()
+    }]);
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
+        crate::tir::TargetInfo::luau_release_fast(),
+        crate::tir::TargetInfo::rust_release_fast(),
+        crate::tir::TargetInfo::mlir_release_fast(),
+    ] {
+        let error = validate_runtime_target_contract(&ir, &target).unwrap_err();
+        assert!(error.contains(crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED));
+        assert!(error.contains("f:op#0"));
+    }
+}
+
+#[test]
+fn retired_class_frame_operation_is_rejected_on_every_target() {
+    for payload in [None, Some(-1), Some(16), Some(i64::MAX)] {
+        let ir = function_ir(vec![
+            OpIR {
+                kind: "object_new_bound_stack".into(),
+                args: Some(vec!["class".into()]),
+                value: payload,
+                out: Some("object".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["object".into()]),
+                ..OpIR::default()
+            },
+        ]);
+        for target in [
+            crate::tir::TargetInfo::native_release_fast(),
+            crate::tir::TargetInfo::wasm_release_fast(),
+            crate::tir::TargetInfo::llvm_release_fast(),
+            crate::tir::TargetInfo::luau_release_fast(),
+            crate::tir::TargetInfo::rust_release_fast(),
+            crate::tir::TargetInfo::mlir_release_fast(),
+        ] {
+            let error = validate_runtime_target_contract(&ir, &target).unwrap_err();
+            assert!(error.contains("object_new_bound_stack"));
+            assert!(error.contains("unclassified"));
+            assert!(error.contains("f:op#0"));
+        }
+    }
+}
+
 fn binary(kind: &str, ty: &str) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {

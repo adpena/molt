@@ -167,26 +167,12 @@ pub fn class_set_new(_py: &CoreGilToken, class_bits: u64, new_fn_bits: u64) {
 
 pub fn alloc_function(_py: &CoreGilToken, fn_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+        let bits = crate::builtins::methods::alloc_builtin_function(py, fn_ptr, arity);
+        if bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            bits
         }
-        unsafe {
-            let builtins = crate::builtin_classes(py);
-            let old_bits = crate::object_class_bits(ptr);
-            if old_bits != builtins.builtin_function_or_method {
-                if !crate::object::object_init_class_edge_unpublished(
-                    py,
-                    ptr,
-                    builtins.builtin_function_or_method,
-                    crate::ClassEdgeOwnership::Owned,
-                ) {
-                    crate::dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -197,37 +183,14 @@ pub fn alloc_function_with_defaults(
     defaults: &[u64],
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+        let bits = crate::builtins::methods::alloc_builtin_function_with_defaults(
+            py, fn_ptr, arity, defaults,
+        );
+        if bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            bits
         }
-        unsafe {
-            (*crate::header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-            let defaults_tuple_ptr = crate::alloc_tuple(py, defaults);
-            if !defaults_tuple_ptr.is_null() {
-                let defaults_name = crate::intern_static_name(
-                    py,
-                    &crate::runtime_state(py).interned.defaults_name,
-                    b"__defaults__",
-                );
-                let defaults_bits = MoltObject::from_ptr(defaults_tuple_ptr).bits();
-                crate::function_set_attr_bits(py, ptr, defaults_name, defaults_bits);
-            }
-            let builtins = crate::builtin_classes(py);
-            let old_bits = crate::object_class_bits(ptr);
-            if old_bits != builtins.builtin_function_or_method {
-                if !crate::object::object_init_class_edge_unpublished(
-                    py,
-                    ptr,
-                    builtins.builtin_function_or_method,
-                    crate::ClassEdgeOwnership::Owned,
-                ) {
-                    crate::dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 

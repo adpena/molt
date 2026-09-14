@@ -1893,25 +1893,38 @@ pub extern "C" fn molt_sys_set_version_info(
 
         let state = runtime_state(_py);
         let default_info = default_sys_version_info();
-        {
-            let mut guard = state.sys_version_info.lock().unwrap();
-            if let Some(existing) = guard.as_ref()
+        // Stage the version-gated class namespaces before changing either sys
+        // fact. Allocation failure leaves the old version and descriptors intact.
+        let Some(publication) =
+            crate::builtins::attributes::prepare_wrapper_members(_py, info.major, info.minor)
+        else {
+            return MoltObject::none().bits();
+        };
+        let conflict = {
+            let mut info_guard = state.sys_version_info.lock().unwrap();
+            let mut version_guard = state.sys_version.lock().unwrap();
+            if let Some(existing) = info_guard.as_ref()
                 && existing != &info
                 && existing != &default_info
             {
-                return raise_exception::<_>(_py, "RuntimeError", "sys.version_info already set");
-            }
-            *guard = Some(info.clone());
-        }
-        {
-            let mut guard = state.sys_version.lock().unwrap();
-            if let Some(existing) = guard.as_ref()
+                Some("sys.version_info already set")
+            } else if let Some(existing) = version_guard.as_ref()
                 && existing != &version
             {
-                return raise_exception::<_>(_py, "RuntimeError", "sys.version already set");
+                Some("sys.version already set")
+            } else {
+                *info_guard = Some(info.clone());
+                *version_guard = Some(version.clone());
+                None
             }
-            *guard = Some(version.clone());
+        };
+        if let Some(message) = conflict {
+            drop(publication);
+            return raise_exception::<_>(_py, "RuntimeError", message);
         }
+        // Infallible publication advances all class versions before displaced
+        // values can run finalizers. Neither sys mutex is held across a release.
+        publication.commit(_py);
         // If the sys module already exists, keep its version metadata in sync.
         let sys_bits = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);

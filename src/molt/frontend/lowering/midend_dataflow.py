@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
+from molt.compiler_analysis.literal_identity import (
+    literal_identity_key,
+    same_literal_value,
+)
 from molt.frontend._types import (
     CFGGraph,
     MoltOp,
@@ -16,7 +22,6 @@ from molt.frontend._types import (
     build_cfg,
 )
 from molt.frontend.lowering.op_kinds_generated import (
-    FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS,
     RAISING_KIND_NAMES,
 )
 
@@ -70,6 +75,27 @@ _SCCP_PROVEN_NOTHROW_KINDS: frozenset[str] = (
     _SCCP_PROVEN_NOTHROW_CURATED - RAISING_KIND_NAMES
 )
 
+
+def _same_sccp_value(left: Any, right: Any) -> bool:
+    if left is _SCCP_UNKNOWN or left is _SCCP_OVERDEFINED or left is _SCCP_MISSING:
+        return left is right
+    return same_literal_value(left, right)
+
+
+def _same_sccp_state(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return left.keys() == right.keys() and all(
+        _same_sccp_value(value, right[name]) for name, value in left.items()
+    )
+
+
+def _admit_sccp_value(value: Any) -> Any:
+    if value is _SCCP_UNKNOWN or value is _SCCP_OVERDEFINED:
+        return value
+    # Includes MISSING, mutable contents, and subclasses. Neither solver nor
+    # try-region analysis may retain these as immutable value facts.
+    return value if literal_identity_key(value) is not None else _SCCP_OVERDEFINED
+
+
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
@@ -77,6 +103,64 @@ if TYPE_CHECKING:
     _MixinBase = _GeneratorProtocol
 else:
     _MixinBase = object
+
+
+def unique_result_definitions(ops: Sequence[MoltOp]) -> dict[str, MoltOp]:
+    """Return only names with one producer in the current operation stream."""
+    definitions: dict[str, MoltOp] = {}
+    repeated: set[str] = set()
+    for op in ops:
+        name = op.result.name
+        if name == "none":
+            continue
+        if name in definitions or name in repeated:
+            repeated.add(name)
+            definitions.pop(name, None)
+        else:
+            definitions[name] = op
+    return definitions
+
+
+@contextmanager
+def current_unique_result_definitions(
+    generator: _GeneratorProtocol, ops: Sequence[MoltOp]
+) -> Iterator[dict[str, MoltOp]]:
+    """Scope flow-insensitive provenance; never borrow the emitter's old index."""
+    definitions = unique_result_definitions(ops)
+    previous_definitions = generator._op_by_result
+    generator._op_by_result = definitions
+    try:
+        yield definitions
+    finally:
+        generator._op_by_result = previous_definitions
+
+
+def primitive_const_values(definitions: dict[str, MoltOp]) -> dict[str, Any]:
+    """Project immutable literals from a uniquely defined producer index."""
+    const_by_name: dict[str, Any] = {}
+    for op in definitions.values():
+        out_name = op.result.name
+        if op.kind not in _PRIMITIVE_CONST_KINDS:
+            continue
+        if len(op.args) != 1:
+            continue
+        value = op.args[0]
+        # Constructor semantics, not the host payload's numeric equality,
+        # determine the exact result type (e.g. CONST_FLOAT([1]) is float).
+        if type(value) not in (bool, int, float, str):
+            continue
+        try:
+            if op.kind in {"CONST_BIGINT", "CONST_INT"}:
+                value = int(value)
+            elif op.kind == "CONST_BOOL":
+                value = bool(value)
+            elif op.kind == "CONST_FLOAT":
+                value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if type(value) in (bool, int, float):
+            const_by_name[out_name] = value
+    return const_by_name
 
 
 class MidendDataflowMixin(_MixinBase):
@@ -282,8 +366,10 @@ class MidendDataflowMixin(_MixinBase):
                     local_defs.add(out_name)
         return failures
 
-    def _dead_op_lattice_class(self, op: MoltOp | str) -> str:
-        effect = self._op_effect_class(op)
+    def _dead_op_lattice_class(
+        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = None
+    ) -> str:
+        effect = self._op_effect_class(op, const_by_name=const_by_name)
         if effect == "control":
             return "protected"
         if effect == "pure":
@@ -294,163 +380,122 @@ class MidendDataflowMixin(_MixinBase):
 
     @staticmethod
     def _primitive_const_value_map(ops: list[MoltOp]) -> dict[str, Any]:
-        const_by_name: dict[str, Any] = {}
-        for op in ops:
-            out_name = op.result.name
-            if out_name == "none" or op.kind not in _PRIMITIVE_CONST_KINDS:
-                continue
-            if not op.args:
-                continue
-            value = op.args[0]
-            if op.kind == "CONST_BIGINT":
-                try:
-                    const_by_name[out_name] = int(value)
-                except (TypeError, ValueError):
-                    continue
-            elif isinstance(value, bool) or isinstance(value, (int, float)):
-                const_by_name[out_name] = value
-        return const_by_name
+        return primitive_const_values(unique_result_definitions(ops))
 
     def _op_instance_cannot_raise(
         self, op: MoltOp, const_by_name: dict[str, Any]
     ) -> bool:
-        comparison = self._predicate_primitive_facts(op)
-        if comparison is not None:
-            return comparison[1]
-        if op.kind not in RAISING_KIND_NAMES:
-            return True
-        if op.kind not in FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS:
-            return False
-        for arg in op.args:
-            if isinstance(arg, MoltValue):
-                if arg.name not in const_by_name:
-                    return False
-            elif isinstance(arg, (list, tuple, dict)):
-                return False
-            elif isinstance(arg, str):
-                return False
-        return True
+        facts = self._op_primitive_facts(op, const_by_name)
+        return facts[1] if facts is not None else op.kind not in RAISING_KIND_NAMES
 
     def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]:
-        if not ops:
-            return []
+        with current_unique_result_definitions(self, ops) as definitions:
+            if not ops:
+                return []
 
-        func_stats = self._midend_function_stats()
-        cfg: CFGGraph = build_cfg(ops)
-        if not cfg.blocks:
-            return []
+            func_stats = self._midend_function_stats()
+            cfg: CFGGraph = build_cfg(ops)
+            if not cfg.blocks:
+                return []
 
-        def normalize_anchor_arg(value: Any) -> Any:
-            if isinstance(value, MoltValue):
-                return ("v", value.name)
-            if isinstance(value, tuple):
-                return ("t", tuple(normalize_anchor_arg(item) for item in value))
-            if isinstance(value, list):
-                return ("l", tuple(normalize_anchor_arg(item) for item in value))
-            if isinstance(value, dict):
-                return (
-                    "d",
-                    tuple(
-                        sorted(
-                            (
-                                normalize_anchor_arg(key),
-                                normalize_anchor_arg(item),
-                            )
-                            for key, item in value.items()
-                        )
-                    ),
+            const_by_name = primitive_const_values(definitions)
+
+            def anchor_key(op: MoltOp) -> tuple[Any, ...] | None:
+                out_name = op.result.name
+                if out_name == "none":
+                    return None
+                if (
+                    self._dead_op_lattice_class(op, const_by_name=const_by_name)
+                    != "pure"
+                ):
+                    return None
+                # DCE anchors and CSE must agree on exact immutable value identity.
+                # Unsupported payloads cannot acquire identity through repr/hash or
+                # a flow-insensitive snapshot of mutable contents.
+                args = tuple(
+                    self._normalize_operand_key_for_value_numbering(arg, {})
+                    for arg in op.args
                 )
-            try:
-                hash(value)
-                return ("c", value)
-            except TypeError:
-                return ("r", repr(value))
+                return (op.kind, args) if all(arg is not None for arg in args) else None
 
-        def anchor_key(op: MoltOp) -> tuple[Any, ...] | None:
-            out_name = op.result.name
-            if out_name == "none":
-                return None
-            if self._dead_op_lattice_class(op) != "pure":
-                return None
-            return (op.kind, tuple(normalize_anchor_arg(arg) for arg in op.args))
-
-        anchor_first_result: dict[tuple[Any, ...], str] = {}
-        anchor_counts: dict[tuple[Any, ...], int] = {}
-        for op in ops:
-            key = anchor_key(op)
-            if key is None:
-                continue
-            anchor_counts[key] = anchor_counts.get(key, 0) + 1
-            anchor_first_result.setdefault(key, op.result.name)
-        preserve_anchor_results: set[str] = {
-            anchor_first_result[key]
-            for key, count in anchor_counts.items()
-            if count > 1 and key in anchor_first_result
-        }
-
-        pure_attempted = 0
-        uses_by_index: dict[int, set[str]] = {}
-        defs_by_name: dict[str, list[int]] = {}
-        removable_indices: set[int] = set()
-        required_values: set[str] = set()
-        worklist: list[str] = []
-        const_by_name = self._primitive_const_value_map(ops)
-
-        def require_value(name: str) -> None:
-            if name == "none" or name in required_values:
-                return
-            required_values.add(name)
-            worklist.append(name)
-
-        for idx, op in enumerate(ops):
-            out_name = op.result.name
-            uses: set[str] = set()
-            for arg in op.args:
-                self._collect_arg_value_names(arg, uses)
-            uses_by_index[idx] = uses
-
-            lattice_class = self._dead_op_lattice_class(op)
-            if out_name != "none":
-                defs_by_name.setdefault(out_name, []).append(idx)
-                if lattice_class == "pure":
-                    pure_attempted += 1
-                    # MISSING ops are runtime sentinels (uninitialized locals,
-                    # optional defaults) that downstream GETATTR/CALL sites
-                    # depend on — never eliminate them.
-                    if (
-                        out_name not in preserve_anchor_results
-                        and op.kind != "MISSING"
-                        and self._op_instance_cannot_raise(op, const_by_name)
-                    ):
-                        removable_indices.add(idx)
-
-        for idx, op in enumerate(ops):
-            if idx in removable_indices:
-                continue
-            for name in uses_by_index[idx]:
-                require_value(name)
-
-        required_removable_indices: set[int] = set()
-        while worklist:
-            value_name = worklist.pop()
-            for producer_idx in defs_by_name.get(value_name, []):
-                if producer_idx not in removable_indices:
+            anchor_first_result: dict[tuple[Any, ...], str] = {}
+            anchor_counts: dict[tuple[Any, ...], int] = {}
+            for op in ops:
+                key = anchor_key(op)
+                if key is None:
                     continue
-                if producer_idx in required_removable_indices:
-                    continue
-                required_removable_indices.add(producer_idx)
-                for dependency_name in uses_by_index[producer_idx]:
-                    require_value(dependency_name)
+                anchor_counts[key] = anchor_counts.get(key, 0) + 1
+                anchor_first_result.setdefault(key, op.result.name)
+            preserve_anchor_results: set[str] = {
+                anchor_first_result[key]
+                for key, count in anchor_counts.items()
+                if count > 1 and key in anchor_first_result
+            }
 
-        remove_indices = removable_indices - required_removable_indices
-        pure_removed = len(remove_indices)
-        removed_count = pure_removed
-        out = [op for idx, op in enumerate(ops) if idx not in remove_indices]
-        self.midend_stats["dce_removed_total"] += removed_count
-        func_stats["dce_pure_op_attempted"] += pure_attempted
-        func_stats["dce_pure_op_accepted"] += pure_removed
-        func_stats["dce_pure_op_rejected"] += max(0, pure_attempted - pure_removed)
-        return out
+            pure_attempted = 0
+            uses_by_index: dict[int, set[str]] = {}
+            defs_by_name: dict[str, list[int]] = {}
+            removable_indices: set[int] = set()
+            required_values: set[str] = set()
+            worklist: list[str] = []
+
+            def require_value(name: str) -> None:
+                if name == "none" or name in required_values:
+                    return
+                required_values.add(name)
+                worklist.append(name)
+
+            for idx, op in enumerate(ops):
+                out_name = op.result.name
+                uses: set[str] = set()
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, uses)
+                uses_by_index[idx] = uses
+
+                lattice_class = self._dead_op_lattice_class(
+                    op, const_by_name=const_by_name
+                )
+                if out_name != "none":
+                    defs_by_name.setdefault(out_name, []).append(idx)
+                    if lattice_class == "pure":
+                        pure_attempted += 1
+                        # MISSING ops are runtime sentinels (uninitialized locals,
+                        # optional defaults) that downstream GETATTR/CALL sites
+                        # depend on — never eliminate them.
+                        if (
+                            out_name not in preserve_anchor_results
+                            and op.kind != "MISSING"
+                            and self._op_instance_cannot_raise(op, const_by_name)
+                        ):
+                            removable_indices.add(idx)
+
+            for idx, op in enumerate(ops):
+                if idx in removable_indices:
+                    continue
+                for name in uses_by_index[idx]:
+                    require_value(name)
+
+            required_removable_indices: set[int] = set()
+            while worklist:
+                value_name = worklist.pop()
+                for producer_idx in defs_by_name.get(value_name, []):
+                    if producer_idx not in removable_indices:
+                        continue
+                    if producer_idx in required_removable_indices:
+                        continue
+                    required_removable_indices.add(producer_idx)
+                    for dependency_name in uses_by_index[producer_idx]:
+                        require_value(dependency_name)
+
+            remove_indices = removable_indices - required_removable_indices
+            pure_removed = len(remove_indices)
+            removed_count = pure_removed
+            out = [op for idx, op in enumerate(ops) if idx not in remove_indices]
+            self.midend_stats["dce_removed_total"] += removed_count
+            func_stats["dce_pure_op_attempted"] += pure_attempted
+            func_stats["dce_pure_op_accepted"] += pure_removed
+            func_stats["dce_pure_op_rejected"] += max(0, pure_attempted - pure_removed)
+            return out
 
     def _op_may_raise_for_sccp(self, op_kind: str) -> bool:
         if op_kind in RAISING_KIND_NAMES:
@@ -483,21 +528,30 @@ class MidendDataflowMixin(_MixinBase):
         guard_fail_indices: set[int] = set()
         loop_bound_facts = self._analyze_loop_bound_facts(ops, cfg)
         loop_compare_truth = self._analyze_affine_loop_compare_truth(ops, cfg)
-        type_of_origin: dict[str, str] = {}
-        for op in ops:
-            if (
-                op.kind == "TYPE_OF"
-                and len(op.args) == 1
-                and isinstance(op.args[0], MoltValue)
-                and op.result.name != "none"
-            ):
-                type_of_origin[op.result.name] = op.args[0].name
 
         def type_fact_key(name: str) -> str:
             return f"__tag__:{name}"
 
         def dict_shape_fact_key(name: str) -> str:
             return f"__dict_shape__:{name}"
+
+        def is_heap_fact(name: str) -> bool:
+            return name.startswith(("__tag__:", "__dict_shape__:"))
+
+        def invalidate_heap_facts(op: MoltOp, known: dict[str, Any]) -> None:
+            operand_constants = {
+                arg.name: known[arg.name]
+                for arg in op.args
+                if isinstance(arg, MoltValue)
+                and arg.name in known
+                and literal_identity_key(known[arg.name]) is not None
+            }
+            if self._op_may_access_arbitrary_heap(op, const_by_name=operand_constants):
+                # Keep immutable scalar observations, including an old TYPE_OF
+                # result, but not a relation to the object's current class.
+                for name in list(known):
+                    if is_heap_fact(name):
+                        known.pop(name, None)
 
         def is_overdefined(value: Any) -> bool:
             return value is _SCCP_OVERDEFINED
@@ -517,7 +571,7 @@ class MidendDataflowMixin(_MixinBase):
                 return left
             if is_overdefined(left) or is_overdefined(right):
                 return _SCCP_OVERDEFINED
-            if left == right:
+            if same_literal_value(left, right):
                 return left
             return _SCCP_OVERDEFINED
 
@@ -529,6 +583,10 @@ class MidendDataflowMixin(_MixinBase):
             for state in states:
                 all_keys.update(state.keys())
             for key in all_keys:
+                # Type/shape guards are must-facts, unlike unknown scalar
+                # lattice values. A callback on one predecessor kills them.
+                if is_heap_fact(key) and any(key not in state for state in states):
+                    continue
                 current: Any = _SCCP_UNKNOWN
                 for state in states:
                     current = merge_lattice(current, state.get(key, _SCCP_UNKNOWN))
@@ -707,7 +765,18 @@ class MidendDataflowMixin(_MixinBase):
                 # comparisons through them.
                 if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
-                return lhs_value is rhs_value
+                # Value facts do not prove allocation identity or interning.
+                # Only the same SSA name, singletons, or distinct exact types
+                # determine Python `is` without consulting host object identity.
+                if lhs.name == rhs.name:
+                    return True
+                if type(lhs_value) is not type(rhs_value):
+                    return False
+                if lhs_value is None or type(lhs_value) is bool:
+                    return lhs_value is rhs_value
+                if lhs_value is Ellipsis or lhs_value is NotImplemented:
+                    return lhs_value is rhs_value
+                return _SCCP_OVERDEFINED
             if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
                 proven_static = loop_compare_truth.get(op_index)
                 if isinstance(proven_static, bool):
@@ -807,9 +876,7 @@ class MidendDataflowMixin(_MixinBase):
                     return _SCCP_UNKNOWN
                 if is_overdefined(arg_value):
                     return _SCCP_OVERDEFINED
-                if isinstance(
-                    arg_value, (str, bytes, tuple, list, dict, set, frozenset, range)
-                ):
+                if isinstance(arg_value, (str, bytes, tuple, frozenset, range)):
                     return len(arg_value)
                 return _SCCP_OVERDEFINED
             if op.kind == "CONTAINS" and len(op.args) == 2:
@@ -827,7 +894,7 @@ class MidendDataflowMixin(_MixinBase):
                     return _SCCP_OVERDEFINED
                 if not isinstance(
                     container_value,
-                    (str, bytes, tuple, list, dict, set, frozenset, range),
+                    (str, bytes, tuple, frozenset, range),
                 ):
                     return _SCCP_OVERDEFINED
                 try:
@@ -847,7 +914,7 @@ class MidendDataflowMixin(_MixinBase):
                     return _SCCP_UNKNOWN
                 if is_overdefined(container_value) or is_overdefined(index_value):
                     return _SCCP_OVERDEFINED
-                if isinstance(container_value, (tuple, list, str, bytes, range)):
+                if isinstance(container_value, (tuple, str, bytes, range)):
                     if isinstance(index_value, int) and not isinstance(
                         index_value, bool
                     ):
@@ -856,12 +923,6 @@ class MidendDataflowMixin(_MixinBase):
                         except Exception:
                             return _SCCP_OVERDEFINED
                     return _SCCP_OVERDEFINED
-                if isinstance(container_value, dict):
-                    try:
-                        if index_value in container_value:
-                            return container_value[index_value]
-                    except Exception:
-                        return _SCCP_OVERDEFINED
                 return _SCCP_OVERDEFINED
             return _SCCP_OVERDEFINED
 
@@ -873,6 +934,7 @@ class MidendDataflowMixin(_MixinBase):
                 return False, True
             for op_idx in range(start_idx + 1, end_idx):
                 op = ops[op_idx]
+                invalidate_heap_facts(op, known)
                 if op.kind in {
                     "IF",
                     "ELSE",
@@ -934,10 +996,9 @@ class MidendDataflowMixin(_MixinBase):
                     known.pop(out_name, None)
                     known.pop(type_fact_key(out_name), None)
                     known.pop(dict_shape_fact_key(out_name), None)
-                    lattice_value = eval_lattice_value(op, known, op_idx)
-                    # Promote MISSING sentinels to overdefined in try analysis too.
-                    if is_missing_sentinel(lattice_value):
-                        lattice_value = _SCCP_OVERDEFINED
+                    lattice_value = _admit_sccp_value(
+                        eval_lattice_value(op, known, op_idx)
+                    )
                     if (
                         lattice_value is not _SCCP_UNKNOWN
                         and lattice_value is not _SCCP_OVERDEFINED
@@ -1076,13 +1137,19 @@ class MidendDataflowMixin(_MixinBase):
                 pred_states = [out_values[pred] for pred in exec_preds]
                 new_in = merge_states(pred_states)
 
-            if new_in != in_values[block_id]:
+            if not _same_sccp_state(new_in, in_values[block_id]):
                 in_values[block_id] = new_in
 
             known = dict(new_in)
             block_traps = False
+            # Newly executable predecessors can remove a must-fact which made
+            # a guard look certain to fail in an earlier transfer.
+            guard_fail_indices.difference_update(range(block.start, block.end))
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
+                # Include no-result operations: a callback need not produce an
+                # SSA value to invalidate observations of captured objects.
+                invalidate_heap_facts(op, known)
                 if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
                     guarded = op.args[0]
                     expected = op.args[1]
@@ -1127,41 +1194,13 @@ class MidendDataflowMixin(_MixinBase):
                 known.pop(out_name, None)
                 known.pop(type_fact_key(out_name), None)
                 known.pop(dict_shape_fact_key(out_name), None)
-                lattice_value = eval_lattice_value(op, known, op_idx)
+                lattice_value = _admit_sccp_value(eval_lattice_value(op, known, op_idx))
                 if lattice_value is _SCCP_UNKNOWN:
                     continue
-                # MISSING sentinels must not propagate as constants through
-                # the lattice — promote to overdefined so no downstream op
-                # can constant-fold through a MISSING value.
-                if is_missing_sentinel(lattice_value):
-                    lattice_value = _SCCP_OVERDEFINED
                 known[out_name] = lattice_value
                 tag = self._const_type_tag_for_lattice_value(lattice_value)
                 if tag is not None:
                     known[type_fact_key(out_name)] = tag
-                if (
-                    op.kind in {"EQ", "NE"}
-                    and isinstance(lattice_value, bool)
-                    and len(op.args) == 2
-                ):
-                    lhs = op.args[0]
-                    rhs = op.args[1]
-                    for type_side, tag_side in ((lhs, rhs), (rhs, lhs)):
-                        if not isinstance(type_side, MoltValue) or not isinstance(
-                            tag_side, MoltValue
-                        ):
-                            continue
-                        guarded_name = type_of_origin.get(type_side.name)
-                        if guarded_name is None:
-                            continue
-                        expected_tag = known.get(tag_side.name, _SCCP_UNKNOWN)
-                        if not isinstance(expected_tag, int):
-                            continue
-                        implies_equal = (
-                            lattice_value if op.kind == "EQ" else not lattice_value
-                        )
-                        if implies_equal:
-                            known[type_fact_key(guarded_name)] = expected_tag
                 if (
                     op.kind == "ISINSTANCE"
                     and lattice_value is True
@@ -1183,7 +1222,7 @@ class MidendDataflowMixin(_MixinBase):
                                 known[type_fact_key(guarded_obj.name)] = tags[0]
 
             prior_out = out_values[block_id]
-            out_changed = known != prior_out
+            out_changed = not _same_sccp_state(known, prior_out)
             if out_changed:
                 out_values[block_id] = known
 

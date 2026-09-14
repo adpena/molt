@@ -21,18 +21,12 @@ pub(super) fn emit_guard_runtime_op(
     let class_bits = locals[&args[1]];
     let expected = locals[&args[2]];
     func.instruction(&Instruction::LocalGet(obj));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
-    );
-    func.instruction(&Instruction::I64ExtendI32U);
     func.instruction(&Instruction::LocalGet(class_bits));
     func.instruction(&Instruction::LocalGet(expected));
     emit_call(
         func,
         reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayoutPtr],
+        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayout],
     );
     if let Some(out) = op.out.as_ref() {
         let res = locals[out];

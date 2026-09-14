@@ -5,10 +5,10 @@ use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue};
 #[cfg(test)]
 use crate::intrinsics::generated::resolve_symbol;
 use crate::{
-    ClassEdgeOwnership, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
-    alloc_dict_with_pairs, alloc_string, alloc_tuple, builtin_classes, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, string_bytes, string_len,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
+    alloc_string, dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_pending,
+    inc_ref_bits, module_dict_bits, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
@@ -216,83 +216,253 @@ fn module_dict_ptr(module_ptr: *mut u8) -> Option<*mut u8> {
     }
 }
 
+fn ensure_registry_memory_error(py: &PyToken<'_>, message: &'static str) {
+    if !exception_pending(py) {
+        raise_exception::<()>(py, "MemoryError", message);
+    }
+}
+
+struct OwnedExactDict {
+    ptr: *mut u8,
+    _owner: crate::PtrDropGuard,
+}
+
+impl OwnedExactDict {
+    fn empty(py: &PyToken<'_>) -> Option<Self> {
+        let ptr = alloc_dict_with_pairs(py, &[]);
+        if ptr.is_null() {
+            ensure_registry_memory_error(py, "intrinsic registry dictionary allocation failed");
+            return None;
+        }
+        Some(Self {
+            ptr,
+            _owner: crate::PtrDropGuard::new(ptr),
+        })
+    }
+
+    fn copy(py: &PyToken<'_>, live: *mut u8) -> Option<Self> {
+        if exception_pending(py) {
+            return None;
+        }
+        let staged_bits =
+            crate::object::ops_dict::molt_dict_copy(MoltObject::from_ptr(live).bits());
+        let Some(ptr) = obj_from_bits(staged_bits).as_ptr() else {
+            ensure_registry_memory_error(py, "intrinsic registry dictionary copy failed");
+            return None;
+        };
+        let owner = crate::PtrDropGuard::new(ptr);
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT || exception_pending(py) {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, "RuntimeError", "dictionary copy returned a non-dict");
+            }
+            return None;
+        }
+        Some(Self { ptr, _owner: owner })
+    }
+}
+
+struct StagedDictPublication {
+    live: *mut u8,
+    staged: OwnedExactDict,
+}
+
+impl StagedDictPublication {
+    fn prepare(py: &PyToken<'_>, live: *mut u8) -> Option<Self> {
+        Some(Self {
+            live,
+            staged: OwnedExactDict::copy(py, live)?,
+        })
+    }
+
+    fn staged_ptr(&self) -> *mut u8 {
+        self.staged.ptr
+    }
+
+    unsafe fn publish(&self, py: &PyToken<'_>) {
+        unsafe { crate::object::ops::dict_publish_staged(py, self.live, self.staged.ptr) };
+    }
+}
+
+fn named_dict_value(py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Result<Option<u64>, ()> {
+    let key_ptr = alloc_string(py, name);
+    if key_ptr.is_null() {
+        ensure_registry_memory_error(py, "intrinsic registry key allocation failed");
+        return Err(());
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    let value = unsafe { dict_get_in_place(py, dict_ptr, key_bits) };
+    dec_ref_bits(py, key_bits);
+    if exception_pending(py) {
+        Err(())
+    } else {
+        Ok(value)
+    }
+}
+
+/// The one dictionary-write authority for registry/module publication.
+/// Production callers only target staged dictionaries, so a failed write can
+/// never leak a partial namespace into a live module or intrinsic registry.
+fn checked_dict_insert(py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8], value_bits: u64) -> bool {
+    if value_bits == 0 {
+        ensure_registry_memory_error(py, "intrinsic registry value allocation failed");
+        return false;
+    }
+    let key_ptr = alloc_string(py, name);
+    if key_ptr.is_null() {
+        ensure_registry_memory_error(py, "intrinsic registry key allocation failed");
+        return false;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    unsafe {
+        dict_set_in_place(py, dict_ptr, key_bits, value_bits);
+    }
+    let inserted = if exception_pending(py) {
+        false
+    } else {
+        (unsafe { dict_get_in_place(py, dict_ptr, key_bits) }) == Some(value_bits)
+    };
+    dec_ref_bits(py, key_bits);
+    if !inserted {
+        ensure_registry_memory_error(py, "intrinsic registry dictionary update failed");
+    }
+    inserted
+}
+
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
-    let Some(dict_ptr) = module_dict_ptr(module_ptr) else {
+    let Some(live_module_dict) = module_dict_ptr(module_ptr) else {
         return;
     };
 
-    // Install an __intrinsics__ registry dict into the module so the lazy
-    // resolver can cache intrinsic function objects.  The `registry_installed`
-    // check prevents double-installation on re-entry, but the runtime-owned
-    // anchor below is still refreshed for existing modules created before the
-    // synthetic `_intrinsics` registration pass.
-    if !registry_installed(_py, dict_ptr) {
-        let registry_ptr = alloc_dict_with_pairs(_py, &[]);
-        if registry_ptr.is_null() {
+    let Some(module_publication) = StagedDictPublication::prepare(_py, live_module_dict) else {
+        return;
+    };
+    let staged_module_dict = module_publication.staged_ptr();
+
+    // Preserve a previously published registry's identity while repairing it.
+    // A missing or invalid legacy entry is replaced only in the staged module.
+    let existing_registry =
+        match named_dict_value(_py, staged_module_dict, REGISTRY_NAME.as_bytes()) {
+            Ok(Some(bits)) => obj_from_bits(bits)
+                .as_ptr()
+                .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT),
+            Ok(None) => None,
+            Err(()) => return,
+        };
+    let registry_publication = match existing_registry {
+        Some(live) => match StagedDictPublication::prepare(_py, live) {
+            Some(publication) => Some(publication),
+            None => return,
+        },
+        None => None,
+    };
+    let new_registry = if registry_publication.is_none() {
+        match OwnedExactDict::empty(_py) {
+            Some(registry) => Some(registry),
+            None => return,
+        }
+    } else {
+        None
+    };
+    let Some(staged_registry) = registry_publication
+        .as_ref()
+        .map(StagedDictPublication::staged_ptr)
+        .or_else(|| new_registry.as_ref().map(|registry| registry.ptr))
+    else {
+        raise_exception::<()>(
+            _py,
+            "RuntimeError",
+            "intrinsic registry staging is unavailable",
+        );
+        return;
+    };
+    let published_registry = existing_registry.unwrap_or(staged_registry);
+
+    if !checked_dict_insert(
+        _py,
+        staged_module_dict,
+        REGISTRY_NAME.as_bytes(),
+        MoltObject::from_ptr(published_registry).bits(),
+    ) || !checked_dict_insert(
+        _py,
+        staged_module_dict,
+        STRICT_FLAG.as_bytes(),
+        MoltObject::from_bool(true).bits(),
+    ) || !checked_dict_insert(
+        _py,
+        staged_module_dict,
+        RUNTIME_FLAG.as_bytes(),
+        MoltObject::from_bool(true).bits(),
+    ) {
+        return;
+    }
+
+    // On wasm32, `call_indirect` with lazily-resolved function pointers
+    // causes "out of bounds table access" traps because the indirect
+    // function table indices become invalid after wasm-ld linking.
+    // Use eager registration on wasm32 for correctness; lazy on native
+    // for the cold-start performance benefit (~7100 fewer allocations).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
+        let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) else {
+            ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
+            return;
+        };
+        let installed =
+            checked_dict_insert(
+                _py,
+                staged_module_dict,
+                LOOKUP_HELPER_NAME.as_bytes(),
+                resolver_bits,
+            ) && checked_dict_insert(_py, staged_registry, b"_molt_lazy_resolve", resolver_bits);
+        dec_ref_bits(_py, resolver_bits);
+        if !installed {
             return;
         }
-        let registry_bits = MoltObject::from_ptr(registry_ptr).bits();
-        if !set_dict_entry(_py, dict_ptr, REGISTRY_NAME, registry_bits) {
-            dec_ref_bits(_py, registry_bits);
-            return;
-        }
-        set_dict_bool(_py, dict_ptr, STRICT_FLAG, true);
-        set_dict_bool(_py, dict_ptr, RUNTIME_FLAG, true);
+    }
 
-        // On wasm32, `call_indirect` with lazily-resolved function pointers
-        // causes "out of bounds table access" traps because the indirect
-        // function table indices become invalid after wasm-ld linking.
-        // Use eager registration on wasm32 for correctness; lazy on native
-        // for the cold-start performance benefit (~7100 fewer allocations).
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
-            if let Some(helper_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) {
-                set_dict_entry(_py, dict_ptr, LOOKUP_HELPER_NAME, helper_bits);
-                dec_ref_bits(_py, helper_bits);
-            }
-            if let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) {
-                set_intrinsic_entry(_py, registry_ptr, "_molt_lazy_resolve", resolver_bits);
-                dec_ref_bits(_py, resolver_bits);
-            }
-        }
-
-        // On WASM with a manifest, eagerly register only the referenced
-        // intrinsics through the app resolver. The manifest already filters
-        // to only the functions the compiled module uses, and the resolver
-        // address-takes only those symbols.
-        // On native, skip eager registration — the lazy resolver handles it.
-        #[cfg(target_arch = "wasm32")]
-        {
-            let manifest = parse_manifest();
-            if let Some(ref m) = manifest {
-                for spec in INTRINSICS {
-                    if !m.contains(spec.name) {
-                        continue;
-                    }
-                    if crate::builtins::functions::runtime_callable_symbol_is_non_callable(
-                        spec.symbol,
-                    ) {
-                        continue;
-                    }
-                    let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
-                        continue;
-                    };
-                    let Some(func_bits) =
-                        build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)
-                    else {
-                        continue;
-                    };
-                    set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
-                    if let Some(alias) = alias_name(spec.name) {
-                        set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
-                    }
-                    dec_ref_bits(_py, func_bits);
+    // On WASM with a manifest, eagerly register only the referenced
+    // intrinsics through the app resolver. The manifest already filters
+    // to only the functions the compiled module uses, and the resolver
+    // address-takes only those symbols.
+    // On native, skip eager registration — the lazy resolver handles it.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let manifest = parse_manifest();
+        if let Some(ref m) = manifest {
+            for spec in INTRINSICS {
+                if !m.contains(spec.name) {
+                    continue;
+                }
+                if crate::builtins::functions::runtime_callable_symbol_is_non_callable(spec.symbol)
+                {
+                    continue;
+                }
+                let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
+                    continue;
+                };
+                let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)
+                else {
+                    ensure_registry_memory_error(_py, "intrinsic function allocation failed");
+                    return;
+                };
+                let installed =
+                    checked_dict_insert(_py, staged_registry, spec.name.as_bytes(), func_bits)
+                        && match alias_name(spec.name) {
+                            Some(alias) => checked_dict_insert(
+                                _py,
+                                staged_registry,
+                                alias.as_bytes(),
+                                func_bits,
+                            ),
+                            None => true,
+                        };
+                dec_ref_bits(_py, func_bits);
+                if !installed {
+                    return;
                 }
             }
         }
-
-        dec_ref_bits(_py, registry_bits);
     }
 
     // Store a runtime-owned module pointer for the lazy resolver.  This must
@@ -306,10 +476,21 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     // but the module cache still held (now-dangling) bits for "builtins".
     let registry_module = &runtime_state(_py).intrinsic_registry_module;
     let prev = registry_module.load(Ordering::Acquire);
-    if prev.is_null() {
-        registry_module.store(module_ptr, Ordering::Release);
-        inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
+    unsafe {
+        module_publication.publish(_py);
+        if let Some(publication) = &registry_publication {
+            publication.publish(_py);
+        }
     }
+    if prev.is_null() {
+        inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
+        registry_module.store(module_ptr, Ordering::Release);
+    }
+    // Publishing is infallible. Release dictionaries holding displaced values
+    // only after both namespaces and their runtime-owned anchor are coherent.
+    drop(registry_publication);
+    drop(new_registry);
+    drop(module_publication);
 }
 
 /// Lazily resolve a single intrinsic by name, build the function object,
@@ -416,67 +597,6 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
     None
 }
 
-fn registry_installed(_py: &PyToken<'_>, dict_ptr: *mut u8) -> bool {
-    let key_ptr = alloc_string(_py, REGISTRY_NAME.as_bytes());
-    if key_ptr.is_null() {
-        return false;
-    }
-    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    let existing = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
-    dec_ref_bits(_py, key_bits);
-    let Some(bits) = existing else {
-        return false;
-    };
-    match obj_from_bits(bits).as_ptr() {
-        Some(ptr) => unsafe { object_type_id(ptr) == TYPE_ID_DICT },
-        None => false,
-    }
-}
-
-fn set_dict_entry(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, value_bits: u64) -> bool {
-    let key_ptr = alloc_string(_py, name.as_bytes());
-    if key_ptr.is_null() {
-        return false;
-    }
-    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-    }
-    dec_ref_bits(_py, key_bits);
-    true
-}
-
-fn set_dict_bool(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, value: bool) {
-    let key_ptr = alloc_string(_py, name.as_bytes());
-    if key_ptr.is_null() {
-        return;
-    }
-    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    let val_bits = MoltObject::from_bool(value).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-    }
-    dec_ref_bits(_py, key_bits);
-}
-
-fn set_intrinsic_entry(
-    _py: &PyToken<'_>,
-    registry_ptr: *mut u8,
-    name: &str,
-    func_bits: u64,
-) -> bool {
-    let key_ptr = alloc_string(_py, name.as_bytes());
-    if key_ptr.is_null() {
-        return false;
-    }
-    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    unsafe {
-        dict_set_in_place(_py, registry_ptr, key_bits, func_bits);
-    }
-    dec_ref_bits(_py, key_bits);
-    true
-}
-
 fn register_bootstrap_callable(
     _py: &PyToken<'_>,
     dict_ptr: *mut u8,
@@ -484,50 +604,52 @@ fn register_bootstrap_callable(
     fn_ptr: u64,
     arity: u8,
     defaults: &[u64],
-) {
+) -> bool {
     let Some(fn_bits) = build_bootstrap_function(_py, fn_ptr, arity, defaults) else {
-        return;
+        ensure_registry_memory_error(_py, "bootstrap callable allocation failed");
+        return false;
     };
-    let key_ptr = alloc_string(_py, export_name);
-    if !key_ptr.is_null() {
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, key_bits, fn_bits);
-        }
-        dec_ref_bits(_py, key_bits);
-    }
+    let installed = checked_dict_insert(_py, dict_ptr, export_name, fn_bits);
     dec_ref_bits(_py, fn_bits);
+    installed
 }
 
-fn install_intrinsics_module_exports(_py: &PyToken<'_>, module_ptr: *mut u8) {
-    let Some(dict_ptr) = module_dict_ptr(module_ptr) else {
-        return;
+fn install_intrinsics_module_exports(_py: &PyToken<'_>, module_ptr: *mut u8) -> bool {
+    let Some(live_dict) = module_dict_ptr(module_ptr) else {
+        return false;
     };
+    let Some(publication) = StagedDictPublication::prepare(_py, live_dict) else {
+        return false;
+    };
+    let staged_dict = publication.staged_ptr();
     let none = MoltObject::none().bits();
-    register_bootstrap_callable(
+    if !register_bootstrap_callable(
         _py,
-        dict_ptr,
+        staged_dict,
         b"require_intrinsic",
         molt_require_intrinsic_runtime as *const () as usize as u64,
         2u8,
         &[none],
-    );
-    register_bootstrap_callable(
+    ) || !register_bootstrap_callable(
         _py,
-        dict_ptr,
+        staged_dict,
         b"load_intrinsic",
         molt_load_intrinsic_runtime as *const () as usize as u64,
         2u8,
         &[none],
-    );
-    register_bootstrap_callable(
+    ) || !register_bootstrap_callable(
         _py,
-        dict_ptr,
+        staged_dict,
         b"runtime_active",
         molt_runtime_active_runtime as *const () as usize as u64,
         0u8,
         &[],
-    );
+    ) {
+        return false;
+    }
+    unsafe { publication.publish(_py) };
+    drop(publication);
+    true
 }
 
 fn alias_name(name: &str) -> Option<String> {
@@ -540,27 +662,6 @@ fn alias_name(name: &str) -> Option<String> {
     alias.push_str("_molt_");
     alias.push_str(rest);
     Some(alias)
-}
-
-fn attach_function_defaults(_py: &PyToken<'_>, ptr: *mut u8, defaults: &[u64]) -> bool {
-    if defaults.is_empty() {
-        return true;
-    }
-    unsafe {
-        let defaults_name = crate::intern_static_name(
-            _py,
-            &crate::runtime_state(_py).interned.defaults_name,
-            b"__defaults__",
-        );
-        let defaults_ptr = alloc_tuple(_py, defaults);
-        if defaults_ptr.is_null() {
-            return false;
-        }
-        let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
-        crate::function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
-        dec_ref_bits(_py, defaults_bits);
-    }
-    true
 }
 
 fn materialize_intrinsic_defaults(
@@ -580,33 +681,22 @@ fn materialize_intrinsic_defaults(
 }
 
 fn build_runtime_function(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     fn_ptr: u64,
     arity: u8,
     defaults: &[u64],
 ) -> Option<u64> {
-    let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
-    if ptr.is_null() {
-        return None;
-    }
-    unsafe {
-        let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-        if !crate::object::object_init_class_edge_unpublished(
-            _py,
-            ptr,
-            builtin_bits,
-            ClassEdgeOwnership::Owned,
-        ) {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return None;
-        }
-    }
-    let fn_bits = MoltObject::from_ptr(ptr).bits();
-    if !attach_function_defaults(_py, ptr, defaults) {
-        dec_ref_bits(_py, fn_bits);
-        return None;
-    }
-    Some(fn_bits)
+    let bits = if defaults.is_empty() {
+        crate::builtins::methods::alloc_builtin_function(py, fn_ptr, u64::from(arity))
+    } else {
+        crate::builtins::methods::alloc_builtin_function_with_defaults(
+            py,
+            fn_ptr,
+            u64::from(arity),
+            defaults,
+        )
+    };
+    (bits != 0).then_some(bits)
 }
 
 fn build_bootstrap_function(
@@ -617,10 +707,13 @@ fn build_bootstrap_function(
 ) -> Option<u64> {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
+        ensure_registry_memory_error(_py, "bootstrap callable allocation failed");
         return None;
     }
     let fn_bits = MoltObject::from_ptr(ptr).bits();
-    if !attach_function_defaults(_py, ptr, defaults) {
+    if !defaults.is_empty()
+        && !unsafe { crate::builtins::methods::set_function_defaults(_py, ptr, defaults) }
+    {
         dec_ref_bits(_py, fn_bits);
         return None;
     }
@@ -650,52 +743,63 @@ fn cache_resolved_intrinsic(
     requested_name: &str,
     canonical_name: &str,
     func_bits: u64,
-) {
+) -> bool {
     let builtins_ptr = runtime_state(_py)
         .intrinsic_registry_module
         .load(Ordering::Acquire);
     if builtins_ptr.is_null() {
-        return;
+        return true;
     }
     unsafe {
         if object_type_id(builtins_ptr) != TYPE_ID_MODULE {
-            return;
+            return true;
         }
     }
     let dict_bits = unsafe { module_dict_bits(builtins_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
+        return true;
     };
     unsafe {
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
+            return true;
         }
     }
-    let reg_key_ptr = alloc_string(_py, REGISTRY_NAME.as_bytes());
-    if reg_key_ptr.is_null() {
-        return;
+    let reg_opt = match named_dict_value(_py, dict_ptr, REGISTRY_NAME.as_bytes()) {
+        Ok(value) => value,
+        Err(()) => return false,
     };
-    let reg_key_bits = MoltObject::from_ptr(reg_key_ptr).bits();
-    let reg_opt = unsafe { dict_get_in_place(_py, dict_ptr, reg_key_bits) };
-    dec_ref_bits(_py, reg_key_bits);
     let Some(reg_bits) = reg_opt else {
-        return;
+        return true;
     };
     let Some(registry_ptr) = obj_from_bits(reg_bits).as_ptr() else {
-        return;
+        return true;
     };
     unsafe {
         if object_type_id(registry_ptr) != TYPE_ID_DICT {
-            return;
+            return true;
         }
     }
-    set_intrinsic_entry(_py, registry_ptr, canonical_name, func_bits);
-    if requested_name != canonical_name {
-        set_intrinsic_entry(_py, registry_ptr, requested_name, func_bits);
+    let Some(publication) = StagedDictPublication::prepare(_py, registry_ptr) else {
+        return false;
+    };
+    let staged_registry = publication.staged_ptr();
+    if !checked_dict_insert(_py, staged_registry, canonical_name.as_bytes(), func_bits) {
+        return false;
     }
-    if let Some(alias) = alias_name(canonical_name) {
-        set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
+    if requested_name != canonical_name
+        && !checked_dict_insert(_py, staged_registry, requested_name.as_bytes(), func_bits)
+    {
+        return false;
     }
+    if let Some(alias) = alias_name(canonical_name)
+        && alias != requested_name
+        && !checked_dict_insert(_py, staged_registry, alias.as_bytes(), func_bits)
+    {
+        return false;
+    }
+    unsafe { publication.publish(_py) };
+    drop(publication);
+    true
 }
 
 fn resolve_intrinsic_func(
@@ -715,8 +819,9 @@ fn resolve_intrinsic_func(
     let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults) else {
         return Err(IntrinsicResolveError::AllocFailed);
     };
-    if cache_result {
-        cache_resolved_intrinsic(_py, requested_name, spec.name, func_bits);
+    if cache_result && !cache_resolved_intrinsic(_py, requested_name, spec.name, func_bits) {
+        dec_ref_bits(_py, func_bits);
+        return Err(IntrinsicResolveError::AllocFailed);
     }
     Ok(func_bits)
 }
@@ -734,7 +839,6 @@ pub(crate) fn try_resolve_intrinsic_func(
 /// The module contains a `require_intrinsic` function that delegates to
 /// the runtime's intrinsic lookup.
 pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
-    use crate::alloc_string;
     use crate::object::builders::alloc_module_obj;
 
     #[cfg(target_arch = "wasm32")]
@@ -749,25 +853,50 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     // Create the _intrinsics module
     let name_ptr = alloc_string(_py, b"_intrinsics");
     if name_ptr.is_null() {
+        ensure_registry_memory_error(_py, "_intrinsics module name allocation failed");
         return;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
 
     let existing_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
+    if exception_pending(_py) {
+        if !obj_from_bits(existing_bits).is_none() {
+            dec_ref_bits(_py, existing_bits);
+        }
+        dec_ref_bits(_py, name_bits);
+        return;
+    }
     if let Some(existing_ptr) = obj_from_bits(existing_bits).as_ptr() {
         unsafe {
             if object_type_id(existing_ptr) == TYPE_ID_MODULE {
-                install_intrinsics_module_exports(_py, existing_ptr);
+                let _ = install_intrinsics_module_exports(_py, existing_ptr);
                 dec_ref_bits(_py, existing_bits);
                 dec_ref_bits(_py, name_bits);
                 return;
             }
         }
         dec_ref_bits(_py, existing_bits);
+        raise_exception::<()>(
+            _py,
+            "RuntimeError",
+            "_intrinsics cache entry is not a module",
+        );
+        dec_ref_bits(_py, name_bits);
+        return;
+    }
+    if !obj_from_bits(existing_bits).is_none() {
+        raise_exception::<()>(
+            _py,
+            "RuntimeError",
+            "_intrinsics cache entry is not a module",
+        );
+        dec_ref_bits(_py, name_bits);
+        return;
     }
 
     let module_ptr = alloc_module_obj(_py, name_bits);
     if module_ptr.is_null() {
+        ensure_registry_memory_error(_py, "_intrinsics module allocation failed");
         dec_ref_bits(_py, name_bits);
         return;
     }
@@ -778,10 +907,14 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     // If `_intrinsics` was already constructed by generic module creation,
     // the cached branch above repairs that module in place instead of trying
     // to replace the first-init-wins cache entry.
-    install_intrinsics_module_exports(_py, module_ptr);
+    if !install_intrinsics_module_exports(_py, module_ptr) {
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, name_bits);
+        return;
+    }
 
     // Register in module cache
-    crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+    let _ = crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, name_bits);
 }
@@ -876,11 +1009,15 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
                         name
                     );
                 }
-                raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    &format!("failed to allocate intrinsic function: {name}"),
-                )
+                if exception_pending(_py) {
+                    MoltObject::none().bits()
+                } else {
+                    raise_exception::<u64>(
+                        _py,
+                        "MemoryError",
+                        &format!("failed to allocate intrinsic function: {name}"),
+                    )
+                }
             }
             Err(IntrinsicResolveError::NotCallable) => raise_exception::<u64>(
                 _py,
@@ -924,11 +1061,17 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
                 | IntrinsicResolveError::NotCallable
                 | IntrinsicResolveError::MissingSymbol,
             ) => MoltObject::none().bits(),
-            Err(IntrinsicResolveError::AllocFailed) => raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                &format!("failed to allocate intrinsic function: {name}"),
-            ),
+            Err(IntrinsicResolveError::AllocFailed) => {
+                if exception_pending(_py) {
+                    MoltObject::none().bits()
+                } else {
+                    raise_exception::<u64>(
+                        _py,
+                        "MemoryError",
+                        &format!("failed to allocate intrinsic function: {name}"),
+                    )
+                }
+            }
         }
     })
 }
@@ -942,6 +1085,37 @@ pub extern "C" fn molt_runtime_active_runtime() -> u64 {
 mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
+
+    /// Cold runtime bootstrap exports the synthetic `_intrinsics` API only.
+    /// The compiled module-construction path publishes the owning registry.
+    fn construct_registry_owner(_py: &PyToken<'_>) -> u64 {
+        assert!(
+            runtime_state(_py)
+                .intrinsic_registry_module
+                .load(Ordering::Acquire)
+                .is_null()
+        );
+        let name_ptr = alloc_string(_py, b"builtins");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+        dec_ref_bits(_py, name_bits);
+        assert!(
+            !exception_pending(_py),
+            "compiled module construction must install the intrinsic registry"
+        );
+        let module_ptr = obj_from_bits(module_bits)
+            .as_ptr()
+            .expect("constructed builtins module");
+        assert_eq!(
+            runtime_state(_py)
+                .intrinsic_registry_module
+                .load(Ordering::Acquire),
+            module_ptr,
+            "module construction must publish this exact registry owner",
+        );
+        module_bits
+    }
 
     #[cfg(not(feature = "stdlib_net"))]
     #[test]
@@ -1002,6 +1176,121 @@ mod tests {
     }
 
     #[test]
+    fn staged_registry_failure_leaves_live_dictionary_unchanged() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let live = OwnedExactDict::empty(_py).expect("live dictionary allocation");
+            assert!(checked_dict_insert(
+                _py,
+                live.ptr,
+                b"stable",
+                MoltObject::from_bool(true).bits(),
+            ));
+            let stable_before = named_dict_value(_py, live.ptr, b"stable").unwrap();
+
+            let publication =
+                StagedDictPublication::prepare(_py, live.ptr).expect("staged dictionary copy");
+            assert!(checked_dict_insert(
+                _py,
+                publication.staged_ptr(),
+                b"partial",
+                MoltObject::from_bool(true).bits(),
+            ));
+            assert!(!checked_dict_insert(
+                _py,
+                publication.staged_ptr(),
+                b"rejected",
+                0,
+            ));
+            drop(publication);
+
+            assert!(exception_pending(_py));
+            let _ = crate::molt_exception_clear();
+            assert_eq!(
+                named_dict_value(_py, live.ptr, b"stable").unwrap(),
+                stable_before
+            );
+            assert_eq!(named_dict_value(_py, live.ptr, b"partial").unwrap(), None);
+            assert_eq!(named_dict_value(_py, live.ptr, b"rejected").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn lazy_alias_cache_failure_is_atomic_and_preserves_registry_identity() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(_py, {
+                let owner_bits = construct_registry_owner(_py);
+                let registry_module = runtime_state(_py)
+                    .intrinsic_registry_module
+                    .load(Ordering::Acquire);
+                assert!(
+                    !registry_module.is_null(),
+                    "module construction must publish the intrinsic registry module",
+                );
+                let module_dict = module_dict_ptr(registry_module).expect("module dictionary");
+                let registry_bits = named_dict_value(_py, module_dict, REGISTRY_NAME.as_bytes())
+                    .unwrap()
+                    .expect("intrinsic registry");
+                let registry_ptr = obj_from_bits(registry_bits).as_ptr().unwrap();
+                assert!(!cache_resolved_intrinsic(
+                    _py,
+                    "_molt_atomic_alias",
+                    "molt_atomic_alias",
+                    0,
+                ));
+                assert!(exception_pending(_py));
+                let _ = crate::molt_exception_clear();
+
+                assert_eq!(
+                    named_dict_value(_py, module_dict, REGISTRY_NAME.as_bytes()).unwrap(),
+                    Some(registry_bits),
+                );
+                for name in [
+                    b"molt_atomic_alias".as_slice(),
+                    b"_molt_atomic_alias".as_slice(),
+                ] {
+                    assert_eq!(named_dict_value(_py, registry_ptr, name).unwrap(), None);
+                }
+                dec_ref_bits(_py, owner_bits);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_registry_reuses_one_lazy_resolver_callable() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(_py, {
+                let owner_bits = construct_registry_owner(_py);
+                let registry_module = runtime_state(_py)
+                    .intrinsic_registry_module
+                    .load(Ordering::Acquire);
+                assert!(!registry_module.is_null());
+                let module_dict = module_dict_ptr(registry_module).expect("module dictionary");
+                let lookup_bits = named_dict_value(_py, module_dict, LOOKUP_HELPER_NAME.as_bytes())
+                    .unwrap()
+                    .expect("module lazy resolver");
+                let registry_bits = named_dict_value(_py, module_dict, REGISTRY_NAME.as_bytes())
+                    .unwrap()
+                    .expect("intrinsic registry");
+                let registry_ptr = obj_from_bits(registry_bits).as_ptr().unwrap();
+                let resolver_bits = named_dict_value(_py, registry_ptr, b"_molt_lazy_resolve")
+                    .unwrap()
+                    .expect("registry lazy resolver");
+
+                assert_eq!(
+                    lookup_bits, resolver_bits,
+                    "module lookup and registry fallback must share one callable",
+                );
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, owner_bits);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
         ignore = "function pointer identity assertion via `as *const () as usize as u64` is not supported under Miri's pointer-provenance model: separate casts of the same fn-pointer expose distinct addresses, so the stored payload won't equal a freshly-cast comparator"
@@ -1098,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn register_intrinsics_module_repairs_existing_cache_entry() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let _ = crate::molt_exception_clear();
@@ -1112,6 +1402,7 @@ mod tests {
             let generic_module_ptr = obj_from_bits(generic_module_bits)
                 .as_ptr()
                 .expect("generic _intrinsics module allocation should succeed");
+            let generic_dict_bits = unsafe { module_dict_bits(generic_module_ptr) };
             assert_eq!(
                 unsafe { object_type_id(generic_module_ptr) },
                 TYPE_ID_MODULE
@@ -1127,6 +1418,11 @@ mod tests {
 
             let cached_bits = crate::builtins::modules::molt_module_cache_get(module_name_bits);
             assert_eq!(cached_bits, generic_module_bits);
+            assert_eq!(
+                unsafe { module_dict_bits(generic_module_ptr) },
+                generic_dict_bits,
+                "repair must preserve the existing module dictionary identity",
+            );
 
             let runtime_active_name_ptr = alloc_string(_py, b"runtime_active");
             assert!(!runtime_active_name_ptr.is_null());

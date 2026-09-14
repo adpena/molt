@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "dict_increment_tests.rs"]
+mod dict_increment_tests;
+
 #[inline(always)]
 pub(crate) unsafe fn dict_commit_projection(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe { crate::object::gc::gc_reproject_dict(_py, ptr) };
@@ -16,28 +20,95 @@ pub(crate) unsafe fn dict_commit_structure(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
-/// Retain, publish, reproject, then release. Destructor re-entry observes a
-/// complete old or new mapping, never a partially committed replacement.
-#[inline]
-unsafe fn dict_commit_value_replacement(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    value_slot: &mut u64,
-    new_bits: u64,
-) {
+/// Publish a fully prepared dictionary without changing the live dictionary's
+/// identity or releasing any displaced Python value. The staged dictionary
+/// receives the old contents; its caller releases that owner only after all
+/// dependent class/cache metadata has committed.
+///
+/// # Safety
+/// Both arguments are distinct live, mutable exact dictionaries. The caller
+/// holds the GIL and exclusive custody of `staged`; no borrowed backing view
+/// may survive this operation. All fallible preparation precedes this commit.
+pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged: *mut u8) {
     unsafe {
-        let old_bits = *value_slot;
+        crate::gil_assert();
+        assert_ne!(live, staged);
+        assert_eq!(object_type_id(live), TYPE_ID_DICT);
+        assert_eq!(object_type_id(staged), TYPE_ID_DICT);
+        assert!(
+            !(*header_from_obj_ptr(live)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP)
+        );
+        assert!(
+            !(*header_from_obj_ptr(staged)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP)
+        );
+        let live_order = dict_order(live) as *mut Vec<u64>;
+        let live_hashes = dict_hashes(live) as *mut Vec<u64>;
+        let live_table = dict_table(live) as *mut Vec<usize>;
+        let _order_lock = crate::object::backing::tracked_vec_mutation_lock(live_order);
+        let _hashes_lock = crate::object::backing::tracked_vec_mutation_lock(live_hashes);
+        let _table_lock = crate::object::backing::tracked_vec_mutation_lock(live_table);
+        crate::object::backing::tracked_vec_swap_contents(live_order, dict_order(staged));
+        crate::object::backing::tracked_vec_swap_contents(live_hashes, dict_hashes(staged));
+        crate::object::backing::tracked_vec_swap_contents(live_table, dict_table(staged));
+        let live_refs =
+            (*header_from_obj_ptr(live)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        let staged_refs =
+            (*header_from_obj_ptr(staged)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        for (object, has_refs) in [(live, staged_refs), (staged, live_refs)] {
+            if has_refs {
+                (*header_from_obj_ptr(object))
+                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            } else {
+                (*header_from_obj_ptr(object))
+                    .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
+            }
+            dict_commit_structure(py, object);
+        }
+    }
+}
+
+/// Detached dictionary ownership, released only after the caller has published
+/// any dependent metadata. No borrow of dictionary backing survives this value.
+pub(crate) struct DetachedDictReferences<'a, 'py, Storage: AsRef<[u64]> = [u64; 2]> {
+    py: &'a PyToken<'py>,
+    bits: Storage,
+}
+
+impl<Storage: AsRef<[u64]>> Drop for DetachedDictReferences<'_, '_, Storage> {
+    fn drop(&mut self) {
+        for &bits in self.bits.as_ref() {
+            dec_ref_bits(self.py, bits);
+        }
+    }
+}
+
+/// Retain, publish and reproject; transfer the displaced reference to the
+/// caller so destructor re-entry cannot observe a partially committed owner.
+#[inline]
+unsafe fn dict_commit_value_replacement<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    value_index: usize,
+    new_bits: u64,
+) -> DetachedDictReferences<'a, 'py> {
+    unsafe {
+        let old_bits = dict_order(ptr)[value_index];
         if old_bits == new_bits {
-            return;
+            return DetachedDictReferences {
+                py: _py,
+                bits: [0; 2],
+            };
         }
         if crate::object::refcount_opt::is_heap_ref(new_bits) {
             inc_ref_bits(_py, new_bits);
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
-        *value_slot = new_bits;
+        // End the slot borrow before GC projection reads the complete mapping.
+        dict_order(ptr)[value_index] = new_bits;
         dict_commit_projection(_py, ptr);
-        if crate::object::refcount_opt::is_heap_ref(old_bits) {
-            dec_ref_bits(_py, old_bits);
+        DetachedDictReferences {
+            py: _py,
+            bits: [old_bits, 0],
         }
     }
 }
@@ -226,356 +297,197 @@ pub(crate) unsafe fn dict_update_set_via_store(
     let _ = molt_store_index(target_bits, key_bits, val_bits);
 }
 
-pub(crate) unsafe fn dict_inc_in_place(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    delta_bits: u64,
-) -> bool {
+/// Admission for every increment projection, including callback-free writes.
+unsafe fn dict_increment_writable(py: &PyToken<'_>, dict: *mut u8) -> bool {
     unsafe {
-        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-            return false;
+        if (*header_from_obj_ptr(dict)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
+            raise_exception::<()>(py, "TypeError", "class layout metadata is immutable");
+            false
+        } else {
+            true
         }
-        let current_bits =
-            dict_get_in_place(_py, dict_ptr, key_bits).unwrap_or(MoltObject::from_int(0).bits());
-        if exception_pending(_py) {
-            return false;
-        }
-
-        if let (Some(current), Some(delta)) = (
-            obj_from_bits(current_bits).as_int(),
-            obj_from_bits(delta_bits).as_int(),
-        ) && let Some(sum) = current.checked_add(delta)
-        {
-            let sum_bits = MoltObject::from_int(sum).bits();
-            dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
-            return !exception_pending(_py);
-        }
-
-        let sum_bits = molt_add(current_bits, delta_bits);
-        if obj_from_bits(sum_bits).is_none() {
-            return false;
-        }
-        dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
-        dec_ref_bits(_py, sum_bits);
-        !exception_pending(_py)
     }
 }
 
-fn bits_as_int(bits: u64) -> Option<i64> {
-    obj_from_bits(bits).as_int()
+#[inline]
+fn inline_increment_sum(current: u64, delta: u64) -> Option<u64> {
+    let sum = obj_from_bits(current)
+        .as_int()?
+        .checked_add(obj_from_bits(delta).as_int()?)?;
+    MoltObject::try_from_int(sum).map(|sum| sum.bits())
+}
+
+/// The arithmetic boundary owns the mapping, key, delta and selected value.
+/// No dictionary view or index survives Python arithmetic; the assignment is a
+/// fresh lookup, just as d[key] = d.get(key, 0) + delta evaluates read then write.
+pub(crate) unsafe fn dict_inc_in_place(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+    delta: u64,
+) -> bool {
+    unsafe {
+        if !dict_increment_writable(py, dict) {
+            return false;
+        }
+        let dictionary = MoltObject::from_ptr(dict).bits();
+        for bits in [dictionary, key, delta] {
+            inc_ref_bits(py, bits);
+        }
+        let result = (|| {
+            let current =
+                dict_get_in_place(py, dict, key).unwrap_or(MoltObject::from_int(0).bits());
+            if exception_pending(py) {
+                return false;
+            }
+            inc_ref_bits(py, current);
+            let sum =
+                inline_increment_sum(current, delta).unwrap_or_else(|| molt_add(current, delta));
+            if !exception_pending(py) {
+                dict_set_in_place(py, dict, key, sum);
+            }
+            // __add__ returning None is a valid value, not a failure sentinel.
+            dec_ref_bits(py, sum);
+            dec_ref_bits(py, current);
+            !exception_pending(py)
+        })();
+        for bits in [delta, key, dictionary] {
+            dec_ref_bits(py, bits);
+        }
+        result && !exception_pending(py)
+    }
+}
+
+/// A direct update exists only for inline operands and an inline result. It
+/// cannot allocate, dispatch arithmetic, or release a mortal old value.
+unsafe fn dict_increment_scalar_entry(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    entry: usize,
+    delta: u64,
+) -> bool {
+    unsafe {
+        let index = entry * 2 + 1;
+        let current = dict_order(dict)[index];
+        let Some(sum) = inline_increment_sum(current, delta) else {
+            return false;
+        };
+        drop(dict_commit_value_replacement(py, dict, index, sum));
+        true
+    }
 }
 
 pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    delta_bits: u64,
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+    delta: u64,
 ) -> Option<bool> {
     unsafe {
-        let key_obj = obj_from_bits(key_bits);
-        let key_ptr = key_obj.as_ptr()?;
-        if object_type_id(key_ptr) != TYPE_ID_STRING {
+        let key_ptr = obj_from_bits(key).as_ptr()?;
+        if object_type_id(key_ptr) != TYPE_ID_STRING
+            || (object_class_bits(key_ptr) != 0
+                && object_class_bits(key_ptr) != builtin_classes(py).str)
+            || obj_from_bits(delta).as_int().is_none()
+        {
             return None;
         }
-        let delta = bits_as_int(delta_bits)?;
-        let key_bytes = std::slice::from_raw_parts(string_bytes(key_ptr), string_len(key_ptr));
-        let hash = hash_string_bytes(_py, key_bytes) as u64;
-
-        let order = dict_order(dict_ptr);
-        let hashes = dict_hashes(dict_ptr);
-        let table = dict_table(dict_ptr);
-        if !table.is_empty() {
-            let mask = table.len() - 1;
-            let mut slot = (hash as usize) & mask;
-            loop {
-                let entry = table[slot];
-                if entry == 0 {
-                    break;
-                }
-                let entry_idx = entry - 1;
-                if entry_idx * 2 >= order.len() {
-                    slot = (slot + 1) & mask;
-                    continue;
-                }
-                if hashes.get(entry_idx).copied() != Some(hash) {
-                    slot = (slot + 1) & mask;
-                    continue;
-                }
-                let entry_key_bits = order[entry_idx * 2];
-                let mut keys_match = entry_key_bits == key_bits;
-                if !keys_match {
-                    let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
-                        // continue probing
-                        slot = (slot + 1) & mask;
-                        continue;
-                    };
-                    if object_type_id(entry_key_ptr) == TYPE_ID_STRING {
-                        let entry_len = string_len(entry_key_ptr);
-                        if entry_len == key_bytes.len() {
-                            let entry_bytes =
-                                std::slice::from_raw_parts(string_bytes(entry_key_ptr), entry_len);
-                            keys_match = entry_bytes == key_bytes;
-                        }
-                    }
-                }
-                if keys_match {
-                    profile_hit_unchecked(&DICT_STR_INT_PREHASH_HIT_COUNT);
-                    let val_idx = entry_idx * 2 + 1;
-                    let current_bits = order[val_idx];
-                    let sum_bits: u64;
-                    let mut sum_owned = false;
-                    if let Some(current) = obj_from_bits(current_bits).as_int() {
-                        if let Some(sum) = current.checked_add(delta) {
-                            sum_bits = MoltObject::from_int(sum).bits();
-                        } else {
-                            sum_bits = molt_add(current_bits, delta_bits);
-                            if obj_from_bits(sum_bits).is_none() {
-                                return Some(false);
-                            }
-                            sum_owned = true;
-                        }
-                    } else {
-                        sum_bits = molt_add(current_bits, delta_bits);
-                        if obj_from_bits(sum_bits).is_none() {
-                            return Some(false);
-                        }
-                        sum_owned = true;
-                    }
-                    if current_bits != sum_bits {
-                        dict_commit_value_replacement(_py, dict_ptr, &mut order[val_idx], sum_bits);
-                    }
-                    if sum_owned {
-                        dec_ref_bits(_py, sum_bits);
-                    }
-                    return Some(!exception_pending(_py));
-                }
-                slot = (slot + 1) & mask;
-            }
-        }
-
-        let sum_bits = MoltObject::from_int(delta).bits();
-        let new_entries = (order.len() / 2) + 1;
-        let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
-        if needs_resize {
-            let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, hashes, table, capacity);
-            if exception_pending(_py) {
-                return Some(false);
-            }
-        }
-        if !reserve_dict_order(_py, order, 2)
-            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
-        {
+        if !dict_increment_writable(py, dict) {
             return Some(false);
         }
-        order.push(key_bits);
-        order.push(sum_bits);
-        hashes.push(hash);
-        inc_ref_bits(_py, key_bits);
-        inc_ref_bits(_py, sum_bits);
-        let entry_idx = order.len() / 2 - 1;
-        dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
-        dict_commit_insertion(_py, dict_ptr, key_bits, sum_bits);
+        let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), string_len(key_ptr));
+        let hash = hash_string_bytes(py, bytes) as u64;
+        // This speculative probe performs no Python equality. Unknown collisions
+        // join the generic lane without duplicating observable key comparisons.
+        if let Some(entry) = dict_exact_string_entry(py, dict, bytes, hash)
+            && dict_increment_scalar_entry(py, dict, entry, delta)
+        {
+            profile_hit_unchecked(&DICT_STR_INT_PREHASH_HIT_COUNT);
+            return Some(true);
+        }
         profile_hit_unchecked(&DICT_STR_INT_PREHASH_MISS_COUNT);
-        Some(!exception_pending(_py))
+        Some(dict_inc_in_place(py, dict, key, delta))
     }
 }
 
-unsafe fn dict_inc_with_string_token_fallback(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
+/// Allocation-free positive probe for token counting. A same-hash nonexact key
+/// ends speculation: ordinary equality may match it or have side effects.
+unsafe fn dict_exact_string_entry(
+    py: &PyToken<'_>,
+    dict: *mut u8,
     token: &[u8],
-    delta_bits: u64,
-    last_bits: &mut u64,
-    had_any: &mut bool,
-) -> bool {
+    hash: u64,
+) -> Option<usize> {
     unsafe {
-        let key_ptr = alloc_string(_py, token);
-        if key_ptr.is_null() {
-            return false;
+        let table = dict_table(dict);
+        if table.is_empty() {
+            return None;
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        if let Some(done) =
-            dict_inc_prehashed_string_key_in_place(_py, dict_ptr, key_bits, delta_bits)
-        {
-            if !done {
-                dec_ref_bits(_py, key_bits);
-                return false;
+        let mask = table.len() - 1;
+        let mut slot = hash as usize & mask;
+        for _ in 0..table.len() {
+            let entry = table[slot];
+            if entry == 0 {
+                return None;
             }
-        } else if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
-            dec_ref_bits(_py, key_bits);
-            return false;
+            if entry != TABLE_TOMBSTONE {
+                let index = entry - 1;
+                if dict_hashes(dict).get(index).copied() == Some(hash) {
+                    let key = *dict_order(dict).get(index.checked_mul(2)?)?;
+                    let key = obj_from_bits(key).as_ptr()?;
+                    let class = object_class_bits(key);
+                    if object_type_id(key) != TYPE_ID_STRING
+                        || (class != 0 && class != builtin_classes(py).str)
+                    {
+                        return None;
+                    }
+                    if string_len(key) == token.len()
+                        && simd_bytes_eq(string_bytes(key), token.as_ptr(), token.len())
+                    {
+                        return Some(index);
+                    }
+                }
+            }
+            slot = (slot + 1) & mask;
         }
-        if *had_any && !obj_from_bits(*last_bits).is_none() {
-            dec_ref_bits(_py, *last_bits);
-        }
-        inc_ref_bits(_py, key_bits);
-        *last_bits = key_bits;
-        *had_any = true;
-        dec_ref_bits(_py, key_bits);
-        true
+        None
     }
 }
 
 unsafe fn dict_inc_with_string_token(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
+    py: &PyToken<'_>,
+    dict: *mut u8,
     token: &[u8],
-    delta_bits: u64,
-    last_bits: &mut u64,
-    had_any: &mut bool,
+    delta: u64,
+    last: &mut SplitDictIncrementLast<'_, '_>,
 ) -> bool {
     unsafe {
-        let hash = hash_string_bytes(_py, token) as u64;
-        {
-            let order = dict_order(dict_ptr);
-            let hashes = dict_hashes(dict_ptr);
-            let table = dict_table(dict_ptr);
-            if !table.is_empty() {
-                let mask = table.len() - 1;
-                let mut slot = (hash as usize) & mask;
-                loop {
-                    let entry = table[slot];
-                    if entry == 0 {
-                        break;
-                    }
-                    let entry_idx = entry - 1;
-                    if entry_idx * 2 >= order.len() {
-                        slot = (slot + 1) & mask;
-                        continue;
-                    }
-                    if hashes.get(entry_idx).copied() != Some(hash) {
-                        slot = (slot + 1) & mask;
-                        continue;
-                    }
-                    let entry_key_bits = order[entry_idx * 2];
-                    let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
-                        return dict_inc_with_string_token_fallback(
-                            _py, dict_ptr, token, delta_bits, last_bits, had_any,
-                        );
-                    };
-                    if object_type_id(entry_key_ptr) != TYPE_ID_STRING {
-                        return dict_inc_with_string_token_fallback(
-                            _py, dict_ptr, token, delta_bits, last_bits, had_any,
-                        );
-                    }
-                    let entry_len = string_len(entry_key_ptr);
-                    if entry_len == token.len() {
-                        let entry_bytes =
-                            std::slice::from_raw_parts(string_bytes(entry_key_ptr), entry_len);
-                        if entry_bytes == token {
-                            let val_idx = entry_idx * 2 + 1;
-                            let current_bits = order[val_idx];
-                            let sum_bits: u64;
-                            let mut sum_owned = false;
-                            if let (Some(current), Some(delta)) = (
-                                obj_from_bits(current_bits).as_int(),
-                                obj_from_bits(delta_bits).as_int(),
-                            ) {
-                                if let Some(sum) = current.checked_add(delta) {
-                                    sum_bits = MoltObject::from_int(sum).bits();
-                                } else {
-                                    sum_bits = molt_add(current_bits, delta_bits);
-                                    if obj_from_bits(sum_bits).is_none() {
-                                        return false;
-                                    }
-                                    sum_owned = true;
-                                }
-                            } else {
-                                sum_bits = molt_add(current_bits, delta_bits);
-                                if obj_from_bits(sum_bits).is_none() {
-                                    return false;
-                                }
-                                sum_owned = true;
-                            }
-                            if current_bits != sum_bits {
-                                dict_commit_value_replacement(
-                                    _py,
-                                    dict_ptr,
-                                    &mut order[val_idx],
-                                    sum_bits,
-                                );
-                            }
-                            if sum_owned {
-                                dec_ref_bits(_py, sum_bits);
-                            }
-                            if *had_any && !obj_from_bits(*last_bits).is_none() {
-                                dec_ref_bits(_py, *last_bits);
-                            }
-                            inc_ref_bits(_py, entry_key_bits);
-                            *last_bits = entry_key_bits;
-                            *had_any = true;
-                            return true;
-                        }
-                    }
-                    slot = (slot + 1) & mask;
-                }
-            }
-        }
-
-        let key_ptr = alloc_string(_py, token);
-        if key_ptr.is_null() {
+        if !dict_increment_writable(py, dict) {
             return false;
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let zero_bits = MoltObject::from_int(0).bits();
-        let sum_bits: u64;
-        let mut sum_owned = false;
-        if let Some(delta) = obj_from_bits(delta_bits).as_int() {
-            sum_bits = MoltObject::from_int(delta).bits();
+        let hash = hash_string_bytes(py, token) as u64;
+        let key = if let Some(entry) = dict_exact_string_entry(py, dict, token, hash)
+            && dict_increment_scalar_entry(py, dict, entry, delta)
+        {
+            let key = dict_order(dict)[entry * 2];
+            inc_ref_bits(py, key);
+            key
         } else {
-            sum_bits = molt_add(zero_bits, delta_bits);
-            if obj_from_bits(sum_bits).is_none() {
-                dec_ref_bits(_py, key_bits);
+            let key = alloc_string(py, token);
+            if key.is_null() {
                 return false;
             }
-            sum_owned = true;
-        }
-        let order = dict_order(dict_ptr);
-        let hashes = dict_hashes(dict_ptr);
-        let table = dict_table(dict_ptr);
-        let new_entries = (order.len() / 2) + 1;
-        let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
-        if needs_resize {
-            let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, hashes, table, capacity);
-            if exception_pending(_py) {
-                if sum_owned {
-                    dec_ref_bits(_py, sum_bits);
-                }
-                dec_ref_bits(_py, key_bits);
+            let key = MoltObject::from_ptr(key).bits();
+            if !dict_inc_in_place(py, dict, key, delta) {
+                dec_ref_bits(py, key);
                 return false;
             }
-        }
-        if !reserve_dict_order(_py, order, 2)
-            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
-        {
-            if sum_owned {
-                dec_ref_bits(_py, sum_bits);
-            }
-            dec_ref_bits(_py, key_bits);
-            return false;
-        }
-        order.push(key_bits);
-        order.push(sum_bits);
-        hashes.push(hash);
-        inc_ref_bits(_py, key_bits);
-        inc_ref_bits(_py, sum_bits);
-        let entry_idx = order.len() / 2 - 1;
-        dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
-        dict_commit_insertion(_py, dict_ptr, key_bits, sum_bits);
-        if sum_owned {
-            dec_ref_bits(_py, sum_bits);
-        }
-        if *had_any && !obj_from_bits(*last_bits).is_none() {
-            dec_ref_bits(_py, *last_bits);
-        }
-        inc_ref_bits(_py, key_bits);
-        *last_bits = key_bits;
-        *had_any = true;
-        dec_ref_bits(_py, key_bits);
-        true
+            key
+        };
+        // Transfer the retained key before releasing the previous token owner.
+        // The previous release can mutate the dictionary but cannot invalidate key.
+        last.replace_owned(key);
+        !exception_pending(py)
     }
 }
 
@@ -681,19 +593,47 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
     }
 }
 
-unsafe fn split_dict_inc_result_tuple(_py: &PyToken<'_>, last_bits: u64, had_any: bool) -> u64 {
-    let had_any_bits = MoltObject::from_bool(had_any).bits();
-    let pair_ptr = alloc_tuple(_py, &[last_bits, had_any_bits]);
-    if pair_ptr.is_null() {
-        if had_any && !obj_from_bits(last_bits).is_none() {
-            dec_ref_bits(_py, last_bits);
+/// One owner for the last token on success, callback failure and allocation
+/// denial. Split entry points cannot leak a previous token on an early return.
+struct SplitDictIncrementLast<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: Option<u64>,
+}
+
+impl<'a, 'py> SplitDictIncrementLast<'a, 'py> {
+    fn new(py: &'a PyToken<'py>) -> Self {
+        Self { py, bits: None }
+    }
+
+    fn replace_owned(&mut self, bits: u64) {
+        let previous = self.bits.replace(bits);
+        if let Some(previous) = previous {
+            dec_ref_bits(self.py, previous);
         }
-        return MoltObject::none().bits();
     }
-    if had_any && !obj_from_bits(last_bits).is_none() {
-        dec_ref_bits(_py, last_bits);
+
+    fn result(&self) -> u64 {
+        let pair = alloc_tuple(
+            self.py,
+            &[
+                self.bits.unwrap_or(MoltObject::none().bits()),
+                MoltObject::from_bool(self.bits.is_some()).bits(),
+            ],
+        );
+        if pair.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(pair).bits()
+        }
     }
-    MoltObject::from_ptr(pair_ptr).bits()
+}
+
+impl Drop for SplitDictIncrementLast<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(bits) = self.bits.take() {
+            dec_ref_bits(self.py, bits);
+        }
+    }
 }
 
 fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
@@ -918,8 +858,7 @@ unsafe fn split_ascii_whitespace_dict_inc_tokens(
     dict_ptr: *mut u8,
     line_bytes: &[u8],
     delta_bits: u64,
-    last_bits: &mut u64,
-    had_any: &mut bool,
+    last: &mut SplitDictIncrementLast<'_, '_>,
 ) -> bool {
     unsafe {
         let mut idx = 0usize;
@@ -938,8 +877,7 @@ unsafe fn split_ascii_whitespace_dict_inc_tokens(
                 dict_ptr,
                 &line_bytes[token_start..token_end],
                 delta_bits,
-                last_bits,
-                had_any,
+                last,
             ) {
                 return false;
             }
@@ -956,6 +894,13 @@ pub extern "C" fn molt_string_split_ws_dict_inc(
     delta_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Token callbacks can release caller-visible containers holding later
+        // inputs. The whole scan owns its byte views and operands, not merely
+        // the one arithmetic invocation currently in progress.
+        let _input_owners = [line_bits, dict_bits, delta_bits].map(|bits| {
+            inc_ref_bits(_py, bits);
+            obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new)
+        });
         let line_obj = obj_from_bits(line_bits);
         let dict_obj = obj_from_bits(dict_bits);
         let Some(line_ptr) = line_obj.as_ptr() else {
@@ -977,19 +922,17 @@ pub extern "C" fn molt_string_split_ws_dict_inc(
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
             }
+            // A dict subclass projects borrowed backing independently of its
+            // wrapper; retain that exact mapping across successive callbacks.
+            inc_ref_bits(_py, dict_bits);
+            let _dictionary_owner = crate::PtrDropGuard::new(dict_ptr);
             let line_bytes =
                 std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
-            let mut last_bits = MoltObject::none().bits();
-            let mut had_any = false;
+            let mut last = SplitDictIncrementLast::new(_py);
             if line_bytes.is_ascii() {
                 profile_hit_unchecked(&SPLIT_WS_ASCII_FAST_PATH_COUNT);
                 if !split_ascii_whitespace_dict_inc_tokens(
-                    _py,
-                    dict_ptr,
-                    line_bytes,
-                    delta_bits,
-                    &mut last_bits,
-                    &mut had_any,
+                    _py, dict_ptr, line_bytes, delta_bits, &mut last,
                 ) {
                     return MoltObject::none().bits();
                 }
@@ -1004,14 +947,13 @@ pub extern "C" fn molt_string_split_ws_dict_inc(
                         dict_ptr,
                         part.as_bytes(),
                         delta_bits,
-                        &mut last_bits,
-                        &mut had_any,
+                        &mut last,
                     ) {
                         return MoltObject::none().bits();
                     }
                 }
             }
-            split_dict_inc_result_tuple(_py, last_bits, had_any)
+            last.result()
         }
     })
 }
@@ -1024,6 +966,13 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
     delta_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Token callbacks can release caller-visible containers holding later
+        // inputs. The whole scan owns its byte views and operands, not merely
+        // the one arithmetic invocation currently in progress.
+        let _input_owners = [line_bits, sep_bits, dict_bits, delta_bits].map(|bits| {
+            inc_ref_bits(_py, bits);
+            obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new)
+        });
         let line_obj = obj_from_bits(line_bits);
         let sep_obj = obj_from_bits(sep_bits);
         let dict_obj = obj_from_bits(dict_bits);
@@ -1053,14 +1002,17 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
                 return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
             }
 
+            // A dict subclass projects borrowed backing independently of its
+            // wrapper; retain that exact mapping across successive callbacks.
+            inc_ref_bits(_py, dict_bits);
+            let _dictionary_owner = crate::PtrDropGuard::new(dict_ptr);
             let line_bytes =
                 std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
             let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
             if sep_bytes.is_empty() {
                 return raise_exception::<_>(_py, "ValueError", "empty separator");
             }
-            let mut last_bits = MoltObject::none().bits();
-            let mut had_any = false;
+            let mut last = SplitDictIncrementLast::new(_py);
             let mut start = 0usize;
             if sep_bytes.len() == 1 {
                 for idx in memchr::memchr_iter(sep_bytes[0], line_bytes) {
@@ -1069,8 +1021,7 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
                         dict_ptr,
                         &line_bytes[start..idx],
                         delta_bits,
-                        &mut last_bits,
-                        &mut had_any,
+                        &mut last,
                     ) {
                         return MoltObject::none().bits();
                     }
@@ -1084,8 +1035,7 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
                         dict_ptr,
                         &line_bytes[start..idx],
                         delta_bits,
-                        &mut last_bits,
-                        &mut had_any,
+                        &mut last,
                     ) {
                         return MoltObject::none().bits();
                     }
@@ -1097,12 +1047,11 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
                 dict_ptr,
                 &line_bytes[start..],
                 delta_bits,
-                &mut last_bits,
-                &mut had_any,
+                &mut last,
             ) {
                 return MoltObject::none().bits();
             }
-            split_dict_inc_result_tuple(_py, last_bits, had_any)
+            last.result()
         }
     })
 }
@@ -2059,7 +2008,14 @@ pub(in crate::object) fn concat_bytes_like(
         }
         return Some(MoltObject::from_ptr(ptr).bits());
     }
-    let ptr = alloc_bytes_like_with_len(_py, total, type_id);
+    // Dynamic sequence dispatch must select an admitted physical layout; no
+    // arbitrary heap type ID may reach the inline storage constructor.
+    let kind = match type_id {
+        TYPE_ID_STRING => InlineBytesKind::String,
+        TYPE_ID_BYTES => InlineBytesKind::Bytes,
+        _ => return None,
+    };
+    let ptr = alloc_inline_bytes_with_len(_py, total, kind);
     if ptr.is_null() {
         return None;
     }
@@ -2095,17 +2051,29 @@ pub(crate) unsafe fn dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) {
+    drop(unsafe { dict_set_deferred(_py, ptr, key_bits, val_bits) });
+}
+
+/// Publish a mapping update while retaining displaced ownership until the
+/// containing namespace has committed its derived facts. Errors never mint a
+/// success receipt, and ordinary setters consume this same transaction.
+pub(crate) unsafe fn dict_set_deferred<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) -> Result<DetachedDictReferences<'a, 'py>, ()> {
     unsafe {
         crate::gil_assert();
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
-            return;
+            return Err(());
         }
         // Fast path: inline NaN-boxed ints bypass all exception checks,
         // hashability validation, and refcounting overhead.
         let key_obj = obj_from_bits(key_bits);
         if let Some(i) = key_obj.as_int() {
-            return dict_set_inline_int_in_place(_py, ptr, key_bits, i, val_bits);
+            return dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash_int(i) as u64);
         }
         let hash = if key_obj.as_ptr().is_none() {
             // Bool, None, or other inline -- still always hashable, use
@@ -2114,14 +2082,14 @@ pub(crate) unsafe fn dict_set_in_place(
         } else {
             // Heap-allocated key: need full hashability check.
             if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-                return;
+                return Err(());
             }
             hash_bits(_py, key_bits)
         };
         if exception_pending(_py) {
-            return;
+            return Err(());
         }
-        dict_set_with_hash_in_place(_py, ptr, key_bits, val_bits, hash);
+        dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash)
     }
 }
 
@@ -2133,41 +2101,47 @@ pub(crate) unsafe fn dict_set_with_hash_in_place(
     val_bits: u64,
     hash: u64,
 ) {
+    drop(unsafe { dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash) });
+}
+
+unsafe fn dict_set_with_hash_deferred<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+    hash: u64,
+) -> Result<DetachedDictReferences<'a, 'py>, ()> {
     unsafe {
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
-            return;
+            return Err(());
         }
         let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash);
-        let order = dict_order(ptr);
-        let hashes = dict_hashes(ptr);
-        let table = dict_table(ptr);
         if exception_pending(_py) {
-            return;
+            return Err(());
         }
         if let Some(entry_idx) = found {
             let val_idx = entry_idx * 2 + 1;
-            let old_bits = order[val_idx];
-            if old_bits != val_bits {
-                dict_commit_value_replacement(_py, ptr, &mut order[val_idx], val_bits);
-            }
-            return;
+            return Ok(dict_commit_value_replacement(_py, ptr, val_idx, val_bits));
         }
 
+        let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
+        let table = dict_table(ptr);
         let new_entries = (order.len() / 2) + 1;
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
             dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
-                return;
+                return Err(());
             }
         }
 
         if !reserve_dict_order(_py, order, 2)
             || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
         {
-            return;
+            return Err(());
         }
         order.push(key_bits);
         order.push(val_bits);
@@ -2181,6 +2155,10 @@ pub(crate) unsafe fn dict_set_with_hash_in_place(
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
         dict_commit_insertion(_py, ptr, key_bits, val_bits);
+        Ok(DetachedDictReferences {
+            py: _py,
+            bits: [0; 2],
+        })
     }
 }
 
@@ -2499,27 +2477,34 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
 }
 
 pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
+    unsafe { dict_del_deferred(_py, ptr, key_bits) }.is_some()
+}
+
+pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Option<DetachedDictReferences<'a, 'py>> {
     unsafe {
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
-            return false;
+            return None;
         }
         if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-            return false;
+            return None;
         }
         let found = dict_find_entry(_py, ptr, key_bits);
         let order = dict_order(ptr);
         let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
         if exception_pending(_py) {
-            return false;
+            return None;
         }
-        let Some(entry_idx) = found else {
-            return false;
-        };
+        let entry_idx = found?;
         let key_idx = entry_idx * 2;
         let val_idx = key_idx + 1;
-        let removed: Vec<u64> = order.drain(key_idx..=val_idx).collect();
+        let removed = [order[key_idx], order[val_idx]];
+        order.drain(key_idx..=val_idx);
         hashes.remove(entry_idx);
         let removed_slot_val = entry_idx + 1;
         let mut tombstones = 0usize;
@@ -2551,19 +2536,33 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         dict_commit_structure(_py, ptr);
-        for bits in removed {
-            dec_ref_bits(_py, bits);
-        }
-        true
+        Some(DetachedDictReferences {
+            py: _py,
+            bits: removed,
+        })
     }
 }
 
-pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
+/// Publish an empty dictionary before returning its displaced owned contents.
+/// No Python edge is released until the caller drops the returned transaction.
+pub(crate) unsafe fn dict_clear_deferred<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    ptr: *mut u8,
+) -> Option<DetachedDictReferences<'a, 'py, Vec<u64>>> {
     unsafe {
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
-            return;
+            return None;
         }
+        Some(DetachedDictReferences {
+            py: _py,
+            bits: dict_detach_contents(_py, ptr),
+        })
+    }
+}
+
+unsafe fn dict_detach_contents(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<u64> {
+    unsafe {
         crate::gil_assert();
         let order = dict_order(ptr);
         let removed: Vec<u64> = std::mem::take(order);
@@ -2573,23 +2572,17 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
         table.clear();
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         dict_commit_structure(_py, ptr);
-        for pair in removed.chunks_exact(2) {
-            dec_ref_bits(_py, pair[0]);
-            dec_ref_bits(_py, pair[1]);
-        }
+        removed
     }
+}
+
+pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
+    drop(unsafe { dict_clear_deferred(_py, ptr) });
 }
 
 pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
-        crate::gil_assert();
-        let order = dict_order(ptr);
-        let removed: Vec<u64> = std::mem::take(order);
-        let hashes = dict_hashes(ptr);
-        hashes.clear();
-        let table = dict_table(ptr);
-        table.clear();
-        (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
+        let removed = dict_detach_contents(_py, ptr);
         for pair in removed.chunks_exact(2) {
             crate::object::release_shutdown_bits(_py, pair[0]);
             crate::object::release_shutdown_bits(_py, pair[1]);

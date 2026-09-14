@@ -1,7 +1,8 @@
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
-use super::super::alias_analysis::{AliasAnalysisResult, LoadPurity, MemRegion};
+use super::super::alias_analysis::{AliasAnalysisResult, MemRegion};
+use super::super::typed_slot_access::{AccessSite, LoadPurity, TypedSlotAccessPlan};
 
 // ===========================================================================
 // Op classification — derived ENTIRELY from the alias oracle (no duplication)
@@ -32,8 +33,13 @@ pub(super) enum MemRole {
 ///   conservative clobber). This subsumes every heap-barrier opcode — the alias
 ///   oracle already widens calls/raises/yields/module-mutations to `GenericHeap`
 ///   — and every `MayDispatch` load, which may dispatch a writing dunder.
-pub(super) fn classify(op: &TirOp, alias: &AliasAnalysisResult) -> MemRole {
-    let region = alias.region_of(op);
+pub(super) fn classify(
+    op: &TirOp,
+    alias: &AliasAnalysisResult,
+    slots: &TypedSlotAccessPlan,
+    site: AccessSite,
+) -> MemRole {
+    let region = slots.region_at(alias, site, op);
     if region == MemRegion::ScalarRegister {
         return MemRole::None;
     }
@@ -41,31 +47,19 @@ pub(super) fn classify(op: &TirOp, alias: &AliasAnalysisResult) -> MemRole {
     // Every other non-scalar op is a clobbering def. `load_purity` only returns
     // `ProvenPure` for typed-slot `LoadAttr` ops, so this gate is exactly the
     // "pure read" set.
-    if matches!(op.opcode, OpCode::LoadAttr | OpCode::Index)
-        && alias.load_purity(op) == LoadPurity::ProvenPure
-    {
+    if slots.load_purity_at(site, op) == LoadPurity::ProvenPure {
         MemRole::Use
     } else {
         MemRole::Def
     }
 }
 
-/// `Some((target, stored_value, offset))` for the narrow typed-slot store
-/// (`store` / `store_init`) — used to expose the forwarded value to consumers.
+/// `Some((target, stored_value, offset))` for the narrow ordinary typed-slot
+/// store. This is a structural projection only: consumers may weaken its
+/// replacing-store semantics exclusively when the shared typed-slot analysis
+/// proves the exact store site release-neutral.
 /// Operands are `[target, stored_value]`; the offset is the `value` attr.
 pub fn typed_slot_store_value(op: &TirOp) -> Option<(ValueId, ValueId, i64)> {
-    if op.opcode != OpCode::StoreAttr || op.operands.len() != 2 {
-        return None;
-    }
-    let kind = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(s)) => s.as_str(),
-        _ => return None,
-    };
-    if !matches!(kind, "store" | "store_init") {
-        return None;
-    }
-    match op.attrs.get("value") {
-        Some(AttrValue::Int(offset)) => Some((op.operands[0], op.operands[1], *offset)),
-        _ => None,
-    }
+    let (target, offset) = op.plain_typed_slot_store()?;
+    Some((target, op.operands[1], offset))
 }

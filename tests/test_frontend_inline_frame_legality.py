@@ -72,7 +72,7 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
         return False
 
     def _emit_guarded_setattr(self, receiver, name, value, owner, **kwargs) -> None:
-        assert kwargs == {"use_init": True, "assume_exact": True}
+        assert kwargs == {"assume_exact": True}
         self.events.append(f"store:{name}")
 
 

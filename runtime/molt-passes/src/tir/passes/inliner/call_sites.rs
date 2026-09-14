@@ -1,17 +1,10 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
-use crate::tir::call_targets::is_gpu_runtime_symbol;
+use crate::tir::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
-
-fn s_value(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("s_value") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
 
 /// One statically-resolvable, inlinable call site inside a caller block.
 pub(super) struct CallSite {
@@ -27,7 +20,7 @@ pub(super) struct CallSite {
 /// module-defined function (resolved via `s_value`), in deterministic order
 /// (blocks sorted by id, ops in index order). Opaque calls, method dispatch,
 /// builtin calls, gpu intrinsics, and copy-fallback calls are NOT collected -
-/// only a first-class `Call` with an `s_value` naming a `defined` function.
+/// only a proven direct `Call` identity naming a `defined` function.
 pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Vec<CallSite> {
     let defined_set: BTreeSet<&str> = defined.iter().map(String::as_str).collect();
     let mut sites = Vec::new();
@@ -36,11 +29,15 @@ pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Ve
     for bid in block_ids {
         let block = &caller.blocks[&bid];
         for (op_index, op) in block.ops.iter().enumerate() {
+            // A legacy direct Copy transport can retain a call-graph edge,
+            // but only first-class calls are supported splice sites.
             if op.opcode != OpCode::Call {
                 continue;
             }
-            let Some(name) = s_value(op) else { continue };
-            if is_gpu_runtime_symbol(name) {
+            let Some(name) = direct_call_symbol_for_op(op) else {
+                continue;
+            };
+            if gpu_runtime_result_type_for_op(op).is_some() {
                 continue;
             }
             if !defined_set.contains(name) {

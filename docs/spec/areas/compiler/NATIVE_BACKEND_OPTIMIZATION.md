@@ -1,379 +1,176 @@
-# Native Backend Optimization Audit
-
-Full pipeline audit: Python source to native binary. Each stage identifies
-concrete bottlenecks, missing optimizations, and estimated impact.
-
-> Note (2026-04-03): this audit describes the current native backend input
-> path, not the canonical long-term IR contract. The architecture source of
-> truth is `docs/spec/areas/compiler/0100_MOLT_IR.md`. Current `SimpleIR`
-> transport plus hint-driven fast paths are transitional compatibility debt and
-> should not be treated as the desired end state.
-
----
-
-## 1. Frontend — Python AST Parsing and Desugaring
-
-**Entry point**: `src/molt/cli.py` line 7439 (`ast.parse`), feeds into
-`src/molt/frontend/__init__.py` class `SimpleTIRGenerator` (line 886).
-
-**How it works**: Python's built-in `ast.parse` produces a CPython AST.
-`SimpleTIRGenerator` is an `ast.NodeVisitor` that walks the tree and emits
-a flat list of `MoltOp` objects that feed the current frontend lowering path.
-There is no separate HIR stage in the current implementation; desugaring happens
-inline during the AST visit. The
-generator is ~35,000 lines covering all supported Python constructs.
-
-**Supported features**: Full control flow (if/elif/else, for/while/break/
-continue, try/except/finally, with), classes with single inheritance,
-closures, generators, async/await, comprehensions, f-strings, walrus
-operator, match/case, decorators, `*args`/`**kwargs`, type annotations
-(advisory).
-
-**Bottlenecks and optimization opportunities**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **Single-pass visitor generates redundant ops**. For example, every `ast.Name` load produces a fresh `MoltValue` even when the same variable was just loaded on the previous op. No CSE at the AST-walk level. | `SimpleTIRGenerator.visit_Name` | Medium — downstream midend CSE catches some, but frontend dedup would reduce op count 5-10% for expression-heavy code | Medium |
-| **No AST-level constant folding**. `2 + 3` emits `const(2), const(3), add` and relies on SCCP to fold. Python's `ast` module provides `ast.literal_eval` infrastructure that could pre-fold pure-constant expressions before TIR generation. | Frontend visitor arithmetic handlers | Low-Medium — SCCP handles this well, but skipping the op emission entirely saves midend time | Low |
-| **Module-level code treated identically to function code**. Module initialization (`molt_main`) emits the same op sequences as function bodies, but module-level code is executed exactly once. This means SCCP/DCE budget is spent on code that cannot benefit from loop optimizations. | `_run_ir_midend_passes` line 29451 — stdlib modules skip midend entirely | Low | Low |
-| **No inter-module type propagation**. `TypeFacts` (line 976) provides cross-module type hints but is only loaded when `--type-facts` is passed. Default builds have no inter-module type information, preventing specialization of imported function calls. | `type_facts` parameter, line 893 | High — inter-module specialization could eliminate many dynamic dispatches in real programs | High |
-
----
-
-## 2. Current Backend Input Transport
-
-The canonical architecture is `HIR -> TIR -> LIR`, but the current native
-backend still consumes a flattened `SimpleIR` transport emitted by the frontend
-lowering path. That transport is variable-based and string-heavy, so some
-representation facts proven upstream are compressed into hint fields before
-codegen.
-
-**IR format**: Each `MoltOp` has `kind: str`, `args: list[Any]`,
-`result: MoltValue`, `metadata: dict`. This is a simple linear IR with
-structured control flow markers (`IF`/`ELSE`/`END_IF`, `LOOP_START`/
-`LOOP_END`, `TRY_START`/`TRY_END`).
-
-**Key design properties**:
-- **NaN-boxed value model**: All values are i64 — ints, bools, None are inline-tagged;
-  floats are IEEE 754 doubles; pointers use the TAG_PTR tag. Defined in
-  `runtime/molt-backend/src/lib.rs` lines 18-28.
-- **Type hints travel as string annotations** on `MoltValue.type_hint` (line 36).
-  The backend uses `fast_int: Option<bool>` (line 240) to enable inline
-  integer fast-paths.
-
-**Bottlenecks**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **String-typed IR**. Op kinds, variable names, and type hints are all strings. The backend deserializes JSON and matches on `op.kind.as_str()` in a massive match statement (~12,000 lines). An enum-based IR would eliminate string allocation/comparison overhead in the backend. | `OpIR` struct (lib.rs:230), `match op.kind.as_str()` (lib.rs:1949) | Medium — backend compile time, not runtime | High |
-| **JSON serialization between frontend and backend**. The current backend transport is serialized to JSON via `json.dumps(ir)` (cli.py:9597), piped to the backend process via stdin, then deserialized with serde. For large programs (thousands of functions), this serialization overhead is significant. The daemon mode helps but still uses JSON. | `_compile_with_backend_daemon` (cli.py:5425) | Medium — 100-500ms for large programs | Medium |
-| **Representation facts degrade before codegen**. Canonical TIR is typed SSA, but the current backend transport collapses many representation facts into variable names plus hints. The backend then has to reconstruct unboxed lanes late, which increases boxing churn, complicates joins, and creates backend-only correctness hazards. | `lower_to_simple.rs`, `OpIR` transport, `compile_func` lowering | High — affects both correctness and hot-path code quality | High |
-
----
-
-## 3. Type Inference and Specialization
-
-**Type system**: `src/molt/type_facts.py` defines `TypeFacts` — a map from
-module/function/variable to type strings with trust levels (`advisory`,
-`guarded`, `trusted`). The type system is entirely optional and advisory by
-default.
-
-**Current transport-level specialization mechanism**: Legacy `fast_int` /
-`fast_float` / `type_hint` fields may still appear on the SimpleIR transport,
-but native scalar representation is not allowed to recover its authority from
-those fields. The native backend now reads all scalar-primary membership from
-`ScalarRepresentationPlan` predicates: raw-int storage through
-`is_raw_int_carrier_name` / tiered int predicates, raw-bool storage through
-`is_bool_unboxed`, and raw-F64 storage through `is_float_unboxed`. Extracted
-native handlers no longer receive cloned `bool_primary_vars` /
-`float_primary_vars` BTreeSets or the legacy `int_carriers_plan` alias; the
-single plan reference is the authority at every lowering boundary. The native
-function compiler also no longer materializes semantic scalar clones such as
-`int_like_vars`, `bool_like_vars`, `float_like_vars`, `str_like_vars`, or
-`none_like_vars`; fast-path lane selection, primitive boxing, non-heap proofs,
-guard satisfaction, branch truthiness, and merge rebinding ask the plan for
-semantic scalar kind directly. Non-primary bool/float results are boxed
-immediately in their main I64 variables instead of being tracked through
-side-channel shadow maps.
-
-This is an implementation compromise, not the desired endpoint. The native
-duplicate-authority int lane is deleted: raw-int carrier eligibility is proven by
-the value-keyed `repr_by_value_for` / `value_range_for` path and projected into
-`repr_by_name` only for native lowering. Bool and F64 names still floor to boxed
-storage in that name-keyed native authority and are raised to `Repr::Bool` /
-`Repr::FloatUnboxed` only by the existing raw-carrier eligibility filters, so
-semantic type facts alone cannot authorize unboxed storage. The next performance
-class is to carry the shared `Repr::Bool` / `Repr::FloatUnboxed` facts through
-frontend, TIR, LIR, optimizer, and every backend as value-keyed representation
-proofs without re-deriving them at native codegen.
-
-**How native raw-primary lowering works**:
-- `ScalarRepresentationPlan::is_raw_int_carrier_name` names carry raw i64 in
-  their main Cranelift Variable. Boxing happens at explicit escape points, with
-  `RawI64Safe` and `RawI64FullDeopt` distinguished by plan predicates.
-- `ScalarRepresentationPlan::is_bool_unboxed` names carry raw 0/1 in their main
-  Cranelift Variable.
-  Non-primary bools stay boxed in their main I64 Variable and recover payload
-  bits only through explicit boxed-bool extraction at use sites.
-- `ScalarRepresentationPlan::is_float_unboxed` names carry raw f64 in their main
-  Cranelift Variable.
-  Non-primary floats stay boxed in their main I64 Variable and recover raw f64
-  through the extended float extractor at proven float use sites. Cleanup
-  scrubbing uses the same representation contract: dead F64-primary variables
-  are scrubbed with F64 zero, while boxed variables retain the boxed
-  `None`/zero cleanup sentinel.
-- Fixed-layout object stores use a native direct-write proof instead of a
-  profile/header/tag slow path when the object root is fresh
-  (`object_new_bound_stack` or sized `object_new_bound`), the value is proven
-  non-heap, and the target slot was either just initialized or previously
-  direct-written with a non-heap value. Any control boundary, unknown op, heap
-  value, or escaping use removes the root from direct-write eligibility.
-- Same-module class constructor loops use a frontend static-binding cache
-  when whole-module analysis proves the class name is defined exactly once, not
-  rebound/deleted/global-mutated, not exposed through `globals()`/`vars()`, and
-  layout-stable. The class reference is resolved once in the loop preheader and
-  the hot loop reuses a local `store_var`/`load_var` class reference without a
-  per-iteration missing-sentinel branch.
-
-**Bottlenecks and opportunities**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **Specialization still crosses a SimpleIR name projection**. Native int carriers are now projected from value-keyed TIR facts, bool/float lanes no longer use raw scalar shadow maps, and native semantic scalar queries are plan-owned, but the TIR/LIR representation plan is still projected through SimpleIR names before native codegen. This leaves bool/F64 eligibility and broader transport recovery logic behind a native name projection rather than a backend-neutral value-keyed lowering contract. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
-| **Bool/float scalar proofs are not yet cross-backend value facts**. Native bool/float lowering consumes one plan authority, but bool/float eligibility still lives behind name-keyed plan predicates rather than a value-keyed proof propagated through every backend. | TIR/LIR bridge, representation lattice propagation, wasm/llvm/luau parity | High | High |
-| **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
-| **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |
-| **Loop induction variable analysis is limited**. `_analyze_loop_bound_facts` and `_analyze_affine_loop_compare_truth` (frontend line 31852-31853) analyze simple `range()` loops, but don't propagate int types through loop body operations. | SCCP, `LoopBoundFact` dataclass (line 61) | Medium — loop-heavy code misses specialization | Medium |
-| **No speculative devirtualization**. Method calls on known classes could be statically dispatched, but the frontend always emits dynamic `get_attr` + `call` sequences. | Frontend method call lowering | High — class-heavy code pays full dynamic dispatch cost | High |
-
----
-
-## 4. Midend Optimizations (SCCP, DCE, CSE, LICM, Edge Threading)
-
-**Entry point**: `_run_ir_midend_passes` (frontend line 29436) invokes
-`_canonicalize_control_aware_ops` (line 35116), which runs the fixed-point
-optimization loop in `_canonicalize_control_aware_ops_impl` (line 34342).
-
-**Optimization pipeline** (per round, up to `max_rounds`):
-1. **Structural simplification** (`_canonicalize_structured_regions_pre_sccp`) — removes trivially dead structured regions
-2. **SCCP** (`_compute_sccp`, line 31832) — sparse conditional constant propagation with lattice merge
-3. **Phi trimming** (`_trim_phi_args_by_executable_edges`) — removes dead phi inputs
-4. **Branch pruning** (`_rewrite_structured_if_regions`) — eliminates statically resolved if/else
-5. **Edge threading** (`_rewrite_loop_try_edge_threading`) — threads predictable loop/try edges
-6. **GVN/CSE** — global value numbering and common subexpression elimination
-7. **LICM** — loop-invariant code motion
-8. **Guard hoisting** — moves type guards out of loops
-9. **DCE** — dead code elimination
-
-**Tiered execution** (line 29585): Functions are classified into tiers A/B/C
-based on module, function name, op count, and PGO hot function lists. Tier A
-gets full optimization (deep edge threading, CSE, LICM, guard hoisting).
-Tier C gets minimal optimization. Work-budget-based degradation (line 34486)
-progressively disables expensive passes when deterministic IR work units exceed
-the function's `work_budget`; wall-clock `budget_ms` is telemetry only.
-
-**Quality assessment**:
-
-| Pass | Status | Quality | Issues |
-|------|--------|---------|--------|
-| **SCCP** | Implemented | Good | Handles constants, booleans, comparisons, type tags, and loop bounds. Does NOT handle heap values (container contents, attribute loads) — these go to `_SCCP_OVERDEFINED` immediately. Missing-value (`_SCCP_MISSING`) handling is correct and well-tested. |
-| **Branch pruning** | Implemented | Good | Correctly prunes statically resolved if/else and elif chains. Respects structured control flow. |
-| **Edge threading** | Implemented | Good | Threads loop breaks and try/except edges when SCCP proves them dead. Gated behind Tier A for safety. |
-| **CSE** | Implemented | Fair | Tracks stats (`cse_attempted`/`cse_accepted`) but limited to pure operations. Does not CSE across heap-reading operations (loads, attribute accesses). `cse_readheap_attempted`/`cse_readheap_rejected` stats (line 29495-29497) suggest readheap CSE is attempted but mostly rejected. |
-| **LICM** | Implemented | Fair | Hoists loop-invariant pure operations. Does not hoist loads because it lacks alias analysis at the TIR level. |
-| **Guard hoisting** | Implemented | Fair | Hoists type checks (`isinstance`, tag checks) out of loops. Stats suggest moderate acceptance rate. |
-| **DCE** | Implemented | Good | Removes unused value-producing ops. Pure-op DCE attempts separate accounting. |
-| **GVN** | Implemented | Fair | Tracks `gvn_attempted`/`gvn_accepted` but appears lightweight — no hash-consing or full value numbering. |
-
-**Bottlenecks**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **No heap-aware SCCP**. Any operation that reads from or writes to the heap (attribute access, subscript, container mutation) immediately makes the result overdefined. This prevents constant-folding through `self.x` patterns, `dict[key]` lookups with known keys, etc. | `eval_lattice_value` in SCCP (line 31940+) | High — class-heavy code gets almost no constant propagation | High |
-| **Escape-bounded object allocation is still incomplete**. TIR escape analysis can rewrite some local `ObjectNewBound` values to stack objects, and native direct-write preanalysis removes field-store runtime dispatch for fresh fixed-layout stack or sized heap objects carrying non-heap values. Broader object lifetime elimination still needs all-backend representation planning instead of native-local recovery. | TIR escape analysis, native direct field-store preanalysis | Medium-High — eliminates heap allocation/refcount/field-dispatch overhead for temporaries | High |
-| **Stdlib modules skip midend entirely**. Line 29451: `if self._source_is_stdlib_module: return ops`. Stdlib wrappers get zero optimization. This is intentional for correctness but means stdlib call-heavy code sees unoptimized call sequences. | `_run_ir_midend_passes` line 29451 | Low-Medium — stdlib is mostly thin wrappers over intrinsics | Low |
-| **Fixed-point convergence can degrade**. The deterministic work-budget system (line 34486) progressively disables passes (CSE, edge threading, guard hoisting, LICM) when accumulated IR work exceeds the per-function `work_budget`. For Tier B/C functions, this means most optimizations never run. | `maybe_apply_budget_degrade` | Medium | Low |
-| **No strength reduction**. Multiplications by powers of 2 are not converted to shifts. Modular arithmetic patterns are not recognized. Division by constants is not converted to multiply-high. | Not implemented | Low-Medium — Cranelift handles some of this internally | Medium |
-
----
-
-## 5. Backend IR Lowering (SimpleIR Transport to Cranelift CLIF)
-
-**Entry point**: `NativeCompiler::compile` (lib.rs:1171) processes the `SimpleIR`
-(deserialized JSON) through three pre-passes then calls `compile_func` per function.
-
-**Pre-passes** (lib.rs:1171-1177):
-1. `apply_profile_order` — reorders functions based on PGO profile for better code locality
-2. `elide_dead_struct_allocs` — removes unused class allocations and their stores
-3. `inline_functions` — inlines small leaf functions (<=30 ops by default)
-
-**Inlining** (lib.rs:587): Limited to `call_internal` sites where the callee
-has <=`INLINE_OP_LIMIT` (30) ops, no control flow, no nested internal calls.
-Variable renaming uses a prefix scheme. Does NOT inline across module
-boundaries or inline functions with loops.
-
-**Codegen structure** (lib.rs:1631+): `compile_func` builds Cranelift IR via
-`FunctionBuilder`. It processes each `OpIR` in sequence with a massive
-`match op.kind.as_str()` dispatch (~12,000 lines covering ~200 op kinds).
-For each op:
-- Constants become `iconst` with NaN-boxed values
-- Arithmetic ops emit inline fast-paths (tag check, unbox, compute, rebox,
-  overflow check, fallback to runtime call)
-- All function calls go through `declare_function` + `call` — runtime functions
-  are imported symbols
-- Structured control flow (if/loop/try) maps to Cranelift blocks with
-  explicit `brif`/`jump`/`switch_to_block`
-
-**Cranelift settings** (lib.rs:1008-1131):
-- `opt_level = "speed"` (always)
-- `regalloc_algorithm`: `backtracking` (release), `single_pass` (dev)
-- `enable_alias_analysis = true`
-- `use_colocated_libcalls = true` (direct PC-relative calls)
-- `enable_heap_access_spectre_mitigation = false`
-- `enable_table_access_spectre_mitigation = false`
-- `probestack_strategy = "inline"`
-- `preserve_frame_pointers`: true (debug), false (release)
-- Host CPU feature detection enabled by default (AVX2, BMI2, POPCNT, etc.)
-
-**Bottlenecks**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **Redundant function signature declarations**. Every op that calls a runtime function re-declares its signature via `module.make_signature()` + `declare_function`. For the same runtime function called 100 times in one function, this creates 100 identical signature objects. Should cache `FuncRef` per runtime function name per function. | Throughout `compile_func` match arms | Medium — compile-time overhead, ~15-25% of backend time for call-heavy programs | Medium |
-| **No peephole optimization between adjacent ops**. Each op is lowered independently. Patterns like `unbox_int(box_int_value(x))` (identity) across adjacent ops are not recognized. The NaN-boxing creates many box/unbox pairs that cancel. | Sequential op processing in compile_func | Medium — unnecessary instructions in hot loops | High |
-| **Inline int overflow check is expensive**. The `fast_int` path for `add` (lib.rs:2106-2142) emits: unbox, iadd, box, unbox-roundtrip comparison, brif (3 blocks). This is ~8 instructions for what could be a single `iadd` + `jo` on x86. | `fast_int` arithmetic lowering, all ops | Medium — hot arithmetic loops carry ~4 unnecessary instructions per op | Medium |
-| **No inline caching in the backend**. The frontend emits IC site IDs (`stable_ic_site_id`, lib.rs:123) for attribute access and method dispatch, but the backend emits them as opaque constants. Inline cache stubs are handled entirely at the runtime level via function calls. A JIT-style IC stub could avoid the call overhead. | IC-related ops | Medium-High for attribute-heavy code | Very High |
-| **`elide_dead_struct_allocs` is conservative**. Only removes allocations where ALL uses are `store`/`store_init`/`guarded_field_set`/`guarded_field_init`/`object_set_class` at position 0. Any other use (including reading) prevents elision. | lib.rs:480-543 | Low — catches only fully dead allocations, not partially used ones | Medium |
-| **Inlining limit of 30 ops is very conservative**. Many useful small functions (property getters, simple math wrappers, one-liner methods) are 30-80 ops due to error handling and type checking overhead. | `INLINE_OP_LIMIT` (lib.rs:555) | Medium — larger inline limit with cost-benefit analysis would help | Low |
-
----
-
-## 6. Cranelift Codegen Quality
-
-**CLIF IR quality**: The generated CLIF is correct but verbose due to the
-NaN-boxing scheme. Every value operation requires tag/unbox/compute/rebox
-sequences. Cranelift's own optimization passes (GVN, alias analysis,
-dead code elimination) clean up some redundancy.
-
-**Cranelift vs LLVM gaps**:
-
-| Optimization | Cranelift Status | LLVM Status | Impact |
-|-------------|-----------------|-------------|--------|
-| **Loop unrolling** | Not implemented | Full support | Medium — Cranelift doesn't unroll, relies on branch prediction |
-| **Auto-vectorization** | Not implemented | SLP + loop vectorization | Low for Molt (NaN-boxed values prevent vectorization) |
-| **Instruction scheduling** | Basic | Full | Low-Medium — matters for deeply pipelined CPUs |
-| **Register coalescing** | Backtracking allocator handles well | Full coalescing | Low — Cranelift's allocator is competitive |
-| **Tail call optimization** | Supported via `return_call` | Full TCO | Available but not used — Molt doesn't emit `return_call` |
-| **Function outlining** | Not implemented | MachineOutliner | Low — reduces code size but Molt binaries are already compact |
-| **Profile-guided layout** | `set_cold_block` used (lib.rs:2118) | Full PGO | Medium — cold blocks are marked but no hot-path straightening |
-| **Interprocedural optimization** | None (AOT object model) | Full LTO + IPA | High — the biggest gap; runtime calls can't be inlined |
-
-**Specific Cranelift tuning opportunities**:
-
-| Opportunity | Details | Impact |
-|-------------|---------|--------|
-| **Enable `egraph_simplify`** | E-graph-based algebraic simplification exists (lib.rs line 16, `egraph_simplify.rs`) but is gated behind `#[cfg(feature = "egraphs")]` and NOT wired into the pipeline (comment: "Prototype. Not wired into the compilation pipeline"). | Low-Medium |
-| **Use `cranelift_frontend::Switch` for method dispatch** | Currently imported (lib.rs:4) but underutilized. Large if/elif chains for type dispatch could use jump tables. | Low |
-| **Stack slot coalescing** | Each `const_str` and `const_bytes` allocates a separate `ExplicitSlot` (lib.rs:2048-2052). Reusing slots for non-overlapping lifetimes would reduce stack frame size. | Low |
-| **Tail call for self-recursive functions** | Cranelift supports `return_call` but Molt never emits it. Simple self-recursion (common in recursive algorithms) could be converted. | Low-Medium |
-
----
-
-## 7. Linking
-
-**Linker invocation** (cli.py lines 9843-10055):
-
-The final binary is produced by linking three components:
-1. `main_stub.c` — a generated C file with `main()` that calls `molt_runtime_init()`,
-   `molt_main()`, and handles exceptions (cli.py:9871-9952)
-2. `output.o` — the Cranelift-generated object file containing all compiled functions
-3. `libmolt_runtime.a` — the static Rust runtime library
-
-Linking uses the system C compiler (`CC` env var, default `clang`). For
-cross-compilation, Zig CC or `MOLT_CROSS_CC` is used.
-
-**Dev-profile linker acceleration**: `_resolve_dev_linker` (referenced at cli.py:10015)
-selects a fast linker (`mold`, `lld`, `sold`) for `--profile dev` builds.
-Falls back to default linker if the fast linker fails (line 10057-10073).
-
-**Bottlenecks**:
-
-| Issue | Location | Impact | Effort |
-|-------|----------|--------|--------|
-| **No `-dead_strip` / `--gc-sections` at link time**. The link command (cli.py:10029-10031) does not pass `-Wl,-dead_strip` (macOS) or `-Wl,--gc-sections` (Linux). Unused runtime functions remain in the final binary. | Link command construction, cli.py:10029 | **Medium** — can reduce binary size 10-30% for small programs that use few runtime features | **Low** |
-| **No LTO across Rust runtime and compiled code**. The runtime is precompiled as `libmolt_runtime.a` and the compiled code is a separate `.o` file. Link-time optimization cannot inline runtime helper functions into compiled code. | Architecture: separate Cranelift object + Rust static lib | **High** — the biggest single optimization gap. Hot runtime functions like `molt_add`, `molt_get_attr`, `molt_dec_ref` are called millions of times but can never be inlined. | **Very High** |
-| **No section ordering / code layout optimization**. Functions are placed in the order they appear in the IR. No profile-guided function reordering at the object level (though `apply_profile_order` in lib.rs:754 reorders functions in the IR based on PGO hot lists). | Object emission via `ObjectModule::finish` (lib.rs:1290) | Low-Medium | Medium |
-| **Static linking only**. The runtime is always statically linked. For applications with multiple Molt-compiled modules, each binary includes a full copy of the runtime. Shared library support would reduce aggregate disk usage. | Architecture decision | Low | High |
-| **No CFI / control flow integrity**. The link command doesn't enable `-fsanitize=cfi` or similar. Not a performance issue but a security hardening gap. | Link command construction | N/A (security) | Medium |
-
----
-
-## 8. Binary Size
-
-**Cargo shipping profile authority** (`Cargo.toml`):
-```toml
-[profile.release-output]
-inherits = "release"
-opt-level = "z"
-lto = "thin"
-codegen-units = 16
-debug = 0
-panic = "abort"
-strip = "symbols"
-```
-
-`release-output`, `release-size`, and `wasm-release` share this measured,
-memory-bounded codegen policy. ThinLTO preserves cross-crate optimization without
-the fat-LTO/one-CGU memory cliff; `debug = 0` prevents stripped artifacts from
-paying for unused PDB/DWARF generation. Package overrides own only hot-crate
-optimization levels. `dev-release` is the explicit symbol-bearing profile.
-
-**Binary composition** (approximate, for a "hello world"):
-- Runtime (`libmolt_runtime.a`): ~2-4 MB (contains all intrinsics, object model,
-  GC, async runtime, scheduler, all builtin type implementations)
-- Compiled code (`output.o`): ~10-100 KB depending on program size
-- C runtime overhead: ~1-2 KB (main stub)
-- Total: ~2-4 MB minimum
-
-**Size optimization opportunities**:
-
-| Opportunity | Details | Impact |
-|-------------|---------|--------|
-| **Link-time dead code elimination** | Adding `-Wl,-dead_strip` (macOS) or `-Wl,--gc-sections` + compiling with `-ffunction-sections -fdata-sections` could strip unused runtime functions. A "hello world" likely uses <10% of the runtime. | **High** — could reduce binary from ~3 MB to ~500 KB for simple programs |
-| **Compile runtime with `#[cfg]` feature gates** | The runtime includes database connectors, HTTP, WebSocket, GUI, CSV, argparse, and many other subsystems. Feature-gating unused subsystems at compile time would be more effective than link-time stripping. | High — requires Cargo feature refactoring |
-| **Data segment deduplication** | `intern_data_segment` (lib.rs:1150) already deduplicates identical byte strings. This is well-implemented. | Already done |
-| **Compressed sections** | Object files could use compressed debug sections (zstd). Not relevant for stripped release builds. | N/A for release |
-| **`panic = "abort"` in the compiled code** | Already set for the runtime via Cargo.toml. The compiled `.o` file doesn't generate Rust panic paths. | Already done |
-
----
-
-## Summary: Top 10 Optimization Opportunities (by estimated impact)
-
-| # | Opportunity | Stage | Est. Runtime Impact | Est. Effort |
-|---|------------|-------|--------------------:|-------------|
-| 1 | **Cross-boundary LTO / runtime inlining** | Linking | 20-40% for call-heavy code | Very High |
-| 2 | **Float specialization (`fast_float` path)** | Type inference + Backend | 2-3x for float-heavy code | Medium |
-| 3 | **Link-time dead code elimination** | Linking + Binary size | 50-70% binary size reduction | Low |
-| 4 | **Inter-module type propagation** | Type inference | 10-20% fewer dynamic dispatches | High |
-| 5 | **Heap-aware SCCP** | Midend | 10-15% for class-heavy code | High |
-| 6 | **Speculative devirtualization** | Frontend + Backend | 10-15% for class-heavy code | High |
-| 7 | **Cache runtime function refs in backend** | Backend compile time | 15-25% faster compilation | Medium |
-| 8 | **Escape analysis + stack allocation** | Midend + Backend | 5-10% for allocation-heavy code | High |
-| 9 | **Return type propagation to callers** | Type inference | 5-10% fewer runtime dispatches | Medium |
-| 10 | **Inlining threshold increase to ~80 ops** | Backend | 3-5% fewer call overhead | Low |
-
----
-
-## Appendix: Key File Reference
-
-| File | Lines | Role |
-|------|------:|------|
-| `src/molt/frontend/__init__.py` | 35,233 | AST visitor, TIR generation, midend optimizations (SCCP, CSE, LICM, DCE, edge threading) |
-| `src/molt/frontend/cfg_analysis.py` | 349 | CFG construction, dominator computation |
-| `src/molt/type_facts.py` | ~200 | Type facts schema and filtering |
-| `src/molt/cli.py` | 16,684 | Build orchestration, linking, caching |
-| `runtime/molt-backend/src/lib.rs` | 14,106 | Cranelift codegen, NaN-boxing, function inlining, struct elision |
-| `runtime/molt-backend/src/ir_schema.rs` | 72 | Op field validation (minimal) |
-| `runtime/molt-backend/src/egraph_simplify.rs` | ~120 | E-graph simplification prototype (not wired in) |
-| `runtime/molt-backend/src/wasm.rs` | (varies) | WASM backend codegen |
-| `Cargo.toml` | 42 | Build profiles (release, dev-fast, release-fast, wasm-release) |
+# Native Backend Optimization
+
+This document maps optimization work to its implementation authorities and
+evidence requirements. It is not a support matrix, benchmark result, or separate
+architecture specification. `docs/spec/areas/compiler/0100_MOLT_IR.md` owns the
+IR architecture; `docs/agent/ORCHESTRATION.md` owns coordination and proof custody.
+The historical April 2026 audit is available in Git history. Its monolithic-file
+locations, line counts, feature-absence claims, and estimated speedups are not
+current evidence.
+
+## Source authority
+
+| Concern | Owning source |
+| --- | --- |
+| Build stages and frontend invocation | `src/molt/cli/build_pipeline.py`, `src/molt/cli/frontend_pipeline.py` |
+| Frontend assembly and Python midend | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/midend_pipeline.py` |
+| Exact scalar producer provenance | `runtime/molt-passes/src/tir/type_refine/exact.rs` |
+| Value-keyed representation and non-heap proofs | `runtime/molt-passes/src/representation_facts.rs` |
+| Native name projection and LLVM representation view | `runtime/molt-tir/src/representation_plan.rs` |
+| Generated operation semantics and lowering policy | `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py` |
+| Operand-dependent operator results and effects | `runtime/molt-ir/src/tir/op_semantics.rs` |
+| Frontend immutable literal identity | `src/molt/compiler_analysis/literal_identity.py` |
+| Cranelift function lowering and scalar boundaries | `runtime/molt-backend-native/src/native_backend/function_compiler.rs`, `runtime/molt-backend-native/src/native_backend/function_compiler/scalar_carriers.rs` |
+| LLVM unary lowering and materialization | `runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs`, `runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs` |
+| WASM representation lowering and result transport | `runtime/molt-tir/src/tir/lower_to_lir.rs`, `runtime/molt-backend-wasm/src/wasm/lir_fast/lir_runtime_ops/call_abi.rs` |
+| Call facts, effects, and ownership | `runtime/molt-passes/src/tir/call_facts.rs`, `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/liveness/raw.rs` |
+| Native link plan and artifact custody | `src/molt/cli/native_link_plan.py`, `src/molt/cli/native_link_command.py`, `src/molt/cli/native_link_custody.py` |
+| Shipping codegen profiles and package overrides | `Cargo.toml` |
+
+The frontend is assembled from visitor/lowering modules; native opcode families
+live beneath the function compiler. Historical `cli.py` and backend `lib.rs`
+line references must not be used to infer today's dispatch structure or costs.
+SimpleIR names remain a native transport projection, not permission to recreate
+semantic facts from strings or hints. Change the shared authority and its
+consumers together when that projection exposes a correctness or performance
+limit.
+
+## Representation and operation boundaries
+
+`extract_exact_scalar_map` owns exact producer provenance, including individual
+result slots and executable copy/phi edges. `repr_by_value_for` raises exact
+Bool/F64 producers and applies integer range or checked-overflow proofs.
+`Repr::default_for` remains the conservative semantic floor: Bool/F64 are boxed
+and integers remain BigInt-safe. An annotation, refinement, subclass hint, or
+return hint cannot authorize raw storage.
+
+LLVM and WASM/LIR consume the shared value-keyed map. Native `repr_by_name` is
+its emitter-capability-filtered projection, not an independent semantic
+authority. Native lowering consults one `ScalarRepresentationPlan`:
+
+- `is_raw_int_carrier_name` identifies raw i64 homes. `RawI64Safe` proves the
+  inline integer window; `RawI64FullDeopt` describes full-width checked storage,
+  not permission for arbitrary unchecked Python arithmetic. Escape boxing must
+  preserve full-width values through the overflow-safe boundary.
+- `is_bool_unboxed` identifies raw 0/1 homes; other bools remain tagged in their
+  main I64 home. `is_float_unboxed` identifies physical F64 homes; other floats
+  remain boxed and use explicit extraction at proven float use sites.
+- Lane selection, guard satisfaction, non-heap classification, merge rebinding,
+  and cleanup use those same facts. Dead F64 homes are scrubbed with F64 zero;
+  boxed homes retain their boxed cleanup sentinel. Separate scalar membership
+  sets or shadow maps must not become another authority.
+
+Generated integer-bitwise rules cover `&`, `|`, `^`, shifts, and inversion.
+Successful operations on exact built-in integer operands produce Python
+integers regardless of magnitude; only bool/bool `&`, `|`, and `^` preserve
+bool. This semantic result fact neither proves raw storage nor removes
+exceptions. Raw shift lowering additionally needs the applicable range proof
+and a count in `[0, 63]`. Dynamic operands must retain runtime dispatch and its
+exception or warning behavior.
+
+Opcode-wide facts for overloaded operations are conservative. Exact admissible
+operands may recover purity through the shared operation-instance authority;
+annotations and transport spellings are not evidence. Frontend CSE/LICM and Rust
+DCE/GVN/exception consumers must preserve callbacks and invalidate heap reads
+across possible mutation. A pure result calculation is not necessarily no-throw:
+mixed unbounded-int/float conversion, division, powers and shifts retain their
+semantic exceptions. Bool inversion also retains observable warning behavior.
+Bytes/text and bytes/integer equality retain option-dependent BytesWarning
+effects unless a target policy proves them disabled. The registry projects these
+same effects into Python and Rust. Purity does not prove commutativity: the
+generated reorder domain admits numeric addition, not string/bytes concatenation.
+
+SCCP value facts must be recursively immutable. Rust uses shared immutable tuple
+storage and never snapshots mutable lists or dictionaries. Frontend joins,
+convergence comparisons, static truth, and constant CSE use typed literal keys:
+`1`, `True`, `1.0`, signed zero, and distinct NaN payloads cannot be conflated by
+host Python equality. Equal literal values do not prove Python object identity.
+
+Unary lowering must honor both operand and result carriers. Negating
+`i64::MIN`, including the negative arm of `abs`, needs a BigInt; deferred boxing
+cannot repair an already wrapped machine result. Cranelift Neg/Abs require an
+inline-safe result for their unchecked raw lane, and Pos/Invert require a raw
+output home before directly storing raw bits. Other numeric results cross
+`def_var_from_numeric_result`, which distinguishes physical F64 from boxed I64
+transport. LLVM uses boxed materialization for unary runtime arguments. WASM
+Neg consumes the generated overflow-dispatch policy from LIR lowering; unary
+runtime results use the shared result sink instead of entering raw locals as
+boxed bits.
+
+Unary plus is identity only for exact numeric carriers: Bool must become int,
+and dynamic values must dispatch `__pos__`. Preserve the Bool tag for inversion
+and its runtime warning behavior. Float negation must preserve IEEE sign-bit
+semantics, including signed zero; subtraction from zero is not an equivalent
+replacement.
+
+## Ownership and call provenance
+
+Liveness projects the shared carrier authority and exact None provenance through
+`non_heap_values_for`; it does not reinterpret annotations as permission to drop
+reference-counting obligations. A float subclass may be a heap object even when
+its annotation looks scalar. Escape analysis, field-store optimization, RC
+elision, and cleanup must preserve that distinction across native and WASM
+consumers.
+
+Call facts distinguish proven direct targets from opaque calls using typed
+operation provenance and module membership. Builtin-looking names, absent
+exception handlers, and annotations are not target, no-throw, no-allocation, or
+raw-return proofs. Unknown facts remain conservative. Inlining eligibility must
+come from the inliner's own decision authority, and a call-fact table must
+invalidate with the operations and CFG on which it depends. Diagnostics must
+report the conservative floor or the actual value-keyed proof, not a stronger
+claim reconstructed from transport hints.
+
+## Evidence before optimization claims
+
+Separate frontend time, analysis/lowering time, codegen, linking, execution,
+peak memory, and final binary size. A change can improve one while worsening
+another. Record baseline and candidate compiler revisions and artifact identities;
+hold the workload corpus, toolchain, target, and profile fixed unless one is the
+variable under study. Distinguish cold, warm, and edit/rebuild runs. Record
+cache hits, invalidations, commands, failures, and evidence locations using the
+existing project receipt and benchmark mechanisms. Timing telemetry must not
+change deterministic optimization decisions.
+
+`tools/frontend_hot_pass_profile.py` profiles frontend lowering over a
+deterministic corpus. Native implementation regressions belong with their
+consumers, including
+`runtime/molt-backend-native/src/native_backend/function_compiler/tests/scalar_carriers.rs`;
+the WASM counterpart is
+`runtime/molt-backend-wasm/src/wasm/lir_fast/tests/arithmetic/runtime_helpers.rs`.
+IR shape and verifier tests establish lowering invariants, not CPython semantic
+parity or a runtime speedup. Those claims require replayable differential and
+performance receipts for the applicable Python-version, backend, OS, and
+architecture cells. No local test establishes unexecuted matrix cells.
+
+Read shipping settings from `Cargo.toml`, including package overrides, rather
+than copying a profile here. Linker flags, dead-section removal, selected
+archives, and symbol custody must be established from the actual target link
+plan and output. Do not infer binary composition from a historical hello-world
+estimate or promise cross-boundary LTO benefits without a supported toolchain
+and a measured consumer.
+
+## Profile-driven hypotheses
+
+These are investigation directions, not confirmed missing features or ranked
+speedup estimates:
+
+- If frontend profiles show repeated parsing, analysis, or serialization,
+  identify the duplicated work and its invalidation boundary before adding a
+  cache, daemon, or alternate transport.
+- If codegen dominates, measure per-function lowering, import/signature reuse,
+  and rebuild topology before moving modules or changing crate boundaries.
+  File decomposition alone does not prove reduced compiler work.
+- If runtime dispatch, boxing, or RC dominates a workload, trace the missing
+  exact fact through calls, joins, escape boundaries, and backend consumers.
+  Extend the existing proof authority rather than introducing a local hint.
+- If allocation, field access, or container operations dominate, evaluate the
+  existing escape, storage, and alias facts against that workload before
+  claiming a missing specialization or adding speculative dispatch.
+- If link time or binary size dominates, measure reachable sections, archive
+  selection, code duplication, and profile tradeoffs before changing inlining,
+  LTO, runtime packaging, or target-specific linker policy.
+
+Prioritize demonstrated frontier gain against critical-path cost. Preserve
+semantic and custody invariants while measuring; record incomplete or failed
+proofs explicitly rather than promoting an optimization hypothesis to support.

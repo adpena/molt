@@ -173,15 +173,18 @@ impl EventLoopRegistry {
         handle
     }
 
-    pub(crate) fn clear(&self, _py: &crate::PyToken<'_>) {
+    pub(crate) fn clear(&self, _py: &crate::PyToken<'_>) -> bool {
         let loops = {
             let mut guard = self.loops.lock().unwrap();
             std::mem::take(&mut *guard)
         };
+        // Callbacks released below can allocate another loop. Never reuse an
+        // identity while stale handles from the detached cohort can still run.
+        let changed = !loops.is_empty();
         for state in loops.into_values() {
             release_event_loop_state_refs(_py, state);
         }
-        self.next_handle.store(1, Ordering::Relaxed);
+        changed
     }
 }
 

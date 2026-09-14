@@ -12,8 +12,6 @@ pub(super) struct FrameRuntimeRequirements {
     needs_field_fast: bool,
     needs_native_forward_f32: bool,
     needs_alloc_resolve: bool,
-    arena_local: Option<u32>,
-    has_arena_eligible: bool,
     stateful: bool,
     saw_jump_or_label: bool,
     fast_int_count: usize,
@@ -24,12 +22,10 @@ impl FrameRuntimeRequirements {
         if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
             self.fast_int_count += 1;
         }
-        if op.arena_eligible == Some(true) {
-            self.has_arena_eligible = true;
-        }
         match op.kind.as_str() {
-            "store" | "store_init" | "load" | "guarded_load" | "guarded_field_get"
-            | "guarded_field_set" | "guarded_field_init" => self.needs_field_fast = true,
+            "store" | "load" | "guarded_load" | "guarded_field_get" | "guarded_field_set" => {
+                self.needs_field_fast = true
+            }
             "invoke_ffi"
                 if op
                     .native_callable_abi
@@ -79,14 +75,6 @@ impl FrameRuntimeRequirements {
                 local_count,
             );
         }
-
-        if self.has_arena_eligible {
-            self.arena_local = Some(locals.ensure_synthetic(
-                WasmFrameSyntheticLocal::WasmScopeArena,
-                local_types,
-                local_count,
-            ));
-        }
     }
 
     pub(super) fn stateful(&self) -> bool {
@@ -103,9 +91,5 @@ impl FrameRuntimeRequirements {
 
     pub(super) fn fast_int_count(&self) -> usize {
         self.fast_int_count
-    }
-
-    pub(super) fn arena_local(&self) -> Option<u32> {
-        self.arena_local
     }
 }

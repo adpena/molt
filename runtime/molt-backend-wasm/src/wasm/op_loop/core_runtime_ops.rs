@@ -30,7 +30,6 @@ pub(super) fn emit_core_runtime_op(
     locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
-    arena_local: Option<u32>,
     ops: &[OpIR],
     op_idx: usize,
 ) -> bool {
@@ -52,7 +51,6 @@ pub(super) fn emit_core_runtime_op(
         locals,
         scalar_plan,
         reloc_enabled,
-        arena_local,
         ops,
         op_idx,
     ) {
@@ -66,7 +64,6 @@ pub(super) fn emit_core_runtime_op(
         locals,
         scalar_plan,
         reloc_enabled,
-        arena_local,
         ops,
         op_idx,
     ) {
@@ -80,7 +77,6 @@ pub(super) fn emit_core_runtime_op(
         locals,
         scalar_plan,
         reloc_enabled,
-        arena_local,
         ops,
         op_idx,
     ) {
@@ -95,14 +91,7 @@ pub(super) fn emit_core_runtime_op(
     if guard_ops::emit_guard_runtime_op(func, op, import_ids, locals, reloc_enabled) {
         return true;
     }
-    if allocation_ops::emit_allocation_runtime_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        reloc_enabled,
-        arena_local,
-    ) {
+    if allocation_ops::emit_allocation_runtime_op(func, op, import_ids, locals, reloc_enabled) {
         return true;
     }
     false

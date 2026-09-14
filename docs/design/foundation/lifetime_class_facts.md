@@ -13,6 +13,11 @@ file:line. -->
 
 # LifetimeClassFacts — the One Cached Lifetime Fact-Plane (M1)
 
+Historical design proposal. Current executable ownership and field contracts are
+Designs 20 and 49. Absence of a class flag, even at a known class version, does not
+prove absence for the object's lifetime when the MRO can mutate. Fact production
+and invalidation remain proof obligations, not an implemented acceptance claim.
+
 ## 0. The mandate, in one sentence
 
 There is **exactly one** place in the compiler that decides whether a heap object
@@ -46,7 +51,7 @@ unconditional and carries no ordering/resurrection hazard.
 
 | Bit | Predicate meaning | Derivation / source of truth | Verified current state (2026-06-25) |
 |---|---|---|---|
-| **B0 MayFinalize** | class/MRO defines `__del__` | runtime `HEADER_FLAG_CLASS_HAS_FINALIZER` (mod.rs:490), set by `class_refresh_finalizer_flag` (mod.rs:1493-1501) via `class_lookup_raw_mro_dict_attr(__del__)`, sealed once by `class_finish_definition` (mod.rs:1512-1516). Compile-time mirror: existing `defines_del` result attr. | EXISTS. Reused verbatim — no behavior change to #58. |
+| **B0 MayFinalize** | current class/MRO declares `__del__` | [Runtime declaration authority](48_finalizer_region_deferred_drain.md). `defines_del=true` is a positive compile-time seed, never an absence proof for mutable classes. | Runtime and compiler receipts remain separate. |
 | **B1 HasWeakrefs** | an instance can be the target of a live `weakref`/`proxy` (CPython `tp_weaklistoffset != 0`) | runtime NEW `HEADER_FLAG_CLASS_SUPPORTS_WEAKREF`, refreshed on the SAME MRO/version hook beside B0 (mod.rs:1493 region), copied to instance flag on `object_set_class_bits` (mod.rs:1417). Compile-time mirror: NEW `class_supports_weakref` result attr. | NEW. grep confirms no `SUPPORTS_WEAKREF`/`weaklistoffset` anywhere in runtime/. |
 | **B2 MayResurrect** | `__del__` can re-root `self` | DERIVED: `= MayFinalize` (conservative; any `__del__` can stash `self`). Not stored. | Derived from B0. |
 | **B3 InnerRefOrdering** | object owns ref-counted fields whose release order a `__del__` can observe | DERIVED: `MayFinalize ∧ HEADER_FLAG_HAS_PTRS` (mod.rs:446; doc 49 field-ownership). Compile-time mirror of the ptr-field half: NEW `class_has_ptr_fields` result attr. | `HEADER_FLAG_HAS_PTRS` EXISTS (mod.rs:446, set by `object_mark_has_ptrs` mod.rs:1518). |
@@ -113,28 +118,13 @@ so which ops carry/propagate lifetime facts is a generated authority, never a ne
 
 ## 3. The single-authority consumer contract (binding)
 
-Every consumer reads `LifetimeClassFacts`; none re-derives. This table is the M1
-acceptance: after M1, grep for finalizer/weakref reasoning must find it ONLY in
-`LifetimeClassFacts`, with each site below reading the struct.
-
-| Consumer (file:line, verified) | Today's narrow query | M1 replacement |
-|---|---|---|
-| **refcount-elim Step 5** (`refcount_elim.rs:586,605`) — RC strip | `!finalizer_roots.contains(&root)` (finalizer-only) | `is_trivial_lifetime_root(root)` (all four) |
-| **refcount-elim Step 6** (`refcount_elim.rs:698-704`) — `DecRef→Free` (M3) | `!finalizer_roots.contains(&val)` at line 701 | `is_trivial_lifetime_root(aliases.root(val))` |
-| **escape analysis** (`escape_analysis.rs`, `finalizer_alloc_roots`) — stack-promotion decline | finalizer-only guard | `¬is_trivial_lifetime_root` |
-| **stack-allocation** | finalizer-only | `¬is_trivial_lifetime_root` blocks stack alloc |
-| **ownership-lowering / rung-3 placement** (`ownership_lattice_min.rs:495-510`; `drop_insertion.rs` queries `is_finalizer_sensitive_root`) — M2 | `is_finalizer_sensitive_root` | `¬is_trivial_lifetime_root` ⇒ Python-lifetime-boundary release |
-
-The M3 site is the sharpest: `refcount_elim.rs:698-704` currently promotes
-`DecRef→Free` under `*balance == 0 && alloc_vals.contains(&val) &&
-!heap_exposed... && !finalizer_roots.contains(&val)`. The `finalizer_roots`
-clause (line 701) is the **single-class** guard; its own rationale
-(refcount_elim.rs:643-659) admits it is "defense-in-depth … disjoint by
-construction" and warns it "keeps it true if a finalizer alloc ever reaches this
-set." M1 supplies the fact that lets M3 replace that fragile one-class guard with
-`is_trivial_lifetime_root` — all four classes, the structurally complete gate.
-The Step-6 guard tests (refcount_elim.rs:1566-1690, currently asserting "no
-`OpCode::Free`" for finalizer values) are extended to all four classes in M3/G3.
+Consumers must share positive facts and their invalidation, not independently
+infer negative lifetime properties. Designs 20 and 49 own the current consumer
+contracts; this proposal does not duplicate their inventory. In particular,
+refcount elimination's heap-RC stripping and `DecRef→Free` lanes were deleted,
+and capture analysis no longer rewrites storage. Do not reconstruct those lanes
+with a wider negative flag mask. Python-local lifetime derives from binding and
+explicit release boundaries, not just finalizer sensitivity.
 
 ---
 

@@ -263,6 +263,7 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_inplace_lshift", 2, ATTR_NONE),
     i64_ret("molt_inplace_rshift", 2, ATTR_NONE),
     i64_ret("molt_neg", 1, ATTR_NONE),
+    i64_ret("molt_pos", 1, ATTR_NONE),
     i64_ret("molt_not", 1, ATTR_NONE),
     i64_ret("molt_invert", 1, ATTR_NONE),
     i64_ret("molt_chan_new", 1, ATTR_NONE),

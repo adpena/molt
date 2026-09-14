@@ -67,12 +67,12 @@ then reconstructed by fragile per-pass analysis"). The evidence:
 
 | Layer | What already exists | Where |
 |---|---|---|
-| **Runtime guard** | `molt_guard_layout_ptr(obj, class, expected_version) -> bool` — reads class slot-4 version, compares, profiles deopt | `runtime/molt-runtime/src/object/accessors.rs:393` |
-| **Runtime guarded field ops** | `molt_guarded_field_get_ptr` / `_set_ptr` / `_init_ptr` — version-guard THEN direct offset access, **with the exact CPython-correct deopt fallback to `molt_get_attr_ptr`/`molt_set_attr_ptr` on guard fail** | `accessors.rs:414`, `:442`, `:468` |
+| **Runtime guard** | `molt_guard_layout(obj, class, expected_version) -> bool` — reads class slot-4 version, compares, profiles deopt | `runtime/molt-runtime/src/object/accessors.rs:393` |
+| **Runtime guarded field ops** | `molt_guarded_field_get` / `molt_guarded_field_set` admit tagged receivers, then check layout before direct offset access; guard failure preserves the original receiver through `molt_get_attr_object` / `molt_set_attr_object` | `runtime/molt-runtime/src/object/accessors.rs` |
 | **Runtime offset authority** | `class_field_offset(class, attr)` — walks the **MRO**, reads `__molt_field_offsets__` per class; `class_own_slot_field_offset` handles `__slots__` | `runtime/molt-runtime/src/builtins/attr.rs:1167`, `:1235` |
 | **Runtime version** | per-class layout version at **class object slot 4** (`class_layout_version_bits`/`_set_`), `class_bump_layout_version` ALSO bumps the **global type version** for IC invalidation | `runtime/molt-runtime/src/object/layout.rs:1311`, `:1376` |
-| **Backend lowering (all 4)** | `guarded_field_get`/`_set`/`_init` + `guard_layout`/`guard_dict_shape` lowered on native, LLVM, WASM, Luau | native `.../fc/memory.rs:1156-1573`; LLVM `lowering.rs:1612`,`:1900`,`:10429`,`:12439`; Luau `luau.rs:3144`; WASM `wasm.rs` |
-| **Op-kind vocabulary** | `guarded_field_get -> LoadAttr`, `guarded_field_set/_init -> StoreAttr`, `guard_layout/guard_dict_shape/guard_layout_ptr/guard_type` classified | `op_kinds_generated.rs:59-74`, `:255-259`, `:499`; `classifier_inert_marker` in `op_kinds.toml:508` |
+| **Backend lowering** | `guarded_field_get` / `guarded_field_set` plus `guard_layout` / `guard_dict_shape`; initialization is a shared exact-site storage fact, never an opcode variant | native `fc/memory.rs`; LLVM `lowering/object_ops.rs`; WASM `field_ops/guarded.rs`; Luau `op_objects.rs` |
+| **Op-kind vocabulary** | `guarded_field_get -> LoadAttr`, `guarded_field_set -> StoreAttr`, `guard_layout` / `guard_dict_shape` / `guard_type` classified | `runtime/molt-ir/src/tir/op_kinds.toml` and its generated projections |
 | **The DECISION (the gap)** | `field_offset(cls, attr)` reads the frontend `self.classes[cls]["fields"][attr]` dict; `_class_layout_stable` (heuristic) gates it; `_collect_module_class_mutations` is the monkeypatch boundary; the op is emitted with a string `"class"` + a runtime-read `expected_version` | frontend `lowering/serialization.py:481`, `:2283`; `__init__.py:3291`, `:2512` |
 
 **Therefore Rung 4 is not "build a shape system from scratch." It is the structural
@@ -225,7 +225,7 @@ pub struct DictShape {
 layout — e.g. a `__slots__` class with no `__dict__`, no monkeypatch, no metaclass
 `__setattr__`, see §3); **`Guarded(class_version_guard)`** for a stable-but-mutable
 layout (direct offset access under a version guard with a deopt edge — the common case,
-and the one the existing `molt_guarded_field_get_ptr` path already implements); else
+and the one the existing `molt_guarded_field_get` path already implements); else
 **`Unknown`** -> the current full runtime lookup (`get_attr_generic_ptr` /
 `molt_get_attr_ptr`), fail-closed.
 
@@ -326,7 +326,7 @@ un-optimized (doc 65 §8 "ShapeFacts greenfield … partiality *sound*").
   the version guard catches a `__class__` reassignment or a class-level layout change; a
   per-instance `__dict__` key addition does NOT change the *class* layout (it adds a dict
   entry, not a slot), so the offset for a *declared* field stays valid — and the existing
-  `molt_guarded_field_get_ptr` already handles the "field is a declared slot but the
+  `molt_guarded_field_get` already handles the "field is a declared slot but the
   value was shadowed in the instance dict" case by checking `is_missing_bits` and falling
   back (`accessors.rs:429`). This is why the runtime path is the correct lowering target
   and the IR fact's job is only to *prove the offset and emit the guard*.
@@ -366,7 +366,7 @@ either re-derive the shape (the frontend) or fall back to the dynamic path.
    *consequence of the proven fact* rather than a string passed through.
 4. **DictShape -> the etl/csv row-dict path (Phase 4c).** A stable-key row dict
    (`csv_parse_wide`) gets `Guarded(dict-shape)` value-slot flow, reusing the existing
-   `guard_dict_shape` op (which shares `molt_guard_layout_ptr` — `lowering.rs:10429`).
+   `guard_dict_shape` op (which shares `molt_guard_layout` — `lowering.rs:10429`).
 
 ---
 
@@ -384,7 +384,7 @@ case where this order provably reduces to a fixed-offset slot read:
   the MRO) -> `Unknown` for that attr (§3.2/§3.3); the dynamic path runs the descriptor.
 - a `__slots__` slot with no shadowing data descriptor -> the slot read IS the CPython
   semantics (`Frozen`/`Proven`).
-- a `__dict__` field -> `Guarded`, and the runtime `molt_guarded_field_get_ptr` already
+- a `__dict__` field -> `Guarded`, and the runtime `molt_guarded_field_get` already
   encodes the "declared field but instance-dict-shadowed" fallback (`accessors.rs:429`)
   AND the guard-fail fallback to `molt_get_attr_ptr` (`accessors.rs:436`), which runs
   full CPython attribute resolution. So a `Guarded` access is *observably identical* to
@@ -439,8 +439,8 @@ drift uncompilable via `gen_op_kinds.py --check`. The ops already exist in the
 vocabulary; this rung completes their registry authority:
 
 - **Kind->OpCode mapping (exists, keep):** `guarded_field_get -> LoadAttr`,
-  `guarded_field_set`/`guarded_field_init -> StoreAttr`, `guard_layout`/
-  `guard_dict_shape`/`guard_layout_ptr`/`guard_type` classified
+  `guarded_field_set -> StoreAttr`, `guard_layout`/
+  `guard_dict_shape`/`guard_layout`/`guard_type` classified
   (`op_kinds_generated.rs:59-74`, `:255`, `:499`).
 - **Effect oracle (the `[[opcode]]` table, `op_kinds.toml:815+`):** `LoadAttr` /
   `StoreAttr` carry `may_throw` (a guarded access CAN raise on the deopt path —
@@ -453,7 +453,7 @@ vocabulary; this rung completes their registry authority:
   ExceptionRegion/`no_throw` analysis (doc 45) so a `Proven` access pays zero
   exception-stack churn (ties Rung 2 2c).
 - **The classifier sets (`op_kinds.toml`):** the guard ops are in `classifier_inert_marker`
-  (`:508`: `guard_layout`/`guard_dict_shape`/`guard_layout_ptr` — they own no surviving
+  (`:508`: `guard_layout`/`guard_dict_shape`/`guard_layout` — they own no surviving
   heap ref). The `guarded_field_get`/`_set`/`_init` ops are in the alias/ownership
   classifier sets (`alias_typed_slot_*`, `:71`) — Rung 4 adds the `TypedField` alias
   region as a *generated* classification so MemorySSA/SROA (doc 02) read it from the

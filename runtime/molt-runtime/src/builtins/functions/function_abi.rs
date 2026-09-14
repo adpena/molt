@@ -25,9 +25,15 @@ fn runtime_callable_name_suffix(symbol_path: &str) -> &str {
     symbol_path.rsplit("::").next().unwrap_or(symbol_path)
 }
 
+/// Resolve semantic callable identity without registering a native call target.
+/// Metadata readers use this path without allocation or registry side effects.
+pub(crate) fn runtime_fn_key(symbol_path: &str, raw_ptr: *const ()) -> u64 {
+    runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
+        .unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr))
+}
+
 pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
-    let key = runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
-        .unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr));
+    let key = runtime_fn_key(symbol_path, raw_ptr);
     if !raw_ptr.is_null() {
         let mut guard = native_callable_targets().lock().unwrap();
         guard.entry(key).or_insert(NativeCallableTarget(raw_ptr));
@@ -404,10 +410,12 @@ pub(crate) fn python_builtin_function_bits(
 pub(crate) fn python_builtin_functions_clear_runtime_state(
     _py: &crate::PyToken<'_>,
     state: &crate::state::RuntimeState,
-) {
+) -> bool {
     if let Some(slots) = state.python_builtin_function_slots.get() {
         let slot_refs: Vec<&AtomicU64> = slots.iter().collect();
-        crate::state::cache::clear_atomic_slots(_py, &slot_refs);
+        crate::state::cache::clear_atomic_slots(_py, &slot_refs)
+    } else {
+        false
     }
 }
 
@@ -721,43 +729,52 @@ pub extern "C" fn molt_func_new_closure(
         }
         if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
             let cell_bits = cell_class(_py);
-            if cell_bits != 0 && !obj_from_bits(cell_bits).is_none() {
-                let closure_obj = obj_from_bits(closure_bits);
-                if let Some(closure_ptr) = closure_obj.as_ptr() {
-                    unsafe {
-                        if object_type_id(closure_ptr) == TYPE_ID_TUPLE {
-                            let Some(closure) = crate::object::seq_access::snapshot(
+            if cell_bits == 0 || obj_from_bits(cell_bits).is_none() || exception_pending(_py) {
+                if !exception_pending(_py) {
+                    raise_exception::<u64>(
+                        _py,
+                        "SystemError",
+                        "cell class initialization returned no class",
+                    );
+                }
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            }
+            let closure_obj = obj_from_bits(closure_bits);
+            if let Some(closure_ptr) = closure_obj.as_ptr() {
+                unsafe {
+                    if object_type_id(closure_ptr) == TYPE_ID_TUPLE {
+                        let Some(closure) = crate::object::seq_access::snapshot(
+                            _py,
+                            closure_ptr,
+                            "sequence snapshot allocation failed",
+                        ) else {
+                            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                            return MoltObject::none().bits();
+                        };
+                        for &entry_bits in closure.iter() {
+                            let entry_obj = obj_from_bits(entry_bits);
+                            let Some(entry_ptr) = entry_obj.as_ptr() else {
+                                continue;
+                            };
+                            if object_type_id(entry_ptr) != TYPE_ID_LIST {
+                                continue;
+                            }
+                            if crate::object::seq_access::len(entry_ptr) != 1 {
+                                continue;
+                            }
+                            let old_class_bits = object_class_bits(entry_ptr);
+                            if old_class_bits == cell_bits {
+                                continue;
+                            }
+                            if !object_replace_class_edge(
                                 _py,
-                                closure_ptr,
-                                "sequence snapshot allocation failed",
-                            ) else {
+                                entry_ptr,
+                                cell_bits,
+                                ClassEdgeOwnership::Owned,
+                            ) {
                                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                                 return MoltObject::none().bits();
-                            };
-                            for &entry_bits in closure.iter() {
-                                let entry_obj = obj_from_bits(entry_bits);
-                                let Some(entry_ptr) = entry_obj.as_ptr() else {
-                                    continue;
-                                };
-                                if object_type_id(entry_ptr) != TYPE_ID_LIST {
-                                    continue;
-                                }
-                                if crate::object::seq_access::len(entry_ptr) != 1 {
-                                    continue;
-                                }
-                                let old_class_bits = object_class_bits(entry_ptr);
-                                if old_class_bits == cell_bits {
-                                    continue;
-                                }
-                                if !object_replace_class_edge(
-                                    _py,
-                                    entry_ptr,
-                                    cell_bits,
-                                    ClassEdgeOwnership::Owned,
-                                ) {
-                                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                                    return MoltObject::none().bits();
-                                }
                             }
                         }
                     }
@@ -881,20 +898,13 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         function_set_globals_override_enabled(func_ptr, true);
         function_set_code_bits(_py, func_ptr, args[0]);
 
-        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
-                return Err(MoltObject::none().bits());
-            };
-            crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, value_bits);
-            dec_ref_bits(_py, attr_bits);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            Ok(())
+        let set_attr = |name: &'static [u8], value_bits: u64| {
+            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
         };
 
         let module_bits = {
             let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__name__") else {
+                dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
                 return MoltObject::none().bits();
             };
             let bits = dict_get_in_place(_py, globals_ptr, module_name_bits).unwrap_or(none_bits);
@@ -908,22 +918,27 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         let vararg_bits = code_vararg_bits(code_ptr);
         let varkw_bits = code_varkw_bits(code_ptr);
 
-        if set_attr(b"__name__", name_bits).is_err()
-            || set_attr(b"__qualname__", name_bits).is_err()
-            || set_attr(b"__module__", module_bits).is_err()
-            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
-            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
-            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
-            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
-            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
-            || set_attr(b"__defaults__", defaults_bits).is_err()
-            || set_attr(b"__kwdefaults__", none_bits).is_err()
-            || set_attr(b"__doc__", none_bits).is_err()
+        if !set_attr(b"__name__", name_bits)
+            || !set_attr(b"__qualname__", name_bits)
+            || !set_attr(b"__module__", module_bits)
+            || !set_attr(b"__molt_arg_names__", arg_names_bits)
+            || !set_attr(b"__molt_posonly__", posonly_bits)
+            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
+            || !set_attr(b"__molt_vararg__", vararg_bits)
+            || !set_attr(b"__molt_varkw__", varkw_bits)
+            || !set_attr(b"__defaults__", defaults_bits)
+            || !set_attr(b"__kwdefaults__", none_bits)
+            || !set_attr(b"__doc__", none_bits)
         {
+            dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
             return MoltObject::none().bits();
         }
 
         crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+            return MoltObject::none().bits();
+        }
 
         MoltObject::from_ptr(func_ptr).bits()
     }
@@ -987,33 +1002,21 @@ pub extern "C" fn molt_function_init_metadata(
             }
         }
 
-        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
-                return Err(MoltObject::none().bits());
-            };
-            unsafe {
-                crate::call::class_init::function_set_attr_bits(
-                    _py, func_ptr, attr_bits, value_bits,
-                );
-            }
-            dec_ref_bits(_py, attr_bits);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            Ok(())
+        let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
+            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
         };
 
-        if set_attr(b"__name__", name_bits).is_err()
-            || set_attr(b"__qualname__", qualname_bits).is_err()
-            || set_attr(b"__module__", module_bits).is_err()
-            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
-            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
-            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
-            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
-            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
-            || set_attr(b"__defaults__", defaults_bits).is_err()
-            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
-            || set_attr(b"__doc__", doc_bits).is_err()
+        if !set_attr(b"__name__", name_bits)
+            || !set_attr(b"__qualname__", qualname_bits)
+            || !set_attr(b"__module__", module_bits)
+            || !set_attr(b"__molt_arg_names__", arg_names_bits)
+            || !set_attr(b"__molt_posonly__", posonly_bits)
+            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
+            || !set_attr(b"__molt_vararg__", vararg_bits)
+            || !set_attr(b"__molt_varkw__", varkw_bits)
+            || !set_attr(b"__defaults__", defaults_bits)
+            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
+            || !set_attr(b"__doc__", doc_bits)
         {
             return MoltObject::none().bits();
         }
@@ -1047,7 +1050,7 @@ pub extern "C" fn molt_function_init_metadata(
         }
 
         if !obj_from_bits(bind_kind_bits).is_none()
-            && set_attr(b"__molt_bind_kind__", bind_kind_bits).is_err()
+            && !set_attr(b"__molt_bind_kind__", bind_kind_bits)
         {
             return MoltObject::none().bits();
         }
@@ -1098,20 +1101,8 @@ pub extern "C" fn molt_function_init_metadata_packed(
             return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 11 items");
         }
 
-        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
-                return Err(MoltObject::none().bits());
-            };
-            unsafe {
-                crate::call::class_init::function_set_attr_bits(
-                    _py, func_ptr, attr_bits, value_bits,
-                );
-            }
-            dec_ref_bits(_py, attr_bits);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            Ok(())
+        let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
+            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
         };
 
         let name_bits = metadata[0];
@@ -1126,17 +1117,17 @@ pub extern "C" fn molt_function_init_metadata_packed(
         let kwdefaults_bits = metadata[9];
         let doc_bits = metadata[10];
 
-        if set_attr(b"__name__", name_bits).is_err()
-            || set_attr(b"__qualname__", qualname_bits).is_err()
-            || set_attr(b"__module__", module_bits).is_err()
-            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
-            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
-            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
-            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
-            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
-            || set_attr(b"__defaults__", defaults_bits).is_err()
-            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
-            || set_attr(b"__doc__", doc_bits).is_err()
+        if !set_attr(b"__name__", name_bits)
+            || !set_attr(b"__qualname__", qualname_bits)
+            || !set_attr(b"__module__", module_bits)
+            || !set_attr(b"__molt_arg_names__", arg_names_bits)
+            || !set_attr(b"__molt_posonly__", posonly_bits)
+            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
+            || !set_attr(b"__molt_vararg__", vararg_bits)
+            || !set_attr(b"__molt_varkw__", varkw_bits)
+            || !set_attr(b"__defaults__", defaults_bits)
+            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
+            || !set_attr(b"__doc__", doc_bits)
         {
             return MoltObject::none().bits();
         }
@@ -1155,7 +1146,7 @@ pub extern "C" fn molt_function_init_metadata_packed(
         }
 
         if !obj_from_bits(bind_kind_bits).is_none()
-            && set_attr(b"__molt_bind_kind__", bind_kind_bits).is_err()
+            && !set_attr(b"__molt_bind_kind__", bind_kind_bits)
         {
             return MoltObject::none().bits();
         }
@@ -1211,24 +1202,12 @@ pub extern "C" fn molt_function_set_defaults(
             }
         }
 
-        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
-                return Err(MoltObject::none().bits());
-            };
-            unsafe {
-                crate::call::class_init::function_set_attr_bits(
-                    _py, func_ptr, attr_bits, value_bits,
-                );
-            }
-            dec_ref_bits(_py, attr_bits);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            Ok(())
+        let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
+            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
         };
 
-        if set_attr(b"__defaults__", defaults_bits).is_err()
-            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
+        if !set_attr(b"__defaults__", defaults_bits)
+            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
         {
             return MoltObject::none().bits();
         }
@@ -1545,8 +1524,8 @@ pub unsafe extern "C" fn molt_closure_load(self_ptr_bits: u64, offset: u64) -> u
 }
 
 /// # Safety
-/// `self_ptr_bits` must encode a valid closure storage pointer and `offset`
-/// must be within the allocated payload.
+/// `self_ptr_bits` must encode the base of a live Molt object's closure payload
+/// (not an interior pointer or standalone word), and `offset` must be within it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bits: u64) -> u64 {
     unsafe {
@@ -1562,6 +1541,9 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bit
             };
             let slot = self_ptr.add(offset) as *mut u64;
             let old_bits = *slot;
+            if obj_from_bits(bits).as_ptr().is_some() {
+                crate::object::object_mark_has_ptrs(_py, self_ptr);
+            }
             if old_bits == bits {
                 return MoltObject::none().bits();
             }

@@ -5,7 +5,6 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::run;
-use super::transform::make_const_int;
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
@@ -21,6 +20,9 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("name".to_string(), AttrValue::Str(name.to_string()));
+    if name == "range" {
+        attrs.insert("_original_kind".into(), AttrValue::Str("range_new".into()));
+    }
     TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
@@ -32,7 +34,9 @@ fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) 
 }
 
 fn make_const(result: ValueId, value: i64) -> TirOp {
-    make_const_int(result, value)
+    let mut op = make_op(OpCode::ConstInt, vec![], vec![result]);
+    op.attrs.insert("value".into(), AttrValue::Int(value));
+    op
 }
 
 fn build_range_for_loop(range_args: &[i64]) -> TirFunction {
@@ -41,7 +45,12 @@ fn build_range_for_loop(range_args: &[i64]) -> TirFunction {
     let mut range_arg_vals = Vec::new();
     let mut entry_ops = Vec::new();
 
-    for &arg in range_args {
+    let normalized = match range_args {
+        [stop] => vec![0, *stop, 1],
+        [start, stop] => vec![*start, *stop, 1],
+        args => args.to_vec(),
+    };
+    for &arg in &normalized {
         let val = func.fresh_value();
         entry_ops.push(make_const(val, arg));
         range_arg_vals.push(val);
@@ -222,6 +231,37 @@ fn devirt_range_single_arg() {
     }
 
     crate::tir::verify::verify_function(&func).expect("verification should pass");
+}
+
+#[test]
+fn generic_range_lookup_is_not_the_range_new_primitive() {
+    for name in ["range", "builtin_range", "molt_range"] {
+        let mut func = build_range_for_loop(&[0, 10, 1]);
+        let call = func
+            .blocks
+            .get_mut(&func.entry_block)
+            .unwrap()
+            .ops
+            .iter_mut()
+            .find(|op| op.opcode == OpCode::CallBuiltin)
+            .unwrap();
+        call.attrs.remove("_original_kind");
+        call.attrs
+            .insert("name".into(), AttrValue::Str(name.into()));
+        run(&mut func);
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::CallBuiltin)
+        );
+        assert!(func.blocks.values().any(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::IterNextUnboxed)
+        }));
+    }
 }
 
 #[test]

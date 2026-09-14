@@ -1,6 +1,69 @@
 use super::*;
 
 #[test]
+fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
+    for (attrs, count, expected_kind, expected_name) in [
+        (
+            AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            1,
+            "call_builtin",
+            Some("len"),
+        ),
+        (AttrDict::new(), 2, "call_builtin", None),
+        (
+            AttrDict::from([
+                ("_original_kind".into(), AttrValue::Str("range_new".into())),
+                ("name".into(), AttrValue::Str("range".into())),
+            ]),
+            3,
+            "range_new",
+            Some("range"),
+        ),
+        (
+            AttrDict::from([(
+                "_original_kind".into(),
+                AttrValue::Str("builtin_print".into()),
+            )]),
+            1,
+            "builtin_print",
+            Some("print"),
+        ),
+    ] {
+        let op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CallBuiltin,
+            operands: (0..count).map(ValueId).collect(),
+            results: vec![ValueId(4)],
+            attrs,
+            source_span: None,
+        };
+        let simple = super::super::op_lowering::lower_op_many(&op);
+        assert_eq!(simple.len(), 1);
+        assert_eq!(simple[0].kind, expected_kind);
+        assert_eq!(simple[0].s_value.as_deref(), expected_name);
+        assert_eq!(simple[0].args.as_ref().unwrap().len(), count as usize);
+        assert_eq!(simple[0].args.as_ref().unwrap()[0], value_var(ValueId(0)));
+    }
+}
+
+#[test]
+#[should_panic(expected = "malformed CallBuiltin identity or argument contract")]
+fn conflicting_builtin_identity_never_silently_disappears_in_roundtrip() {
+    let op = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CallBuiltin,
+        operands: vec![ValueId(0)],
+        results: vec![ValueId(1)],
+        attrs: AttrDict::from([
+            ("name".into(), AttrValue::Str("len".into())),
+            ("_original_kind".into(), AttrValue::Str("print".into())),
+        ]),
+        source_span: None,
+    };
+    super::super::op_lowering::lower_op_many(&op);
+}
+
+#[test]
 fn tir_round_trip_preserves_object_argument_call_sequence() {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::passes::run_pipeline;

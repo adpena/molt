@@ -14,6 +14,7 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::super::alias_analysis::{AliasAnalysisResult, MemRegion};
+use super::super::typed_slot_access;
 use super::DebugLog;
 use super::PromotionStats;
 use super::gates::is_marker_passthrough;
@@ -47,6 +48,12 @@ struct LoopPlan {
     hoisted_loads: Vec<(usize, ValueId)>,
 }
 
+struct PromotionEvidence {
+    carried: Vec<ValueId>,
+    writer_values: Vec<Vec<ValueId>>,
+    inserted_blocks: HashSet<BlockId>,
+}
+
 pub(super) fn promote_loop(
     func: &mut TirFunction,
     lp: &LoopInfo,
@@ -58,7 +65,6 @@ pub(super) fn promote_loop(
 ) -> bool {
     // ---- legality + classification (no mutation) ---------------------------
     let mut accesses_by_slot: HashMap<String, Vec<SlotAccess>> = HashMap::new();
-
     for &bid in &lp.linear_order {
         let block = &func.blocks[&bid];
         for (op_index, op) in block.ops.iter().enumerate() {
@@ -88,32 +94,19 @@ pub(super) fn promote_loop(
                         value,
                     });
                 }
-                _ if op.opcode == OpCode::CheckException => {} // compensated, not a barrier
-                _ => {
-                    // Pure, movable ops (the licm-canonical S3 predicate) and
-                    // plain value copies cannot observe or mutate any memory —
-                    // never barriers. (The alias oracle's coarse taxonomy
-                    // defaults unlisted ops like `Copy` to `GenericHeap`,
-                    // which would otherwise alias everything.) Everything else
-                    // barriers when its region may alias the module dict.
-                    if crate::tir::passes::effects::opcode_is_pure_movable(op.opcode)
-                        || op.is_plain_value_copy()
-                        || is_marker_passthrough(op)
-                    {
-                        continue;
-                    }
-                    if alias.region_of(op).may_alias(&MemRegion::ModuleDict) {
-                        let orig = match op.attrs.get("_original_kind") {
-                            Some(AttrValue::Str(k)) => format!(" (_original_kind={k})"),
-                            _ => String::new(),
-                        };
-                        dbg.note(format!(
-                            "{} loop@{:?}: refused (barrier op {:?}{} in loop)",
-                            func.name, lp.header, op.opcode, orig
-                        ));
-                        return false;
-                    }
+                _ if op.is_async_work_poll() => {
+                    dbg.note(format!(
+                        "{} loop@{:?}: refused (async-work poll can observe module slots)",
+                        func.name, lp.header
+                    ));
+                    return false;
                 }
+                // Remaining loop-local effects are validated transactionally
+                // after promotion. Rewriting module loads into real header
+                // phis lets the shared exact-scalar solver prove arithmetic
+                // that is dynamic only because the pre-promotion values came
+                // through ModuleGetAttr.
+                _ => {}
             }
         }
     }
@@ -149,6 +142,15 @@ pub(super) fn promote_loop(
     // Entry availability per slot.
     let mut slots: Vec<String> = accesses_by_slot.keys().cloned().collect();
     slots.sort();
+
+    // Everything below may allocate fresh SSA ids or rewrite CFG state. Build
+    // it on a candidate so every refusal preserves the original function,
+    // including counters, annotations, and analysis-visible structure.
+    let original_func = func;
+    let mut candidate = original_func.clone();
+    let func = &mut candidate;
+    let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let seed_stores = typed_slot_access::for_alias(func, alias);
     // The entry-seed scan walks ops BACKWARDS across the straight-line chain
     // of blocks ending at the preheader (the lift often splits the set-up
     // block from the loop with tiny pass-through blocks, so the seeds live a
@@ -156,7 +158,7 @@ pub(super) fn promote_loop(
     // has exactly one predecessor and that predecessor unconditionally falls
     // through (single successor). Ops are cloned so the per-slot walk below
     // can allocate fresh ids on `func` without a live borrow of `func.blocks`.
-    let preheader_ops: Vec<TirOp> = {
+    let preheader_ops: Vec<(typed_slot_access::AccessSite, TirOp)> = {
         let pred_map = build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
         let mut chain = vec![lp.preheader];
         let mut cur = lp.preheader;
@@ -173,7 +175,14 @@ pub(super) fn promote_loop(
         chain.reverse();
         chain
             .iter()
-            .flat_map(|b| func.blocks[b].ops.iter().cloned())
+            .flat_map(|&b| {
+                func.blocks[&b]
+                    .ops
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(move |(index, op)| ((b, index), op))
+            })
             .collect()
     };
     let mut entry_values = Vec::new();
@@ -182,7 +191,7 @@ pub(super) fn promote_loop(
         // Walk the preheader block backwards for the LAST access of this slot
         // with no ModuleDict-aliasing barrier after it.
         let mut found: Option<ValueId> = None;
-        for op in preheader_ops.iter().rev() {
+        for (site, op) in preheader_ops.iter().rev() {
             match opcode_module_slot_access_role_table(op.opcode) {
                 ModuleSlotAccessRole::KeyedAttr => {
                     if alias.root(op.operands[0]) == module_root
@@ -198,11 +207,25 @@ pub(super) fn promote_loop(
                     // A different slot's const-named access: key-disjoint, keep
                     // walking.
                 }
+                _ if op.is_async_work_poll() => {
+                    dbg.note(format!(
+                        "{} loop@{:?}: refused (async-work poll in entry-seed chain)",
+                        func.name, lp.header
+                    ));
+                    return false;
+                }
                 _ if op.opcode == OpCode::CheckException => {}
-                _ if crate::tir::passes::effects::opcode_is_pure_movable(op.opcode)
-                    || op.is_plain_value_copy()
+                _ if crate::tir::passes::effects::op_is_pure_movable_with_types(
+                    op,
+                    &exact_scalar_types,
+                ) || op.is_plain_value_copy()
                     || is_marker_passthrough(op) => {}
-                _ if alias.region_of(op).may_alias(&MemRegion::ModuleDict) => break,
+                _ if seed_stores
+                    .region_at(alias, *site, op)
+                    .may_alias(&MemRegion::ModuleDict) =>
+                {
+                    break;
+                }
                 _ => {}
             }
         }
@@ -278,7 +301,164 @@ pub(super) fn promote_loop(
         hoisted_loads,
     };
 
-    apply_promotion(func, lp, module_root, &plan, stats);
+    let mut candidate_stats = PromotionStats::default();
+    let evidence = apply_promotion(func, lp, module_root, &plan, &mut candidate_stats);
+    if !candidate_is_legal(func, lp, module_root, &plan, &evidence, dbg) {
+        return false;
+    }
+
+    *original_func = candidate;
+    stats.slots_promoted += candidate_stats.slots_promoted;
+    stats.ops_eliminated += candidate_stats.ops_eliminated;
+    true
+}
+
+fn candidate_is_legal(
+    func: &TirFunction,
+    lp: &LoopInfo,
+    module_root: ValueId,
+    plan: &LoopPlan,
+    evidence: &PromotionEvidence,
+    dbg: &mut DebugLog,
+) -> bool {
+    if let Err(error) = crate::tir::verify::verify_function(func) {
+        dbg.note(format!(
+            "{} loop@{:?}: refused (transactional candidate failed verification: {error:?})",
+            func.name, lp.header
+        ));
+        return false;
+    }
+
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let alias = AliasAnalysisResult::compute(func);
+    let slot_access = typed_slot_access::for_alias(func, &alias);
+    let any_dirty = plan
+        .accesses
+        .iter()
+        .any(|accesses| accesses.iter().any(|access| access.is_set));
+
+    // Removing a per-iteration ModuleSetAttr is safe only when the seed and
+    // every writer of that mutable slot have producer-derived scalar identity.
+    // This excludes annotation-only entry parameters, unknown callback
+    // results, and a single good seed followed by an unproved loop writer.
+    for (slot_index, accesses) in plan.accesses.iter().enumerate() {
+        if !accesses.iter().any(|access| access.is_set) {
+            continue;
+        }
+        let seed = evidence.carried[slot_index];
+        if !exact.contains_key(&seed)
+            || evidence.writer_values[slot_index]
+                .iter()
+                .any(|value| !exact.contains_key(value))
+        {
+            dbg.note(format!(
+                "{} loop@{:?}: refused (mutable slot '{}' lacks exact seed/writer provenance)",
+                func.name, lp.header, plan.slots[slot_index]
+            ));
+            return false;
+        }
+    }
+
+    // Recheck every surviving operation after module loads have become header
+    // phis. Exact Add/Lt now use the shared instance-effects authority; opaque
+    // callbacks, unknown writers, and marked async polls remain barriers.
+    for &bid in &lp.linear_order {
+        let block = &func.blocks[&bid];
+        for (op_index, op) in block.ops.iter().enumerate() {
+            if opcode_module_slot_access_role_table(op.opcode) != ModuleSlotAccessRole::None {
+                dbg.note(format!(
+                    "{} loop@{:?}: refused (module access survived transactional rewrite)",
+                    func.name, lp.header
+                ));
+                return false;
+            }
+            if op.opcode == OpCode::CheckException {
+                if op.is_async_work_poll() {
+                    dbg.note(format!(
+                        "{} loop@{:?}: refused (async-work poll can observe promoted slots)",
+                        func.name, lp.header
+                    ));
+                    return false;
+                }
+                if any_dirty {
+                    let compensation = match op.attrs.get("value") {
+                        Some(AttrValue::Int(label)) => {
+                            func.label_id_map.iter().find_map(|(block, candidate)| {
+                                (candidate == label).then_some(BlockId(*block))
+                            })
+                        }
+                        _ => None,
+                    };
+                    if compensation.is_none_or(|block| !evidence.inserted_blocks.contains(&block)) {
+                        dbg.note(format!(
+                            "{} loop@{:?}: refused (dirty CheckException lacks compensation)",
+                            func.name, lp.header
+                        ));
+                        return false;
+                    }
+                }
+                continue;
+            }
+            if crate::tir::passes::effects::op_is_pure_movable_with_types(op, &exact)
+                || is_marker_passthrough(op)
+            {
+                continue;
+            }
+            if slot_access
+                .region_at(&alias, (bid, op_index), op)
+                .may_alias(&MemRegion::ModuleDict)
+            {
+                let orig = match op.attrs.get("_original_kind") {
+                    Some(AttrValue::Str(kind)) => format!(" (_original_kind={kind})"),
+                    _ => String::new(),
+                };
+                dbg.note(format!(
+                    "{} loop@{:?}: refused (barrier op {:?}{} after exact promotion)",
+                    func.name, lp.header, op.opcode, orig
+                ));
+                return false;
+            }
+        }
+    }
+
+    // Promotion-created blocks are either normal-exit store-backs or exception
+    // compensation blocks. Pin their complete shape so no inserted callback or
+    // unproved value can escape the candidate validation above.
+    for &bid in &evidence.inserted_blocks {
+        let block = &func.blocks[&bid];
+        if !matches!(&block.terminator, Terminator::Branch { .. })
+            || block.ops.is_empty()
+            || block.ops.len() % 2 != 0
+        {
+            dbg.note(format!(
+                "{} loop@{:?}: refused (malformed generated store-back block {:?})",
+                func.name, lp.header, bid
+            ));
+            return false;
+        }
+        for pair in block.ops.chunks_exact(2) {
+            let name = &pair[0];
+            let store = &pair[1];
+            let valid_name = name.opcode == OpCode::ConstStr
+                && name.operands.is_empty()
+                && name.results.len() == 1
+                && matches!(name.attrs.get("s_value"), Some(AttrValue::Str(slot)) if plan.slots.contains(slot));
+            let valid_store = store.opcode == OpCode::ModuleSetAttr
+                && store.operands.len() == 3
+                && store.results.is_empty()
+                && store.operands[0] == module_root
+                && name.results.first() == store.operands.get(1)
+                && exact.contains_key(&store.operands[2]);
+            if !valid_name || !valid_store {
+                dbg.note(format!(
+                    "{} loop@{:?}: refused (unproved generated store-back in {:?})",
+                    func.name, lp.header, bid
+                ));
+                return false;
+            }
+        }
+    }
+
     true
 }
 
@@ -288,7 +468,7 @@ fn apply_promotion(
     module_root: ValueId,
     plan: &LoopPlan,
     stats: &mut PromotionStats,
-) {
+) -> PromotionEvidence {
     let n = plan.slots.len();
     stats.slots_promoted += n;
 
@@ -378,6 +558,7 @@ fn apply_promotion(
         original_operands: Vec<ValueId>,
     }
     let mut compensations: Vec<Compensation> = Vec::new();
+    let mut inserted_blocks = HashSet::new();
 
     let slot_index_of_access: HashMap<(BlockId, usize), usize> = plan
         .accesses
@@ -461,6 +642,17 @@ fn apply_promotion(
             *v = resolve(*v, &replace);
         }
     }
+    let writer_values: Vec<Vec<ValueId>> = plan
+        .accesses
+        .iter()
+        .map(|accesses| {
+            accesses
+                .iter()
+                .filter(|access| access.is_set)
+                .map(|access| resolve(access.value, &replace))
+                .collect()
+        })
+        .collect();
 
     // ---- 4. back edges + exit edges -----------------------------------------
     // Back edges (in-loop preds of the header): append the latch-end values.
@@ -520,6 +712,7 @@ fn apply_promotion(
         let store_ops = alloc_store_back_ops(func, module_root, &plan.slots, &vals, &slot_dirty);
         // The new edge block forwards the original edge args unchanged.
         let edge_block = func.fresh_block();
+        inserted_blocks.insert(edge_block);
         let original_args = edge_args(&func.blocks[&from].terminator, to);
         func.blocks.insert(
             edge_block,
@@ -552,6 +745,7 @@ fn apply_promotion(
             let comp_ops =
                 alloc_store_back_ops(func, module_root, &plan.slots, &c.values, &slot_dirty);
             let comp_block = func.fresh_block();
+            inserted_blocks.insert(comp_block);
             let fresh_label = labels.fresh();
             func.label_id_map.insert(comp_block.0, fresh_label);
             func.blocks.insert(
@@ -572,6 +766,12 @@ fn apply_promotion(
             op.attrs.insert("value".into(), AttrValue::Int(fresh_label));
             op.operands.clear();
         }
+    }
+
+    PromotionEvidence {
+        carried,
+        writer_values,
+        inserted_blocks,
     }
 }
 

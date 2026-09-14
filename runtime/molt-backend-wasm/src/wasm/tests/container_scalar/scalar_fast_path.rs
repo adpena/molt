@@ -9,6 +9,15 @@ fn wasm_const_int_op(out: &str, value: i64) -> OpIR {
     }
 }
 
+fn wasm_const_float_op(out: &str, value: f64) -> OpIR {
+    OpIR {
+        kind: "const_float".to_string(),
+        out: Some(out.to_string()),
+        f_value: Some(value),
+        ..OpIR::default()
+    }
+}
+
 fn wasm_copy_var_op(out: &str, var: &str) -> OpIR {
     let mut copy = wasm_test_op("copy_var", Some(out), Vec::<&str>::new());
     copy.var = Some(var.to_string());
@@ -142,16 +151,14 @@ fn proven_inline_int_add_lowers_without_boxed_add_call() {
 #[test]
 fn proven_float_add_lowers_without_boxed_add_call() {
     let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
-    let output = compile_final_numeric_function_with_diagnostics(
-        vec!["param_lhs", "param_rhs"],
-        Some(vec!["float", "float"]),
-        vec![
-            wasm_copy_var_op("lhs", "param_lhs"),
-            wasm_copy_var_op("rhs", "param_rhs"),
-            add,
-            wasm_ret_op("sum"),
-        ],
-    );
+    let output = compile_final_numeric_ops_with_diagnostics(vec![
+        wasm_const_float_op("seed_lhs", 1.25),
+        wasm_const_float_op("seed_rhs", 2.5),
+        wasm_copy_var_op("lhs", "seed_lhs"),
+        wasm_copy_var_op("rhs", "seed_rhs"),
+        add,
+        wasm_ret_op("sum"),
+    ]);
 
     wasmparser::Validator::new()
         .validate_all(&output.wasm)
@@ -171,6 +178,47 @@ fn proven_float_add_lowers_without_boxed_add_call() {
             .numeric_lanes
             .op_loop_additive_boxed_runtime_sites,
         0
+    );
+}
+
+#[test]
+fn annotated_float_add_preserves_boxed_runtime_dispatch() {
+    let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+    let output = compile_final_numeric_function_with_diagnostics(
+        vec!["param_lhs", "param_rhs"],
+        Some(vec!["float", "float"]),
+        vec![
+            wasm_copy_var_op("lhs", "param_lhs"),
+            wasm_copy_var_op("rhs", "param_rhs"),
+            add,
+            wasm_ret_op("sum"),
+        ],
+    );
+
+    wasmparser::Validator::new()
+        .validate_all(&output.wasm)
+        .expect("valid wasm");
+    let import_indices = wasm_function_import_indices(&output.wasm);
+    let add_import = import_indices
+        .get("add")
+        .expect("annotation-only addition requires the boxed runtime helper");
+    assert!(
+        wasm_direct_call_indices_for_export(&output.wasm, "molt_main").contains(add_import),
+        "float annotations must preserve runtime dispatch for overriding subclasses"
+    );
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_float_raw_sites,
+        0
+    );
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_boxed_runtime_sites,
+        1
     );
 }
 

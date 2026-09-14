@@ -3,9 +3,9 @@
 use super::*;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::{
-    alloc_property_obj, call_callable1, exception_materialize_traceback_bits,
-    function_set_attr_bits, missing_bits, molt_get_attr_name, molt_is_callable, molt_module_import,
-    molt_sys_stderr, object_class_bits, tuple_from_iter_bits,
+    alloc_property_obj, call_callable1, exception_materialize_traceback_bits, missing_bits,
+    molt_get_attr_name, molt_is_callable, molt_module_import, molt_sys_stderr, object_class_bits,
+    tuple_from_iter_bits,
 };
 
 const UNRAISABLE_FIELDS: [&str; 5] = [
@@ -547,15 +547,7 @@ fn set_class_attr(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, value_bits:
 }
 
 fn alloc_runtime_method(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> u64 {
-    let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
-    if ptr.is_null() {
-        return 0;
-    }
-    if !init_class_edge(_py, ptr, builtin_classes(_py).builtin_function_or_method) {
-        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-        return 0;
-    }
-    MoltObject::from_ptr(ptr).bits()
+    crate::builtins::methods::alloc_builtin_function(_py, fn_ptr, arity)
 }
 
 fn init_class_edge(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) -> bool {
@@ -579,36 +571,20 @@ fn install_method(
 }
 
 fn install_method_with_defaults(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     class_ptr: *mut u8,
     name: &str,
     fn_ptr: u64,
     arity: u64,
     defaults: &[u64],
 ) -> bool {
-    let func_bits = alloc_runtime_method(_py, fn_ptr, arity);
-    let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-        return false;
-    };
-    let defaults_ptr = alloc_tuple(_py, defaults);
-    if defaults_ptr.is_null() {
-        dec_ref_bits(_py, func_bits);
+    let function =
+        crate::builtins::methods::alloc_builtin_function_with_defaults(py, fn_ptr, arity, defaults);
+    if function == 0 {
         return false;
     }
-    let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
-    let defaults_name = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.defaults_name,
-        b"__defaults__",
-    );
-    unsafe { function_set_attr_bits(_py, func_ptr, defaults_name, defaults_bits) };
-    dec_ref_bits(_py, defaults_bits);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, func_bits);
-        return false;
-    }
-    let installed = set_class_attr(_py, class_ptr, name, func_bits);
-    dec_ref_bits(_py, func_bits);
+    let installed = set_class_attr(py, class_ptr, name, function);
+    dec_ref_bits(py, function);
     installed
 }
 
@@ -631,6 +607,11 @@ fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, get
 
 fn discard_unraisable_args_class(_py: &PyToken<'_>, class_bits: u64) -> u64 {
     if !obj_from_bits(class_bits).is_none() {
+        // This constructor-owned class was never published. Release its
+        // namespace first while any already-built identity remains readable.
+        if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
+            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
+        }
         class_break_cycles(_py, class_bits);
         dec_ref_bits(_py, class_bits);
     }
@@ -1311,14 +1292,19 @@ mod tests {
             let repr_name_ptr = alloc_string(_py, b"__repr__");
             assert!(!repr_name_ptr.is_null());
             let repr_name_bits = MoltObject::from_ptr(repr_name_ptr).bits();
+            let original_repr = class_dict_value(_py, class_bits, "__repr__");
             let class_mutation =
                 crate::molt_set_attr_name(class_bits, repr_name_bits, MoltObject::none().bits());
-            assert_eq!(class_mutation, 0, "setattr errors use the zero sentinel");
+            assert_eq!(
+                class_mutation, none,
+                "setattr reports failure through the exception channel"
+            );
             assert!(
                 exception_pending(_py),
                 "the hidden runtime type itself must be immutable"
             );
             clear_exception(_py);
+            assert_eq!(class_dict_value(_py, class_bits, "__repr__"), original_repr);
             dec_ref_bits(_py, repr_name_bits);
 
             let source_ptr = alloc_tuple(_py, &fields);
@@ -1349,12 +1335,16 @@ mod tests {
                 err_name_bits,
                 MoltObject::from_int(99).bits(),
             );
-            assert_eq!(result, 0, "setattr errors use the zero sentinel");
+            assert_eq!(
+                result, none,
+                "setattr reports failure through the exception channel"
+            );
             assert!(
                 exception_pending(_py),
                 "structured tuple fields are readonly"
             );
             clear_exception(_py);
+            assert_eq!(unraisable_args_field(_py, args_bits, 3), fields[3]);
             dec_ref_bits(_py, err_name_bits);
 
             dec_ref_bits(_py, args_bits);

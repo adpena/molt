@@ -856,7 +856,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or(TirType::DynBox);
 
         let (val, out_ty) = match (&operand_ty, name) {
-            (TirType::I64, "neg") => {
+            // Negating i64::MIN requires a BigInt. The same result-range proof
+            // as binary arithmetic must authorize the raw machine operation.
+            (TirType::I64, "neg") if self.repr_facts.is_inline_safe_int(result_id) => {
                 let v = self
                     .backend
                     .builder
@@ -872,6 +874,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::F64)
             }
+            // Unary plus is identity only for exact numeric carriers. Bool
+            // must become int, and boxed values must dispatch __pos__.
+            (TirType::I64 | TirType::F64, "pos") => (operand, operand_ty.clone()),
             (TirType::Bool, "not") => {
                 let v = self
                     .backend
@@ -891,12 +896,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             _ => {
                 let rt_name = match name {
                     "neg" => "molt_neg",
+                    "pos" => "molt_pos",
                     "not" => "molt_not",
                     "invert" => "molt_invert",
                     _ => unreachable!(),
                 };
-                let op_i64 = self.ensure_i64(operand);
-                let func = self.backend.module.get_function(rt_name).unwrap();
+                // Runtime unary entries consume boxed objects, not widened
+                // machine bits. In particular, ~bool needs its Bool tag for
+                // both integer semantics and the runtime deprecation warning.
+                let op_i64 = self.materialize_dynbox_bits(operand, &operand_ty);
+                let func = self.ensure_runtime_i64_fn(rt_name, 1);
                 let v = self
                     .backend
                     .builder

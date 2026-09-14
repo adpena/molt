@@ -2040,10 +2040,12 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
 
         // 1. Collect __dict__ entries.
         let mut dict_state_bits: Option<u64> = None;
-        let dict_bits = if type_id == crate::TYPE_ID_DATACLASS {
-            unsafe { crate::dataclass_dict_bits(ptr) }
-        } else {
-            unsafe { crate::instance_dict_bits(ptr) }
+        let dict_bits = unsafe {
+            if super::field_storage::allows_dictionary(_py, ptr) {
+                super::field_storage::materialize(_py, ptr).unwrap_or(0)
+            } else {
+                0
+            }
         };
         if dict_bits != 0
             && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -2054,12 +2056,24 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
             dict_state_bits = Some(dict_bits);
         }
 
-        // 2. Collect typed/slot field values.
-        let slot_state_bits = if type_id == crate::TYPE_ID_DATACLASS {
-            dataclass_getstate_slot_state(_py, ptr)
-        } else {
-            object_getstate_slot_state(_py, ptr)
-        };
+        if exception_pending(_py) {
+            if let Some(bits) = dict_state_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+
+        // 2. Collect genuine slots; inferred attributes belong only to __dict__.
+        let slot_state_bits = object_getstate_slot_state(_py, ptr);
+        if exception_pending(_py) {
+            if let Some(bits) = dict_state_bits {
+                dec_ref_bits(_py, bits);
+            }
+            if let Some(bits) = slot_state_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
 
         // 3. Combine following CPython's (dict, slots) tuple convention.
         match (dict_state_bits, slot_state_bits) {
@@ -2087,88 +2101,47 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
     })
 }
 
-/// Extract typed field values from `__molt_field_offsets__` into a new dict.
-fn object_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-    let class_bits = unsafe { object_class_bits(ptr) };
-    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
-    if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
-        return None;
-    }
-    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
-    if state_ptr.is_null() {
-        return None;
-    }
-    let state_bits = MoltObject::from_ptr(state_ptr).bits();
-    let mut fields = Vec::new();
+/// Default state uses normal attribute semantics for each declared slot name.
+/// Custom getters, descriptors and same-name class shadows are observable here;
+/// only AttributeError means absent. Physical backing traversal belongs to GC.
+fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
-        crate::builtins::attr::for_each_object_inline_field_ptr(
-            _py,
-            ptr,
-            class_ptr,
-            &mut |name_bits, _slot, value_bits| {
-                if !crate::builtins::methods::is_missing_bits(_py, value_bits) {
-                    fields.push((name_bits, value_bits));
+        let object = MoltObject::from_ptr(ptr).bits();
+        inc_ref_bits(py, object);
+        let _object_owner = crate::PtrDropGuard::new(ptr);
+        let names = super::field_storage::slot_state_names(py, ptr)?;
+        if names.is_empty() {
+            return None;
+        }
+        let state = super::builders::alloc_dict_with_capacity_and_pairs(py, names.len(), &[]);
+        if state.is_null() {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, "MemoryError", "instance slot state allocation failed");
+            }
+            return None;
+        }
+        let mut owner = crate::PtrDropGuard::new(state);
+        for &name in names.iter() {
+            let value = crate::molt_get_attr_name(object, name);
+            if exception_pending(py) {
+                dec_ref_bits(py, value);
+                if crate::builtins::attr::clear_attribute_error_if_pending(py) {
+                    continue;
                 }
-            },
-        );
-    }
-    for (name_bits, value_bits) in fields.iter().rev().copied() {
-        unsafe { crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits) };
-    }
-    if exception_pending(_py) {
-        dec_ref_bits(_py, state_bits);
-        return None;
-    }
-    if fields.is_empty() {
-        dec_ref_bits(_py, state_bits);
-        return None;
-    }
-    Some(state_bits)
-}
-
-/// Extract dataclass field values from the descriptor layout into a new dict.
-fn dataclass_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-    let desc_ptr = unsafe { crate::dataclass_desc_ptr(ptr) };
-    if desc_ptr.is_null() {
-        return None;
-    }
-    let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
-    let field_names = unsafe { &(*desc_ptr).field_names };
-    if field_names.is_empty() {
-        return None;
-    }
-
-    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
-    if state_ptr.is_null() {
-        return None;
-    }
-    let state_bits = MoltObject::from_ptr(state_ptr).bits();
-    let mut wrote_any = false;
-    for (name, &value_bits) in field_names.iter().zip(field_values.iter()) {
-        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
-            continue;
+                return None;
+            }
+            dict_set_in_place(py, state, name, value);
+            dec_ref_bits(py, value);
+            if exception_pending(py) {
+                return None;
+            }
         }
-        let Some(name_bits) =
-            crate::builtins::attr::attr_name_bits_from_bytes(_py, name.as_bytes())
-        else {
-            dec_ref_bits(_py, state_bits);
-            return None;
-        };
-        unsafe {
-            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
-        }
-        dec_ref_bits(_py, name_bits);
-        if exception_pending(_py) {
-            dec_ref_bits(_py, state_bits);
+        if dict_order(state).is_empty() {
             return None;
         }
-        wrote_any = true;
+        owner.release();
+        Some(MoltObject::from_ptr(state).bits())
     }
-    if !wrote_any {
-        dec_ref_bits(_py, state_bits);
-        return None;
-    }
-    Some(state_bits)
 }
 
 #[unsafe(no_mangle)]
@@ -2318,7 +2291,9 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                         object_attr_lookup_raw(_py, obj_ptr, name_bits)
                     }
                     TYPE_ID_DATACLASS => dataclass_attr_lookup_raw(_py, obj_ptr, name_bits),
-                    _ => attr_lookup_ptr(_py, obj_ptr, name_bits),
+                    _ => crate::builtins::attributes::attr_lookup_ptr_default(
+                        _py, obj_ptr, name_bits,
+                    ),
                 };
                 if let Some(val) = found {
                     return val;
@@ -2500,12 +2475,13 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
                     molt_set_attr_generic(obj_ptr, bytes, len as u64, val_bits)
                 };
                 dec_ref_bits(_py, attr_bits);
-                return res as u64;
+                let _ = res;
+                return MoltObject::none().bits();
             }
             let obj = obj_from_bits(obj_bits);
-            let res = attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64;
+            let _ = attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits);
             dec_ref_bits(_py, attr_bits);
-            res
+            MoltObject::none().bits()
         }
     })
 }

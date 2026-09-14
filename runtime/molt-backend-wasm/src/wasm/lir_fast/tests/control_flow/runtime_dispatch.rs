@@ -56,7 +56,34 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
         values: vec![result_id],
     };
 
+    let annotated = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
+    assert!(annotated.runtime_calls.contains(&"add"));
+    assert!(
+        !annotated
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64ReinterpretF64)),
+        "an annotated float parameter already has a boxed carrier"
+    );
+
+    let float_value = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].operands[0] = float_value;
+    entry.ops.insert(
+        0,
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstFloat,
+            operands: vec![],
+            results: vec![float_value],
+            attrs: AttrDict::from([("value".into(), AttrValue::Float(1.25))]),
+            source_span: None,
+        },
+    );
     let output = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(output.result_types, vec![ValType::I64]);
 
     assert!(
         !output.bails_to_generic_path,

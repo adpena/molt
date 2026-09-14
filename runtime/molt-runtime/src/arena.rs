@@ -1,8 +1,5 @@
+use crate::{MoltObject, usize_from_bits};
 use std::alloc::Layout;
-use std::mem::size_of;
-
-use crate::object::{HEADER_FLAG_ARENA, HEADER_FLAG_RAW_ALLOC};
-use crate::{MoltHeader, MoltObject, TYPE_ID_OBJECT, usize_from_bits};
 
 fn release_tracked_bytes(size: usize) {
     let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(size));
@@ -12,10 +9,10 @@ fn release_tracked_bytes(size: usize) {
 // ScopeArena — per-scope bump allocator for NoEscape values
 // ---------------------------------------------------------------------------
 //
-// MLKit/Cyclone-style region allocator. The compiler emits arena lifecycle
-// calls at scope boundaries: create at scope entry, bump-allocate NoEscape
-// values during scope execution, reset/free at scope exit. All allocations
-// within a scope are freed in O(1) by resetting the bump pointer.
+// Caller-managed region storage. Object RC/GC releases owned edges before the
+// caller reclaims storage. Compiler placement requires a proved scope-lifetime
+// contract; an IR boolean cannot authorize it. Reset retains the first chunk
+// and releases any additional chunks, so its cost is proportional to chunk count.
 
 const SCOPE_ARENA_CHUNK_SIZE: usize = 4096;
 const SCOPE_ARENA_ALIGN: usize = 8;
@@ -74,10 +71,9 @@ unsafe impl Send for ArenaChunk {}
 
 /// Per-scope bump allocator for NoEscape values.
 ///
-/// All allocations are `SCOPE_ARENA_ALIGN` (8) byte aligned. At scope
-/// exit the entire arena is freed in O(1) by resetting the bump pointer
-/// (or dropping the arena). Chunks are allocated on demand and reused
-/// across resets.
+/// All allocations are `SCOPE_ARENA_ALIGN` (8) byte aligned. Reclamation costs
+/// O(chunks), not O(objects). All object owners and sidecars must already be
+/// released before reset/drop. The first chunk is reused across resets.
 pub struct ScopeArena {
     /// Backing storage. Each entry is an aligned heap-allocated chunk.
     chunks: Vec<ArenaChunk>,
@@ -100,7 +96,7 @@ impl ScopeArena {
 
     /// Bump-allocate `size` bytes with `SCOPE_ARENA_ALIGN`-byte alignment.
     ///
-    /// Returns a null pointer only if `size` is zero.
+    /// Returns null for zero/overflowing size, resource denial, or allocation failure.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         if size == 0 {
@@ -141,7 +137,7 @@ impl ScopeArena {
         ptr
     }
 
-    /// Reset the arena -- frees ALL allocations in O(1).
+    /// Reclaim all storage after object-owner release, in O(chunks).
     ///
     /// Keeps the first chunk allocated so the next scope entry avoids a
     /// fresh allocation for the common case.
@@ -194,8 +190,10 @@ pub extern "C" fn molt_arena_alloc(arena: *mut ScopeArena, size: u64) -> *mut u8
 /// ops, etc.) expects fully NaN-boxed bits.
 ///
 /// The header is initialized as `TYPE_ID_OBJECT` with refcount 1 and the
-/// `HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC` flags set so `dec_ref` skips
-/// the global allocator (the arena reclaims memory via `molt_arena_free`).
+/// `HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC` flags set. Ordinary `dec_ref`
+/// releases every captured owner and metadata sidecar, but not arena storage.
+/// Every returned owner must be released before arena reset/free. Storage
+/// lifetime does not replace Python object lifetime.
 ///
 /// On null `arena` or arena OOM, returns `MoltObject::none().bits()`, again
 /// matching `molt_alloc`'s failure semantics.
@@ -205,46 +203,18 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
         return MoltObject::none().bits();
     }
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(payload) = usize_from_bits(size_bits) else {
-            return MoltObject::none().bits();
-        };
-        let total = match payload.checked_add(size_of::<MoltHeader>()) {
-            Some(v) => v,
-            None => return MoltObject::none().bits(),
-        };
-        // SAFETY: caller guarantees `arena` was returned by `molt_arena_new`
-        // and has not been freed.
-        let arena_ref = unsafe { &mut *arena };
-        let header_ptr = arena_ref.alloc(total);
-        if header_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        // Zero header + payload so subsequent stores see a clean slate, just
-        // like the canonical zeroed allocator does for allocator-backed objects.
-        // SAFETY: `arena.alloc` returned a chunk of `total` bytes belonging
-        // to a live `Vec<u8>` inside the arena.
+        // SAFETY: the live arena provides aligned storage through the final
+        // object DecRef. The shared allocator owns header/extent initialization.
         unsafe {
-            std::ptr::write_bytes(header_ptr, 0, total);
-            let header = header_ptr as *mut MoltHeader;
-            (*header).type_id = TYPE_ID_OBJECT;
-            MoltHeader::initialize_refcount_before_publication(header, 1);
-            MoltHeader::initialize_flags_gc_unpublished(
-                header,
-                HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC,
-            );
-            // size_class = 0 (oversized path) keeps drop logic generic; the
-            // arena free path bypasses `std::alloc::dealloc` entirely.
-            (*header).size_class = 0;
-            // The zeroed aux word/kind selects the immutable `None`
-            // representation; raw arena objects never carry aux metadata.
-            let obj_ptr = header_ptr.add(size_of::<MoltHeader>());
-            MoltObject::from_ptr(obj_ptr).bits()
+            crate::object::alloc_scoped_boxed_object(_py, size_bits, |size| {
+                (&mut *arena).alloc(size)
+            })
         }
     })
 }
 
-/// Reset the arena, releasing all bump allocations in O(1).
-/// The arena itself remains valid for reuse.
+/// Reclaim all bump storage after releasing its object owners and metadata.
+/// This costs O(chunks); the arena remains valid for reuse.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_arena_reset(arena: *mut ScopeArena) {
     if arena.is_null() {
@@ -256,7 +226,7 @@ pub extern "C" fn molt_arena_reset(arena: *mut ScopeArena) {
     arena.reset();
 }
 
-/// Free the arena and all of its backing storage.
+/// Free the arena and its backing storage after releasing every object owner.
 /// After this call, `arena` is dangling and must not be used.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_arena_free(arena: *mut ScopeArena) {
@@ -270,7 +240,10 @@ pub extern "C" fn molt_arena_free(arena: *mut ScopeArena) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::HEADER_FLAG_SCOPED;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::{MoltHeader, TYPE_ID_OBJECT};
+    use std::mem::size_of;
 
     struct TrackerReset;
 
@@ -298,11 +271,12 @@ mod tests {
                     "fresh arena alloc should have refcount 1"
                 );
                 assert_ne!(
-                    (*header).load_metadata_flags() & HEADER_FLAG_ARENA,
+                    (*header).load_metadata_flags() & HEADER_FLAG_SCOPED,
                     0,
-                    "HEADER_FLAG_ARENA must be set so dec_ref skips dealloc"
+                    "scoped storage must not enter global dealloc"
                 );
             }
+            crate::dec_ref_bits(_py, bits);
             molt_arena_free(arena);
         });
     }
@@ -313,6 +287,91 @@ mod tests {
         // Null arena must return MoltObject::none().bits() rather than panic.
         let bits = molt_arena_alloc_object(std::ptr::null_mut(), 16);
         assert_eq!(bits, MoltObject::none().bits());
+    }
+
+    #[test]
+    fn arena_boxed_extent_releases_tail_captures_before_scope_storage() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            for payload in [16, 131_072] {
+                let arena = molt_arena_new();
+                let bits = molt_arena_alloc_object(arena, payload);
+                let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
+                let child_ptr = crate::alloc_list(_py, &[]);
+                assert!(!child_ptr.is_null());
+                let child = MoltObject::from_ptr(child_ptr).bits();
+                unsafe {
+                    let child_header = crate::object::header_from_obj_ptr(child_ptr);
+                    let owners = (*child_header).ref_count_snapshot();
+                    let extent = crate::object::object_payload_size(ptr);
+                    assert!(extent >= payload as usize);
+                    let address = crate::provenance::abi::expose_address(ptr);
+                    crate::molt_closure_store(address, 0, child);
+                    crate::molt_closure_store(address, (extent - size_of::<u64>()) as u64, child);
+                    crate::molt_object_publish_initialized(bits);
+                    assert!(crate::object::gc::gc_is_tracked(ptr));
+                    assert_eq!((*child_header).ref_count_snapshot(), owners + 2);
+                    crate::dec_ref_bits(_py, bits);
+                    assert!(!crate::object::gc::gc_is_tracked(ptr));
+                    assert_eq!(
+                        (*child_header).ref_count_snapshot(),
+                        owners,
+                        "terminal traversal includes the last boxed word"
+                    );
+                    crate::dec_ref_bits(_py, child);
+                }
+                molt_arena_reset(arena);
+                molt_arena_free(arena);
+                assert!(!crate::exception_pending(_py));
+            }
+        });
+    }
+
+    #[test]
+    fn arena_boxed_self_cycle_uses_shared_collection_before_storage_reset() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let arena = molt_arena_new();
+            let bits = molt_arena_alloc_object(arena, 8);
+            let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
+            unsafe {
+                let address = crate::provenance::abi::expose_address(ptr);
+                crate::molt_closure_store(address, 0, bits);
+                crate::molt_object_publish_initialized(bits);
+                crate::dec_ref_bits(_py, bits);
+                assert!(crate::object::gc::gc_is_tracked(ptr));
+                crate::object::gc::collect_cycles(_py);
+                assert!(!crate::object::gc::gc_is_tracked(ptr));
+                assert_eq!(
+                    (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot(),
+                    0
+                );
+            }
+            molt_arena_reset(arena);
+            molt_arena_free(arena);
+            assert!(!crate::exception_pending(_py));
+        });
+    }
+
+    #[test]
+    fn arena_object_death_does_not_release_chunk_allocation_budget() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(1),
+                ..Default::default()
+            })));
+            let _reset = TrackerReset;
+            let arena = molt_arena_new();
+            assert!(!arena.is_null());
+            let bits = molt_arena_alloc_object(arena, 16);
+            assert!(MoltObject::from_bits(bits).as_ptr().is_some());
+            crate::dec_ref_bits(_py, bits);
+            assert!(crate::resource::with_tracker(|tracker| tracker.on_allocate(1)).is_err());
+            molt_arena_free(arena);
+            assert!(crate::resource::with_tracker(|tracker| tracker.on_allocate(1)).is_ok());
+            crate::resource::with_tracker(|tracker| tracker.on_free(1));
+        });
     }
 
     #[test]
@@ -374,6 +433,8 @@ mod tests {
                 distance >= size_of::<MoltHeader>() + 32,
                 "arena allocations must not overlap: distance={distance}"
             );
+            crate::dec_ref_bits(_py, bits1);
+            crate::dec_ref_bits(_py, bits2);
             molt_arena_free(arena);
         });
     }

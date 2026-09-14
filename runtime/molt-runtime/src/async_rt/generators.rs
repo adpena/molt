@@ -328,6 +328,11 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 }
             }
             let header = header_from_obj_ptr(ptr);
+            // Compiled task constructors populate tagged capture slots directly
+            // after this call. Their layout permits heap owners even while the
+            // current words are None; exclude non-owning field fast paths before
+            // any backend publishes captures into the payload.
+            crate::object::object_mark_has_ptrs(_py, ptr);
             if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
                 || !object_init_shape_unpublished(ptr, object_shape_for_poll_fn(poll_fn_addr))
                 || !object_init_state_unpublished(ptr, 0)
@@ -1410,20 +1415,17 @@ pub extern "C" fn molt_asyncgen_hooks_set(firstiter_bits: u64, finalizer_bits: u
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
-        let mut hooks = runtime_state(_py).asyncgen_hooks.lock().unwrap();
-        if hooks.firstiter != 0 {
-            dec_ref_bits(_py, hooks.firstiter);
-        }
-        if hooks.finalizer != 0 {
-            dec_ref_bits(_py, hooks.finalizer);
-        }
-        hooks.firstiter = firstiter_bits;
-        hooks.finalizer = finalizer_bits;
-        if firstiter_bits != 0 {
-            inc_ref_bits(_py, firstiter_bits);
-        }
-        if finalizer_bits != 0 {
-            inc_ref_bits(_py, finalizer_bits);
+        inc_ref_bits(_py, firstiter_bits);
+        inc_ref_bits(_py, finalizer_bits);
+        let old = {
+            let mut hooks = runtime_state(_py).asyncgen_hooks.lock().unwrap();
+            [
+                std::mem::replace(&mut hooks.firstiter, firstiter_bits),
+                std::mem::replace(&mut hooks.finalizer, finalizer_bits),
+            ]
+        };
+        for bits in old {
+            dec_ref_bits(_py, bits);
         }
         MoltObject::none().bits()
     })

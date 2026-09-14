@@ -64,9 +64,6 @@ mod loops;
 mod promote;
 mod terminators;
 
-#[cfg(test)]
-mod tests;
-
 use gates::{
     const_str_defs, is_state_machine_op, is_wildcard_module_op, module_has_concurrency_markers,
     single_module_root,
@@ -184,15 +181,6 @@ fn promote_function(
         return false;
     }
 
-    let alias = AliasAnalysisResult::compute(func);
-    let Some(module_root) = single_module_root(func, &alias) else {
-        dbg.note(format!(
-            "{}: skip (no single entry-arg module root)",
-            func.name
-        ));
-        return false;
-    };
-
     let pred_map = build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
     let idoms = compute_idoms_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly);
     let loops = discover_loops(func, &pred_map, &idoms, dbg);
@@ -202,7 +190,27 @@ fn promote_function(
 
     let mut changed = false;
     for lp in loops {
-        changed |= promote_loop(func, &lp, module_root, &names, &alias, stats, dbg);
+        // Earlier loop transactions can add compensation/store-back blocks and
+        // exact header facts. Recompute both shared authorities so a later
+        // disjoint loop never consumes stale names, aliases, or scalar facts.
+        let current_names = const_str_defs(func);
+        let current_alias = AliasAnalysisResult::compute(func);
+        let Some(module_root) = single_module_root(func, &current_alias) else {
+            dbg.note(format!(
+                "{}: skip (no single entry-arg module root)",
+                func.name
+            ));
+            break;
+        };
+        changed |= promote_loop(
+            func,
+            &lp,
+            module_root,
+            &current_names,
+            &current_alias,
+            stats,
+            dbg,
+        );
     }
     changed
 }

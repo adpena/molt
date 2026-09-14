@@ -7,7 +7,7 @@ use crate::object::ops_hash::molt_str_hash_method;
 use crate::*;
 
 pub(crate) fn slice_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "indices" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.slice_indices,
@@ -39,11 +39,11 @@ pub(crate) fn slice_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             2,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__add__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_add,
@@ -445,11 +445,11 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             3,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_iter,
@@ -797,11 +797,11 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             3,
         )),
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_iter,
@@ -1219,5 +1219,5 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             3,
         )),
         _ => None,
-    }
+    })
 }

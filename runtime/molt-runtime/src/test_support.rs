@@ -165,6 +165,12 @@ pub(crate) struct RuntimeTestTransaction {
     _process_state: MutexGuard<'static, ()>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RuntimeTestLifecycleMode {
+    TrustedFresh,
+    Cold,
+}
+
 impl RuntimeTestTransaction {
     pub(crate) fn new() -> Self {
         Self::enter(false)
@@ -178,40 +184,82 @@ impl RuntimeTestTransaction {
     ///
     /// Import-boundary tests need their environment frozen during cold
     /// bootstrap, so they cannot enter the normal already-ready transaction.
-    /// This is the sole test authority for the shutdown/reset/reinitialize
-    /// lifecycle: it owns process-state custody, restores the environment, and
-    /// leaves the lifecycle reset even when the test body unwinds.
+    /// This delegates to the shared shutdown/reset lifecycle authority while
+    /// adding restart custody, the trusted environment, and eager bootstrap.
     pub(crate) fn with_trusted_fresh_runtime<R>(f: impl FnOnce() -> R) -> R {
+        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::TrustedFresh, f)
+    }
+
+    /// Run a test that owns the complete cold runtime lifecycle.
+    ///
+    /// The body starts with an uninitialized runtime and chooses which thread
+    /// performs production initialization and shutdown. Unlike the ordinary
+    /// transaction, this destructive lifecycle authority does not snapshot
+    /// exception state, establish an incidental CPython thread-state record,
+    /// force trusted capabilities, or block worker initialization behind test
+    /// restart custody. Cleanup still retires any runtime left Ready, resets the
+    /// one-shot lifecycle state, and leaves pending-call custody unowned.
+    pub(crate) fn with_cold_runtime_lifecycle<R>(f: impl FnOnce() -> R) -> R {
+        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::Cold, f)
+    }
+
+    fn with_runtime_lifecycle<R>(mode: RuntimeTestLifecycleMode, f: impl FnOnce() -> R) -> R {
         let _process_state = process_global_test_state();
-        let mut restart = RuntimeTestRestartCustody::enter();
-        let _capability_environment = MaximumCapabilityTierTestEnvironment::enter();
+        let mut restart =
+            (mode == RuntimeTestLifecycleMode::TrustedFresh).then(RuntimeTestRestartCustody::enter);
+        let _capability_environment = (mode == RuntimeTestLifecycleMode::TrustedFresh)
+            .then(MaximumCapabilityTierTestEnvironment::enter);
         let mut pending_calls = PendingCallTestCustody::enter();
 
         if crate::state::runtime_state::runtime_is_initialized() {
             assert_eq!(
                 crate::state::runtime_state::molt_runtime_shutdown(),
                 1,
-                "fresh runtime transaction could not retire the prior runtime"
+                "runtime lifecycle transaction could not retire the prior runtime"
             );
         }
         crate::state::runtime_state::molt_runtime_reset_for_testing();
-        assert_eq!(
-            crate::state::runtime_state::molt_runtime_init(),
-            1,
-            "fresh runtime transaction could not bootstrap"
-        );
+        if mode == RuntimeTestLifecycleMode::Cold {
+            // The prior runtime's pending-call owner was retired with it. Do
+            // not bind the cold body's initializer to this harness thread: the
+            // production initialization winner must select the new owner.
+            pending_calls.reset();
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0,
+                "cold runtime lifecycle started with an incidental CPython thread-state owner"
+            );
+        } else {
+            assert_eq!(
+                crate::state::runtime_state::molt_runtime_init(),
+                1,
+                "fresh runtime transaction could not bootstrap"
+            );
+        }
 
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(f));
         if crate::state::runtime_state::runtime_is_initialized() {
             assert_eq!(
                 crate::state::runtime_state::molt_runtime_shutdown(),
                 1,
-                "fresh runtime transaction could not retire its runtime"
+                "runtime lifecycle transaction could not retire its runtime"
             );
         }
         crate::state::runtime_state::molt_runtime_reset_for_testing();
-        pending_calls.reset();
-        restart.finish();
+        if mode == RuntimeTestLifecycleMode::Cold {
+            // Production initialization selected the body's real main-thread
+            // owner after the entry snapshot was reset. Borrow that completed
+            // lifecycle once, prove its ring is empty, and clear the retired
+            // owner instead of leaking it into the next test runtime.
+            let mut completed_pending_calls = PendingCallTestCustody::enter();
+            completed_pending_calls.reset();
+        } else {
+            pending_calls.reset();
+        }
+        if let Some(restart) = restart.as_mut() {
+            restart.finish();
+        }
 
         match outcome {
             Ok(value) => value,

@@ -47,7 +47,7 @@ pub(super) fn propagate_guard_types(
     let mut guards: Vec<GuardInfo> = Vec::new();
     for (&bid, block) in &func.blocks {
         for op in &block.ops {
-            if op.opcode != OpCode::TypeGuard {
+            if op.opcode != OpCode::TypeGuard || !op.has_valid_shape() {
                 continue;
             }
             let guarded_value = match op.operands.first().copied() {
@@ -111,6 +111,7 @@ pub(super) fn propagate_guard_types(
                     .iter()
                     .find(|op| {
                         op.opcode == OpCode::TypeGuard
+                            && op.has_valid_shape()
                             && op.operands.first() == Some(&guard.guarded_value)
                     })
                     .and_then(|op| op.results.first().copied());
@@ -249,9 +250,9 @@ pub(super) fn propagate_guard_types(
                 })
                 .collect();
             let result_types = if let Some(facts) =
-                crate::tir::predicate_semantics::predicate_facts_for_op(op, exact_scalar_types)
+                crate::tir::op_semantics::op_instance_facts_for_op(op, exact_scalar_types)
             {
-                vec![Some(facts.result_type); op.results.len()]
+                vec![facts.result_type; op.results.len()]
             } else {
                 infer_result_types_with_attrs(
                     op.opcode,

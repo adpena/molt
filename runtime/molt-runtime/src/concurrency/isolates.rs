@@ -403,7 +403,8 @@ fn run_thread_payload(payload: Vec<u8>) {
             return;
         }
         let payload_bits = MoltObject::from_ptr(payload_ptr).bits();
-        let _ = unsafe { call_callable1(_py, func_bits, payload_bits) };
+        let result_bits = unsafe { call_callable1(_py, func_bits, payload_bits) };
+        dec_ref_bits(_py, result_bits);
         dec_ref_bits(_py, payload_bits);
         dec_ref_bits(_py, func_bits);
         dec_ref_bits(_py, loaded_bits);
@@ -442,36 +443,517 @@ fn run_thread_payload_shared(token: u64) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>) {
+    run_isolate_thread(
+        handle,
+        || unsafe { molt_isolate_bootstrap() },
+        || run_thread_payload(payload),
+    );
+}
+
+/// Own the complete fresh-isolate lifecycle. The final-image export remains the
+/// sole application initializer; parameters make this lifecycle testable without
+/// installing a second global provider or invoking libtest's Unavailable export.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_isolate_thread(
+    handle: Arc<MoltThreadHandle>,
+    bootstrap: impl FnOnce() -> u64,
+    payload: impl FnOnce(),
+) {
     let thread_id = current_thread_id();
     handle.mark_started(thread_id, thread_id);
     let state = Box::new(RuntimeState::new());
     let state_ptr = Box::into_raw(state);
     set_thread_runtime_state(state_ptr);
     touch_tls_guard();
-    let setup = std::panic::catch_unwind(|| {
-        let gil = GilGuard::new();
-        let py = gil.token();
-        runtime_reset_for_init(&py, unsafe { &*state_ptr });
-    });
-    if setup.is_ok() {
+    let setup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        {
+            let gil = GilGuard::new();
+            let py = gil.token();
+            runtime_reset_for_init(&py, unsafe { &*state_ptr });
+        }
         crate::with_gil_entry_nopanic!(_py, {
-            unsafe {
-                let _ = molt_isolate_bootstrap();
+            if exception_pending(_py) {
+                log_thread_exception(_py);
+                return false;
             }
+            let result = bootstrap();
+            // The application ABI returns an owned Molt result, including on
+            // exceptional paths. Discarding it must release that ownership.
+            dec_ref_bits(_py, result);
+            let initialized = !exception_pending(_py);
+            // Reporting may clear pending state, but cannot change the captured
+            // initialization outcome into permission to execute the payload.
             log_thread_exception(_py);
-        });
-        run_thread_payload(payload);
+            initialized
+        })
+    }));
+    match setup {
+        Ok(true) => {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(payload)).is_err() {
+                eprintln!("MOLT_ISOLATE_PAYLOAD_PANIC: payload unwound; tearing down isolate");
+            }
+        }
+        Ok(false) => {}
+        Err(_) => {
+            eprintln!("MOLT_ISOLATE_BOOTSTRAP_PANIC: initialization unwound; payload skipped");
+        }
     }
-    let _ = std::panic::catch_unwind(|| {
+    let teardown = std::panic::catch_unwind(|| {
         let gil = GilGuard::new();
         let py = gil.token();
         runtime_teardown_isolate(&py, unsafe { &*state_ptr });
     });
+    if teardown.is_err() {
+        eprintln!("MOLT_ISOLATE_TEARDOWN_PANIC: detaching failed isolate");
+    }
     clear_thread_runtime_state();
     unsafe {
         drop(Box::from_raw(state_ptr));
     }
     handle.mark_done();
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bootstrap_failure_tests {
+    use super::*;
+    use std::ffi::c_void;
+    use std::os::raw::c_int;
+
+    static ISOLATE_DRAIN_ATEXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static ISOLATE_DRAIN_REENTRY_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static ISOLATE_DRAIN_LATE_TLS_BITS: AtomicU64 = AtomicU64::new(0);
+    static ISOLATE_PRESERVED_PENDING_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn isolate_shutdown_drain_reentry() {
+        assert!(
+            crate::concurrency::execution::current_thread_has_c_extension_execution_context(),
+            "isolate shutdown reentry lost destruction execution custody"
+        );
+        let late_tls = ISOLATE_DRAIN_LATE_TLS_BITS.swap(0, AtomicOrdering::AcqRel);
+        assert_ne!(
+            late_tls, 0,
+            "isolate shutdown reentry lost its late TLS owner"
+        );
+        crate::CONTEXT_STACK.with(|stack| stack.borrow_mut().push(late_tls));
+
+        // The first dictionary was already detached from the record before this
+        // hook ran. Publishing another one here forces the shutdown owner to
+        // revisit both the Molt TLS and CPython managed-edge domains.
+        let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
+        assert!(
+            !dict.is_null(),
+            "isolate shutdown reentry failed to publish a fresh state dictionary"
+        );
+        ISOLATE_DRAIN_REENTRY_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
+    }
+
+    extern "C" fn publish_isolate_shutdown_edges() -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
+            assert!(
+                !dict.is_null(),
+                "isolate atexit callback failed to publish its initial state dictionary"
+            );
+            let late_tls = alloc_string(py, b"isolate-shutdown-late-tls-owner");
+            assert!(
+                !late_tls.is_null(),
+                "isolate late TLS owner allocation failed"
+            );
+            let previous = ISOLATE_DRAIN_LATE_TLS_BITS.swap(
+                MoltObject::from_ptr(late_tls).bits(),
+                AtomicOrdering::AcqRel,
+            );
+            assert_eq!(previous, 0, "isolate late TLS owner was already published");
+            molt_cpython_abi::api::object::set_thread_state_drain_reentry_test_hook(Some(
+                isolate_shutdown_drain_reentry,
+            ));
+            ISOLATE_DRAIN_ATEXIT_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
+            MoltObject::none().bits()
+        })
+    }
+
+    unsafe extern "C" fn count_isolate_preserved_pending_call(_arg: *mut c_void) -> c_int {
+        ISOLATE_PRESERVED_PENDING_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
+        0
+    }
+
+    #[derive(Default)]
+    struct IsolatedCpythonObservation {
+        owns_process_state: bool,
+        prepare_result: u64,
+        prepare_runtime_error: bool,
+        prepare_message: String,
+        producer_result: u64,
+        producer_runtime_error: bool,
+        producer_message: String,
+        retained_abi_state_after_teardown: bool,
+    }
+
+    fn pending_runtime_error(_py: &PyToken<'_>) -> (bool, String) {
+        if !exception_pending(_py) {
+            return (false, String::new());
+        }
+        let bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let matches = !obj_from_bits(bits).is_none()
+            && crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                bits,
+                "RuntimeError",
+            );
+        let message = obj_from_bits(bits)
+            .as_ptr()
+            .map(|ptr| format_exception_with_traceback(_py, ptr))
+            .unwrap_or_default();
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+        (matches, message)
+    }
+
+    unsafe extern "C" fn rejected_isolate_noargs(
+        _self: *mut molt_cpython_abi::abi_types::PyObject,
+        _args: *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject {
+        std::ptr::null_mut()
+    }
+
+    fn primary_exception_bindings() -> [u64; 2] {
+        let gil = GilGuard::new();
+        let _py = gil.token();
+        [
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+            (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError),
+        ]
+        .map(|pointer| {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(pointer.cast())
+                .expect("primary static exception shell must remain bound")
+                .bits()
+        })
+    }
+
+    fn exercise_bootstrap(fail: bool) -> (usize, usize) {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let handle = Arc::new(MoltThreadHandle::new());
+        let initializations = Arc::new(AtomicUsize::new(0));
+        let payloads = Arc::new(AtomicUsize::new(0));
+        let worker_handle = Arc::clone(&handle);
+        let worker_initializations = Arc::clone(&initializations);
+        let worker_payloads = Arc::clone(&payloads);
+        std::thread::spawn(move || {
+            run_isolate_thread(
+                worker_handle,
+                || {
+                    worker_initializations.fetch_add(1, AtomicOrdering::SeqCst);
+                    crate::with_gil_entry_nopanic!(_py, {
+                        if fail {
+                            raise_exception::<u64>(
+                                _py,
+                                "RuntimeError",
+                                "bootstrap regression failure",
+                            )
+                        } else {
+                            MoltObject::none().bits()
+                        }
+                    })
+                },
+                || {
+                    worker_payloads.fetch_add(1, AtomicOrdering::SeqCst);
+                },
+            );
+        })
+        .join()
+        .expect("bootstrap failure must not unwind past lifecycle cleanup");
+        assert!(handle.done.load(AtomicOrdering::Acquire));
+        assert!(handle.wait_started());
+        assert!(handle.wait(Some(Duration::ZERO)));
+        (
+            initializations.load(AtomicOrdering::SeqCst),
+            payloads.load(AtomicOrdering::SeqCst),
+        )
+    }
+
+    #[test]
+    fn failed_initializer_never_runs_payload_and_completes_handle() {
+        assert_eq!(exercise_bootstrap(true), (1, 0));
+    }
+
+    #[test]
+    fn successful_initializer_runs_payload_once_and_completes_handle() {
+        assert_eq!(exercise_bootstrap(false), (1, 1));
+    }
+
+    #[test]
+    fn isolate_teardown_drains_cpython_edges_published_after_the_early_worker_boundary() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        ISOLATE_DRAIN_ATEXIT_CALLBACKS.store(0, AtomicOrdering::Release);
+        ISOLATE_DRAIN_REENTRY_CALLBACKS.store(0, AtomicOrdering::Release);
+        ISOLATE_DRAIN_LATE_TLS_BITS.store(0, AtomicOrdering::Release);
+        molt_cpython_abi::api::object::set_thread_state_drain_reentry_test_hook(None);
+        let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+
+        let handle = Arc::new(MoltThreadHandle::new());
+        let retained_after_teardown = Arc::new(AtomicBool::new(true));
+        let worker_handle = Arc::clone(&handle);
+        let worker_retained_after_teardown = Arc::clone(&retained_after_teardown);
+        std::thread::spawn(move || {
+            run_isolate_thread(
+                worker_handle,
+                || {
+                    crate::with_gil_entry_nopanic!(py, {
+                        let callback = crate::builtins::functions::alloc_runtime_function_obj(
+                            py,
+                            crate::provenance::abi::expose_function_address(
+                                publish_isolate_shutdown_edges as *const (),
+                            ),
+                            0,
+                        );
+                        assert!(
+                            !callback.is_null(),
+                            "isolate atexit callback allocation failed"
+                        );
+                        let callback = MoltObject::from_ptr(callback).bits();
+                        assert_eq!(
+                            crate::builtins::atexit::molt_atexit_register(
+                                callback,
+                                MoltObject::none().bits(),
+                                MoltObject::none().bits(),
+                            ),
+                            callback
+                        );
+                        dec_ref_bits(py, callback);
+                        assert!(!exception_pending(py));
+                        MoltObject::none().bits()
+                    })
+                },
+                || {},
+            );
+            worker_retained_after_teardown.store(
+                molt_cpython_abi::api::object::current_thread_has_retained_runtime_state(),
+                AtomicOrdering::Release,
+            );
+        })
+        .join()
+        .expect("late isolate shutdown publication must complete teardown");
+
+        // Leave no process-global test hook behind even when an assertion below
+        // reports a lifecycle regression.
+        molt_cpython_abi::api::object::set_thread_state_drain_reentry_test_hook(None);
+        assert!(handle.done.load(AtomicOrdering::Acquire));
+        assert!(handle.wait_started());
+        assert!(handle.wait(Some(Duration::ZERO)));
+        assert_eq!(
+            ISOLATE_DRAIN_ATEXIT_CALLBACKS.load(AtomicOrdering::Acquire),
+            1,
+            "the real isolate teardown must run the late-publication callback once"
+        );
+        assert_eq!(
+            ISOLATE_DRAIN_REENTRY_CALLBACKS.load(AtomicOrdering::Acquire),
+            1,
+            "the shared shutdown drain must revisit the late CPython edge once"
+        );
+        assert_eq!(
+            ISOLATE_DRAIN_LATE_TLS_BITS.load(AtomicOrdering::Acquire),
+            0,
+            "the shutdown drain never transferred the late Molt TLS owner"
+        );
+        assert!(
+            !retained_after_teardown.load(AtomicOrdering::Acquire),
+            "isolate teardown retained the native worker's late CPython state"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            retained_before,
+            "late isolate shutdown publication changed the process owner count"
+        );
+    }
+
+    #[test]
+    fn isolate_teardown_preserves_primary_pending_call_queue_and_admission() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        ISOLATE_PRESERVED_PENDING_CALLBACKS.store(0, AtomicOrdering::Release);
+        let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(count_isolate_preserved_pending_call),
+                    std::ptr::null_mut(),
+                )
+            },
+            0,
+            "primary pending-call admission was not open before isolate teardown"
+        );
+
+        let handle = Arc::new(MoltThreadHandle::new());
+        let worker_handle = Arc::clone(&handle);
+        std::thread::spawn(move || {
+            run_isolate_thread(worker_handle, || MoltObject::none().bits(), || {});
+        })
+        .join()
+        .expect("isolate teardown must preserve primary pending-call custody");
+
+        assert!(handle.done.load(AtomicOrdering::Acquire));
+        assert_eq!(
+            ISOLATE_PRESERVED_PENDING_CALLBACKS.load(AtomicOrdering::Acquire),
+            0,
+            "isolate teardown executed a primary-runtime pending callback"
+        );
+        assert!(
+            molt_cpython_abi::api::pending_calls::has_pending_calls(),
+            "isolate teardown discarded the primary pending-call queue"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            retained_before,
+            "isolate teardown changed the primary runtime's retained-state count"
+        );
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(count_isolate_preserved_pending_call),
+                    std::ptr::null_mut(),
+                )
+            },
+            0,
+            "isolate teardown closed primary pending-call admission"
+        );
+        crate::with_gil_entry_nopanic!(_py, {
+            assert_eq!(
+                molt_cpython_abi::api::pending_calls::Py_MakePendingCalls(),
+                0
+            );
+        });
+        assert_eq!(
+            ISOLATE_PRESERVED_PENDING_CALLBACKS.load(AtomicOrdering::Acquire),
+            2,
+            "the primary runtime did not execute both preserved pending callbacks"
+        );
+        assert!(!molt_cpython_abi::api::pending_calls::has_pending_calls());
+    }
+
+    #[test]
+    fn isolated_runtime_rejects_process_static_cpython_ownership() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let prepared = crate::molt_cpython_abi_prepare_static_extension();
+        assert_eq!(prepared, MoltObject::from_bool(true).bits());
+        let primary_bindings = primary_exception_bindings();
+        let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+
+        let handle = Arc::new(MoltThreadHandle::new());
+        let payloads = Arc::new(AtomicUsize::new(0));
+        let observation = Arc::new(Mutex::new(IsolatedCpythonObservation::default()));
+        let worker_handle = Arc::clone(&handle);
+        let worker_payloads = Arc::clone(&payloads);
+        let worker_observation = Arc::clone(&observation);
+        std::thread::spawn(move || {
+            run_isolate_thread(
+                worker_handle,
+                || {
+                    crate::with_gil_entry_nopanic!(_py, {
+                        let owns_process_state =
+                            crate::state::runtime_state::owns_process_cpython_state(
+                                crate::runtime_state(_py),
+                            );
+                        let prepare_result = crate::molt_cpython_abi_prepare_static_extension();
+                        let (prepare_runtime_error, prepare_message) = pending_runtime_error(_py);
+                        let _ = molt_exception_clear();
+
+                        let name = b"rejected_isolate_callable";
+                        let producer_result = unsafe {
+                            (molt_cpython_abi::hooks::hooks_or_stubs().register_c_function)(
+                                rejected_isolate_noargs as *const () as usize as u64,
+                                molt_cpython_abi::abi_types::METH_NOARGS,
+                                MoltObject::none().bits(),
+                                name.as_ptr(),
+                                name.len(),
+                            )
+                        };
+                        let (producer_runtime_error, producer_message) = pending_runtime_error(_py);
+                        *worker_observation.lock().unwrap() = IsolatedCpythonObservation {
+                            owns_process_state,
+                            prepare_result,
+                            prepare_runtime_error,
+                            prepare_message,
+                            producer_result,
+                            producer_runtime_error,
+                            producer_message,
+                            retained_abi_state_after_teardown: false,
+                        };
+                        // Leave the producer's RuntimeError pending. The real
+                        // isolate lifecycle must classify bootstrap as failed,
+                        // skip its payload, report the error, and still tear
+                        // down the isolate completely.
+                        MoltObject::none().bits()
+                    })
+                },
+                || {
+                    worker_payloads.fetch_add(1, AtomicOrdering::SeqCst);
+                },
+            );
+            worker_observation
+                .lock()
+                .unwrap()
+                .retained_abi_state_after_teardown =
+                molt_cpython_abi::api::object::current_thread_has_retained_runtime_state();
+        })
+        .join()
+        .expect("rejected isolate C-extension admission must complete teardown");
+
+        assert!(handle.done.load(AtomicOrdering::Acquire));
+        assert!(handle.wait_started());
+        assert!(handle.wait(Some(Duration::ZERO)));
+        assert_eq!(
+            payloads.load(AtomicOrdering::SeqCst),
+            0,
+            "rejected C-extension bootstrap must never execute the isolate payload"
+        );
+        let observed = observation.lock().unwrap();
+        assert!(!observed.owns_process_state);
+        assert_eq!(observed.prepare_result, MoltObject::none().bits());
+        assert!(observed.prepare_runtime_error);
+        assert!(
+            observed
+                .prepare_message
+                .contains("process-static C extensions")
+                && observed.prepare_message.contains("isolated runtime"),
+            "unexpected prepare rejection: {}",
+            observed.prepare_message
+        );
+        assert_eq!(
+            observed.producer_result, 0,
+            "isolate must not publish executable C-callable ownership"
+        );
+        assert!(observed.producer_runtime_error);
+        assert!(
+            observed
+                .producer_message
+                .contains("process-static C extensions")
+                && observed.producer_message.contains("isolated runtime"),
+            "unexpected producer rejection: {}",
+            observed.producer_message
+        );
+        assert!(
+            !observed.retained_abi_state_after_teardown,
+            "rejected isolate teardown retained its native thread's CPython state"
+        );
+        drop(observed);
+
+        assert_eq!(
+            primary_exception_bindings(),
+            primary_bindings,
+            "isolate teardown must not detach or replace primary static exception bindings"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            retained_before,
+            "rejected isolate admission leaked retained CPython thread state"
+        );
+        assert_eq!(
+            crate::molt_cpython_abi_prepare_static_extension(),
+            MoltObject::from_bool(true).bits(),
+            "primary C-extension admission must remain ready after isolate teardown"
+        );
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

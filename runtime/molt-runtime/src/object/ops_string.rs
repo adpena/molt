@@ -1233,7 +1233,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                     .saturating_mul(parts.len().saturating_sub(1));
                 total_len = total_len.saturating_add(sep_total);
             }
-            let out_ptr = alloc_bytes_like_with_len(_py, total_len, TYPE_ID_STRING);
+            let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
             if out_ptr.is_null() {
                 if iter_owned {
                     for bits in owned_bits.iter().copied() {
@@ -1504,7 +1504,8 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 }
                 // Allocate string object directly, then write SIMD-lowered
                 // bytes into the data buffer -- avoids intermediate Vec alloc.
-                let ptr = alloc_bytes_like_with_len(_py, hay_bytes.len(), TYPE_ID_STRING);
+                let ptr =
+                    alloc_inline_bytes_with_len(_py, hay_bytes.len(), InlineBytesKind::String);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -1584,7 +1585,8 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 }
                 // Allocate string object directly, then write SIMD-uppered
                 // bytes into the data buffer -- avoids intermediate Vec alloc.
-                let ptr = alloc_bytes_like_with_len(_py, hay_bytes.len(), TYPE_ID_STRING);
+                let ptr =
+                    alloc_inline_bytes_with_len(_py, hay_bytes.len(), InlineBytesKind::String);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }

@@ -453,6 +453,7 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         "const mod = require(%r);\n"
         "const events = [];\n"
         "const runtime = { exports: {\n"
+        "  molt_exception_pending: () => 0n,\n"
         "  molt_runtime_execution_enter: () => { events.push('enter'); return 41n; },\n"
         "  molt_runtime_execution_leave: (token) => events.push(`leave:${token}`),\n"
         "} };\n"

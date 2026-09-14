@@ -6,13 +6,12 @@ use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_gvn_value_key_spec_table,
-    opcode_operand_independent_result_tir_type,
 };
 use crate::tir::ops::{Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::super::PassStats;
-use super::keys::{ValueKey, gvn_value_key, gvn_value_key_from_spec, is_primitive_type};
+use super::keys::{ValueKey, gvn_value_key, gvn_value_key_from_spec};
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
@@ -38,42 +37,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // intra-block GVN (their leaders never escape their own scope).
     let strict_reachable = am.get::<StrictReachable>(func).clone();
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
-
-    // Build a value→type map from STRUCTURALLY GUARANTEED sources only:
-    // block args (set by type_refine), operand-independent result-type opcodes,
-    // and function params.
-    // NO speculative type inference — if a value's type isn't provably
-    // known, it's treated as DynBox (not primitive, not safe to number).
-    let mut value_type: HashMap<ValueId, crate::tir::types::TirType> = HashMap::new();
-    {
-        // Block arguments carry types from type_refine.
-        for block in func.blocks.values() {
-            for arg in &block.args {
-                value_type.insert(arg.id, arg.ty.clone());
-            }
-        }
-        // Function parameters.
-        for (i, ty) in func.param_types.iter().enumerate() {
-            value_type.insert(ValueId(i as u32), ty.clone());
-        }
-        // Generated opcode facts own operand-independent result types.
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                if !op.has_valid_result_arity() {
-                    continue;
-                }
-                for (index, &res) in op.results.iter().enumerate() {
-                    if let Some(t) = opcode_operand_independent_result_tir_type(op.opcode, index) {
-                        value_type.insert(res, t);
-                    }
-                }
-            }
-        }
-    }
-
-    // Exact SSA-derived scalar results include comparison chains, without
-    // resurrecting their former opcode-wide Bool assertion.
-    value_type.extend(exact_scalar_types.iter().map(|(&id, ty)| (id, ty.clone())));
 
     // Track which block each value is defined in.
     let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::new();
@@ -196,22 +159,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     let numberable = match numbering_role {
                         GvnNumberingRole::Always => true,
                         GvnNumberingRole::TypeGated => {
-                            // Arithmetic/comparison/boolean ops are only numberable
-                            // when ALL operands are proven primitive types. On DynBox
-                            // operands, these ops may trigger dunder methods with side
-                            // effects (__add__, __eq__, etc.).
-                            crate::tir::predicate_semantics::predicate_facts_for_op(
+                            // The shared instance oracle accepts only exact
+                            // producer-derived scalar facts. Function annotations
+                            // and generic DynBox operands cannot authorize CSE.
+                            let effects = super::super::effects::op_effects_with_types(
                                 op,
                                 &exact_scalar_types,
-                            )
-                            .map_or_else(
-                                || {
-                                    op.operands
-                                        .iter()
-                                        .all(|v| value_type.get(v).is_some_and(is_primitive_type))
-                                },
-                                |facts| facts.effects.consistent && facts.effects.effect_free,
-                            )
+                            );
+                            effects.consistent && effects.effect_free
                         }
                         GvnNumberingRole::ValueKeyedConstant | GvnNumberingRole::Never => false,
                     };

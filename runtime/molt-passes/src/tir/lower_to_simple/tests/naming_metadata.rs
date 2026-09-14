@@ -573,49 +573,6 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
 }
 
 #[test]
-fn tir_round_trip_preserves_guarded_field_init_offset() {
-    use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
-
-    let func_ir = FunctionIR {
-        name: "guarded_init".into(),
-        params: vec![
-            "obj".into(),
-            "class_bits".into(),
-            "expected".into(),
-            "value".into(),
-        ],
-        ops: vec![OpIR {
-            kind: "guarded_field_init".into(),
-            args: Some(vec![
-                "obj".into(),
-                "class_bits".into(),
-                "expected".into(),
-                "value".into(),
-            ]),
-            s_value: Some("x".into()),
-            value: Some(24),
-            ..OpIR::default()
-        }],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: Default::default(),
-    };
-
-    let tir_func = lower_to_tir(&func_ir);
-    let round_tripped = lower_to_simple_ir(&tir_func);
-    let init_op = round_tripped
-        .iter()
-        .find(|op| op.kind == "guarded_field_init")
-        .expect("expected guarded_field_init after TIR round-trip");
-
-    assert_eq!(init_op.s_value.as_deref(), Some("x"));
-    assert_eq!(init_op.value, Some(24));
-}
-
-#[test]
 fn tir_round_trip_preserves_guarded_field_get_offset() {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::lower_from_simple::lower_to_tir;
@@ -651,51 +608,6 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
         load_op.out.is_some(),
         "guarded_field_get must preserve an output"
     );
-}
-
-#[test]
-fn tir_round_trip_preserves_guarded_field_init_metadata() {
-    use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
-
-    let func_ir = FunctionIR {
-        name: "guarded_init".into(),
-        params: vec![
-            "obj".into(),
-            "class_bits".into(),
-            "expected".into(),
-            "value".into(),
-        ],
-        ops: vec![OpIR {
-            kind: "guarded_field_init".into(),
-            args: Some(vec![
-                "obj".into(),
-                "class_bits".into(),
-                "expected".into(),
-                "value".into(),
-            ]),
-            s_value: Some("x".into()),
-            value: Some(24),
-            out: Some("init_result".into()),
-            ..OpIR::default()
-        }],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: Default::default(),
-    };
-
-    let tir_func = lower_to_tir(&func_ir);
-    let round_tripped = lower_to_simple_ir(&tir_func);
-    let init_op = round_tripped
-        .iter()
-        .find(|op| op.kind == "guarded_field_init")
-        .expect("expected guarded_field_init after TIR round-trip");
-
-    assert_eq!(init_op.s_value.as_deref(), Some("x"));
-    assert_eq!(init_op.value, Some(24));
-    assert_eq!(init_op.out.as_deref(), Some("init_result"));
 }
 
 #[test]
@@ -738,10 +650,8 @@ fn tir_round_trip_preserves_call_async_metadata() {
 
 #[test]
 fn tir_round_trip_preserves_typed_field_class_identity() {
-    // The `class` field on typed-slot field ops (the S5-1.5 alias-region
-    // authority) must survive the SimpleIR↔TIR roundtrip on both load and
-    // store spellings; otherwise the alias oracle's `TypedField` region would
-    // collapse to `GenericHeap` after the first roundtrip.
+    // Preserve class metadata for guarded receiver dispatch on both load and
+    // store spellings. Physical alias identity is independent of this hint.
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::lower_from_simple::lower_to_tir;
 
@@ -765,19 +675,6 @@ fn tir_round_trip_preserves_typed_field_class_identity() {
             },
             OpIR {
                 kind: "guarded_field_set".into(),
-                args: Some(vec![
-                    "obj".into(),
-                    "class_bits".into(),
-                    "expected".into(),
-                    "value".into(),
-                ]),
-                s_value: Some("x".into()),
-                value: Some(24),
-                class_name: Some("Point".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "guarded_field_init".into(),
                 args: Some(vec![
                     "obj".into(),
                     "class_bits".into(),
@@ -814,11 +711,7 @@ fn tir_round_trip_preserves_typed_field_class_identity() {
 
     let tir_func = lower_to_tir(&func_ir);
     let round_tripped = lower_to_simple_ir(&tir_func);
-    for kind in [
-        "guarded_field_get",
-        "guarded_field_set",
-        "guarded_field_init",
-    ] {
+    for kind in ["guarded_field_get", "guarded_field_set"] {
         let op = round_tripped
             .iter()
             .find(|op| op.kind == kind)

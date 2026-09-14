@@ -54,8 +54,6 @@
 //! * `v` is heap-carrying (NOT a [`TirLivenessResult::is_raw_scalar`] — raw i64 /
 //!   bool / float carriers hold no refcount; dropping them would pass a raw
 //!   register to `molt_dec_ref_obj`).
-//! * `v` is not produced by `StackAlloc` / `ObjectNewBoundStack` (stack lifetime,
-//!   no RC — design R6).
 //! * `v` is not a function parameter (parameters are borrowed from the caller per
 //!   the ABI; the caller owns and drops them).
 //!
@@ -96,9 +94,11 @@
 //! straight-line rule does; there is no separate IncRef to elide here (molt's ABI
 //! is borrow-args, so no IncRef was ever needed around the call). The borrow
 //! inference therefore reduces to: drop after the call, never before — which the
-//! last-use placement already does. Finalizer-sensitive values only override
-//! that placement when they are Python-bound roots (`store_var` / explicit
-//! delete boundary); unbound expression temporaries still die at their last use.
+//! last-use placement already does. Positive Python named-owner provenance
+//! (`bound_local`) or an explicit delete boundary overrides last-use placement
+//! even without known finalizer metadata. Mutable classes and opaque values do
+//! not prove destruction unobservable. Unmarked expression temporaries still
+//! die at their last use; `store_var` alone is not new lexical-owner evidence.
 //! We keep the call operands out of any *pre-call* drop, which the last-use
 //! semantics guarantee.
 //!
@@ -165,9 +165,6 @@ mod remap;
 mod runner;
 mod util;
 
-#[cfg(test)]
-mod tests;
-
 /// The function-level attr the pass sets (round-tripped to the native backend as
 /// a marker op) so the SimpleIR `loop_reassign_old_val` ad-hoc dec-ref path is
 /// disabled for drop-inserted functions — preventing the R1 double-drop.
@@ -181,4 +178,3 @@ pub const DROP_INSERTED_ATTR: &str = "drop_inserted";
 pub const EXCEPTION_REGION_DROPS_INSERTED_ATTR: &str = "exception_region_drops_inserted";
 
 pub use self::runner::run;
-pub(crate) use self::util::attr_is_true;

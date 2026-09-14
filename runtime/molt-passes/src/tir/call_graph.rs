@@ -21,8 +21,9 @@
 //! Every call-bearing op in a function body produces a [`CallEdge`]:
 //!
 //! * **[`CallEdge::StaticDirect`]** — an [`OpCode::Call`] whose `s_value` attr is
-//!   `Str(name)` AND `name` is a function defined in this module. The target is
-//!   known; this is the edge the inliner can act on.
+//!   `Str(name)` AND `name` is a function defined in this module AND the
+//!   preserved source role proves a direct target. Registered direct-call Copy
+//!   transports can retain an edge but are not first-class inlining sites.
 //! * **[`CallEdge::Opaque`]** — every other call: a [`OpCode::Call`] with no
 //!   `s_value` (indirect / computed callee), a `Str(name)` that names a function
 //!   *not* in this module (extern / cross-batch), any dynamic-method opcode
@@ -69,7 +70,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use super::call_targets::is_gpu_runtime_symbol;
+use super::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
 use super::function::TirModule;
 use super::op_kinds_generated::{
     CallOpcodeRole, opcode_call_role_table, simpleir_kind_is_call_graph_user_call,
@@ -97,21 +98,11 @@ pub enum CallEdge {
 /// present in this [`TirModule`]; a named callee outside it resolves to
 /// [`CallEdge::Opaque`] (extern / cross-batch).
 fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> {
-    /// Read an op's `s_value` string attr, if present.
-    fn s_value(op: &TirOp) -> Option<&str> {
-        match op.attrs.get("s_value") {
-            Some(AttrValue::Str(s)) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
     match opcode_call_role_table(op.opcode) {
         // A first-class `Call`: static-direct when its `s_value` names a defined
-        // function, otherwise opaque (indirect, or a callee extern to this
-        // module). The SSA lift folds `call`, `call_func`, `call_internal`,
-        // `call_indirect`, `call_bind`, `call_guarded`, `invoke_ffi` all into
-        // `OpCode::Call`, so this single arm covers every user-level direct-call
-        // spelling.
+        // function and the preserved source spelling has a direct target role.
+        // Opaque spellings also lift to `Call`; their incidental string is not
+        // a static target, even if it matches a module or GPU runtime symbol.
         //
         // EXCEPTION: the gpu_* intrinsics (`gpu_thread_id`, `gpu_barrier`, …)
         // also lift to `OpCode::Call`, but with a fixed `molt_gpu_*` runtime
@@ -121,10 +112,10 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         // them as a call edge would spuriously disqualify a gpu-kernel leaf from
         // leaf-ness and change codegen, so they are NOT edges.
         CallOpcodeRole::UserCall => {
-            if matches!(s_value(op), Some(s) if is_gpu_runtime_symbol(s)) {
+            if gpu_runtime_result_type_for_op(op).is_some() {
                 None
             } else {
-                Some(match s_value(op) {
+                Some(match direct_call_symbol_for_op(op) {
                     Some(name) if defined.contains(name) => {
                         CallEdge::StaticDirect(name.to_string())
                     }
@@ -141,13 +132,15 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         // so it MUST count as a call edge — missing it would mark a function
         // that actually calls as a leaf (an unsound recursion-guard skip).
         CallOpcodeRole::CopyOriginalKind => match op.attrs.get("_original_kind") {
+            // Registered direct transport uses the same source-role authority
+            // as first-class calls; opaque spellings cannot borrow a name.
             Some(AttrValue::Str(kind)) if simpleir_kind_is_call_graph_user_call(kind) => {
-                match s_value(op) {
+                Some(match direct_call_symbol_for_op(op) {
                     Some(name) if defined.contains(name) => {
-                        Some(CallEdge::StaticDirect(name.to_string()))
+                        CallEdge::StaticDirect(name.to_string())
                     }
-                    _ => Some(CallEdge::Opaque),
-                }
+                    _ => CallEdge::Opaque,
+                })
             }
             _ => None,
         },
@@ -678,33 +671,112 @@ mod tests {
 
     #[test]
     fn gpu_intrinsic_call_does_not_disqualify_leaf() {
-        // A gpu_thread_id op lifts to OpCode::Call with s_value molt_gpu_thread_id
-        // — a runtime intrinsic, NOT a user call. It must not disqualify leaf-ness
-        // (the legacy SimpleIR scan ignored gpu_* op kinds).
-        let mut f = TirFunction::new("kernel".into(), vec![], TirType::None);
-        let entry = f.entry_block;
-        let v = f.fresh_value();
-        let block = f.blocks.get_mut(&entry).unwrap();
-        let mut attrs = AttrDict::new();
-        attrs.insert(
-            "s_value".into(),
-            AttrValue::Str("molt_gpu_thread_id".into()),
-        );
-        block.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Call,
-            operands: vec![],
-            results: vec![v],
-            attrs,
-            source_span: None,
-        });
-        block.terminator = Terminator::Return { values: vec![] };
-        let cg = CallGraph::build(&module(vec![f]));
-        assert!(
-            cg.leaf_functions().contains("kernel"),
-            "gpu intrinsic call ≠ user call → still a leaf"
-        );
-        assert!(!cg.has_opaque_call("kernel"));
+        for (kind, symbol) in [
+            ("gpu_thread_id", "molt_gpu_thread_id"),
+            ("gpu_block_id", "molt_gpu_block_id"),
+            ("gpu_block_dim", "molt_gpu_block_dim"),
+            ("gpu_grid_dim", "molt_gpu_grid_dim"),
+            ("gpu_barrier", "molt_gpu_barrier"),
+        ] {
+            let mut f = func_calling("kernel", &[Some(symbol)]);
+            f.blocks.get_mut(&f.entry_block).unwrap().ops[0]
+                .attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            let cg = CallGraph::build(&module(vec![f]));
+            assert!(
+                cg.leaf_functions().contains("kernel"),
+                "{kind}: GPU intrinsic call is not a user edge"
+            );
+            assert!(!cg.has_opaque_call("kernel"), "{kind}");
+            assert!(cg.callees("kernel").is_empty(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn opaque_call_spellings_cannot_borrow_gpu_or_module_identity() {
+        for kind in [
+            "call_func",
+            "call_function",
+            "call_indirect",
+            "call_bind",
+            "call_guarded",
+            "invoke_ffi",
+        ] {
+            for symbol in ["molt_gpu_thread_id", "module_function"] {
+                let mut caller = func_calling("caller", &[Some(symbol)]);
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                    .attrs
+                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                assert!(cg.has_opaque_call("caller"), "{kind}: {symbol}");
+                assert!(!cg.leaf_functions().contains("caller"), "{kind}: {symbol}");
+                assert!(cg.callees("caller").is_empty(), "{kind}: {symbol}");
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_gpu_named_module_calls_keep_their_edges() {
+        for symbol in [
+            "molt_gpu_thread_id",
+            "molt_gpu_block_id",
+            "molt_gpu_block_dim",
+            "molt_gpu_grid_dim",
+            "molt_gpu_barrier",
+        ] {
+            for original in [None, Some("call"), Some("call_internal")] {
+                let mut caller = func_calling("caller", &[Some(symbol)]);
+                if let Some(kind) = original {
+                    caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                        .attrs
+                        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                }
+                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                assert!(!cg.has_opaque_call("caller"), "{symbol}: {original:?}");
+                assert!(
+                    !cg.leaf_functions().contains("caller"),
+                    "{symbol}: {original:?}"
+                );
+                assert_eq!(
+                    cg.callees("caller"),
+                    &[symbol.to_string()],
+                    "{symbol}: {original:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_call_transport_uses_generated_direct_and_opaque_roles() {
+        for kind in [
+            "call",
+            "call_internal",
+            "call_func",
+            "call_function",
+            "call_indirect",
+            "call_bind",
+            "call_guarded",
+            "invoke_ffi",
+        ] {
+            for symbol in ["module_function", "molt_gpu_thread_id"] {
+                let mut caller = func_calling("caller", &[Some(symbol)]);
+                let result = caller.fresh_value();
+                let op = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0];
+                op.opcode = OpCode::Copy;
+                op.results = vec![result];
+                op.attrs
+                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                let direct = matches!(kind, "call" | "call_internal");
+                assert_eq!(cg.has_opaque_call("caller"), !direct, "{kind}: {symbol}");
+                assert_eq!(
+                    cg.callees("caller").len(),
+                    usize::from(direct),
+                    "{kind}: {symbol}"
+                );
+                assert!(!cg.leaf_functions().contains("caller"), "{kind}: {symbol}");
+            }
+        }
     }
 
     #[test]
@@ -731,7 +803,8 @@ mod tests {
             !cg.leaf_functions().contains("f"),
             "Copy[call_func] is a call"
         );
-        assert_eq!(cg.callees("f"), &["g".to_string()]);
+        assert!(cg.has_opaque_call("f"));
+        assert!(cg.callees("f").is_empty());
     }
 
     #[test]

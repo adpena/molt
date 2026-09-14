@@ -1,8 +1,11 @@
 use crate::builtins::frames::{frame_stack_pop, frame_stack_push_function};
-use crate::call::require_call_attr;
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
+};
+use crate::call::{
+    CallAttrLookup, StaticmethodCallTarget, lookup_call_attr, require_call_attr,
+    resolve_staticmethod_call_target,
 };
 use crate::object::layout::ensure_function_code_bits;
 use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
@@ -17,22 +20,22 @@ use crate::{
     alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
-    call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup,
-    class_attr_lookup_raw_mro, class_layout_version_bits, class_name_bits, class_name_for_error,
-    code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place,
-    dict_get_method, dict_order, dict_setdefault_method, dict_update_method,
-    dict_update_set_via_store, exception_pending, function_arity, function_arity_usize,
-    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
-    inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted,
-    is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits, missing_bits,
-    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
-    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
-    molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
-    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
-    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
-    molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
-    molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup_raw_mro,
+    class_layout_version_bits, class_name_bits, class_name_for_error, code_filename_bits,
+    code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place, dict_get_method,
+    dict_order, dict_setdefault_method, dict_update_method, dict_update_set_via_store,
+    exception_pending, function_arity, function_arity_usize, function_attr_bits,
+    function_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
+    generic_alias_origin_bits, has_capability, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
+    intern_static_name, is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits,
+    issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
+    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
+    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
+    molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
+    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
+    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
+    molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
+    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_dict_from_obj, molt_dict_new, molt_dict_pop_method,
     molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
     molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
@@ -742,6 +745,12 @@ unsafe fn call_type_with_builder(
             } else {
                 (&[] as &[u64], &[] as &[u64], &[] as &[u64])
             };
+
+            if let Some(result) = crate::builtins::types::wrappers::try_construct_exact_wrapper(
+                _py, class_bits, pos_args, kw_names, kw_values,
+            ) {
+                return result;
+            }
 
             if class_bits == builtins.super_type {
                 return crate::builtins::types::descriptor_objects::super_call(
@@ -1737,192 +1746,84 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
     }
 }
 
-unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
-    let attr = |name_bytes: &'static [u8]| unsafe {
-        function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                match name_bytes {
-                    b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
-                    b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
-                    b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
-                    b"__molt_kwonly_names__" => &runtime_state(_py).interned.molt_kwonly_names,
-                    b"__defaults__" => &runtime_state(_py).interned.defaults_name,
-                    b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
-                    _ => unreachable!("unknown binding metadata attr"),
-                },
-                name_bytes,
-            ),
-        )
-        .unwrap_or_else(|| MoltObject::none().bits())
-    };
-
-    for name in [
-        b"__molt_bind_kind__".as_slice(),
-        b"__molt_vararg__",
-        b"__molt_varkw__",
-    ] {
-        if !obj_from_bits(attr(name)).is_none() {
-            return true;
-        }
-    }
-
-    let kwonly_bits = attr(b"__molt_kwonly_names__");
-    if !obj_from_bits(kwonly_bits).is_none() {
-        let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
-            return true;
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-            || unsafe { crate::object::seq_access::len(ptr) } != 0
-        {
-            return true;
-        }
-    }
-
-    let defaults_bits = attr(b"__defaults__");
-    if !obj_from_bits(defaults_bits).is_none() {
-        let Some(ptr) = obj_from_bits(defaults_bits).as_ptr() else {
-            return true;
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-            || unsafe { crate::object::seq_access::len(ptr) } != 0
-        {
-            return true;
-        }
-    }
-
-    let kwdefaults_bits = attr(b"__kwdefaults__");
-    if !obj_from_bits(kwdefaults_bits).is_none() {
-        let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
-            return true;
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT || !unsafe { dict_order(ptr) }.is_empty()
-        {
-            return true;
-        }
-    }
-
-    false
+/// One callback-free projection of binder-relevant metadata. Ordinary calls
+/// require binding for positional defaults; the fused fast path may pad those
+/// defaults directly. Both consumers share all other admission facts.
+struct FunctionBindingShape {
+    full_binder: bool,
+    positional_defaults: usize,
 }
 
-/// Read one binding-metadata attribute (`__molt_*__`/`__defaults__`/
-/// `__kwdefaults__`) from a function's `__dict__`, returning `none` bits when
-/// absent. Shared by the granular binder-shape classifiers below.
-///
-/// # Safety
-/// `func_ptr` must be a live function object; the GIL must be held.
-unsafe fn function_binding_meta(
-    _py: &PyToken<'_>,
-    func_ptr: *mut u8,
-    name_bytes: &'static [u8],
-) -> u64 {
-    unsafe {
-        function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                match name_bytes {
-                    b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
-                    b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
-                    b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
-                    b"__molt_kwonly_names__" => &runtime_state(_py).interned.molt_kwonly_names,
-                    b"__defaults__" => &runtime_state(_py).interned.defaults_name,
-                    b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
-                    _ => unreachable!("unknown binding metadata attr"),
-                },
-                name_bytes,
-            ),
-        )
-        .unwrap_or_else(|| MoltObject::none().bits())
-    }
+unsafe fn function_binding_meta(py: &PyToken<'_>, func_ptr: *mut u8, name: &[u8]) -> u64 {
+    unsafe { crate::call::function::function_metadata_bits(py, func_ptr, name) }
 }
 
-/// Whether a function needs the FULL argument binder for the fused method-call
-/// fast path — i.e. it has keyword-only parameters, keyword-only defaults,
-/// `*args`, `**kwargs`, or a builtin bind-kind. This is exactly
-/// [`function_requires_full_binding`] MINUS the positional `__defaults__` test:
-/// positional defaults are fillable allocation-free by the direct path (the
-/// trampoline pads from `__defaults__`), so they must NOT force the binder.
-///
-/// A malformed `__defaults__` (present but not a tuple) is conservatively
-/// treated as needing the binder so the direct path never mis-pads.
-///
-/// # Safety
-/// `func_ptr` must be a live function object; the GIL must be held.
-pub(crate) unsafe fn function_needs_full_binder(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+unsafe fn function_binding_shape(py: &PyToken<'_>, func_ptr: *mut u8) -> FunctionBindingShape {
     unsafe {
-        if callable_matches_runtime_symbol(
+        let mut full_binder = callable_matches_runtime_symbol(
             Some(MoltObject::from_ptr(func_ptr).bits()),
-            fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
-        ) {
-            return true;
-        }
+            crate::builtins::functions::runtime_fn_key(
+                "molt_exception_init_owned",
+                crate::builtins::exceptions::molt_exception_init_owned as *const (),
+            ),
+        );
         for name in [
             b"__molt_bind_kind__".as_slice(),
             b"__molt_vararg__",
             b"__molt_varkw__",
         ] {
-            if !obj_from_bits(function_binding_meta(_py, func_ptr, name)).is_none() {
-                return true;
-            }
+            full_binder |= !obj_from_bits(function_binding_meta(py, func_ptr, name)).is_none();
         }
-
-        let kwonly_bits = function_binding_meta(_py, func_ptr, b"__molt_kwonly_names__");
-        if !obj_from_bits(kwonly_bits).is_none() {
-            let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
-                return true;
+        let kwonly = obj_from_bits(function_binding_meta(
+            py,
+            func_ptr,
+            b"__molt_kwonly_names__",
+        ));
+        if !kwonly.is_none() {
+            full_binder |= match kwonly.as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
+                    crate::object::seq_access::len(ptr) != 0
+                }
+                _ => true,
             };
-            if object_type_id(ptr) != TYPE_ID_TUPLE || crate::object::seq_access::len(ptr) != 0 {
-                return true;
-            }
         }
-
-        let kwdefaults_bits = function_binding_meta(_py, func_ptr, b"__kwdefaults__");
-        if !obj_from_bits(kwdefaults_bits).is_none() {
-            let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
-                return true;
+        let kwdefaults = obj_from_bits(function_binding_meta(py, func_ptr, b"__kwdefaults__"));
+        if !kwdefaults.is_none() {
+            full_binder |= match kwdefaults.as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => !dict_order(ptr).is_empty(),
+                _ => true,
             };
-            if object_type_id(ptr) != TYPE_ID_DICT || !dict_order(ptr).is_empty() {
-                return true;
-            }
         }
-
-        // A malformed `__defaults__` (non-None, non-tuple) cannot be padded
-        // safely by the direct path — defer to the binder.
-        let defaults_bits = function_binding_meta(_py, func_ptr, b"__defaults__");
-        if !obj_from_bits(defaults_bits).is_none() {
-            match obj_from_bits(defaults_bits).as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {}
-                _ => return true,
+        let defaults = obj_from_bits(function_binding_meta(py, func_ptr, b"__defaults__"));
+        let positional_defaults = if defaults.is_none() {
+            0
+        } else {
+            match defaults.as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
+                    crate::object::seq_access::len(ptr)
+                }
+                _ => {
+                    full_binder = true;
+                    0
+                }
             }
+        };
+        FunctionBindingShape {
+            full_binder,
+            positional_defaults,
         }
-
-        false
     }
 }
 
-/// Count of trailing positional parameters carrying a default
-/// (`len(__defaults__)`), for a function the caller has already established does
-/// NOT need the full binder. Returns 0 when `__defaults__` is absent/empty.
-///
-/// # Safety
-/// `func_ptr` must be a live function object; the GIL must be held.
-unsafe fn function_positional_default_count(_py: &PyToken<'_>, func_ptr: *mut u8) -> usize {
-    unsafe {
-        let defaults_bits = function_binding_meta(_py, func_ptr, b"__defaults__");
-        if obj_from_bits(defaults_bits).is_none() {
-            return 0;
-        }
-        match obj_from_bits(defaults_bits).as_ptr() {
-            Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
-                crate::object::seq_access::len(ptr)
-            }
-            _ => 0,
-        }
-    }
+/// Positional defaults can be padded by the fused direct path; every other
+/// binder requirement, including malformed defaults, comes from the same shape.
+unsafe fn function_requires_full_binding(py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+    let shape = unsafe { function_binding_shape(py, func_ptr) };
+    shape.full_binder || shape.positional_defaults != 0
+}
+
+pub(crate) unsafe fn function_needs_full_binder(py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+    unsafe { function_binding_shape(py, func_ptr).full_binder }
 }
 
 pub(crate) unsafe fn refresh_function_requires_binder_flag(
@@ -1954,10 +1855,13 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
     supplied: usize,
 ) -> bool {
     unsafe {
-        if function_requires_binder_flag(func_ptr) || function_needs_full_binder(_py, func_ptr) {
+        if function_requires_binder_flag(func_ptr) {
             return true;
         }
-        let positional_defaults = function_positional_default_count(_py, func_ptr);
+        let shape = function_binding_shape(_py, func_ptr);
+        if shape.full_binder {
+            return true;
+        }
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
@@ -1966,7 +1870,7 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
             );
             return true;
         };
-        positional_defaults != 0 && supplied != arity
+        shape.positional_defaults != 0 && supplied != arity
     }
 }
 
@@ -2160,6 +2064,14 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 return raise_not_callable(_py, call_obj);
             };
+            match resolve_staticmethod_call_target(_py, call_bits) {
+                StaticmethodCallTarget::Owned(target) => {
+                    builder_guard.release();
+                    return molt_call_bind(target.bits(), builder_bits);
+                }
+                StaticmethodCallTarget::Raised => return MoltObject::none().bits(),
+                StaticmethodCallTarget::NotStaticmethod => {}
+            }
             let mut func_bits = call_bits;
             let mut self_bits = None;
             if matches!(
@@ -2176,27 +2088,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     self_bits = Some(bound_method_self_bits(call_ptr));
                 }
                 TYPE_ID_TYPE => {
-                    let meta_bits = object_class_bits(call_ptr);
-                    if meta_bits != 0
-                        && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
-                        && object_type_id(meta_ptr) == TYPE_ID_TYPE
-                    {
-                        let call_name_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.call_name,
-                            b"__call__",
-                        );
-                        if let Some(call_attr_bits) = class_attr_lookup(
-                            _py,
-                            meta_ptr,
-                            meta_ptr,
-                            Some(call_ptr),
-                            call_name_bits,
-                        ) {
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, call_attr_bits);
-                                return MoltObject::none().bits();
-                            }
+                    match lookup_call_attr(_py, call_ptr) {
+                        CallAttrLookup::Found(call_attr_bits) => {
                             if !is_default_type_call(_py, call_attr_bits) {
                                 builder_guard.release();
                                 let result = molt_call_bind(call_attr_bits, builder_bits);
@@ -2204,9 +2097,9 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                                 return result;
                             }
                             dec_ref_bits(_py, call_attr_bits);
-                        } else if exception_pending(_py) {
-                            return MoltObject::none().bits();
                         }
+                        CallAttrLookup::Raised => return MoltObject::none().bits(),
+                        CallAttrLookup::Missing => {}
                     }
                     return call_type_with_builder(
                         _py,
@@ -2864,12 +2757,12 @@ mod tests {
                 assert!(!dictionary.is_null());
                 let dictionary_bits = MoltObject::from_ptr(dictionary).bits();
                 let attribute = intern_metadata_name(_py, b"__kwdefaults__");
-                crate::call::class_init::function_set_attr_bits(
+                assert!(crate::call::class_init::function_set_attr_bits(
                     _py,
                     function,
                     attribute,
                     dictionary_bits,
-                );
+                ));
                 dec_ref_bits(_py, dictionary_bits);
                 let value_before = (*crate::header_from_obj_ptr(value)).ref_count_snapshot();
                 let owned = super::function_kwdefault_owned(_py, function, name_bits)
@@ -2880,12 +2773,12 @@ mod tests {
                     (*crate::header_from_obj_ptr(value)).ref_count_snapshot(),
                     value_before + 1,
                 );
-                crate::call::class_init::function_set_attr_bits(
+                assert!(crate::call::class_init::function_set_attr_bits(
                     _py,
                     function,
                     attribute,
                     MoltObject::none().bits(),
-                );
+                ));
                 assert_eq!(
                     (*crate::header_from_obj_ptr(value)).ref_count_snapshot(),
                     value_before,
@@ -2905,8 +2798,10 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                let key = crate::alloc_string(_py, b"key");
-                let value = crate::alloc_string(_py, b"value");
+                // Ownership deltas require mortal payloads, not the canonical
+                // immortal identifier strings returned by alloc_string.
+                let key = crate::object::builders::alloc_string_nointern(_py, b"key");
+                let value = crate::object::builders::alloc_string_nointern(_py, b"value");
                 let key_bits = MoltObject::from_ptr(key).bits();
                 let value_bits = MoltObject::from_ptr(value).bits();
                 let list = crate::alloc_list(_py, &[value_bits]);
@@ -2947,7 +2842,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                let key = crate::alloc_string(_py, b"key");
+                let key = crate::object::builders::alloc_string_nointern(_py, b"key");
                 let old = alloc_list(_py, &[]);
                 let replacement = alloc_list(_py, &[MoltObject::from_int(9).bits()]);
                 assert!(!key.is_null() && !old.is_null() && !replacement.is_null());
@@ -3080,12 +2975,12 @@ mod tests {
                 let names = alloc_tuple(_py, &[key_bits]);
                 assert!(!names.is_null());
                 let names_bits = MoltObject::from_ptr(names).bits();
-                crate::call::class_init::function_set_attr_bits(
+                assert!(crate::call::class_init::function_set_attr_bits(
                     _py,
                     func_ptr,
                     intern_metadata_name(_py, b"__molt_arg_names__"),
                     names_bits,
-                );
+                ));
                 let builder = super::molt_callargs_new(0, 1);
                 assert_ne!(builder, 0);
                 super::molt_callargs_push_kw(builder, key_bits, MoltObject::from_int(1).bits());
@@ -3239,12 +3134,12 @@ mod tests {
             let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
             let defaults_name = intern_metadata_name(_py, b"__defaults__");
             unsafe {
-                crate::call::class_init::function_set_attr_bits(
+                assert!(crate::call::class_init::function_set_attr_bits(
                     _py,
                     func_ptr,
                     defaults_name,
                     defaults_bits,
-                );
+                ));
             }
             dec_ref_bits(_py, defaults_bits);
             dec_ref_bits(_py, default_bits);
@@ -3443,7 +3338,7 @@ mod tests {
                     1,
                     std::mem::size_of::<u64>() as i64,
                     0,
-                    0,
+                    1, // Install the supplied bases before inherited-hook dispatch.
                 )
             };
             assert!(!obj_from_bits(class_bits).is_none());
@@ -3817,29 +3712,19 @@ mod tests {
         for (name, val_bits) in meta.iter().copied() {
             let attr_bits = intern_metadata_name(_py, name);
             unsafe {
-                crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, val_bits)
+                assert!(crate::call::class_init::function_set_attr_bits(
+                    _py, func_ptr, attr_bits, val_bits
+                ))
             };
         }
         MoltObject::from_ptr(func_ptr).bits()
     }
 
-    /// Intern one of the binding-metadata attribute names against the same slot
-    /// the production classifiers consult, so the test exercises the real
-    /// classifier rather than an ad-hoc key.
+    /// Use the runtime's canonical attribute-name interning authority. Keeping
+    /// another metadata-name allowlist here makes new binder fields fail in the
+    /// fixture before they ever reach their production consumer.
     fn intern_metadata_name(_py: &crate::PyToken<'_>, name: &'static [u8]) -> u64 {
-        use crate::runtime_state;
-        use crate::state::cache::intern_static_name;
-        let interned = &runtime_state(_py).interned;
-        let slot = match name {
-            b"__molt_bind_kind__" => &interned.molt_bind_kind,
-            b"__molt_vararg__" => &interned.molt_vararg,
-            b"__molt_varkw__" => &interned.molt_varkw,
-            b"__molt_kwonly_names__" => &interned.molt_kwonly_names,
-            b"__defaults__" => &interned.defaults_name,
-            b"__kwdefaults__" => &interned.kwdefaults_name,
-            other => panic!("unknown metadata name {:?}", other),
-        };
-        intern_static_name(_py, slot, name)
+        crate::attr_name_bits_from_bytes(_py, name).expect("metadata name")
     }
 
     #[test]

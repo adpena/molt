@@ -11,7 +11,6 @@ pub(in crate::wasm) enum WasmFrameSyntheticLocal {
     WasmTmp0,
     WasmTmp1,
     WasmAllocResolve,
-    WasmScopeArena,
 }
 
 impl WasmFrameSyntheticLocal {
@@ -32,15 +31,12 @@ impl WasmFrameSyntheticLocal {
             Self::WasmTmp0 => "__wasm_tmp0",
             Self::WasmTmp1 => "__wasm_tmp1",
             Self::WasmAllocResolve => "__wasm_alloc_resolve",
-            Self::WasmScopeArena => "__wasm_scope_arena",
         }
     }
 
     fn val_type(self) -> ValType {
         match self {
-            // WasmScopeArena holds a runtime `*mut ScopeArena`: a real
-            // wasm32 pointer, matching the arena import signatures.
-            Self::WasmTmp0 | Self::WasmAllocResolve | Self::WasmScopeArena => ValType::I32,
+            Self::WasmTmp0 | Self::WasmAllocResolve => ValType::I32,
             Self::DeadSink
             | Self::MoltTmp0
             | Self::MoltTmp1
@@ -103,11 +99,6 @@ mod tests {
             &mut local_types,
             &mut local_count,
         );
-        let scope_arena = locals.ensure_synthetic(
-            WasmFrameSyntheticLocal::WasmScopeArena,
-            &mut local_types,
-            &mut local_count,
-        );
         let molt_tmp0 = locals.ensure_synthetic(
             WasmFrameSyntheticLocal::MoltTmp0,
             &mut local_types,
@@ -123,8 +114,7 @@ mod tests {
         assert_eq!(wasm_tmp0, 1);
         assert_eq!(wasm_tmp1, 2);
         assert_eq!(alloc_resolve, 3);
-        assert_eq!(scope_arena, 4);
-        assert_eq!(molt_tmp0, 5);
+        assert_eq!(molt_tmp0, 4);
         assert_eq!(molt_tmp0_again, molt_tmp0);
         assert_eq!(
             locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0),
@@ -137,11 +127,10 @@ mod tests {
                 ValType::I32,
                 ValType::I64,
                 ValType::I32,
-                ValType::I32,
                 ValType::I64,
             ]
         );
-        assert_eq!(local_count, 6);
+        assert_eq!(local_count, 5);
 
         assert_eq!(
             locals.local_kind("__molt_tmp0"),
@@ -167,7 +156,7 @@ mod tests {
                 .find(|local| local.name() == "__wasm_tmp0")
                 .is_some_and(|local| local.kind().is_call_retention_exempt())
         );
-        locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 6);
+        locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 5);
         assert_eq!(
             locals.local_kind(WasmFrameLocals::NONE_NAME),
             Some(WasmFrameLocalKind::NoneSingleton)
@@ -178,7 +167,7 @@ mod tests {
                 .find(|local| local.name() == WasmFrameLocals::NONE_NAME)
                 .is_some_and(|local| local.kind().is_call_retention_exempt())
         );
-        locals.insert("__tmp0".to_string(), 7);
+        locals.insert("__tmp0".to_string(), 6);
         assert_eq!(locals.local_kind("__tmp0"), Some(WasmFrameLocalKind::Value));
         assert!(
             locals

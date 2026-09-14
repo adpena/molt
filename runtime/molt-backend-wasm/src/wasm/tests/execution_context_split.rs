@@ -1,422 +1,370 @@
+use super::native_callable::{
+    native_callable_wasm_temp_dir, real_execution_tool, run_execution_command,
+};
 use super::support::*;
 use crate::ir::ExecutionContextPolicy;
-use wasmparser::Operator;
+use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
-/// Return the fixed operand-stack effect that wasmparser assigns to an
-/// ordinary fallthrough operator. This is generated from wasmparser's operator
-/// table so newly emitted scalar instructions join the proof surface with
-/// their typed stack signature instead of requiring another local whitelist.
-///
-/// Custom-arity instructions stay fail-closed: their effect depends on module
-/// types or control labels and must be modeled explicitly by `frame_paths`.
-/// Exception instructions are also excluded even when their stack arity is
-/// fixed because they transfer control rather than falling through normally.
-fn frame_proof_linear_stack_effect(op: &Operator<'_>) -> Option<(u32, u32)> {
-    macro_rules! classify_operator {
-        (
-            $(
-                @$proposal:ident $variant:ident
-                $({ $($arg:ident: $argty:ty),* })?
-                => $visit:ident ($($annotation:tt)*)
-            )*
-        ) => {
-            match op {
-                $(
-                    Operator::$variant $( { $($arg: _,)* .. } )? => {
-                        classify_operator!(@effect @$proposal $($annotation)*)
-                    }
-                )*
-                _ => None,
-            }
-        };
-        (@effect @exceptions $($annotation:tt)*) => {
-            None
-        };
-        (@effect @legacy_exceptions $($annotation:tt)*) => {
-            None
-        };
-        (@effect @$proposal:ident arity $pops:literal -> $pushes:literal) => {
-            Some(($pops, $pushes))
-        };
-        (@effect @$proposal:ident arity custom) => {
-            None
-        };
-    }
-
-    wasmparser::for_each_operator!(classify_operator)
+// Execute real dispatch conditions: a value-oblivious CFG walker invents
+// impossible state-dispatch paths before entry. Runtime imports are explicit
+// observation boundaries, never generic zero stubs.
+const EXECUTE_FRAME_CASES: &str = r#"
+const fs = require('fs');
+const assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const boxedNone = BigInt(config.boxed_none);
+const boxedFalse = BigInt(config.boxed_false);
+const boxedTrue = BigInt(config.boxed_true);
+let state;
+function reset(label, inherited = false, exceptionAt = 0) {
+  state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
+           lines: [], polls: 0, exceptionAt, pending: false};
 }
-
-/// Explore the emitted structured control-flow graph, treating data-dependent
-/// branches nondeterministically. A static exit-site count is not a frame proof:
-/// the split owner has normal, exceptional and chunk-stop return paths. Each
-/// reachable path must mint/pop its frame exactly once (inherited chunks: zero).
-/// The finite state is (instruction, enters, exits); invalid counts fail before
-/// insertion, so loops cannot hide an accumulating frame leak or make this walk
-/// unbounded. Unsupported control families fail closed, rather than falling
-/// through as if they were arithmetic.
-fn frame_paths(
-    ops: &[Operator<'_>],
-    enter: u32,
-    exit: u32,
-    owned_frames: u8,
-) -> Result<usize, String> {
-    let terminal = ops.len();
-    let mut ends = vec![terminal; terminal + 1];
-    let mut alternatives = vec![None; terminal];
-    let mut target_owners = vec![Vec::new(); terminal];
-    let mut else_owners = vec![None; terminal];
-    let mut stack = vec![terminal]; // The implicit function label.
-    for (index, op) in ops.iter().enumerate() {
-        // Retain only the labels actually referenced by edges, not a copy of
-        // the whole control stack at every instruction: O(instructions + edges)
-        // storage even for deeply nested emitted blocks.
-        let branch_owner = |depth: u32| -> Result<usize, String> {
-            let slot = stack
-                .len()
-                .checked_sub(depth as usize)
-                .and_then(|slot| slot.checked_sub(1))
-                .ok_or_else(|| format!("invalid branch depth {depth} at {index}"))?;
-            Ok(stack[slot])
-        };
-        match op {
-            Operator::Block { .. } | Operator::Loop { .. } | Operator::If { .. } => {
-                stack.push(index)
-            }
-            Operator::Else => {
-                let owner = *stack.last().ok_or("else without an if")?;
-                if owner == terminal || !matches!(ops[owner], Operator::If { .. }) {
-                    return Err(format!("else {index} does not belong to an if"));
-                }
-                alternatives[owner] = Some(index + 1);
-                else_owners[index] = Some(owner);
-            }
-            Operator::End => {
-                let owner = stack.pop().ok_or("end without a control label")?;
-                ends[owner] = index + 1;
-            }
-            Operator::Br { relative_depth } | Operator::BrIf { relative_depth } => {
-                target_owners[index].push(branch_owner(*relative_depth)?);
-            }
-            Operator::BrTable { targets } => {
-                target_owners[index].push(branch_owner(targets.default())?);
-                for depth in targets.targets() {
-                    target_owners[index]
-                        .push(branch_owner(depth.map_err(|error| error.to_string())?)?);
-                }
-            }
-            _ => {}
-        }
-    }
-    if !stack.is_empty() {
-        return Err("unterminated WASM control label".into());
-    }
-    let mut pending = vec![(0, 0u8, 0u8)];
-    let mut visited = BTreeSet::new();
-    let mut returns = BTreeSet::new();
-    while let Some((index, mut enters, mut exits)) = pending.pop() {
-        if !visited.insert((index, enters, exits)) {
-            continue;
-        }
-        if index == terminal {
-            if (enters, exits) != (owned_frames, owned_frames) {
-                return Err(format!(
-                    "function fallthrough has {enters} entries and {exits} exits"
-                ));
-            }
-            returns.insert(index);
-            continue;
-        }
-        let branch = |owner: usize| -> usize {
-            if owner < terminal && matches!(ops[owner], Operator::Loop { .. }) {
-                owner + 1
-            } else {
-                ends[owner]
-            }
-        };
-        let mut successors = Vec::new();
-        match &ops[index] {
-            Operator::Call { function_index } if *function_index == enter => {
-                if enters == owned_frames {
-                    return Err(format!("unexpected frame entry at instruction {index}"));
-                }
-                enters += 1;
-                successors.push(index + 1);
-            }
-            Operator::Call { function_index } if *function_index == exit => {
-                if exits == enters {
-                    return Err(format!(
-                        "frame pop without owned entry at instruction {index}"
-                    ));
-                }
-                exits += 1;
-                successors.push(index + 1);
-            }
-            Operator::If { .. } => {
-                successors.extend([index + 1, alternatives[index].unwrap_or(ends[index])]);
-            }
-            Operator::Else => successors.push(ends[else_owners[index].unwrap()]),
-            Operator::Br { .. } => successors.push(branch(target_owners[index][0])),
-            Operator::BrIf { .. } => {
-                successors.extend([index + 1, branch(target_owners[index][0])])
-            }
-            Operator::BrTable { .. } => {
-                successors.extend(target_owners[index].iter().copied().map(branch));
-            }
-            Operator::Return => {
-                if (enters, exits) != (owned_frames, owned_frames) {
-                    return Err(format!(
-                        "return {index} has {enters} entries and {exits} exits"
-                    ));
-                }
-                returns.insert(index);
-            }
-            Operator::Unreachable => {} // A trap is not a normal function return.
-            Operator::Block { .. }
-            | Operator::Loop { .. }
-            | Operator::End
-            | Operator::Call { .. }
-            | Operator::CallIndirect { .. } => successors.push(index + 1),
-            other if frame_proof_linear_stack_effect(other).is_some() => successors.push(index + 1),
-            other => {
-                return Err(format!(
-                    "unsupported frame-proof operator at {index}: {other:?}"
-                ));
-            }
-        }
-        pending.extend(successors.into_iter().map(|next| (next, enters, exits)));
-    }
-    Ok(returns.len())
+function ensure(condition, message) {
+  assert.ok(condition, state.label + ': ' + message + '; state=' + JSON.stringify(state));
 }
-
-#[test]
-fn frame_path_proof_derives_linear_scalar_ops_from_wasmparser_signatures() {
-    assert_eq!(
-        frame_proof_linear_stack_effect(&Operator::I64GeU),
-        Some((2, 1))
-    );
-    assert_eq!(
-        frame_proof_linear_stack_effect(&Operator::I32Mul),
-        Some((2, 1))
-    );
-    assert_eq!(
-        frame_proof_linear_stack_effect(&Operator::F64ConvertI64S),
-        Some((1, 1))
-    );
-    assert_eq!(
-        frame_proof_linear_stack_effect(&Operator::Drop),
-        Some((1, 0))
-    );
-
-    let enter = Operator::Call { function_index: 0 };
-    let exit = Operator::Call { function_index: 1 };
-    let scalar_family = [
-        enter,
-        Operator::I64Const { value: 7 },
-        Operator::I64Const { value: 3 },
-        Operator::I64GeU,
-        Operator::Drop,
-        exit,
-        Operator::Return,
-        Operator::End,
-    ];
-    assert_eq!(frame_paths(&scalar_family, 0, 1, 1).unwrap(), 1);
+function instantiate(path) {
+  const module = new WebAssembly.Module(fs.readFileSync(path));
+  const imports = {env: {
+    memory: new WebAssembly.Memory({initial: config.memory_pages}),
+    __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
+  }};
+  const hooks = {
+    trace_enter_slot(slot) {
+      ensure(state.depth === 0 && state.enters === 0, 'unexpected frame entry');
+      ensure(slot === 5n, 'wrong owner code slot ' + slot);
+      state.depth++; state.enters++; return boxedNone;
+    },
+    trace_exit() {
+      ensure(state.depth === 1 && state.enters === 1 && state.exits === 0,
+             'frame pop without owned entry');
+      state.depth--; state.exits++; return boxedNone;
+    },
+    trace_set_line(line) {
+      ensure(state.depth === 1, 'line update outside the executing frame');
+      state.lines.push(Number(line)); return boxedNone;
+    },
+    exception_pending() {
+      ensure(state.depth === 1, 'exception observer outside the executing frame');
+      state.polls++;
+      state.pending ||= state.polls === state.exceptionAt;
+      return state.pending ? 1n : 0n;
+    },
+    async_work_poll_and_exception_pending() {
+      return hooks.exception_pending();
+    },
+    inc_ref_obj(value) {
+      ensure(value === boxedNone || value === boxedFalse || value === boxedTrue,
+             'unexpected heap retain in scalar split fixture');
+    },
+    dec_ref_obj(value) {
+      ensure(value === boxedNone || value === boxedFalse || value === boxedTrue,
+             'unexpected heap release in scalar split fixture');
+    },
+  };
+  for (const entry of WebAssembly.Module.imports(module)) {
+    if (entry.module === 'env' && entry.kind !== 'function') {
+      assert.ok(entry.name in imports.env, 'unexpected host surface ' + entry.name);
+      continue;
+    }
+    assert.equal(entry.kind, 'function', 'unexpected import ' + entry.module + '.' + entry.name);
+    imports[entry.module] ??= {};
+    imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+      throw new Error(state.label + ': unexpected runtime call ' + entry.module + '.' + entry.name);
+    });
+  }
+  return new WebAssembly.Instance(module, imports).exports;
 }
-
-#[test]
-fn frame_path_proof_rejects_unmodeled_control_even_with_fixed_stack_arity() {
-    assert_eq!(frame_proof_linear_stack_effect(&Operator::ThrowRef), None);
-    assert_eq!(
-        frame_proof_linear_stack_effect(&Operator::ReturnCall { function_index: 2 }),
-        None
-    );
-    assert!(
-        frame_paths(&[Operator::ThrowRef, Operator::End], 0, 1, 0)
-            .unwrap_err()
-            .contains("unsupported frame-proof operator")
-    );
+function verifyOwner(exports, owner, lines, polls, exceptionAt = 0) {
+  reset(owner + ' exceptionAt=' + exceptionAt, false, exceptionAt);
+  exports[owner]();
+  ensure(state.depth === 0 && state.enters === 1 && state.exits === 1,
+         'owner return must enter/pop exactly once');
+  assert.deepEqual(state.lines, lines, state.label + ': executed chunk lines');
+  assert.equal(state.polls, polls, state.label + ': executed chunk exception checks');
+  assert.equal(state.pending, exceptionAt !== 0, state.label + ': exception remains pending');
 }
+reset('instantiate split module');
+const baseline = config.cases[0];
+const app = instantiate(baseline.module);
+// Unmodified generated chunks: their real status and inherited frame behavior.
+for (const chunk of baseline.chunks) {
+  reset('actual inherited chunk ' + chunk.name, true);
+  const status = app[chunk.name]();
+  assert.equal(status, chunk.continues ? boxedTrue : boxedFalse, state.label);
+  ensure(state.depth === 1 && state.enters === 0 && state.exits === 0,
+         'inherited chunk changed caller frame ownership');
+  assert.deepEqual(state.lines, chunk.lines, state.label);
+  assert.equal(state.polls, 0, state.label);
+}
+// Actual owner/chunks: normal return and pending exception at each boundary.
+verifyOwner(app, baseline.owner, baseline.chunks.flatMap(c => c.lines), baseline.chunks.length);
+for (let boundary = 1; boundary <= baseline.chunks.length; boundary++) {
+  verifyOwner(app, baseline.owner,
+    baseline.chunks.slice(0, boundary).flatMap(c => c.lines), boundary, boundary);
+}
+// Separate status-injection fixtures cover each owner stop and fallthrough;
+// they are not evidence for unmodified chunk return behavior.
+for (const test of config.cases.slice(1)) {
+  reset('instantiate status module ' + test.owner);
+  const statusApp = instantiate(test.module);
+  verifyOwner(statusApp, test.owner,
+    test.chunks.slice(0, test.executed).flatMap(c => c.lines), test.executed);
+}
+// The same observer rejects executable malformed frame lifecycles.
+reset('instantiate malformed-frame controls');
+const malformed = instantiate(config.negative_module);
+for (const [name, message] of [
+  ['missing_entry', /frame pop without owned entry/],
+  ['double_pop', /frame pop without owned entry/],
+  ['reentry', /unexpected frame entry/],
+  ['missing_exit', /owner return must enter\/pop exactly once/],
+]) {
+  assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
+}
+console.log('split-frame execution: actual chunks, normal/exceptional owner, status edges, negative controls passed');
+"#;
 
-#[test]
-fn wasm_compiles_split_local_frame_with_inherited_chunks() {
+fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
     let mut ops = vec![OpIR {
-        kind: "trace_enter_slot".to_string(),
+        kind: "trace_enter_slot".into(),
         value: Some(5),
         ..OpIR::default()
     }];
     for line in 1..=6 {
         ops.push(OpIR {
-            kind: "line".to_string(),
+            kind: "line".into(),
             value: Some(line),
             ..OpIR::default()
         });
         ops.push(OpIR {
-            kind: "const_none".to_string(),
+            kind: "const_none".into(),
             out: Some(format!("v{line}")),
             ..OpIR::default()
         });
     }
     ops.extend([
-        OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
+        wasm_test_op("trace_exit", None, vec![]),
+        wasm_test_op("ret_void", None, vec![]),
     ]);
     let original = FunctionIR {
-        name: "wasm_framed_large".to_string(),
+        name: name.into(),
         ops,
         execution_context: ExecutionContextPolicy::Local,
         ..FunctionIR::default()
     };
     let mut occupied = BTreeSet::from([original.name.clone()]);
-    let (stub, chunks) = crate::passes::split_large_function(original, 3, &mut occupied).unwrap();
-    let stub_name = stub.name.clone();
-    let chunk_names = chunks
+    crate::passes::split_large_function(original, 3, &mut occupied).unwrap()
+}
+
+fn chunk_case(chunk: &FunctionIR) -> serde_json::Value {
+    assert_eq!(chunk.execution_context, ExecutionContextPolicy::Inherited);
+    let returned = chunk.ops.iter().find(|op| op.kind == "ret").unwrap();
+    let returned_name = &returned.args.as_ref().unwrap()[0];
+    let producer = chunk
+        .ops
         .iter()
-        .map(|chunk| chunk.name.clone())
-        .collect::<Vec<_>>();
-    let ir = SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
-    };
-    crate::validate_simple_ir(&ir).unwrap();
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        native_eh_enabled: false,
-        reloc_enabled: false,
-        wasm_profile: WasmProfile::Auto,
-        ..WasmCompileOptions::default()
+        .find(|op| op.out.as_ref() == Some(returned_name))
+        .unwrap();
+    assert_eq!(producer.kind, "const_bool");
+    json!({
+        "name": chunk.name,
+        "continues": producer.value == Some(1),
+        "lines": chunk.ops.iter().filter(|op| op.kind == "line")
+            .map(|op| op.value.unwrap()).collect::<Vec<_>>(),
     })
-    .compile(ir);
-    wasmparser::Validator::new().validate_all(&wasm).unwrap();
-    let imports = wasm_function_import_names(&wasm);
-    assert!(imports.iter().any(|name| name == "trace_enter_slot"));
-    assert!(imports.iter().any(|name| name == "trace_exit"));
-    let import_indices = wasm_function_import_indices(&wasm);
-    let enter = import_indices["trace_enter_slot"];
-    let exit = import_indices["trace_exit"];
-    let owner_ops = wasm_operators_for_export(&wasm, &stub_name);
-    assert!(frame_paths(&owner_ops, enter, exit, 1).unwrap() > 0);
-    let exports = wasm_function_export_indices(&wasm);
-    for chunk_name in chunk_names {
-        assert!(
-            exports.contains_key(&chunk_name),
-            "missing split chunk {chunk_name}"
-        );
-        let calls = wasm_direct_call_indices_for_export(&wasm, &chunk_name);
-        assert!(!calls.contains(&enter), "inherited chunk minted a frame");
-        assert!(!calls.contains(&exit), "inherited chunk popped its caller");
-        let operators = wasm_operators_for_export(&wasm, &chunk_name);
-        assert!(frame_paths(&operators, enter, exit, 0).unwrap() > 0);
+}
+
+fn malformed_frame_module() -> Vec<u8> {
+    use wasm_encoder::{
+        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+        ImportSection, Instruction, Module, TypeSection, ValType,
+    };
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    types.ty().function([], [ValType::I64]);
+    types.ty().function([], []);
+    module.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import("molt_runtime", "trace_enter_slot", EntityType::Function(0));
+    imports.import("molt_runtime", "trace_exit", EntityType::Function(1));
+    module.section(&imports);
+    let mut functions = FunctionSection::new();
+    let mut exports = ExportSection::new();
+    let mut code = CodeSection::new();
+    for (index, (name, calls)) in [
+        ("missing_entry", vec![1]),
+        ("double_pop", vec![0, 1, 1]),
+        ("reentry", vec![0, 0, 1]),
+        ("missing_exit", vec![0]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        functions.function(2);
+        exports.export(name, ExportKind::Func, 2 + index as u32);
+        let mut body = Function::new([]);
+        for callee in calls {
+            if callee == 0 {
+                body.instruction(&Instruction::I64Const(5));
+            }
+            body.instruction(&Instruction::Call(callee));
+            body.instruction(&Instruction::Drop);
+        }
+        body.instruction(&Instruction::End);
+        code.function(&body);
     }
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+    module.finish()
 }
 
 #[test]
-fn frame_path_proof_checks_branch_targets_and_rejects_balanced_site_count_lies() {
-    use wasmparser::BlockType;
-    let enter = || Operator::Call { function_index: 0 };
-    let exit = || Operator::Call { function_index: 1 };
-    let good = vec![
-        enter(),
-        Operator::Block {
-            blockty: BlockType::Empty,
-        },
-        Operator::BrIf { relative_depth: 0 },
-        exit(),
-        Operator::Return,
-        Operator::End,
-        exit(),
-        Operator::Return,
-        Operator::End,
-    ];
-    assert_eq!(frame_paths(&good, 0, 1, 1).unwrap(), 2);
-    // One entry/one exit in the byte stream, but the taken branch leaks its frame.
-    let missing = vec![
-        enter(),
-        Operator::Block {
-            blockty: BlockType::Empty,
-        },
-        Operator::BrIf { relative_depth: 0 },
-        exit(),
-        Operator::Return,
-        Operator::End,
-        Operator::Return,
-        Operator::End,
-    ];
+fn wasm_compiles_split_local_frame_with_inherited_chunks() {
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "split-frame execution proof",
+    )
+    .expect("Node is required: a static dispatch walker cannot prove emitted frame paths");
+    let (stub, chunks) = split_frame_fixture("wasm_framed_large");
     assert!(
-        frame_paths(&missing, 0, 1, 1)
-            .unwrap_err()
-            .contains("1 entries and 0 exits")
+        chunks.len() > 1,
+        "fixture must exercise cross-chunk ownership"
     );
-    let double = vec![enter(), exit(), exit(), Operator::Return, Operator::End];
-    assert!(
-        frame_paths(&double, 0, 1, 1)
-            .unwrap_err()
-            .contains("pop without owned entry")
-    );
-    let reentry = vec![
-        enter(),
-        Operator::Loop {
-            blockty: BlockType::Empty,
-        },
-        exit(),
-        enter(),
-        Operator::BrIf { relative_depth: 0 },
-        Operator::End,
-        exit(),
-        Operator::Return,
-        Operator::End,
-    ];
-    assert!(
-        frame_paths(&reentry, 0, 1, 1)
-            .unwrap_err()
-            .contains("unexpected frame entry")
-    );
-    assert!(frame_paths(&[enter(), exit(), Operator::End], 0, 1, 0).is_err());
-
-    let alternatives = vec![
-        enter(),
-        Operator::If {
-            blockty: BlockType::Empty,
-        },
-        exit(),
-        Operator::Return,
-        Operator::Else,
-        exit(),
-        Operator::Return,
-        Operator::End,
-        Operator::Unreachable,
-        // Statically present, but not executable on either branch.
-        exit(),
-        Operator::End,
-    ];
-    assert_eq!(frame_paths(&alternatives, 0, 1, 1).unwrap(), 2);
-    let loop_without_frame_mutation = vec![
-        enter(),
-        Operator::Loop {
-            blockty: BlockType::Empty,
-        },
-        Operator::BrIf { relative_depth: 0 },
-        Operator::End,
-        exit(),
-        Operator::End,
-    ];
-    assert_eq!(
-        frame_paths(&loop_without_frame_mutation, 0, 1, 1).unwrap(),
-        1
-    );
-    let escape_function = vec![
-        enter(),
-        Operator::Br { relative_depth: 0 },
-        exit(),
-        Operator::End,
-    ];
-    assert!(
-        frame_paths(&escape_function, 0, 1, 1)
-            .unwrap_err()
-            .contains("fallthrough")
+    let chunk_count = chunks.len();
+    let baseline = json!({
+        "owner": stub.name,
+        "chunks": chunks.iter().map(chunk_case).collect::<Vec<_>>(),
+    });
+    let mut fixtures = vec![(
+        baseline,
+        std::iter::once(stub).chain(chunks).collect::<Vec<_>>(),
+    )];
+    // Preserve the actual fixture. These sibling functions explicitly inject
+    // only the chunk status contract to execute every owner exit.
+    for stop_at in 0..=chunk_count {
+        let (stub, mut chunks) = split_frame_fixture(&format!("wasm_framed_status_{stop_at}"));
+        assert_eq!(chunks.len(), chunk_count);
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            for op in &mut chunk.ops {
+                if op.kind == "const_bool"
+                    && op
+                        .out
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("__molt_split_continue_"))
+                {
+                    op.value = Some(i64::from(index != stop_at));
+                }
+            }
+        }
+        let case = json!({
+            "owner": stub.name,
+            "chunks": chunks.iter().map(chunk_case).collect::<Vec<_>>(),
+            "executed": (stop_at + 1).min(chunk_count),
+        });
+        fixtures.push((
+            case,
+            std::iter::once(stub).chain(chunks).collect::<Vec<_>>(),
+        ));
+    }
+    let (temp, _remove_temp) = native_callable_wasm_temp_dir();
+    let mut cases = Vec::new();
+    let mut memory_pages = 0;
+    let mut table_entries = 0;
+    for (index, (mut case, functions)) in fixtures.into_iter().enumerate() {
+        // Each scenario owns a real module entry. Merely placing sibling owners
+        // in the baseline module does not root them: the production pipeline
+        // correctly removes those unreferenced functions and all their chunks.
+        let ir = SimpleIR {
+            functions,
+            profile: None,
+        };
+        crate::validate_simple_ir(&ir).unwrap();
+        let wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: false,
+            wasm_profile: WasmProfile::Auto,
+            ..WasmCompileOptions::default()
+        })
+        .compile(ir);
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let import_indices = wasm_function_import_indices(&wasm);
+        let enter = import_indices["trace_enter_slot"];
+        let exit = import_indices["trace_exit"];
+        let exports = wasm_function_export_indices(&wasm);
+        let owner = case["owner"].as_str().unwrap();
+        assert!(exports.contains_key(owner), "missing split owner {owner}");
+        for chunk in case["chunks"].as_array().unwrap() {
+            let name = chunk["name"].as_str().unwrap();
+            if !exports.contains_key(name) {
+                // Actual baseline chunks are executed independently below and
+                // must exist. Injected-status fixtures prove owner behavior;
+                // their unreachable chunks may be optimized away legitimately.
+                assert_ne!(index, 0, "missing original split chunk {name}");
+                continue;
+            }
+            let calls = wasm_direct_call_indices_for_export(&wasm, name);
+            assert!(
+                !calls.contains(&enter),
+                "inherited chunk {name} minted a frame"
+            );
+            assert!(
+                !calls.contains(&exit),
+                "inherited chunk {name} popped its caller"
+            );
+        }
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::ImportSection(reader) = payload.unwrap() {
+                for import in reader.into_imports() {
+                    match import.unwrap().ty {
+                        TypeRef::Memory(ty) => memory_pages = memory_pages.max(ty.initial),
+                        TypeRef::Table(ty) => table_entries = table_entries.max(ty.initial),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let module_path = temp.join(format!("split_frame_{index}.wasm"));
+        fs::write(&module_path, wasm).expect("write emitted split frame module");
+        case["module"] = json!(module_path);
+        cases.push(case);
+    }
+    let negative = malformed_frame_module();
+    wasmparser::Validator::new()
+        .validate_all(&negative)
+        .unwrap();
+    let negative_path = temp.join("malformed_frame.wasm");
+    let config_path = temp.join("split_frame_cases.json");
+    fs::write(&negative_path, negative).expect("write executable frame negative controls");
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&json!({
+            "negative_module": negative_path,
+            "memory_pages": memory_pages,
+            "table_entries": table_entries,
+            "boxed_none": molt_codegen_abi::box_none_bits().to_string(),
+            "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
+            "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
+            "cases": cases,
+        }))
+        .unwrap(),
+    )
+    .expect("write named split frame execution cases");
+    run_execution_command(
+        Command::new(node)
+            .arg("-e")
+            .arg(EXECUTE_FRAME_CASES)
+            .arg(&config_path),
+        &format!(
+            "execute emitted frame ownership cases from {}",
+            config_path.display()
+        ),
     );
 }
 

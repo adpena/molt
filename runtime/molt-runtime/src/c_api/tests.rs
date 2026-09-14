@@ -897,10 +897,22 @@ fn create_guarded_test_class(
             attrs.len() as u64,
             std::mem::size_of::<u64>() as i64,
             1,
-            0,
+            1, // Install the supplied bases before inherited-hook dispatch.
         )
     };
-    assert!(!obj_from_bits(class_bits).is_none());
+    assert!(
+        !obj_from_bits(class_bits).is_none() && !exception_pending(_py),
+        "guarded class construction failed: {:?}",
+        crate::builtins::exceptions::exception_last_bits_noinc(_py)
+            .and_then(|bits| obj_from_bits(bits).as_ptr())
+            .map(|ptr| crate::builtins::exceptions::format_exception_message(_py, ptr))
+    );
+    let class_ptr = obj_from_bits(class_bits).as_ptr().expect("guarded class");
+    assert_eq!(
+        &*unsafe { crate::class_mro_view(_py, class_ptr) },
+        &[class_bits, builtins.object],
+        "guarded fixture must establish its real object base before publishing"
+    );
     dec_ref_bits(_py, name_bits);
     (class_bits, attr_storage)
 }
@@ -1146,7 +1158,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         let class_flags =
             unsafe { (*crate::object::header_from_obj_ptr(class_ptr)).load_metadata_flags() };
         assert_ne!(
-            class_flags & crate::object::HEADER_FLAG_CLASS_HAS_FINALIZER,
+            class_flags & crate::object::HEADER_FLAG_CLASS_DECLARES_FINALIZER,
             0,
             "sealed class must carry the finalizer fact before allocation"
         );
@@ -1154,7 +1166,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            unsafe { crate::object::object_class_has_finalizer(inst_ptr) },
+            unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
             "instance finalization must derive from the current class authority"
         );
 
@@ -1195,7 +1207,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            !unsafe { crate::object::object_class_has_finalizer(inst_ptr) },
+            !unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
             "plain instance must not derive finalizer sensitivity"
         );
 

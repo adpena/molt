@@ -10,18 +10,16 @@ pub(super) fn emit_allocation_runtime_op(
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
-    arena_local: Option<u32>,
 ) -> bool {
     match op.kind.as_str() {
-        "alloc" | "stack_alloc" | "alloc_class" => {}
+        "stack_alloc" => panic!(
+            "{}",
+            crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED
+        ),
+        "alloc" | "alloc_class" => {}
         _ => return false,
     }
 
-    // Arena fast path: NoEscape allocations marked
-    // `arena_eligible` go through `molt_arena_alloc_object`
-    // (same NaN-boxed contract as `molt_alloc` but bumps
-    // out of the per-function ScopeArena). The arena is
-    // freed once at every return in O(1).
     if op.kind == "alloc_class" {
         func.instruction(&Instruction::I64Const(op.value.unwrap()));
         let class_name = op
@@ -34,16 +32,6 @@ pub(super) fn emit_allocation_runtime_op(
             func,
             reloc_enabled,
             import_ids[crate::wasm_abi_generated::WasmRuntimeImport::AllocClass],
-        );
-    } else if op.arena_eligible == Some(true)
-        && let Some(arena_idx) = arena_local
-    {
-        func.instruction(&Instruction::LocalGet(arena_idx));
-        func.instruction(&Instruction::I64Const(op.value.unwrap()));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaAllocObject],
         );
     } else {
         func.instruction(&Instruction::I64Const(op.value.unwrap()));

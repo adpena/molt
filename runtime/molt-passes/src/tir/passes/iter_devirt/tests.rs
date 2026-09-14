@@ -210,13 +210,13 @@ fn devirt_list_from_build_list() {
         "GetIter should be replaced with len"
     );
 
-    // Entry block should have CallBuiltin("len").
+    // Entry block should use the existing backend-supported length primitive.
     assert!(
-        entry.ops.iter().any(|op| {
-            op.opcode == OpCode::CallBuiltin
-                && op.attrs.get("name") == Some(&AttrValue::Str("len".to_string()))
-        }),
-        "entry should have CallBuiltin('len')"
+        entry
+            .ops
+            .iter()
+            .any(|op| { op.opcode == OpCode::Copy && op.length_argument().is_some() }),
+        "entry should have the len primitive"
     );
 
     // Body block should have Index op at position 0.
@@ -320,8 +320,8 @@ fn devirt_list_from_function_value_type() {
     let len_op = entry
         .ops
         .iter()
-        .find(|op| op.opcode == OpCode::CallBuiltin)
-        .expect("typed-list devirt should synthesize len call");
+        .find(|op| op.opcode == OpCode::Copy && op.length_argument().is_some())
+        .expect("typed-list devirt should synthesize the len primitive");
     assert!(
         !len_op.attrs.contains_key("_fast_int"),
         "synthesized len must use value_types for scalar proof, not _fast_int attrs"

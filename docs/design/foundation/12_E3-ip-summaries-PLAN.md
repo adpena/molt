@@ -2,7 +2,12 @@
 
 # E3: Interprocedural Escape + Purity Summaries — Complete Implementation Plan
 
-## 1. Current State (verified against live code)
+Historical June 2026 proposal, not a current implementation inventory. Design 03
+owns the interprocedural proposal; Designs 20 and 49 own current lifetime and
+field contracts. Generated operation effects replaced the handwritten builtin
+effect tables below. Capture facts do not establish placement or release safety.
+
+## 1. Historical source snapshot
 
 ### What exists today
 
@@ -20,7 +25,7 @@ Three fields. The module docs at lines 13-14 explicitly name the missing slots: 
 The per-function escape analysis is fully functional. `OpCode::Call` arm (line 367-369) unconditionally forces `GlobalEscape` regardless of whether the callee is known-pure. This is the precise legacy line E3 replaces.
 
 **`alias_analysis.rs` — `AliasAnalysisResult::compute()` (line 424)**
-Anchors escape analysis as the S5 points-to phase. `AliasAnalysisResult.escape` is computed by `escape_analysis::analyze(func)` (line 437). The alias oracle's `is_barrier_for`, `may_observe_slot`, and `is_stack_object` all flow from this escape map. Improving the escape map improves all three queries transitively.
+Anchors escape analysis as the S5 points-to phase. `AliasAnalysisResult.escape` is computed by `escape_analysis::analyze(func)` (line 437). The alias oracle's `is_barrier_for`, `may_observe_slot`, and `is_local_allocation` all flow from this escape map. Improving the escape map improves all three queries transitively.
 
 **`module_phase.rs` — `run_module_pipeline()` (line 115)**
 Pipeline order today (verified lines 116-178):
@@ -189,9 +194,15 @@ Files changed:
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/escape_analysis.rs` — change `analyze(func)` to `analyze(func, summaries: Option<&ModuleSummaries>)`; replace `OpCode::Call → GlobalEscape` (line 367-369) with the precise `does_not_capture_param` conditional
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/alias_analysis.rs` — update `AliasAnalysisResult::compute(func)` (line 424) to pass `summaries` through; signature becomes `compute(func, summaries: Option<&ModuleSummaries>)`; `AliasAnalysis::compute` in the `Analysis` impl (line 724) needs the summaries source — this is where the `TargetInfo` field enters
 - `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs` — add `pub ip_summaries: Option<Arc<ModuleSummaries>>` field; populate in `module_phase::run_module_pipeline` before the per-function pipeline runs (the rebuild at line 172-173 produces the final summaries; set them on `tti` before `compile_module_parallel` is called)
-- All call sites of `escape_analysis::analyze` (there are 3: in `alias_analysis.rs`, in `escape_analysis::run`, and in any test that calls `analyze` directly) need the new argument
+- Migrate every current analysis consumer and its invalidation keys together.
+  The escape transform and `run` adapter no longer exist; do not reintroduce them.
 
-**Soundness argument**: The escape analysis is monotone — it only ever moves values UP the lattice (NoEscape → ArgEscape → GlobalEscape). Adding `does_not_capture_param` summaries can only prevent a value from escalating from ArgEscape to GlobalEscape at a Call site. If the summary is wrong (falsely claims does-not-capture), a value that should be GlobalEscape is left ArgEscape. ArgEscape values are stack-promoted and RC-stripped. A false-positive `does_not_capture` therefore causes a use-after-free. The computation is conservative-correct because:
+**Required soundness argument**: capture propagation is monotone, but a false
+noncapture summary can still invalidate alias and allocation-elimination proofs.
+Neither `NoEscape` nor `ArgEscape` permits frame placement or RC stripping.
+Proof requires every parameter alias, returned owner, retained edge and callback;
+missing facts are unknown. In particular, the historical rules below are design
+obligations to verify, not proof that the proposed computation is correct:
 1. Recursive SCCs get `does_not_capture=false` (conservative bottom)
 2. Unknown/opaque callees (no summary) fall through to `false` → GlobalEscape preserved
 3. The `does_not_capture` proof requires `EscapeState::NoEscape || EscapeState::ArgEscape` at the local escape analysis of the callee's param, which means the callee's own escape analysis also proved non-capture
@@ -227,13 +238,13 @@ This is the "firing instrument" — an unexpectedly zero count is immediately vi
 All shapes must be byte-identical vs CPython 3.12 / 3.13 / 3.14 on native + WASM:
 
 ```python
-# Shape 1: basic does-not-capture → stack promotion across a user call
-def identity(x): return x  # does_not_capture_param[0]=true, is_pure=true
+# Shape 1: returned parameter alias must remain a capture obligation
+def identity(x): return x  # returning x is not a noncapture proof
 
 def f():
     class Box: pass
     b = Box()
-    identity(b)  # b should not escape through identity; stack-promotable
+    identity(b)  # discarded result does not prove frame lifetime or RC freedom
     return 42
 
 print(f())  # 42
@@ -303,10 +314,11 @@ except ZeroDivisionError:
 
 ## 7. Perf Gate
 
-`bench_sum` is already 3.8× faster than CPython (module_slot_promotion). E3 targets a measurable stack-promotion improvement on class-heavy code:
-
-- Create a benchmark `bench_points.py`: construct N `Point(x, y)` objects locally, call `distance(p)` (a pure function), accumulate. Before E3: `p` escapes through `distance` call → heap-alloc. After: `does_not_capture_param[0]=true` → stack-alloc, RC-free.
-- Perf gate: `bench_points` must be ≥ 1.1× faster than CPython on native release-fast. If it does not fire (stack-promotion not happening), `MOLT_EA_STATS=1` exposes the zero-downgrade count.
+Historical speed ratios above are not current receipts. Measure class-heavy
+workloads before and after identity-bound summaries, recording allocation, RC,
+binary-size and wall-clock changes. Attribute gains to the transformation that
+actually fired; noncapture alone cannot promise stack allocation or zero RC.
+Native and WASM behavior must agree before accepting a performance claim.
 
 ---
 

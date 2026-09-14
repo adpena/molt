@@ -2,6 +2,13 @@
 
 # Interprocedural Specialization Engine — Complete Implementation Blueprint
 
+This is a design proposal, not evidence that parameter capture summaries are
+implemented. Current effect authority is generated from `op_kinds.toml`; callable
+spellings and receiver hints grant neither purity nor noncapture. The live
+intraprocedural lifetime contract is documented in Design 20 and Design 49.
+Capture summaries may refine alias facts; they do not prove destruction lifetime,
+frame placement, allocation freedom, or permission to strip an owner's release.
+
 ## 1. Precise Problem Statement
 
 ### Why This Is Load-Bearing
@@ -10,7 +17,7 @@ molt has **one body per function**. Every parameter enters as `DynBox` unless an
 
 1. **escape_analysis.rs:367** — `OpCode::Call` unconditionally marks every argument `GlobalEscape` (line 367). User functions are "opaque-impure" to the escape analysis because there are no callee summaries saying "I don't capture param[0]". Stack-allocation therefore stops dead at every user-function call boundary.
 
-2. **sccp.rs, licm.rs, gvn.rs** — all three check `is_pure()` or `effect_free` via the effects table (effects.rs:427, 448–478), but that table only covers builtins. User-defined functions are always impure → LICM cannot hoist `y = f(x)` out of a loop even when `f` observably has no side effects, SCCP cannot propagate the return value, and CSE cannot deduplicate repeated calls.
+2. **SCCP, LICM, GVN** — generated operation effects do not prove arbitrary callable bodies pure. Exact SCCP evaluators admit concrete operands locally; a callable name alone cannot justify hoisting or deduplication. Interprocedural optimization requires identity-bound body summaries with the relevant exception and callback effects.
 
 3. **Representation specialization (the Julia axis)** — `add(a, b)` where `a` and `b` are proven `RawI64Safe` at every call site compiles the generic body that tests for BigInt and dispatches through boxed helpers. Julia solves this by cloning + compiling per-`(Repr, Repr)` tuple; this is **the** performance multiplier for numeric code.
 
@@ -51,7 +58,7 @@ pub struct FunctionSummary {
     /// does_not_capture_param[i] = true iff parameter i never escapes the
     /// function (escape state is NoEscape or ArgEscape in the function's own
     /// escape map). Enables IP-escape: a caller's allocation passed as arg[i]
-    /// to this function can remain stack-promotable.
+    /// to this function can retain a local capture fact, not a placement proof.
     pub does_not_capture_param: Vec<bool>,
     /// True iff the function is observationally pure: no store to any heap
     /// location reachable outside the function, no I/O, no raise of an
@@ -71,8 +78,8 @@ pub struct FunctionSummary {
 **Computation** (bottom-up over SCC condensation, exactly as today):
 
 For each function in bottom-up order:
-1. Run `escape_analysis::analyze(func)` → `HashMap<ValueId, EscapeState>`. The function's entry-block `ValueId`s are the parameter values (they are the `TirValue::id` fields of `func.blocks[func.entry_block].args`). Map each param index `i` to `args[i].id`; `does_not_capture_param[i] = escapes[param_id] != GlobalEscape`.
-2. Compute `is_pure`: scan all blocks for any op that is not in `effects::opcode_is_pure_movable`, and for any `CallBuiltin` whose `builtin_effects` returns `None` or a non-pure entry. A function with any `Call` to another user function is pure iff **that callee's summary** says `is_pure=true` (bottom-up order guarantees it's already computed). A function with any `CallMethod` or opaque call is `is_pure=false` (conservative). Exception: a function with only `CheckException` (no handler) and whose body is otherwise pure is still pure — `CheckException` is a read of a flag, not a write.
+1. Extend the shared escape analysis to explicitly seed parameter values before computing parameter summaries. The current allocation-root analysis does not return facts for arbitrary parameters: a missing map entry means unknown, never noncapture. A positive summary requires every alias, CFG edge, retained result and callback use to satisfy the noncapture contract.
+2. Compute body effects from the generated operation authority and identity-bound callee summaries. Builtin and method names are not effect summaries. Exception propagation and callback mutations remain observable; an effect-free result calculation alone does not permit motion across a handler or heap mutation.
 3. Compute `return_repr`: collect all `Return` terminators' returned value `ValueId`s; for each, look up the function's own `repr_by_value` (if available via `representation_plan.rs`). If all return sites agree on the same `Repr`, record it; otherwise `None`.
 4. Compute `return_alias` — migrate the existing `passes::compute_return_alias_summaries` (passes.rs:156) from the legacy SimpleIR layer to TIR, operating on the same bottom-up order (this is the "deferred" slot S4 reserved at 7915b29a0).
 
@@ -220,20 +227,13 @@ Line 220 — `analyze` signature: add `summaries: Option<&ModuleSummaries>`.
 
 Line 367 — `OpCode::Call` arm: use `does_not_capture_param` from summary when available. See §2.2 above for the exact guard.
 
-Line 771 — `run` convenience function: pass `None` as summaries (backward-compatible).
-
 ### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/pass_manager.rs`
 
-The per-function pipeline's `escape_analysis` pass currently calls `escape_analysis::run(func)`. It needs to optionally receive an `Arc<ModuleSummaries>` to pass through. Two options:
-
-**Chosen approach**: Add an optional `module_summaries: Option<Arc<ModuleSummaries>>` field to `PassManager` (not `TargetInfo` — summaries are module-scope, not target-scope). The escape_analysis pass adapter in `build_default_pipeline` captures it:
-
-```rust
-// In pass_manager.rs, PassManager struct:
-pub module_summaries: Option<Arc<ModuleSummaries>>,
-```
-
-The escape analysis `TirPass::run` impl reads `self.module_summaries.as_deref()`.
+The escape transform and its `run` adapter have been removed. Future summary
+integration must enter the shared analysis context consumed by alias analysis and
+SROA, with source/CFG/callee-identity invalidation. Do not recreate a transform to
+transport facts or place module summaries on target configuration. This proposal
+does not prescribe an unimplemented summary API as a current source contract.
 
 ### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs`
 
@@ -316,13 +316,13 @@ The existing `pub fn compute_return_alias_summaries` at passes.rs:156 operates o
 
 **E3 — does_not_capture_param[i]**:
 - The computation is the existing `escape_analysis::analyze` applied intraprocedurally, bottom-up. The analysis is monotone (NoEscape ≤ ArgEscape ≤ GlobalEscape, only ever escalates). The bottom-up property ensures a callee's summary is computed before any caller reads it.
-- The caller-side escape analysis upgrade (line 367): it transitions from GlobalEscape to ArgEscape — the lattice moves DOWN (less escaping), not UP. This is only sound if the callee truly does not capture the argument. The callee's summary says `does_not_capture_param[i] = true` only when the intraprocedural escape analysis of the callee returns NoEscape or ArgEscape for that parameter. That is the same analysis the intra-function path already trusts for builtins (the ArgEscape path at line 390).
+- A caller may refine GlobalEscape to ArgEscape only from an explicit identity-bound noncapture summary for that parameter. This is a proof refinement, not an inference from builtin spelling or purity. Missing parameter facts remain unknown; the current opaque builtin boundary cannot supply this proof.
 - Recursive functions: in a mutual-recursion SCC, the bottom-up pass processes the SCC as a unit. Conservative treatment: for an SCC, `does_not_capture_param[i]` is only set to true when ALL members of the SCC agree. A self-recursive function's parameter always sees a `Call` to itself → the intraprocedural escape analysis marks the parameter at that `Call` as GlobalEscape (no summary available for self, conservative) → `does_not_capture_param[i] = false`. Fail-closed.
 - SCC with multiple members: each member's escape analysis sees the other member's Call as opaque (no summary yet in the bottom-up walk). Conservative → GlobalEscape → `does_not_capture_param[i] = false` for all recursive cycle members. Correct.
 
 **E3 — is_pure**:
 - A function is classified `is_pure = true` only when:
-  1. Every opcode in every block is in `effects::opcode_is_pure_movable` OR is a `CallBuiltin` with `builtin_effects.is_pure() = true` OR is a `Call` to a function whose summary says `is_pure = true`.
+  1. Every operation has admitted generated effects or an identity-bound body summary; builtin and method spellings cannot replace that proof.
   2. No `CallMethod` (always opaque-impure), no opaque calls.
   3. No `TryStart/TryEnd/StateBlock*` (exception handlers have observable side effects).
   4. No `CheckException` that is the *only* impure thing: `CheckException` is a read of a flag that the callee's own behavior sets — it is a function of what the callee did, not an independent side effect. A function with only `CheckException` propagation and otherwise-pure ops is classified pure.
@@ -389,11 +389,11 @@ test_specializer_union_split:
 **ip_summary.rs additions**:
 
 ```
-test_does_not_capture_param_for_pure_function:
-  f(x) { return len(x) } → does_not_capture_param = [true] (len is ArgEscape only).
+test_dynamic_len_does_not_prove_noncapture:
+  f(x) { return len(x) } → does_not_capture_param = [false] without exact callback-free admission.
 
-test_is_pure_function:
-  f(x) { return x * 2 } → is_pure = true.
+test_dynamic_arithmetic_does_not_prove_purity:
+  f(x) { return x * 2 } → is_pure = false without exact operand admission.
 
 test_is_impure_function_with_print:
   f(x) { print(x); return x } → is_pure = false.
@@ -670,8 +670,7 @@ Each phase is a complete structural piece. A phase is not done until its unit te
 | `tir/passes/ip_summary.rs:55` | `ModuleSummaries::compute` | Extend to populate new fields bottom-up |
 | `tir/passes/escape_analysis.rs:367` | `OpCode::Call → GlobalEscape` (unconditional) | Summary-gated ArgEscape when `does_not_capture_param[i]` is true |
 | `tir/passes/escape_analysis.rs:220` | `pub fn analyze(func: &TirFunction)` | Add `summaries: Option<&ModuleSummaries>` param |
-| `tir/passes/escape_analysis.rs:771` | `pub fn run(func)` | Pass `None` summaries (backward-compat) |
-| `tir/pass_manager.rs` | `PassManager` struct | Add `module_summaries: Option<Arc<ModuleSummaries>>` field |
+| Shared analysis context | Capture facts consumed by alias analysis and SROA | Identity-bound summary input and invalidation; no escape transform adapter |
 | `tir/module_phase.rs:110` | `run_module_pipeline` | Add E5 `run_specializer` call between E1 and rebuild |
 | `tir/passes/mod.rs:~34` | module declarations | Add `pub mod specializer;` |
 | `tir/target_info.rs:163` | `TargetInfo` struct | Add `specialization_budget`, `specialization_code_growth_limit`, `union_split_enabled` |

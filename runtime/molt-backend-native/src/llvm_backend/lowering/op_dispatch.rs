@@ -25,15 +25,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- Unary --
             OpCode::Neg => self.emit_unary(op, "neg"),
-            OpCode::Pos => {
-                // Pos is identity for numeric types.
-                let result_id = op.results[0];
-                let operand = op.operands[0];
-                let val = self.values[&operand];
-                let ty = self.value_types[&operand].clone();
-                self.values.insert(result_id, val);
-                self.value_types.insert(result_id, ty);
-            }
+            OpCode::Pos => self.emit_unary(op, "pos"),
             OpCode::Not => self.emit_unary(op, "not"),
 
             // -- Comparison (type-specialized) --
@@ -478,25 +470,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // -- StackAlloc: alloca for stack-resident slots --
-            // attrs: { "type": "i64" | "dynbox" | ... }
-            // result: pointer stored as i64 (ptrtoint)
+            // Raw boxed frame allocation is not implemented. In particular,
+            // a naked i64 alloca cannot stand in for a tagged object payload.
             OpCode::StackAlloc => {
-                let i64_ty = self.backend.context.i64_type();
-                let ptr = self
-                    .backend
-                    .builder
-                    .build_alloca(i64_ty, "stack_slot")
-                    .unwrap();
-                let ptr_as_i64 = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(ptr, i64_ty, "slot_ptr")
-                    .unwrap();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, ptr_as_i64.into());
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                panic!(
+                    "{}",
+                    crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED
+                );
             }
 
             // -- Free: stack-allocated slots are freed automatically — no-op --
@@ -1047,7 +1027,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "verified UnpackSequence must lower through the canonical runtime ABI"
                 );
             }
-            OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
+            OpCode::ObjectNewBound => {
                 let Some(&class_id) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };

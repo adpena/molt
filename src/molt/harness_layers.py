@@ -220,7 +220,6 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
     known_clean = {
         "molt-backend",
         "molt-db",
-        "molt-snapshot",
         "molt-embed",
         "molt-harness",
         "molt-runtime-protobuf",
@@ -322,7 +321,6 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
 
     # Additional crates that get a full `cargo test` if present.
     for crate in [
-        "molt-snapshot",
         "molt-embed",
         "molt-harness",
         "molt-runtime-protobuf",

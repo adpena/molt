@@ -1,5 +1,274 @@
 use super::*;
 
+fn lower_unary_numeric_carrier_fixture(
+    kind: &str,
+    source: &str,
+    out: &str,
+) -> (String, BTreeSet<String>) {
+    let plan = scalar_transport_plan_for_boxed_transport_homes();
+    lower_unary_numeric_carrier_with_plan(
+        kind,
+        source,
+        out,
+        &plan,
+        if source == "bool_home" { 1 } else { 7 },
+    )
+}
+
+fn lower_unary_numeric_carrier_with_plan(
+    kind: &str,
+    source: &str,
+    out: &str,
+    plan: &ScalarRepresentationPlan,
+    source_bits: u64,
+) -> (String, BTreeSet<String>) {
+    let mut backend = SimpleBackend::new();
+    let mut sig = Signature::new(CallConv::SystemV);
+    let home_type = |name: &str| {
+        if plan.is_float_unboxed(name) {
+            types::F64
+        } else {
+            types::I64
+        }
+    };
+    sig.returns.push(AbiParam::new(home_type(out)));
+    let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut func, &mut context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let mut vars = BTreeMap::new();
+        for name in [source, out] {
+            if !vars.contains_key(name) {
+                vars.insert(name.to_string(), builder.declare_var(home_type(name)));
+            }
+        }
+        let raw = if plan.is_float_unboxed(source) {
+            builder.ins().f64const(f64::from_bits(source_bits))
+        } else {
+            builder.ins().iconst(types::I64, source_bits as i64)
+        };
+        builder.def_var(vars[source], raw);
+        let mut refs = BTreeMap::new();
+        let inc_ref = import_func_ref(
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut refs,
+            "molt_inc_ref_obj",
+            &[types::I64],
+            &[],
+        );
+        let op = OpIR {
+            kind: kind.to_string(),
+            args: Some(vec![source.to_string()]),
+            out: Some(out.to_string()),
+            ..OpIR::default()
+        };
+        let mut sealed = BTreeSet::from([entry]);
+        super::super::fc::unary_logic::handle_unary_logic_op(
+            &op,
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut refs,
+            &mut sealed,
+            &vars,
+            plan,
+            inc_ref,
+            true,
+            &crate::NanBoxConsts::new(),
+        );
+        if plan.is_full_deopt_int_name(source) && matches!(kind, "neg" | "abs") {
+            let box_fn = refs
+                .get("molt_int_from_i64")
+                .expect("full-width unary input must use overflow-safe boxing");
+            let mut exact_box_calls = 0;
+            for block in builder.func.layout.blocks() {
+                for inst in builder.func.layout.block_insts(block) {
+                    if let cranelift_codegen::ir::InstructionData::Call { func_ref, .. } =
+                        builder.func.dfg.insts[inst]
+                        && func_ref == *box_fn
+                    {
+                        assert_eq!(
+                            builder.func.dfg.inst_args(inst),
+                            &[raw],
+                            "full-width boxing must consume the original value, not an int47 payload"
+                        );
+                        exact_box_calls += 1;
+                    }
+                    if builder.func.dfg.insts[inst].opcode() == cranelift_codegen::ir::Opcode::Isub
+                    {
+                        assert!(
+                            !builder.func.dfg.inst_args(inst).contains(&raw),
+                            "unchecked unary negation must not consume a full-width source"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                exact_box_calls, 1,
+                "one overflow-safe input materialization must own full-width unary dispatch"
+            );
+        }
+        let result = builder.use_var(vars[out]);
+        builder.ins().return_(&[result]);
+        builder.finalize();
+    }
+    verify_function(&func, &settings::Flags::new(settings::builder()))
+        .expect("unary numeric carrier CFG must verify");
+    (
+        func.display().to_string(),
+        backend
+            .import_ids
+            .keys()
+            .map(|name| name.to_string())
+            .collect(),
+    )
+}
+
+#[test]
+fn unary_neg_and_abs_preserve_full_width_checked_arithmetic_inputs() {
+    for (lhs, rhs) in [
+        (-(1_i64 << 32), 1_i64 << 31),
+        (-(1_i64 << 31), 1_i64 << 31),
+        (1_i64 << 31, 1_i64 << 31),
+    ] {
+        let value = lhs.checked_mul(rhs).unwrap();
+        let plan = representation_plan_for_ops(&[
+            OpIR {
+                kind: "const_int".into(),
+                out: Some("lhs".into()),
+                value: Some(lhs),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_int".into(),
+                out: Some("rhs".into()),
+                value: Some(rhs),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "checked_mul".into(),
+                args: Some(vec!["lhs".into(), "rhs".into()]),
+                var: Some("full_home".into()),
+                out: Some("overflow".into()),
+                ..OpIR::default()
+            },
+        ]);
+        assert!(
+            plan.is_full_deopt_int_name("full_home"),
+            "checked product {value} must expose the full-width carrier"
+        );
+        assert!(!plan.is_inline_safe_int_name("full_home"));
+        for (kind, runtime) in [("neg", "molt_neg"), ("abs", "molt_abs_builtin")] {
+            let (clif, imports) = lower_unary_numeric_carrier_with_plan(
+                kind,
+                "full_home",
+                "boxed_result",
+                &plan,
+                value as u64,
+            );
+            assert!(
+                imports.contains(runtime),
+                "{kind}({value}) requires BigInt-correct runtime dispatch: {clif}"
+            );
+            assert!(
+                imports.contains("molt_int_from_i64"),
+                "{kind}({value}) must not truncate its input: {clif}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unary_numeric_float_results_preserve_physical_f64_homes_and_zero_sign() {
+    let plan = scalar_transport_plan_for_float_home();
+    for kind in ["neg", "pos"] {
+        for value in [1.25_f64, 0.0_f64, -0.0_f64] {
+            let (clif, imports) = lower_unary_numeric_carrier_with_plan(
+                kind,
+                "float_home",
+                "float_home",
+                &plan,
+                value.to_bits(),
+            );
+            assert!(
+                !imports.iter().any(|name| matches!(
+                    name.as_str(),
+                    "molt_neg" | "molt_pos" | "molt_float_from_obj"
+                )),
+                "{kind} must retain its physical F64 result through the numeric sink: {clif}"
+            );
+            assert_eq!(
+                clif.matches("fneg").count(),
+                usize::from(kind == "neg"),
+                "unary float sign behavior: {clif}"
+            );
+            assert!(
+                !clif.contains("fsub"),
+                "subtraction from zero is not IEEE unary negation: {clif}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unary_numeric_raw_operands_cannot_define_boxed_results_directly() {
+    for (kind, runtime) in [
+        ("neg", "molt_neg"),
+        ("pos", "molt_pos"),
+        ("abs", "molt_abs_builtin"),
+        ("invert", "molt_invert"),
+    ] {
+        let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "int_home", "boxed_result");
+        assert!(
+            imports.contains(runtime),
+            "{kind} must use boxed result transport: {clif}"
+        );
+        assert!(
+            clif.contains("call"),
+            "{kind} must retain the boxed runtime path: {clif}"
+        );
+    }
+}
+
+#[test]
+fn unary_numeric_bool_operands_unbox_runtime_results_for_integer_homes() {
+    for (kind, runtime) in [
+        ("neg", "molt_neg"),
+        ("pos", "molt_pos"),
+        ("abs", "molt_abs_builtin"),
+        ("invert", "molt_invert"),
+    ] {
+        let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "bool_home", "int_home");
+        assert!(
+            imports.contains(runtime),
+            "{kind} must preserve Bool runtime semantics: {clif}"
+        );
+        assert!(
+            clif.contains("sshr"),
+            "{kind} must extract the signed integer payload before storing into its raw home: {clif}"
+        );
+    }
+}
+
+#[test]
+fn unary_numeric_proven_raw_integer_results_avoid_runtime_calls() {
+    for kind in ["neg", "pos", "abs", "invert"] {
+        let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "int_home", "int_home");
+        assert!(
+            !imports.iter().any(|name| matches!(
+                name.as_str(),
+                "molt_neg" | "molt_pos" | "molt_abs_builtin" | "molt_invert"
+            )),
+            "{kind} must preserve proven raw operations: {clif}"
+        );
+    }
+}
+
 #[test]
 fn native_container_dispatch_uses_tir_container_facts() {
     let dict_index = OpIR {

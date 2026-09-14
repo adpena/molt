@@ -438,7 +438,7 @@ pub fn run_module_pipeline(
 /// typed-slot load PAIR: two `LoadAttr` uses sharing the same reaching memory
 /// version, the same object root (alias-canonicalized), and the same field
 /// offset. Such a pair is exactly what MemGVN (S5-2b) would dedup — so the count
-/// is the direct producer effect of the class-aware `TypedField` regions.
+/// is the direct producer effect of physical field regions.
 ///
 /// Also reports the denominator (functions with ≥2 typed-slot loads at all) so a
 /// zero numerator is diagnosable. Writes to stderr (the `MOLT_INLINE_STATS`
@@ -478,7 +478,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
     let mut report_lines: Vec<String> = Vec::new();
 
     // Raw diagnostics (denominator sanity): how many typed-slot LoadAttr ops
-    // exist at all, and how many carry a `_class` attr / classify as TypedField.
+    // exist at all, and how many carry a `_class` attr / physical field region.
     {
         let mut raw_loads = 0usize;
         let mut raw_loads_with_class = 0usize;
@@ -504,8 +504,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
                     }
                     if matches!(
                         alias.region_of(op),
-                        crate::tir::passes::alias_analysis::MemRegion::TypedField { .. }
-                            | crate::tir::passes::alias_analysis::MemRegion::StackObject { .. }
+                        crate::tir::passes::alias_analysis::MemRegion::Field { .. }
                     ) {
                         raw_typedfield_loads += 1;
                     }
@@ -513,7 +512,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
             }
         }
         let line = format!(
-            "[S5-1.5] module '{}': raw typed-slot loads={raw_loads} (with _class={raw_loads_with_class}, classify TypedField/StackObject={raw_typedfield_loads})",
+            "[S5-1.5] module '{}': raw typed-slot loads={raw_loads} (with _class={raw_loads_with_class}, physical field regions={raw_typedfield_loads})",
             module.name
         );
         eprintln!("{line}");
@@ -528,7 +527,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
         // Key a typed-slot load by (reaching def version, object root, field
         // offset). Two loads with the same key are a forwardable pair (MemGVN
         // would dedup the second into a copy of the first). Only loads whose
-        // region is precise (TypedField / StackObject — i.e. class-aware) can
+        // region is a physical Field can
         // form such a pair; a GenericHeap load is clobbered by any preceding
         // GenericHeap def and never shares a precise version.
         let mut keyed: std::collections::HashMap<(u32, u32, i64), usize> =
@@ -542,10 +541,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
             else {
                 continue;
             };
-            if !matches!(
-                region,
-                MemRegion::TypedField { .. } | MemRegion::StackObject { .. }
-            ) {
+            if !matches!(region, MemRegion::Field { .. }) {
                 continue;
             }
             let op = &func.blocks[&block].ops[op_idx];

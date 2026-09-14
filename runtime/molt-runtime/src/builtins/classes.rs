@@ -1,6 +1,6 @@
 use crate::{GilGuard, PyToken};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use std::sync::{Mutex, TryLockError};
 
 use molt_obj_model::MoltObject;
 
@@ -11,14 +11,15 @@ use crate::object::{
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
     BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
-    RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_ID_WEAKREF, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY,
-    TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET,
-    TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
+    RuntimeState, TYPE_ID_CLASSMETHOD, TYPE_ID_DICT, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD,
+    TYPE_ID_TYPE, TYPE_ID_WEAKREF, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
+    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
+    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
-    class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
-    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_type_id,
-    raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_bump_layout_version,
+    class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits,
+    intern_static_name, molt_class_set_base, obj_from_bits, object_type_id, raise_exception,
+    runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -146,7 +147,7 @@ pub(crate) struct BuiltinClasses {
 }
 
 impl BuiltinClasses {
-    fn anchors(&self) -> [u64; 78] {
+    pub(crate) fn anchors(&self) -> [u64; 78] {
         [
             self.object,
             self.type_obj,
@@ -751,6 +752,16 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(generic_alias, object);
     let _ = molt_class_set_base(union_type, object);
     let _ = molt_class_set_base(reference_type, object);
+    for (class_bits, type_id) in [
+        (classmethod, TYPE_ID_CLASSMETHOD),
+        (staticmethod, TYPE_ID_STATICMETHOD),
+        (property, TYPE_ID_PROPERTY),
+    ] {
+        let class_ptr = obj_from_bits(class_bits)
+            .as_ptr()
+            .expect("validated wrapper class pointer");
+        assert!(unsafe { crate::object::class_set_instance_type_id(class_ptr, type_id) });
+    }
     let reference_ptr = obj_from_bits(reference_type)
         .as_ptr()
         .expect("validated ReferenceType class pointer");
@@ -954,6 +965,28 @@ pub(crate) fn builtin_classes_if_initialized(_py: &PyToken<'_>) -> Option<&'stat
     }
 }
 
+/// Resolve the builtin wrapper classes without recursing through their own
+/// bootstrap. Ordinary first-use allocation initializes the anchor; allocation
+/// attempted by bootstrap itself fails closed instead of re-locking the
+/// non-reentrant initialization mutex.
+pub(crate) fn builtin_classes_for_wrapper_allocation(
+    _py: &PyToken<'_>,
+) -> Option<&'static BuiltinClasses> {
+    if let Some(classes) = builtin_classes_if_initialized(_py) {
+        return Some(classes);
+    }
+    match BUILTIN_CLASSES_INIT_LOCK.try_lock() {
+        Ok(guard) => {
+            drop(guard);
+            Some(builtin_classes(_py))
+        }
+        Err(TryLockError::WouldBlock) => None,
+        Err(TryLockError::Poisoned(error)) => {
+            panic!("builtin class bootstrap lock poisoned: {error}")
+        }
+    }
+}
+
 fn init_builtin_classes() -> &'static BuiltinClasses {
     let gil = GilGuard::new();
     let py = gil.token();
@@ -968,6 +1001,28 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
     state.builtin_classes.store(ptr, AtomicOrdering::Release);
+    // Sizing and slot-layout code needs the complete builtin family, so the
+    // anchor is published first under the GIL + bootstrap lock. Seal every
+    // builtin in base-before-derived anchor order before any caller can receive
+    // the family; inherited physical fields (notably int/float) must never see
+    // an unfinished private-map word during instance traversal.
+    let published = unsafe { &*ptr };
+    for bits in published.anchors() {
+        let class_ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("published builtin class anchor is not a pointer");
+        unsafe { crate::object::class_finish_definition(&py, class_ptr) }
+            .unwrap_or_else(|()| panic!("builtin class layout sealing failed"));
+        assert_ne!(
+            unsafe { crate::object::layout::class_field_offsets_bits(class_ptr) },
+            0,
+            "published builtin class lacks private field-offset authority",
+        );
+    }
+    assert!(
+        crate::builtins::attributes::wrapper_publish_members(&py),
+        "builtin wrapper member descriptor publication failed"
+    );
     assert!(
         crate::builtins::attr::install_weakref_callback_descriptor(&py),
         "builtin ReferenceType.__callback__ descriptor publication failed"
@@ -975,9 +1030,14 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     unsafe { &*ptr }
 }
 
-pub(crate) fn builtin_classes_break_cycles(py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn builtin_classes_retire_identities(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+    retirement: &crate::object::class_storage::RuntimeClassRetirement,
+) {
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if ptr.is_null() {
+        retirement.detach_identities(py);
         return;
     }
     unsafe {
@@ -988,8 +1048,10 @@ pub(crate) fn builtin_classes_break_cycles(py: &PyToken<'_>, state: &RuntimeStat
             "cycle break",
         );
         builtins.assert_anchor_family_live("cycle breaking");
+        // The shared transaction owns detachment for the entire canonical
+        // cohort, including exception and descriptor classes outside this bank.
+        retirement.detach_identities(py);
         for (index, bits) in builtins.anchors().into_iter().enumerate() {
-            class_break_cycles(py, bits);
             assert_builtin_class_anchor_live(index, bits, "cycle break completion");
         }
         builtins.anchor_lifecycle.transition(
@@ -1148,6 +1210,28 @@ mod tests {
     use crate::*;
 
     #[test]
+    fn builtin_layout_metadata_survives_repeated_runtime_shutdown() {
+        // Private sealed layouts retain canonical names and empty tuples even
+        // after public class cycles are broken. Exercise the real owner-order
+        // boundary, including a subsequent bootstrap with fresh pool identity.
+        for _ in 0..2 {
+            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                crate::with_gil_entry_nopanic!(py, {
+                    let classes = builtin_classes(py);
+                    classes.assert_anchor_family_live("embedded shutdown fixture");
+                    for bits in classes.anchors() {
+                        let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                        assert!(
+                            unsafe { crate::object::layout::class_cached_layout_size(ptr) }
+                                .is_some()
+                        );
+                    }
+                });
+            });
+        }
+    }
+
+    #[test]
     fn builtin_bootstrap_rollback_clears_self_edge_and_releases_each_owner_once() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -1248,6 +1332,23 @@ mod tests {
                 .is_err(),
                 "an anchor released before teardown must fail the shipped-profile membership tooth"
             );
+        });
+    }
+
+    #[test]
+    fn published_builtin_family_has_private_layout_authority() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = crate::builtin_classes(_py);
+            for bits in builtins.anchors() {
+                let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                assert!(unsafe { crate::object::class_definition_is_finished(ptr) });
+                assert_ne!(
+                    unsafe { crate::object::layout::class_field_offsets_bits(ptr) },
+                    0,
+                );
+                assert!(unsafe { crate::object::layout::class_cached_layout_size(ptr) }.is_some());
+            }
         });
     }
 }

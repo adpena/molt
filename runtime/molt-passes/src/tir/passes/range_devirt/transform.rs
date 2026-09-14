@@ -2,7 +2,7 @@ use crate::tir::blocks::{BlockId, LoopBreakKind, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
-use crate::tir::values::{TirValue, ValueId};
+use crate::tir::values::TirValue;
 
 use super::super::PassStats;
 use super::candidate::RangeLoopCandidate;
@@ -13,39 +13,12 @@ pub(super) fn apply_transform(
     c: &RangeLoopCandidate,
     stats: &mut PassStats,
 ) {
-    let start_val = if c.start_val.0 == u32::MAX - 1 {
-        let val = func.fresh_value();
-        func.value_types.insert(val, TirType::I64);
-        let const_op = make_const_int(val, 0);
-        if let Some(block) = func.blocks.get_mut(&c.setup_block) {
-            block.ops.insert(c.call_range_idx, const_op);
-        }
-        stats.ops_added += 1;
-        val
-    } else {
-        c.start_val
-    };
-
-    let offset = if c.start_val.0 == u32::MAX - 1 { 1 } else { 0 };
-
-    let step_val = if c.step_val.0 == u32::MAX {
-        let val = func.fresh_value();
-        func.value_types.insert(val, TirType::I64);
-        let const_op = make_const_int(val, 1);
-        if let Some(block) = func.blocks.get_mut(&c.setup_block) {
-            block.ops.insert(c.call_range_idx + offset, const_op);
-        }
-        stats.ops_added += 1;
-        val
-    } else {
-        c.step_val
-    };
-
-    let offset2 = offset + if c.step_val.0 == u32::MAX { 1 } else { 0 };
+    let start_val = c.start_val;
+    let step_val = c.step_val;
 
     if let Some(block) = func.blocks.get_mut(&c.setup_block) {
-        let call_idx = c.call_range_idx + offset2;
-        let iter_idx = c.get_iter_idx + offset2;
+        let call_idx = c.call_range_idx;
+        let iter_idx = c.get_iter_idx;
 
         let (first_remove, second_remove) = if call_idx > iter_idx {
             (call_idx, iter_idx)
@@ -159,19 +132,4 @@ pub(super) fn apply_transform(
 
     func.loop_break_kinds
         .insert(c.header_block, LoopBreakKind::BreakIfFalse);
-}
-
-pub(super) fn make_const_int(result: ValueId, value: i64) -> TirOp {
-    TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::ConstInt,
-        operands: vec![],
-        results: vec![result],
-        attrs: {
-            let mut m = AttrDict::new();
-            m.insert("value".to_string(), AttrValue::Int(value));
-            m
-        },
-        source_span: None,
-    }
 }

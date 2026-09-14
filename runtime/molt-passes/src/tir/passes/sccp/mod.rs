@@ -3,8 +3,8 @@
 //! Propagates constants through the SSA graph, folds constant operations,
 //! and eliminates branches with known-constant conditions.
 //!
-//! This is a simplified single-pass forward scan that folds obvious constants.
-//! An iterative fixpoint version can replace it later.
+//! The flow-insensitive SSA lattice carries immutable values only. Heap object
+//! contents require memory-state and alias custody; they are not SSA constants.
 
 mod eval;
 
@@ -12,6 +12,7 @@ mod eval;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::PassStats;
 use super::effects;
@@ -22,10 +23,10 @@ use crate::tir::op_kinds_generated::{
     ExceptionRegionNestingRole, SccpConstantSeedRule, opcode_exception_region_nesting_role_table,
     opcode_sccp_constant_seed_rule_table,
 };
-use crate::tir::ops::{AttrDict, AttrValue, OpCode};
+use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use eval::{evaluate_builtin_call, evaluate_method_call, evaluate_op};
+use eval::{evaluate_builtin_call, evaluate_op};
 
 /// A value in the constant-propagation lattice.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,28 +39,27 @@ enum LatticeValue {
     Bottom,
 }
 
-/// Concrete constant values carried through the lattice.
+/// Immutable value constants carried through the flow-insensitive lattice.
 ///
-/// # NaN note
-/// The derived `PartialEq` for `Float(f64)` uses `f64::eq`, which returns
-/// `false` for NaN == NaN. In practice this only affects programs that fold
-/// a constant NaN value -- an extremely rare case -- and the worst outcome is
-/// a missed constant-fold (the lattice value stays Bottom rather than being
-/// collapsed to a constant NaN). A future improvement would be to implement
-/// `PartialEq` manually using `f64::to_bits()` for bit-exact NaN comparison.
-#[derive(Debug, Clone, PartialEq)]
+/// Mutability is excluded by construction, including transitively through
+/// tuples. A list/dict snapshot would become stale after mutation through any
+/// alias or callback, even when its SSA identity is unchanged. Mutable object
+/// producers and their dependent observations therefore remain overdefined.
+///
+/// Equality denotes exact lattice value identity, not Python `==` or `is`.
+/// Float bits preserve signed zero and NaN sign/payload; tuples compare their
+/// recursively immutable values without depending on allocation identity.
+#[derive(Debug, Clone)]
 enum ConstVal {
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(String),
     None,
-    /// Compile-time constant list (all elements are ConstVal).
+    /// Recursively immutable tuple (all elements are ConstVal).
     /// Capped at MAX_COMPOUND_ELEMENTS to avoid embedding huge data at compile time.
-    List(Vec<ConstVal>),
-    /// Compile-time constant dict (all keys and values are ConstVal).
-    /// Capped at MAX_COMPOUND_ELEMENTS entries.
-    Dict(Vec<(ConstVal, ConstVal)>),
+    /// Shared storage preserves the value DAG instead of expanding nested clones.
+    Tuple(Arc<[ConstVal]>),
     /// Compile-time range(start, stop, step). Not materialized as a list,
     /// but supports len() and iteration count propagation.
     Range {
@@ -69,9 +69,61 @@ enum ConstVal {
     },
 }
 
+impl PartialEq for ConstVal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left.to_bits() == right.to_bits(),
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Str(left), Self::Str(right)) => left == right,
+            (Self::None, Self::None) => true,
+            (Self::Tuple(left), Self::Tuple(right)) => {
+                Arc::ptr_eq(left, right) || left.as_ref() == right.as_ref()
+            }
+            (
+                Self::Range {
+                    start: ls,
+                    stop: le,
+                    step: ld,
+                },
+                Self::Range {
+                    start: rs,
+                    stop: re,
+                    step: rd,
+                },
+            ) => (ls, le, ld) == (rs, re, rd),
+            _ => false,
+        }
+    }
+}
+
+// Bit-exact floats make equality reflexive even for NaNs.
+impl Eq for ConstVal {}
+
 /// Maximum number of elements for compile-time compound value folding.
-/// Prevents embedding excessively large data structures in the binary.
+/// Counts recursive tuple nodes and UTF-8 bytes, not only immediate children.
+/// Admission happens before allocation, bounding compiler work and output size.
 const MAX_COMPOUND_ELEMENTS: usize = 1000;
+
+impl ConstVal {
+    fn materialization_cost(&self) -> Option<usize> {
+        let cost = match self {
+            Self::Str(value) => value.len().max(1),
+            Self::Tuple(elements) => elements.iter().try_fold(1usize, |cost, value| {
+                let cost = cost.checked_add(value.materialization_cost()?)?;
+                (cost <= MAX_COMPOUND_ELEMENTS).then_some(cost)
+            })?,
+            _ => 1,
+        };
+        (cost <= MAX_COMPOUND_ELEMENTS).then_some(cost)
+    }
+}
+
+/// SCCP computes one immutable result, never a broadcast into result siblings.
+/// The generated operation contract owns structural validity for every caller.
+fn admits_constant_result(op: &TirOp) -> bool {
+    op.has_valid_shape() && op.results.len() == 1
+}
 
 /// Build a set of ValueIds that are results of ops inside try regions.
 /// When `has_exception_handling` is true, we must not rewrite these ops
@@ -141,6 +193,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         let block = &func.blocks[&bid];
         for op in &block.ops {
             for &res in &op.results {
+                if !admits_constant_result(op) {
+                    // Malformed producers must not seed downstream constants or
+                    // branches even when we preserve their own instruction.
+                    lattice.insert(res, LatticeValue::Bottom);
+                    continue;
+                }
                 // Loop-carried values (loop_index_start, loop_index_next, iter_next)
                 // must not be folded — they change on each iteration.
                 let original_kind = op
@@ -166,8 +224,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     lattice.insert(res, LatticeValue::Bottom);
                     continue;
                 }
-                let val =
-                    seed_constant_lattice_value(op.opcode, &op.attrs).unwrap_or(LatticeValue::Top);
+                let val = seed_constant_lattice_value(op).unwrap_or(LatticeValue::Top);
                 lattice.insert(res, val);
             }
         }
@@ -181,7 +238,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for &bid in &block_ids {
             let block = &func.blocks[&bid];
             for op in &block.ops {
-                if op.results.is_empty() {
+                if !admits_constant_result(op) {
                     continue;
                 }
                 // Skip ops that are already resolved as Constant or Bottom.
@@ -219,8 +276,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
                 // All operands are Constant — try to evaluate.
                 let folded = evaluate_op(op.opcode, &operand_vals)
-                    .or_else(|| evaluate_builtin_call(op, &operand_vals))
-                    .or_else(|| evaluate_method_call(op, &operand_vals));
+                    .or_else(|| evaluate_builtin_call(op, &operand_vals));
                 if let Some(result) = folded {
                     lattice.insert(result_id, LatticeValue::Constant(result));
                     changed = true;
@@ -237,7 +293,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for &bid in &block_ids {
         let block = func.blocks.get_mut(&bid).unwrap();
         for op in &mut block.ops {
-            if op.results.is_empty() {
+            if !admits_constant_result(op) {
                 continue;
             }
             let result_id = op.results[0];
@@ -285,11 +341,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.attrs = AttrDict::new();
                         stats.values_changed += 1;
                     }
-                    // Compound types (List, Dict, Range) stay in the lattice for
-                    // downstream folding (e.g. len([1,2,3]) → 3) but cannot be
-                    // rewritten to a single constant opcode since no ConstList/
-                    // ConstDict/ConstRange opcodes exist in TIR.
-                    ConstVal::List(_) | ConstVal::Dict(_) | ConstVal::Range { .. } => {}
+                    // Immutable compounds inform downstream value observations,
+                    // but their producers retain runtime allocation/identity.
+                    // TIR has no ConstTuple or ConstRange materialization opcode.
+                    ConstVal::Tuple(_) | ConstVal::Range { .. } => {}
                 }
             }
         }
@@ -383,8 +438,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
-fn seed_constant_lattice_value(opcode: OpCode, attrs: &AttrDict) -> Option<LatticeValue> {
-    match opcode_sccp_constant_seed_rule_table(opcode) {
+fn seed_constant_lattice_value(op: &TirOp) -> Option<LatticeValue> {
+    if !admits_constant_result(op) {
+        return Some(LatticeValue::Bottom);
+    }
+    let attrs = &op.attrs;
+    match opcode_sccp_constant_seed_rule_table(op.opcode) {
         SccpConstantSeedRule::None => None,
         SccpConstantSeedRule::IntAttr => Some(match attrs.get("value") {
             Some(AttrValue::Int(v)) => LatticeValue::Constant(ConstVal::Int(*v)),
@@ -399,9 +458,14 @@ fn seed_constant_lattice_value(opcode: OpCode, attrs: &AttrDict) -> Option<Latti
             _ => LatticeValue::Bottom,
         }),
         SccpConstantSeedRule::StrAttr => Some(match attrs.get("s_value") {
-            Some(AttrValue::Str(v)) => LatticeValue::Constant(ConstVal::Str(v.clone())),
+            Some(AttrValue::Str(v)) if v.len() <= MAX_COMPOUND_ELEMENTS => {
+                LatticeValue::Constant(ConstVal::Str(v.clone()))
+            }
+            Some(AttrValue::Str(_)) => LatticeValue::Bottom,
             _ => match attrs.get("value") {
-                Some(AttrValue::Str(v)) => LatticeValue::Constant(ConstVal::Str(v.clone())),
+                Some(AttrValue::Str(v)) if v.len() <= MAX_COMPOUND_ELEMENTS => {
+                    LatticeValue::Constant(ConstVal::Str(v.clone()))
+                }
                 _ => LatticeValue::Bottom,
             },
         }),

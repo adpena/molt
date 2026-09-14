@@ -34,7 +34,7 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     for &bid in &block_order {
         let block = &func.blocks[&bid];
         for op in &block.ops {
-            if !op.has_valid_result_arity() {
+            if !op.has_valid_shape() {
                 continue;
             }
             for (index, &result) in op.results.iter().enumerate() {
@@ -75,9 +75,9 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .map(|id| proven.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
             let result_types = if let Some(facts) =
-                crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact)
+                crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
             {
-                vec![Some(facts.result_type); op.results.len()]
+                vec![facts.result_type; op.results.len()]
             } else {
                 infer_result_types_with_attrs(
                     op.opcode,

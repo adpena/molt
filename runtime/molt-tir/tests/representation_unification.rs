@@ -62,21 +62,12 @@ struct IntOp {
     /// bounded IV `i in [0, IV_STOP)` the result still fits the signed
     /// inline-int47 window `[-2^46, 2^46 - 1]`.
     rhs_const: i64,
-    /// Expected admission of a bounded result to the raw carrier at the
-    /// VALUE-KEYED authority (`repr_by_value_for` on the canonical TIR, the
-    /// proof source the LLVM/WASM backends and the name projection consume).
+    /// Expected admission shared by the VALUE-KEYED and NAME-KEYED authority:
+    /// `repr_by_value_for` on canonical TIR supplies the proof consumed by the
+    /// LLVM/WASM backends and the name projection.
     /// `mod`/`floordiv`/`add`/`mul`/`shl` have value-range transfer rules and
     /// are admitted when their bounded result stays in the inline-int47 window.
-    value_keyed_raw: bool,
-    /// Expected admission of a bounded result to the raw carrier at the
-    /// NAME-KEYED native authority (`for_function_ir` -> `is_raw_int_carrier_name`,
-    /// the exact predicate the modulo store consulted). This is a *strict
-    /// subset* of `value_keyed_raw`: the SimpleIR -> name projection is
-    /// deliberately conservative for shifts, so `lshift` results are NOT name-
-    /// keyed carriers even though the value-keyed `Shl` proof admits them (see
-    /// `primary_int_names_admit_bounded_arithmetic_range_proof`). The store is
-    /// carrier-aware either way; this flag pins the established native behavior.
-    name_keyed_raw: bool,
+    expected_raw: bool,
 }
 
 /// The bounded induction-variable ceiling. Small enough that `i * RHS`,
@@ -90,8 +81,7 @@ fn int_ops() -> Vec<IntOp> {
             simple_kind: "mod",
             tir_opcode: OpCode::Mod,
             rhs_const: 7,
-            value_keyed_raw: true,
-            name_keyed_raw: true,
+            expected_raw: true,
         },
         IntOp {
             // `//` has a value-range transfer rule at both authorities, so a
@@ -99,35 +89,27 @@ fn int_ops() -> Vec<IntOp> {
             simple_kind: "floordiv",
             tir_opcode: OpCode::FloorDiv,
             rhs_const: 3,
-            value_keyed_raw: true,
-            name_keyed_raw: true,
+            expected_raw: true,
         },
         IntOp {
             simple_kind: "add",
             tir_opcode: OpCode::Add,
             rhs_const: 7,
-            value_keyed_raw: true,
-            name_keyed_raw: true,
+            expected_raw: true,
         },
         IntOp {
             simple_kind: "mul",
             tir_opcode: OpCode::Mul,
             rhs_const: 7,
-            value_keyed_raw: true,
-            name_keyed_raw: true,
+            expected_raw: true,
         },
         IntOp {
-            // `<<` lowers to `OpCode::Shl`; a literal `<< 1` keeps the machine
-            // shift count in the proven `[0, 63]` window the value-keyed raw
-            // lane requires (so `value_keyed_raw` = true). The SimpleIR -> name
-            // projection is conservative for shifts, so the NATIVE name-keyed
-            // authority does NOT admit it (`name_keyed_raw` = false). The store
-            // is carrier-aware in both authorities regardless.
+            // Exact integer provenance, inline result range and a count in
+            // [0, 63] admit the same raw carrier in both value and name views.
             simple_kind: "lshift",
             tir_opcode: OpCode::Shl,
             rhs_const: 1,
-            value_keyed_raw: true,
-            name_keyed_raw: false,
+            expected_raw: true,
         },
     ]
 }
@@ -235,13 +217,13 @@ fn name_keyed_authority_admits_bounded_int_op_results() {
         // (the boxed-stored-as-raw fragmentation), trips here.
         assert_eq!(
             plan.is_raw_int_carrier_name("r"),
-            int_op.name_keyed_raw,
+            int_op.expected_raw,
             "{}: name-keyed carrier authority for `r = i_cur {} {}` must match \
              the established native admission (expected raw={})",
             int_op.simple_kind,
             int_op.simple_kind,
             int_op.rhs_const,
-            int_op.name_keyed_raw,
+            int_op.expected_raw,
         );
 
         // When admitted, it must be the inline-safe tier (RawI64Safe) - the
@@ -250,7 +232,7 @@ fn name_keyed_authority_admits_bounded_int_op_results() {
         // fires (the result is boxed MaybeBigInt, the sound default).
         assert_eq!(
             plan.is_inline_safe_int_name("r"),
-            int_op.name_keyed_raw,
+            int_op.expected_raw,
             "{}: inline-safe (RawI64Safe) admission of `r` must match the \
              native name-keyed authority",
             int_op.simple_kind
@@ -410,10 +392,10 @@ fn value_range_proof_and_carrier_registry_agree_per_int_op() {
         // rule that stops proving `mod`) is caught rather than silently
         // flipping the agreement to the other (still self-consistent) branch.
         assert_eq!(
-            proven_inline, int_op.value_keyed_raw,
+            proven_inline, int_op.expected_raw,
             "{}: value-range proof direction changed (fits_inline_int47={proven_inline}, \
              expected {})",
-            int_op.simple_kind, int_op.value_keyed_raw
+            int_op.simple_kind, int_op.expected_raw
         );
         if proven_inline {
             // A proven-bounded result must be the inline-safe tier specifically.
@@ -463,8 +445,7 @@ fn overflowing_result_is_refused_by_both_proof_and_registry() {
         // The whole point of this control: the result is NOT proven inline
         // (it overflows 2^46), so it must be refused the raw carrier at BOTH
         // authorities.
-        value_keyed_raw: false,
-        name_keyed_raw: false,
+        expected_raw: false,
     };
     let big_stop = 1i64 << 20;
     let (func, body) = bounded_loop_body_op_tir(overflow_op, big_stop);
@@ -584,8 +565,7 @@ fn fragmented_carrier_map_fails_the_gate() {
         simple_kind: "mul",
         tir_opcode: OpCode::Mul,
         rhs_const: 1i64 << 40,
-        value_keyed_raw: false,
-        name_keyed_raw: false,
+        expected_raw: false,
     };
     let (func, body) = bounded_loop_body_op_tir(overflowing_mul, 1i64 << 20);
     let vr = value_range_for(&func);

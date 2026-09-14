@@ -70,9 +70,12 @@ fn generic_wasm_del_boundary_lowers_through_shared_dec_ref_authority() {
     );
 }
 
-fn compile_local_alias_body(ops: Vec<OpIR>) -> (Vec<u32>, BTreeMap<String, u32>) {
+fn compile_local_alias_body(
+    params: Vec<&str>,
+    ops: Vec<OpIR>,
+) -> (Vec<u32>, BTreeMap<String, u32>) {
     let ir = SimpleIR {
-        functions: vec![wasm_test_function("molt_main", vec![], None, ops)],
+        functions: vec![wasm_test_function("molt_main", params, None, ops)],
         profile: None,
     };
     let wasm = WasmBackend::with_options(WasmCompileOptions {
@@ -97,16 +100,19 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
     owned.s_value = Some("owned".to_string());
     let mut store = wasm_test_op("store_var", None, vec!["owned"]);
     store.var = Some("slot".to_string());
-    let (drop_calls, drop_imports) = compile_local_alias_body(vec![
-        owned,
-        store,
-        load_one.clone(),
-        load_two,
-        wasm_test_op("const_none", Some("none"), vec![]),
-        wasm_test_op("is", Some("result"), vec!["v1", "none"]),
-        wasm_test_op("del_boundary", None, vec!["v2"]),
-        wasm_test_op("ret", None, vec!["result"]),
-    ]);
+    let (drop_calls, drop_imports) = compile_local_alias_body(
+        vec![],
+        vec![
+            owned,
+            store,
+            load_one.clone(),
+            load_two,
+            wasm_test_op("const_none", Some("none"), vec![]),
+            wasm_test_op("is", Some("result"), vec!["v1", "none"]),
+            wasm_test_op("del_boundary", None, vec!["v2"]),
+            wasm_test_op("ret", None, vec!["result"]),
+        ],
+    );
     let dec_index = drop_imports["dec_ref_obj"];
     let inc_count = drop_imports.get("inc_ref_obj").map_or(0, |inc_index| {
         drop_calls
@@ -120,14 +126,17 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         .count();
     assert_eq!(
         (inc_count, dec_count),
-        (0, 2),
-        "transparent load aliases share the source ownership root; terminal drops release the temporary value and slot owner without backend-minted references: calls={drop_calls:?} imports={drop_imports:?}"
+        (0, 1),
+        "store_var/load_var aliases share one allocation owner; DelBoundary releases that root once, without a second slot owner or backend-minted retain: calls={drop_calls:?} imports={drop_imports:?}"
     );
 
-    let (binding_calls, binding_imports) = compile_local_alias_body(vec![
-        wasm_test_op("binding_alias", Some("owned"), vec!["slot"]),
-        wasm_test_op("ret_void", None, vec![]),
-    ]);
+    let (binding_calls, binding_imports) = compile_local_alias_body(
+        vec!["slot"],
+        vec![
+            wasm_test_op("binding_alias", Some("owned"), vec!["slot"]),
+            wasm_test_op("ret", None, vec!["owned"]),
+        ],
+    );
     let inc_index = binding_imports["inc_ref_obj"];
     assert_eq!(
         binding_calls
@@ -135,6 +144,12 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
             .filter(|call_index| **call_index == inc_index)
             .count(),
         1,
-        "binding_alias remains an explicitly owned alias: calls={binding_calls:?}"
+        "binding_alias retains the declared borrowed parameter for its owned return: calls={binding_calls:?}"
+    );
+    assert!(
+        binding_imports
+            .get("dec_ref_obj")
+            .is_none_or(|index| !binding_calls.contains(index)),
+        "return transfers the retained alias; neither it nor the borrowed parameter is dropped: calls={binding_calls:?} imports={binding_imports:?}"
     );
 }

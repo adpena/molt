@@ -201,7 +201,7 @@ impl LuauBackend {
                     self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                 }
             }
-            "store" | "store_init" => {
+            "store" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     // Field offsets are byte offsets in 8-byte MoltValue slots.

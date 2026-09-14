@@ -77,6 +77,7 @@ mod proven;
 mod result_attrs;
 mod result_builtins_iterators;
 mod result_containers;
+mod result_integer_bits;
 mod result_scalars;
 mod solver_cfg;
 mod solver_loops;

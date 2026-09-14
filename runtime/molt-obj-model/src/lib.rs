@@ -436,13 +436,9 @@ impl MoltObject {
             //
             // The provenance registry is a debug-only PROVENANCE CHECKER, not the
             // arbiter of whether a pointer is recoverable. Compiled code legitimately
-            // mints `TAG_PTR` values WITHOUT calling `from_ptr` — e.g. the native
-            // backend inlines `ObjectNewBoundStack` and NaN-boxes the Cranelift
-            // `stack_addr` directly (function_compiler.rs `box_ptr_value`). Those
-            // pointers are canonical and valid but never enter the registry, so a
-            // registry MISS must not turn `as_ptr()` into `None` — doing so made
-            // stack-allocated temp receivers (`Left().who()`) decode to a null
-            // receiver under the dev profile only, diverging from release.
+            // mints `TAG_PTR` values without calling `from_ptr`, so canonical
+            // pointer words crossing the ABI need not enter this registry.
+            // A registry miss must not change address decoding between profiles.
             //
             // So: when the registry has a slot for this address, return the
             // provenance-carrying registered pointer (preserving the debug-build
@@ -704,12 +700,9 @@ mod tests {
 
     #[test]
     fn as_ptr_recovers_address_for_compiled_minted_box() {
-        // Compiled native code (e.g. the inlined `ObjectNewBoundStack` lowering)
-        // NaN-boxes a pointer directly without going through `from_ptr`, so the
-        // pointer never enters the debug provenance registry. `as_ptr()` must
-        // still recover the canonical address — a registry MISS is NOT `None`.
-        // This is the profile-independence contract the call_method_ic receiver
-        // (a stack-allocated temp receiver) depends on.
+        // Pointer words crossing the ABI need not pass through `from_ptr`.
+        // A debug provenance registry miss must still decode the canonical
+        // address, exactly as it does in release builds.
         reset_ptr_registry();
         let boxed = Box::new(0xABu8);
         let ptr = Box::into_raw(boxed);

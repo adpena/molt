@@ -146,6 +146,26 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   authority for differential work remains the harness lock under
   `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`.
 
+### Source ownership and handoff
+
+The parent registers every active worker before dispatch, including read-only
+reviewers. Use `init --agent --role --lane --owned` and update the resulting
+record when scope changes or the worker finishes. A reviewer has no owned write
+paths. Keep the agreed registry root and actual source checkout explicit in the
+parent record; `scan` reads the selected repository's records, not agent chat.
+
+`check` detects broad proof-lane collisions; it does not lock source files or
+merge dirty worktrees. The integrator must enforce disjoint write scopes and
+freeze affected writers before reconciliation. Record base revision, changed
+paths, deletions, evidence, unresolved findings, and a working-content identity
+at handoff. Recheck that identity before applying the reviewed changes; if it
+changed, reconcile the new delta rather than overwrite it or repeat stale proof.
+
+Compare both working trees against their common base. Preserve unique changes
+and reconcile semantic conflicts before advancing a baseline or pruning a tree.
+Regenerate projections from the merged authority. Only the integrator stages,
+proves the integrated result, and lands; a completed worker is not a landed arc.
+
 ### Windows Host Traps
 
 On Windows, `python3` may resolve to a Microsoft Store `WindowsApps` execution

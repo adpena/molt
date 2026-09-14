@@ -372,91 +372,15 @@ fn fold_abs_of_negative_int() {
 }
 
 #[test]
-fn fold_math_sqrt_constant() {
-    // math.sqrt(4.0) => 2.0
+fn math_sqrt_retains_target_runtime_evaluation() {
+    // A builtin name and host libm result are not target-semantic admission.
     let ops = vec![
         make_const_float(0, 4.0),
         make_call_builtin(1, "math.sqrt", vec![0]),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstFloat);
-    assert_eq!(
-        result_ops[1].attrs.get("f_value"),
-        Some(&AttrValue::Float(2.0))
-    );
-}
-
-#[test]
-fn fold_math_floor_constant() {
-    // math.floor(3.7) => 3
-    let ops = vec![
-        make_const_float(0, 3.7),
-        make_call_builtin(1, "math.floor", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[1].attrs.get("value"), Some(&AttrValue::Int(3)));
-}
-
-#[test]
-fn fold_str_upper_method() {
-    // "hello".upper() => "HELLO"
-    let ops = vec![
-        make_const_str(0, "hello"),
-        make_call_method(1, "upper", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstStr);
-    assert_eq!(
-        result_ops[1].attrs.get("s_value"),
-        Some(&AttrValue::Str("HELLO".into()))
-    );
-}
-
-#[test]
-fn fold_str_lower_method() {
-    // "WORLD".lower() => "world"
-    let ops = vec![
-        make_const_str(0, "WORLD"),
-        make_call_method(1, "lower", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstStr);
-    assert_eq!(
-        result_ops[1].attrs.get("s_value"),
-        Some(&AttrValue::Str("world".into()))
-    );
-}
-
-#[test]
-fn fold_str_strip_method() {
-    // "  hi  ".strip() => "hi"
-    let ops = vec![
-        make_const_str(0, "  hi  "),
-        make_call_method(1, "strip", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstStr);
-    assert_eq!(
-        result_ops[1].attrs.get("s_value"),
-        Some(&AttrValue::Str("hi".into()))
-    );
-}
-
-#[test]
-fn fold_str_startswith_method() {
-    // "hello".startswith("hel") => True
-    let ops = vec![
-        make_const_str(0, "hello"),
-        make_const_str(1, "hel"),
-        make_call_method(2, "startswith", vec![0, 1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[2].attrs.get("value"),
-        Some(&AttrValue::Bool(true))
-    );
+    assert_eq!(result_ops[1].opcode, OpCode::CallBuiltin);
+    assert_eq!(result_ops[1].operands, vec![ValueId(0)]);
 }
 
 #[test]
@@ -507,66 +431,23 @@ fn no_fold_print_builtin() {
     assert_eq!(result_ops[1].opcode, OpCode::CallBuiltin);
 }
 
-#[test]
-fn fold_str_replace_method() {
-    // "hello world".replace("world", "rust") => "hello rust"
-    let ops = vec![
-        make_const_str(0, "hello world"),
-        make_const_str(1, "world"),
-        make_const_str(2, "rust"),
-        make_call_method(3, "replace", vec![0, 1, 2]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 4);
-    assert_eq!(result_ops[3].opcode, OpCode::ConstStr);
-    assert_eq!(
-        result_ops[3].attrs.get("s_value"),
-        Some(&AttrValue::Str("hello rust".into()))
-    );
-}
-
-#[test]
-fn fold_int_bit_length_method() {
-    // (255).bit_length() => 8
-    let ops = vec![
-        make_const_int(0, 255),
-        make_call_method(1, "bit_length", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[1].attrs.get("value"), Some(&AttrValue::Int(8)));
-}
-
-#[test]
-fn fold_bool_builtin() {
-    // bool(0) => False
-    let ops = vec![make_const_int(0, 0), make_call_builtin(1, "bool", vec![0])];
-    let (result_ops, _) = run_sccp_on_ops(ops, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[1].attrs.get("value"),
-        Some(&AttrValue::Bool(false))
-    );
-}
-
-#[test]
-fn fold_math_gcd() {
-    // math.gcd(12, 8) => 4
-    let ops = vec![
-        make_const_int(0, 12),
-        make_const_int(1, 8),
-        make_call_builtin(2, "math.gcd", vec![0, 1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[2].attrs.get("value"), Some(&AttrValue::Int(4)));
-}
-
 // --- Compound constant folding tests ---
 
 fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
+        operands: elements.into_iter().map(ValueId).collect(),
+        results: vec![ValueId(result)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    }
+}
+
+fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
+    TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::BuildTuple,
         operands: elements.into_iter().map(ValueId).collect(),
         results: vec![ValueId(result)],
         attrs: AttrDict::new(),
@@ -586,13 +467,13 @@ fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
 }
 
 #[test]
-fn fold_len_of_constant_list() {
-    // len([1, 2, 3]) => 3
+fn fold_len_of_immutable_tuple() {
+    // len((1, 2, 3)) => 3
     let ops = vec![
         make_const_int(0, 1),
         make_const_int(1, 2),
         make_const_int(2, 3),
-        make_build_list(3, vec![0, 1, 2]),
+        make_build_tuple(3, vec![0, 1, 2]),
         make_call_builtin(4, "len", vec![3]),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 5);
@@ -601,8 +482,7 @@ fn fold_len_of_constant_list() {
 }
 
 #[test]
-fn fold_len_of_constant_dict() {
-    // len({"a": 1, "b": 2}) => 2
+fn mutable_dict_contents_are_not_value_constants() {
     let ops = vec![
         make_const_str(0, "a"),
         make_const_int(1, 1),
@@ -612,79 +492,8 @@ fn fold_len_of_constant_dict() {
         make_call_builtin(5, "len", vec![4]),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 6);
-    assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(2)));
-}
-
-#[test]
-fn fold_len_of_range() {
-    // len(range(10)) => 10
-    let ops = vec![
-        make_const_int(0, 10),
-        make_call_builtin(1, "range", vec![0]),
-        make_call_builtin(2, "len", vec![1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[2].attrs.get("value"), Some(&AttrValue::Int(10)));
-}
-
-#[test]
-fn fold_len_of_range_with_start_stop() {
-    // len(range(3, 10)) => 7
-    let ops = vec![
-        make_const_int(0, 3),
-        make_const_int(1, 10),
-        make_call_builtin(2, "range", vec![0, 1]),
-        make_call_builtin(3, "len", vec![2]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 4);
-    assert_eq!(result_ops[3].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[3].attrs.get("value"), Some(&AttrValue::Int(7)));
-}
-
-#[test]
-fn fold_len_of_range_with_step() {
-    // len(range(0, 10, 3)) => 4  (0, 3, 6, 9)
-    let ops = vec![
-        make_const_int(0, 0),
-        make_const_int(1, 10),
-        make_const_int(2, 3),
-        make_call_builtin(3, "range", vec![0, 1, 2]),
-        make_call_builtin(4, "len", vec![3]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 5);
-    assert_eq!(result_ops[4].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[4].attrs.get("value"), Some(&AttrValue::Int(4)));
-}
-
-#[test]
-fn fold_len_of_empty_range() {
-    // len(range(10, 0)) => 0
-    let ops = vec![
-        make_const_int(0, 10),
-        make_const_int(1, 0),
-        make_call_builtin(2, "range", vec![0, 1]),
-        make_call_builtin(3, "len", vec![2]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 4);
-    assert_eq!(result_ops[3].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[3].attrs.get("value"), Some(&AttrValue::Int(0)));
-}
-
-#[test]
-fn fold_len_of_negative_step_range() {
-    // len(range(10, 0, -2)) => 5  (10, 8, 6, 4, 2)
-    let ops = vec![
-        make_const_int(0, 10),
-        make_const_int(1, 0),
-        make_const_int(2, -2),
-        make_call_builtin(3, "range", vec![0, 1, 2]),
-        make_call_builtin(4, "len", vec![3]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 5);
-    assert_eq!(result_ops[4].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[4].attrs.get("value"), Some(&AttrValue::Int(5)));
+    assert_eq!(result_ops[4].opcode, OpCode::BuildDict);
+    assert_eq!(result_ops[5].opcode, OpCode::CallBuiltin);
 }
 
 #[test]
@@ -744,41 +553,14 @@ fn fold_string_repeat_zero() {
 }
 
 #[test]
-fn fold_bool_of_constant_list() {
-    // bool([]) => False, bool([1]) => True
-    let ops_empty = vec![
-        make_build_list(0, vec![]),
-        make_call_builtin(1, "bool", vec![0]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops_empty, 2);
-    assert_eq!(result_ops[1].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[1].attrs.get("value"),
-        Some(&AttrValue::Bool(false))
-    );
-
-    let ops_nonempty = vec![
-        make_const_int(0, 42),
-        make_build_list(1, vec![0]),
-        make_call_builtin(2, "bool", vec![1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops_nonempty, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[2].attrs.get("value"),
-        Some(&AttrValue::Bool(true))
-    );
-}
-
-#[test]
-fn fold_sum_of_constant_list() {
-    // sum([1, 2, 3, 4]) => 10
+fn fold_sum_of_immutable_tuple() {
+    // sum((1, 2, 3, 4)) => 10
     let ops = vec![
         make_const_int(0, 1),
         make_const_int(1, 2),
         make_const_int(2, 3),
         make_const_int(3, 4),
-        make_build_list(4, vec![0, 1, 2, 3]),
+        make_build_tuple(4, vec![0, 1, 2, 3]),
         make_call_builtin(5, "sum", vec![4]),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 6);
@@ -787,33 +569,31 @@ fn fold_sum_of_constant_list() {
 }
 
 #[test]
-fn fold_sorted_of_constant_list() {
-    // sorted([3, 1, 2]) => [1, 2, 3]
-    // len(sorted([3, 1, 2])) => 3
+fn builtin_mutable_results_are_not_value_constants() {
+    // sorted returns a mutable list even when its input is immutable.
     let ops = vec![
         make_const_int(0, 3),
         make_const_int(1, 1),
         make_const_int(2, 2),
-        make_build_list(3, vec![0, 1, 2]),
+        make_build_tuple(3, vec![0, 1, 2]),
         make_call_builtin(4, "sorted", vec![3]),
         make_call_builtin(5, "len", vec![4]),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 6);
-    // sorted result stays as BuildList (no ConstList opcode), but len propagates
-    assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
-    assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(3)));
+    assert_eq!(result_ops[4].opcode, OpCode::CallBuiltin);
+    assert_eq!(result_ops[5].opcode, OpCode::CallBuiltin);
 }
 
 #[test]
-fn fold_list_concat() {
-    // len([1, 2] + [3, 4]) => 4
+fn fold_tuple_concat() {
+    // len((1, 2) + (3, 4)) => 4
     let ops = vec![
         make_const_int(0, 1),
         make_const_int(1, 2),
-        make_build_list(2, vec![0, 1]),
+        make_build_tuple(2, vec![0, 1]),
         make_const_int(3, 3),
         make_const_int(4, 4),
-        make_build_list(5, vec![3, 4]),
+        make_build_tuple(5, vec![3, 4]),
         make_binop(OpCode::Add, 6, 2, 5),
         make_call_builtin(7, "len", vec![6]),
     ];
@@ -823,12 +603,12 @@ fn fold_list_concat() {
 }
 
 #[test]
-fn fold_list_repeat() {
-    // len([1, 2] * 3) => 6
+fn fold_tuple_repeat() {
+    // len((1, 2) * 3) => 6
     let ops = vec![
         make_const_int(0, 1),
         make_const_int(1, 2),
-        make_build_list(2, vec![0, 1]),
+        make_build_tuple(2, vec![0, 1]),
         make_const_int(3, 3),
         make_binop(OpCode::Mul, 4, 2, 3),
         make_call_builtin(5, "len", vec![4]),
@@ -839,47 +619,18 @@ fn fold_list_repeat() {
 }
 
 #[test]
-fn fold_bool_of_range() {
-    // bool(range(0)) => False
-    let ops = vec![
-        make_const_int(0, 0),
-        make_call_builtin(1, "range", vec![0]),
-        make_call_builtin(2, "bool", vec![1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[2].attrs.get("value"),
-        Some(&AttrValue::Bool(false))
-    );
-
-    // bool(range(5)) => True
-    let ops = vec![
-        make_const_int(0, 5),
-        make_call_builtin(1, "range", vec![0]),
-        make_call_builtin(2, "bool", vec![1]),
-    ];
-    let (result_ops, _) = run_sccp_on_ops(ops, 3);
-    assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
-    assert_eq!(
-        result_ops[2].attrs.get("value"),
-        Some(&AttrValue::Bool(true))
-    );
-}
-
-#[test]
-fn no_fold_oversized_list() {
-    // Building a list with > MAX_COMPOUND_ELEMENTS should not fold.
+fn no_fold_oversized_tuple() {
+    // Building a tuple with > MAX_COMPOUND_ELEMENTS should not fold.
     // We test with 1001 elements (above the cap).
     let mut ops = Vec::new();
     for i in 0..1001u32 {
         ops.push(make_const_int(i, i as i64));
     }
     let elem_ids: Vec<u32> = (0..1001).collect();
-    ops.push(make_build_list(1001, elem_ids));
+    ops.push(make_build_tuple(1001, elem_ids));
     ops.push(make_call_builtin(1002, "len", vec![1001]));
     let (result_ops, _) = run_sccp_on_ops(ops, 1003);
-    // The BuildList should NOT fold (too large), so len() can't fold either.
+    // The BuildTuple should NOT fold (too large), so len() can't fold either.
     let len_op = &result_ops[1002];
     assert_eq!(len_op.opcode, OpCode::CallBuiltin);
 }
@@ -901,4 +652,593 @@ fn python_range_len_uses_canonical_numeric_fact() {
     assert_eq!(python_range_len(0, 1, 1), Some(1));
     assert_eq!(python_range_len(-5, 5, 1), Some(10));
     assert_eq!(python_range_len(0, 1, 0), None);
+}
+
+#[test]
+fn malformed_producers_never_seed_rewrite_or_fold_downstream_control() {
+    for opcode in [
+        OpCode::ConstInt,
+        OpCode::ConstFloat,
+        OpCode::ConstBool,
+        OpCode::ConstStr,
+        OpCode::ConstNone,
+        OpCode::Add,
+        OpCode::Neg,
+        OpCode::Not,
+        OpCode::BuildTuple,
+        OpCode::CallBuiltin,
+        OpCode::CallMethod,
+    ] {
+        for operand_count in 0..=4 {
+            for result_count in 0..=3 {
+                let mut producer = make_const_int(20, 7);
+                producer.opcode = opcode;
+                producer.operands = vec![ValueId(0); operand_count];
+                producer.results = (20..20 + result_count).map(ValueId).collect();
+                producer.attrs = match opcode {
+                    OpCode::ConstBool => make_const_bool(20, true).attrs,
+                    OpCode::ConstFloat => make_const_float(20, 1.0).attrs,
+                    OpCode::ConstStr => make_const_str(20, "value").attrs,
+                    OpCode::CallBuiltin => make_call_builtin(20, "len", vec![]).attrs,
+                    OpCode::CallMethod => make_call_method(20, "upper", vec![]).attrs,
+                    _ => producer.attrs,
+                };
+                if admits_constant_result(&producer) {
+                    continue;
+                }
+                let mut func = TirFunction::new("invalid_producer".into(), vec![], TirType::None);
+                let then_block = func.fresh_block();
+                let else_block = func.fresh_block();
+                for id in [then_block, else_block] {
+                    func.blocks.insert(
+                        id,
+                        TirBlock {
+                            id,
+                            args: vec![],
+                            ops: vec![],
+                            terminator: Terminator::Return { values: vec![] },
+                        },
+                    );
+                }
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops = vec![
+                    if opcode == OpCode::Not {
+                        make_const_bool(0, true)
+                    } else {
+                        make_const_int(0, 1)
+                    },
+                    producer.clone(),
+                    make_binop(OpCode::Add, 30, 20, 0),
+                    make_call_builtin(31, "len", vec![20]),
+                ];
+                entry.terminator = Terminator::CondBranch {
+                    cond: ValueId(20),
+                    then_block,
+                    then_args: vec![],
+                    else_block,
+                    else_args: vec![],
+                };
+                func.next_value = 32;
+                run(&mut func);
+                let entry = &func.blocks[&func.entry_block];
+                assert_eq!(
+                    entry.ops[1].opcode, producer.opcode,
+                    "{opcode:?}/{operand_count}/{result_count}"
+                );
+                assert_eq!(entry.ops[1].operands, producer.operands);
+                assert_eq!(entry.ops[1].results, producer.results);
+                assert_eq!(entry.ops[1].attrs, producer.attrs);
+                assert_eq!(entry.ops[2].opcode, OpCode::Add);
+                assert_eq!(entry.ops[3].opcode, OpCode::CallBuiltin);
+                assert!(matches!(entry.terminator, Terminator::CondBranch { .. }));
+                assert_eq!(func.blocks.len(), 3);
+            }
+        }
+    }
+}
+
+#[test]
+fn call_folding_preserves_unsupported_arguments_and_result_siblings() {
+    for (mut call, valid_operand_count) in [
+        (make_call_builtin(20, "len", vec![0]), 1),
+        (make_call_method(20, "upper", vec![0]), 1),
+        (make_call_method(20, "find", vec![0, 1]), 2),
+        (make_call_method(20, "replace", vec![0, 1, 2]), 3),
+    ] {
+        let opcode = call.opcode;
+        let prefix = vec![
+            make_const_str(0, "abc"),
+            make_const_str(1, "a"),
+            make_const_str(2, "x"),
+            make_const_int(3, 1),
+        ];
+        for results in [0, 2, 3] {
+            call.results = (20..20 + results).map(ValueId).collect();
+            let mut ops = prefix.clone();
+            ops.push(call.clone());
+            let (after, _) = run_sccp_on_ops(ops, 24);
+            assert_eq!(after[4].opcode, opcode);
+            assert_eq!(after[4].results, call.results);
+        }
+        call.results = vec![ValueId(20)];
+        call.operands.push(ValueId(3));
+        let mut ops = prefix.clone();
+        ops.push(call.clone());
+        ops.push(make_call_builtin(21, "len", vec![20]));
+        let (after, _) = run_sccp_on_ops(ops, 24);
+        assert_eq!(after[4].opcode, opcode, "extra args {call:?}");
+        assert_eq!(after[4].operands.len(), valid_operand_count + 1);
+        assert_eq!(after[5].opcode, OpCode::CallBuiltin);
+        call.operands.pop();
+        let mut ops = prefix;
+        ops.push(call);
+        let (after, _) = run_sccp_on_ops(ops, 24);
+        if opcode == OpCode::CallBuiltin {
+            assert_ne!(
+                after[4].opcode, opcode,
+                "valid fixed builtin must still fold"
+            );
+        } else {
+            assert_eq!(
+                after[4].opcode, opcode,
+                "operand zero is a callable, not its receiver"
+            );
+        }
+    }
+}
+
+#[test]
+fn unproved_float_calls_and_operators_retain_runtime_evaluation() {
+    for (name, values) in [
+        ("int", vec![f64::INFINITY]),
+        ("math.floor", vec![f64::NAN]),
+        ("math.ceil", vec![(1_u64 << 63) as f64]),
+        ("math.trunc", vec![f64::NEG_INFINITY]),
+        ("math.sqrt", vec![4.0]),
+        ("math.sqrt", vec![-1.0]),
+        ("math.log", vec![0.0]),
+        ("math.exp", vec![1000.0]),
+        ("math.pow", vec![0.0, -1.0]),
+        ("math.hypot", vec![3.0, 4.0]),
+    ] {
+        let mut ops: Vec<_> = values
+            .iter()
+            .enumerate()
+            .map(|(index, &value)| make_const_float(index as u32, value))
+            .collect();
+        let call = make_call_builtin(10, name, (0..values.len() as u32).collect());
+        ops.push(call.clone());
+        ops.push(make_call_builtin(11, "bool", vec![10]));
+        let (after, _) = run_sccp_on_ops(ops, 12);
+        let retained = &after[values.len()];
+        assert_eq!(retained.opcode, call.opcode, "{name}/{values:?}");
+        assert_eq!(retained.operands, call.operands);
+        assert_eq!(retained.attrs, call.attrs);
+        assert_eq!(after[values.len() + 1].opcode, OpCode::CallBuiltin);
+    }
+    for opcode in [OpCode::Pow, OpCode::FloorDiv, OpCode::Mod] {
+        for (left, right) in [(2.0, 3.0), (1.0, 0.1), (-0.0, 3.0), (0.0, -3.0), (1.0, 0.0)] {
+            let operation = make_binop(opcode, 2, 0, 1);
+            let (after, _) = run_sccp_on_ops(
+                vec![
+                    make_const_float(0, left),
+                    make_const_float(1, right),
+                    operation.clone(),
+                    make_call_builtin(3, "bool", vec![2]),
+                ],
+                4,
+            );
+            assert_eq!(after[2].opcode, opcode);
+            assert_eq!(after[2].operands, operation.operands);
+            assert_eq!(after[3].opcode, OpCode::CallBuiltin);
+        }
+    }
+    let (after, _) = run_sccp_on_ops(
+        vec![
+            make_const_int(0, 9_007_199_254_740_993),
+            make_const_int(1, 3),
+            make_binop(OpCode::Div, 2, 0, 1),
+            make_call_builtin(3, "bool", vec![2]),
+        ],
+        4,
+    );
+    assert_eq!(after[2].opcode, OpCode::Div);
+    assert_eq!(after[2].operands, vec![ValueId(0), ValueId(1)]);
+    assert_eq!(after[3].opcode, OpCode::CallBuiltin);
+}
+
+#[test]
+fn dedicated_range_constructor_has_exact_three_operand_semantics() {
+    for (start, stop, step, expected) in [
+        (0, 10, 1, Some(10)),
+        (3, 10, 1, Some(7)),
+        (0, 10, 3, Some(4)),
+        (10, 0, 1, Some(0)),
+        (10, 0, -2, Some(5)),
+        (0, 10, 0, None),
+        (i64::MIN, i64::MAX, 1, None),
+    ] {
+        let mut range = make_call_builtin(3, "range", vec![0, 1, 2]);
+        range
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str("range_new".into()));
+        let (after, _) = run_sccp_on_ops(
+            vec![
+                make_const_int(0, start),
+                make_const_int(1, stop),
+                make_const_int(2, step),
+                range,
+                make_call_builtin(4, "len", vec![3]),
+            ],
+            5,
+        );
+        assert_eq!(
+            after[3].opcode,
+            OpCode::CallBuiltin,
+            "do not materialize a range value"
+        );
+        match expected {
+            Some(len) => {
+                assert_eq!(after[4].opcode, OpCode::ConstInt);
+                assert_eq!(after[4].attrs.get("value"), Some(&AttrValue::Int(len)));
+            }
+            None => assert_eq!(after[4].opcode, OpCode::CallBuiltin),
+        }
+    }
+}
+
+#[test]
+fn callable_metadata_never_turns_a_receiver_into_a_bound_callable() {
+    for method in [
+        "upper",
+        "lower",
+        "title",
+        "capitalize",
+        "swapcase",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "isalpha",
+        "isdigit",
+        "isalnum",
+        "isspace",
+        "isupper",
+        "islower",
+        "startswith",
+        "endswith",
+        "find",
+        "rfind",
+        "count",
+        "replace",
+        "removeprefix",
+        "removesuffix",
+        "zfill",
+        "bit_length",
+        "bit_count",
+        "is_integer",
+    ] {
+        for spelling in [method.to_string(), format!("BoundMethod:str:{method}")] {
+            let call = make_call_method(3, &spelling, vec![0, 1, 2]);
+            let (after, _) = run_sccp_on_ops(
+                vec![
+                    make_const_str(0, "abc"),
+                    make_const_str(1, "a"),
+                    make_const_str(2, "b"),
+                    call.clone(),
+                    make_call_builtin(4, "len", vec![3]),
+                ],
+                5,
+            );
+            assert_eq!(after[3].opcode, call.opcode, "{spelling}");
+            assert_eq!(after[3].operands, call.operands);
+            assert_eq!(after[3].attrs, call.attrs);
+            assert_eq!(after[4].opcode, OpCode::CallBuiltin);
+        }
+    }
+}
+
+#[test]
+fn mutable_lookup_names_do_not_establish_builtin_identity() {
+    for name in [
+        "bool",
+        "int",
+        "float",
+        "str",
+        "range",
+        "math.floor",
+        "math.ceil",
+        "math.trunc",
+        "math.fabs",
+        "math.isfinite",
+        "math.isinf",
+        "math.isnan",
+        "math.copysign",
+        "math.gcd",
+        "math.lcm",
+    ] {
+        for count in 0..=3 {
+            let call = make_call_builtin(3, name, (0..count).collect());
+            let (after, _) = run_sccp_on_ops(
+                vec![
+                    make_const_int(0, 1),
+                    make_const_int(1, 2),
+                    make_const_int(2, 3),
+                    call.clone(),
+                    make_call_builtin(4, "len", vec![3]),
+                ],
+                5,
+            );
+            assert_eq!(after[3].opcode, call.opcode, "{name}/{count}");
+            assert_eq!(after[3].operands, call.operands);
+            assert_eq!(after[3].attrs, call.attrs);
+            assert_eq!(after[4].opcode, OpCode::CallBuiltin);
+        }
+    }
+}
+
+#[test]
+fn recursive_constant_payloads_and_long_literals_stop_before_copy_amplification() {
+    let mut ops = vec![make_const_str(0, &"x".repeat(501))];
+    ops.push(make_build_tuple(1, vec![0]));
+    ops.push(make_build_tuple(2, vec![1, 1]));
+    ops.push(make_call_builtin(3, "len", vec![2]));
+    ops.push(make_const_str(4, &"x".repeat(1001)));
+    ops.push(make_call_builtin(5, "repr", vec![4]));
+    let (after, _) = run_sccp_on_ops(ops, 6);
+    assert_eq!(after[3].opcode, OpCode::CallBuiltin);
+    assert_eq!(after[5].opcode, OpCode::CallBuiltin);
+}
+
+#[test]
+fn builtin_dispatch_view_separates_name_and_arguments_and_rejects_conflicts() {
+    for dynamic in [false, true] {
+        let mut call = make_call_builtin(2, "len", vec![1]);
+        if dynamic {
+            call.attrs.clear();
+            call.operands.insert(0, ValueId(0));
+        }
+        let (after, _) = run_sccp_on_ops(
+            vec![make_const_str(0, "len"), make_const_str(1, "payload"), call],
+            3,
+        );
+        assert_eq!(after[2].opcode, OpCode::ConstInt);
+        assert_eq!(after[2].attrs.get("value"), Some(&AttrValue::Int(7)));
+    }
+    for (key, value) in [
+        ("_original_kind", AttrValue::Str("print".into())),
+        ("_original_kind", AttrValue::Str("unknown_builtin".into())),
+        ("name", AttrValue::Int(1)),
+        ("s_value", AttrValue::Str("abs".into())),
+        ("callee", AttrValue::Str("molt_is_truthy".into())),
+    ] {
+        let mut call = make_call_builtin(1, "len", vec![0]);
+        call.attrs.insert(key.into(), value);
+        let (after, _) = run_sccp_on_ops(vec![make_const_str(0, "abc"), call.clone()], 2);
+        assert_eq!(after[1].opcode, call.opcode, "{key}");
+        assert_eq!(after[1].attrs, call.attrs);
+    }
+}
+
+#[test]
+fn boolean_primitive_folds_exact_immutable_values_in_the_real_pipeline() {
+    for (literal, expected) in [(make_const_str(0, ""), false), (make_const_int(0, 2), true)] {
+        let mut op = make_binop(OpCode::Bool, 1, 0, 0);
+        op.operands.truncate(1);
+        let (after, _) = run_sccp_on_ops(vec![literal, op], 2);
+        assert_eq!(after[1].opcode, OpCode::ConstBool);
+        assert_eq!(
+            after[1].attrs.get("value"),
+            Some(&AttrValue::Bool(expected))
+        );
+    }
+}
+
+#[test]
+fn lattice_float_identity_preserves_all_bits() {
+    let bits = [
+        0x0000_0000_0000_0000_u64,
+        0x8000_0000_0000_0000,
+        0x3ff0_0000_0000_0000,
+        0x7ff0_0000_0000_0000,
+        0xfff0_0000_0000_0000,
+        0x7ff8_0000_0000_0001,
+        0x7ff8_0000_0000_0002,
+        0xfff8_0000_0000_0001,
+        0x7ff0_0000_0000_0001,
+    ];
+    for left_bits in bits {
+        for right_bits in bits {
+            let left = ConstVal::Float(f64::from_bits(left_bits));
+            let right = ConstVal::Float(f64::from_bits(right_bits));
+            let expected = left_bits == right_bits;
+            assert_eq!(left == right, expected, "{left_bits:x} vs {right_bits:x}");
+            assert_eq!(
+                LatticeValue::Constant(left) == LatticeValue::Constant(right),
+                expected,
+                "lattice wrapper must retain exact float identity"
+            );
+        }
+    }
+}
+
+#[test]
+fn lattice_identity_preserves_variants_and_sentinels() {
+    assert_ne!(ConstVal::Bool(true), ConstVal::Int(1));
+    assert_ne!(ConstVal::Int(1), ConstVal::Float(1.0));
+    assert_ne!(ConstVal::Bool(false), ConstVal::None);
+    assert_ne!(LatticeValue::Top, LatticeValue::Bottom);
+    assert_ne!(LatticeValue::Top, LatticeValue::Constant(ConstVal::None));
+    assert_eq!(LatticeValue::Top, LatticeValue::Top);
+    assert_eq!(LatticeValue::Bottom, LatticeValue::Bottom);
+    for value in [
+        ConstVal::Int(1),
+        ConstVal::Bool(true),
+        ConstVal::Str("literal".into()),
+        ConstVal::None,
+    ] {
+        assert_eq!(value, value.clone());
+    }
+}
+
+#[test]
+fn lattice_immutable_tuple_identity_is_recursive_not_allocation_based() {
+    fn nested(zero: f64, bits: u64) -> ConstVal {
+        ConstVal::Tuple(
+            vec![
+                ConstVal::Tuple(
+                    vec![ConstVal::Float(zero), ConstVal::Float(f64::from_bits(bits))].into(),
+                ),
+                ConstVal::Range {
+                    start: 1,
+                    stop: 9,
+                    step: 2,
+                },
+            ]
+            .into(),
+        )
+    }
+    let left = nested(0.0, 0x7ff8_0000_0000_0001);
+    let same = nested(0.0, 0x7ff8_0000_0000_0001);
+    let (ConstVal::Tuple(left_storage), ConstVal::Tuple(same_storage)) = (&left, &same) else {
+        unreachable!();
+    };
+    assert!(!Arc::ptr_eq(left_storage, same_storage));
+    assert_eq!(left, same);
+    assert_eq!(left, left.clone());
+    assert_ne!(left, nested(-0.0, 0x7ff8_0000_0000_0001));
+    assert_ne!(left, nested(0.0, 0x7ff8_0000_0000_0002));
+    assert_ne!(
+        ConstVal::Tuple(vec![ConstVal::Bool(true)].into()),
+        ConstVal::Tuple(vec![ConstVal::Int(1)].into())
+    );
+    // Python range equality compares sequences, but exposed start/stop/step
+    // attributes still differ; value facts cannot merge these empty ranges.
+    assert_ne!(
+        ConstVal::Range {
+            start: 0,
+            stop: 0,
+            step: 1
+        },
+        ConstVal::Range {
+            start: 1,
+            stop: 1,
+            step: 1
+        }
+    );
+}
+
+#[test]
+fn lattice_identity_does_not_replace_python_comparison_semantics() {
+    let positive_zero = ConstVal::Float(0.0);
+    let negative_zero = ConstVal::Float(-0.0);
+    assert_ne!(positive_zero, negative_zero);
+    assert_eq!(
+        evaluate_op(OpCode::Eq, &[Some(&positive_zero), Some(&negative_zero)]),
+        Some(ConstVal::Bool(true))
+    );
+    assert_eq!(
+        evaluate_op(OpCode::Ne, &[Some(&positive_zero), Some(&negative_zero)]),
+        Some(ConstVal::Bool(false))
+    );
+    let left_nan = ConstVal::Float(f64::from_bits(0x7ff8_0000_0000_0001));
+    let right_nan = ConstVal::Float(f64::from_bits(0x7ff8_0000_0000_0001));
+    assert_eq!(left_nan, right_nan);
+    assert_eq!(
+        evaluate_op(OpCode::Eq, &[Some(&left_nan), Some(&right_nan)]),
+        Some(ConstVal::Bool(false))
+    );
+    assert_eq!(
+        evaluate_op(OpCode::Ne, &[Some(&left_nan), Some(&right_nan)]),
+        Some(ConstVal::Bool(true))
+    );
+}
+
+#[test]
+fn mutable_list_observations_survive_direct_and_aliased_inplace_mutation() {
+    for aliased in [false, true] {
+        for observer in ["len", "bool", "sum"] {
+            let mut alias = make_build_list(3, vec![2]);
+            alias.opcode = OpCode::Copy;
+            let ops = vec![
+                make_const_int(0, 1),
+                make_const_int(1, 2),
+                make_build_list(2, vec![0]),
+                alias,
+                make_build_list(4, vec![1]),
+                make_call_builtin(5, observer, vec![2]),
+                make_binop(OpCode::InplaceAdd, 6, if aliased { 3 } else { 2 }, 4),
+                make_call_builtin(7, observer, vec![2]),
+            ];
+            let expected = ops.clone();
+            let (result_ops, _) = run_sccp_on_ops(ops, 8);
+            for index in [2, 3, 4, 5, 6, 7] {
+                assert_eq!(
+                    result_ops[index].opcode, expected[index].opcode,
+                    "{observer}, aliased={aliased}, op={index}"
+                );
+                assert_eq!(result_ops[index].operands, expected[index].operands);
+            }
+        }
+    }
+}
+
+#[test]
+fn callbacks_cannot_leave_mutable_or_nested_compound_value_facts() {
+    for constructor in [OpCode::BuildList, OpCode::BuildDict, OpCode::BuildSet] {
+        let mut container = make_build_list(2, vec![0, 1]);
+        container.opcode = constructor;
+        let ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            container,
+            make_build_tuple(3, vec![2]),
+            make_build_tuple(4, vec![3]),
+            // The callback can mutate captured state without receiving the
+            // container as an explicit operand. Operand-local invalidation
+            // would miss this ownership boundary.
+            make_call_builtin(5, "mutate_captured_state", vec![]),
+            make_call_builtin(6, "len", vec![2]),
+            make_call_builtin(7, "bool", vec![2]),
+            make_call_builtin(8, "len", vec![3]),
+            make_call_builtin(9, "bool", vec![4]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 10);
+        assert_eq!(result_ops[2].opcode, constructor);
+        assert_eq!(result_ops[3].opcode, OpCode::BuildTuple);
+        assert_eq!(result_ops[4].opcode, OpCode::BuildTuple);
+        for op in &result_ops[5..] {
+            assert_eq!(op.opcode, OpCode::CallBuiltin, "{constructor:?}");
+        }
+    }
+}
+
+#[test]
+fn mutable_builtin_and_sequence_results_remain_runtime_values() {
+    for builtin in ["sorted", "list", "dict", "set"] {
+        let ops = vec![
+            make_const_int(0, 1),
+            make_build_tuple(1, vec![0]),
+            make_call_builtin(2, builtin, if builtin == "dict" { vec![] } else { vec![1] }),
+            make_call_builtin(3, "mutate_captured_state", vec![]),
+            make_call_builtin(4, "len", vec![2]),
+            make_build_tuple(5, vec![2]),
+            make_call_builtin(6, "bool", vec![5]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 7);
+        for index in [2, 3, 4, 6] {
+            assert_eq!(result_ops[index].opcode, OpCode::CallBuiltin, "{builtin}");
+        }
+    }
+    for opcode in [OpCode::Add, OpCode::Mul] {
+        let ops = vec![
+            make_const_int(0, 2),
+            make_build_list(1, vec![0]),
+            make_binop(opcode, 2, 1, if opcode == OpCode::Add { 1 } else { 0 }),
+            make_call_builtin(3, "mutate_captured_state", vec![]),
+            make_call_builtin(4, "len", vec![2]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 5);
+        assert_eq!(result_ops[2].opcode, opcode);
+        assert_eq!(result_ops[4].opcode, OpCode::CallBuiltin);
+    }
 }

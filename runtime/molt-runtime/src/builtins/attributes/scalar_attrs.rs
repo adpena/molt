@@ -48,31 +48,6 @@ fn scalar_class_bits(_py: &PyToken<'_>, kind: ScalarKind) -> u64 {
     }
 }
 
-/// Bind a curated builtin class attribute to a scalar receiver, mirroring the
-/// descriptor protocol for the kinds those tables can yield.
-fn bind_scalar_class_attr(
-    _py: &PyToken<'_>,
-    attr_bits: u64,
-    self_bits: u64,
-    class_bits: u64,
-) -> u64 {
-    if let Some(attr_ptr) = maybe_ptr_from_bits(attr_bits) {
-        match unsafe { object_type_id(attr_ptr) } {
-            TYPE_ID_CLASSMETHOD => {
-                let func_bits = unsafe { classmethod_func_bits(attr_ptr) };
-                return molt_bound_method_new(func_bits, class_bits);
-            }
-            TYPE_ID_STATICMETHOD => {
-                let func_bits = unsafe { staticmethod_func_bits(attr_ptr) };
-                inc_ref_bits(_py, func_bits);
-                return func_bits;
-            }
-            _ => {}
-        }
-    }
-    molt_bound_method_new(attr_bits, self_bits)
-}
-
 /// Resolve `name` as a bound method on a numeric/bool scalar receiver.
 ///
 /// This is the method half of the single numeric scalar attribute authority. The
@@ -88,24 +63,40 @@ fn resolve_scalar_method(
 ) -> Option<u64> {
     let builtins = builtin_classes(_py);
     let class_bits = scalar_class_bits(_py, kind);
+    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
     let direct = match kind {
         ScalarKind::Int | ScalarKind::Bool => int_method_bits(_py, name),
         ScalarKind::Float => float_method_bits(_py, name),
     };
     if let Some(func_bits) = direct {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
+        return unsafe {
+            descriptor_bind(
+                _py,
+                func_bits,
+                Some(MoltObject::from_ptr(class_ptr).bits()),
+                Some(self_bits),
+            )
+        };
     }
     if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name) {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
+        return unsafe {
+            descriptor_bind(
+                _py,
+                func_bits,
+                Some(MoltObject::from_ptr(class_ptr).bits()),
+                Some(self_bits),
+            )
+        };
     }
     if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name) {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
+        return unsafe {
+            descriptor_bind(
+                _py,
+                func_bits,
+                Some(MoltObject::from_ptr(class_ptr).bits()),
+                Some(self_bits),
+            )
+        };
     }
     None
 }

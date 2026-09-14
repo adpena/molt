@@ -15,7 +15,6 @@ pub(super) fn emit_data_runtime_op(
     locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
-    arena_local: Option<u32>,
     ops: &[OpIR],
     op_idx: usize,
 ) -> bool {

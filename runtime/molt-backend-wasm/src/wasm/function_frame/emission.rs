@@ -2,7 +2,6 @@ use super::WasmFunctionFrame;
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm::constant_ops::emit_seeded_runtime_const_op;
-use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use std::fmt::Write as _;
@@ -85,37 +84,11 @@ impl WasmFunctionFrame {
         }
     }
 
-    pub(in crate::wasm) fn emit_entry_initializers(
-        &self,
-        func: &mut Function,
-        reloc_enabled: bool,
-        import_ids: &TrackedImportIds,
-    ) {
+    pub(in crate::wasm) fn emit_entry_initializers(&self, func: &mut Function) {
         self.const_cache.emit_init(func);
-        if let Some(idx) = self.arena_local {
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaNew],
-            );
-            func.instruction(&Instruction::LocalSet(idx));
-        }
     }
 
-    pub(in crate::wasm) fn emit_implicit_return(
-        &self,
-        func: &mut Function,
-        reloc_enabled: bool,
-        import_ids: &TrackedImportIds,
-    ) {
-        if let Some(arena_idx) = self.arena_local {
-            func.instruction(&Instruction::LocalGet(arena_idx));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
-            );
-        }
+    pub(in crate::wasm) fn emit_implicit_return(&self, func: &mut Function) {
         self.const_cache.emit_none(func);
         func.instruction(&Instruction::End);
     }

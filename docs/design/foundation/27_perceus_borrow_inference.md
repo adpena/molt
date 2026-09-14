@@ -36,15 +36,12 @@ each historical bug class **un-expressible**, not merely avoided.
 
 Rung 1 inserts a `DecRef` at every owned temporary's last use and then asks
 `refcount_elim` to remove the redundant ones. That is **insert-then-remove**.
-The two existing "elide to zero" steps — `refcount_elim` Step 5 (deferred-RC:
-non-heap-exposed ⇒ remove IncRef/DecRef, `refcount_elim.rs:577`) and Step 6
-(unique-ownership DecRef→Free, `refcount_elim.rs:628`) — are **disabled in the
-post-drop mode** (`run_post_drop`, `refcount_elim.rs:154`; the `post_drop` early
-return at `refcount_elim.rs:572`) precisely because, after insertion, they cannot
-distinguish *the one balancing release* from *a redundant pair*. So today, on a
-non-escaping owned temporary, rung 1 emits a real `molt_dec_ref_obj` call (the
-runtime fast-paths the inline-tag case, but the boxed case is a true atomic
-decrement + branch + maybe-free).
+The former opcode-only deferred-RC and per-block direct-Free policies have been
+deleted: neither could distinguish a required heap release from a redundant
+pair. Pre- and post-drop pipelines now share one release-preserving
+implementation. Boxed owned temporaries retain runtime `molt_dec_ref_obj`
+destruction unless an explicit prior retain is safely cancelled with its drop;
+stack-representation references remain elidable.
 
 Perceus' contribution is to make the elision a property of the **inference**, not
 a post-hoc removal. A value that is **borrowed** (never consumed by a transfer
@@ -381,20 +378,16 @@ molt's runtime already implements the *fused* form: `dec_ref_ptr`
 `object/mod.rs:2578`), and the Cranelift inline tag-check `emit_dec_ref_obj`
 (`simple_backend.rs:1076-1103`) short-circuits the non-pointer case. So molt's
 `DecRef` op *is* Perceus' specialized `drop` — the uniqueness test is inside the
-runtime call, with the inline tag-check hoisted to codegen. **Rung 2 does not
-need a separate specialization pass for the decref-vs-free split**; that is
-`refcount_elim` Step 6 (`refcount_elim.rs:628`, the DecRef→Free promotion for
-proven-unique values), which exists but is disabled post-drop.
+runtime call, with the inline tag-check hoisted to codegen. **Rung 2 does not need a separate decref-versus-free specialization pass.**
+The former per-block `DecRef -> Free` guess and unconditional deferred-RC
+elision have been deleted. A missing local heap exposure, a zero local balance,
+or `NoEscape` does not prove uniqueness, absence of child releases, or
+unobservable finalization.
 
-The rung-2 structural fix: **Step 6 becomes sound post-drop once borrow
-inference owns the obligation accounting.** Today Step 6 is disabled because it
-keys on `build_heap_exposed_set` (`refcount_elim.rs:601`) which cannot see the
-drop pass's lone releases. With the ownership lattice, a root that is `Owned(1)`,
-non-escaping (the lattice's own escape fact, §3.4), and has its sole `drop` at a
-point that dominates no other use **provably** hits the zero-transition — so the
-`DecRef` can be a direct `Free` (skip the atomic decrement + branch). This is a
-Phase-3 deliverable (§6 P3), gated on the lattice replacing
-`build_heap_exposed_set` as the escape oracle.
+Any future direct-release specialization must supply a shared all-path ownership
+proof and preserve weakrefs, finalizers, resurrection, child-edge destruction,
+allocation representation, and exception ordering. Until that proof exists,
+runtime `DecRef` owns the zero transition. There is no dormant Step 6 to re-enable.
 
 ### 3.2 Reuse / FBIP: `drop`-then-same-size-`alloc` → reuse token
 
@@ -446,24 +439,26 @@ The doc must not claim list-append FBIP — `lst.append` frees nothing per
 iteration. This precision is the difference between an honest perf projection and
 the overclaim the directive forbids.
 
-### 3.4 The escape fact = the lattice, replacing `build_heap_exposed_set`
+### 3.4 Capture and destruction are separate facts
 
-`refcount_elim` Steps 5/6 and reuse all need "does this value escape?".
-Three oracles answer it today, inconsistently:
+`escape_analysis::analyze` owns conservative capture obligations over
+allocations, exact copy aliases, every CFG edge, and retained typed fields.
+Callable names and frontend hints never establish noncapture. Fact-graph
+`ownership.escape_state` projects this analysis with explicit CFG invalidation.
 
-- `refcount_heap_exposure_opcodes` (`op_kinds.toml`, consumed by `refcount_elim.rs`) — opcode list.
-- `build_heap_exposed_set` (`refcount_elim.rs:89`) — operand scan + Return.
-- `escape_analysis.rs` (the SROA-enabling escape pass).
+Reference-count elimination does not own another escape list. Its pre- and
+post-drop entry points use the same implementation: explicit stack references
+may be removed; otherwise only a retain followed by its matched release may
+cancel across shared callback/exception barriers. Cross-block cancellation
+requires an unconditional edge into a sole-predecessor successor. Local pairing
+already covers loop headers, so a duplicate loop scan is unnecessary.
 
-Rung 2 unifies the *RC-relevant* escape fact into the lattice: a root **escapes**
-iff it is the operand of a non-borrowing store/build/call-capture/return/yield —
-which is exactly "its obligation is transferred or shared". A `Borrowed` root
-never escapes (someone else owns it); an `Owned` root escapes iff it is consumed
-by a transfer or stored-with-incref into something that outlives it. This makes
-the deferred-RC Step 5 *expressible post-drop* (P3): a non-escaping `Owned(1)`
-root whose drop is its only release can have the drop elided to a `Free` (Step 6)
-or, if reuse-paired, to a reuse token (§3.2). The directive's "elide to zero on
-non-escaping" is this unification.
+A frame-local heap object still needs its final release and its contained
+object releases. Neither `NoEscape`, `Borrowed`, nor a syntactic local refcount
+balance proves destruction can disappear. Reuse or direct-release
+specialization must add end-to-end ownership and destruction proofs, not revive
+the deleted deferred-RC or per-block Free policy.
+
 
 ---
 
@@ -639,7 +634,7 @@ CPython, NEVER `rtk diff` which lies — design 20 workflow lessons).
 | Phase | Scope | Deletes (file:line) | Gate (must all pass) |
 |---|---|---|---|
 | **P1 — Lattice replaces the seven sets** | Introduce `Ownership` lattice + the three edge types (alias-union/phi-join/borrow-of) as the single computation feeding `DropInsertion`. Re-derive every placement (straight-line drop, edge-dying, phi-retain, suspension-IncRef, transfer exclusions) from the lattice. | The *ad-hoc derivations* in `drop_insertion.rs`: remaining placement-local ownership sets become `lattice(root) == Owned` or explicit lattice states. Borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots are already sourced by `OwnershipRootFacts`; `DropEligibility` now composes those roots with the liveness-owned raw-scalar roots, so DropInsertion no longer owns the scattered `droppable` predicate. Python-bound local, named-slot, local-store, explicit-release root facts, the composed boundary-release root set, statement-release eligibility, and return-boundary deferral classification are sourced by `PythonLifetimeFacts`, with local-store boundary releases routed through `PythonLifetimeFacts::boundary_release_roots`. FinalizerSensitive roots, generated result-absorption ownership, statement-release finalizer boundaries, generated terminator transfer roots, and generated consumed-operand roots are sourced by `OwnershipLattice`/the ownership module. Raw-scalar production still comes from `TirLivenessResult`/the representation lattice until the Raw state is folded deliberately. `BorrowProvenance`/`AliasUnionFind` plus generated terminator/operand transfer queries are **kept** (they are the edge sources) but their *consumers* unify. | **Byte-identical RC output** vs current `DropInsertion` on the full differential corpus (native AND LLVM): `cmp -s` the emitted TIR DecRef/IncRef set per function + binary output. Backend lib tests green. `MOLT_ASSERT_NO_LEAK=1` clean. 0 new warnings (`cargo test`, not just `build`). The seven historical repros (design 20 Findings #1–#4) stay green. |
-| **P2 — Elision-to-zero on non-escaping** | The lattice's escape fact (§3.4) replaces `build_heap_exposed_set`. A `Borrowed` root gets no dup/drop (already true); make `Owned(1)` non-escaping roots whose drop is their sole release elide the `DecRef` entirely where the value is **dead with no observable release semantics** (no `__del__`-bearing type) — and promote the surviving sole-release `DecRef` to `Free` (re-enable Step 6 post-drop, soundly). | `refcount_elim` Step 5's `build_heap_exposed_set` consumer (:601) and the `post_drop` early-return that disables Step 6 (:572) — both replaced by the lattice escape fact. `is_heap_exposing` (:61) retires (folded into signatures). | Per-bench perf table showing the boxed-temp DecRef count drops to zero on non-escaping shapes (`bench_fib` intermediate temps; the design-20 accumulator). `bench_sum` (Raw lane) unchanged (zero ops, the contract). RSS bounded (`MOLT_ASSERT_NO_LEAK=1`). Native AND LLVM byte-identical to CPython. **Performance contract: faster-than-CPython on every bench, every target, every profile** (CLAUDE.md). |
+| **P2 — Proven ownership cancellation** | Shared capture facts bound lifetime, while exact ownership and destruction proofs determine which RC operations may disappear. The current pass removes only stack references and forward balanced pairs; heap final releases remain runtime operations. | `runtime/molt-passes/src/tir/passes/refcount_elim/` and the shared alias/effect barriers. No deferred-RC scan, duplicate loop policy, or direct-Free guess remains. | Native/WASM differential lifetime and finalizer receipts; bounded RSS and measured RC/allocation reductions. No performance claim from instruction counts alone. |
 | **P3 — Reuse/FBIP end-to-end** | Add ownership-safe candidate analysis after drop insertion, a typed TIR reuse operation, every backend lowering, and the terminal-semantics-aware runtime mechanism in one landing. Restrict the first implementation to proven no-child, non-weakref-able, finalizer-free representations; exclude `UserClass` and containers. | No dormant pass, attrs, or ABI precedes the consumers. | **Alloc-count evidence**: the BigInt accumulator must show an O(n)→O(1) allocation reduction. No reuse fires for `UserClass`/containers. `__del__`/weakref differential tests remain byte-identical; leak and RSS gates remain clean. |
 | **P4 — Registry-column migration** | Move the borrow signatures (§2.1: `result_ownership`, `result_validity`, `operand_ownership[]`, `borrows_source_operand`) into `op_kinds.toml` (design 25) and generate the classifier. The lattice reads generated columns instead of hand lists. *(Optionally: the inliner-gated borrowed-return signatures, §2.2, if the return-alias summary has landed.)* | The hand-maintained `copy_kind_mints_fresh_owned_ref` table, `copy_kind_is_inert_marker_table`, `copy_kind_is_explicit_no_heap_move`, and remaining result-ownership lists are generated from the table. The `classifier_silent_fallthrough` hazard is closed: every kind gets an explicit `result_ownership`. The `IterNextUnboxed` value-out validity fact is already generated via `[[result_validity]]`. | The design-25 sync test (`tests/test_gen_op_kinds.py`) green: drift = build error. **Byte-identical codegen** vs P3 (the columns mirror current reality exactly). `audit_op_kinds.py --check` clean against the baseline. |
 
@@ -698,14 +693,12 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
   after ownership-aware drop insertion and refcount elimination. *Gate:* a test
   asserts the typed reuse operation appears on the BigInt accumulator and the
   pass-manager order is pinned.
-- **R-elide-1 (P2 over-elision).** Re-enabling Step 6 (DecRef→Free) post-drop is
-  the exact unsoundness `run_post_drop` was created to avoid (`refcount_elim.rs:572`).
-  P2 must prove the lattice escape fact is *sound* where `build_heap_exposed_set`
-  was *necessary*. *Gate:* byte-identical RC behavior on the full corpus + the
-  design-20 leak repros under `MOLT_ASSERT_NO_LEAK`; a Free that should have been
-  a DecRef (shared object) is an immediate UAF the corpus catches. **Round-8
-  lens:** every DecRef→Free promotion must have a lattice proof of `Owned(1)` +
-  non-escaping + sole-release; spot-check the promotions against `escape_analysis`.
+- **R-elide-1 (P2 over-elision).** A local balance or noncapture fact does not
+  establish all-path uniqueness or unobservable destruction. Every future
+  release specialization must prove alias/CFG ownership, weakref and finalizer
+  behavior, child-edge cleanup, and representation safety. *Gate:* native/WASM
+  differential lifetime receipts and design-20 leak repros under
+  `MOLT_ASSERT_NO_LEAK`; shared-object premature Free is an immediate UAF.
 - **R-native-1 (the legacy-RC deletion sweep, inherited).** Native is active on
   the shared terminal drop path, but P1's unification does not automatically
   prove that every broader automatic temp-RC/value-tracking lane is redundant.
@@ -748,7 +741,7 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 |---|---|---|
 | `runtime/molt-passes/src/tir/passes/drop_insertion.rs` | Modify (P1) | Replace the seven ad-hoc sets/predicates with `Ownership` lattice reads; `droppable` → `lattice(root)==Owned`; keep alias-union/borrow-provenance/consumed-operand as the lattice edge sources |
 | `runtime/molt-passes/src/tir/passes/alias_analysis.rs` | Modify (P1/P4) | `CopyLowering`/`copy_kind_*` become the `result_ownership` reading; P4 generates them from `op_kinds.toml` |
-| `runtime/molt-passes/src/tir/passes/refcount_elim.rs` | Modify (P2) | Replace `build_heap_exposed_set` (:89) with the lattice escape fact; re-enable Step 6 post-drop soundly (:572 early-return removed under the lattice proof) |
+| `runtime/molt-passes/src/tir/passes/refcount_elim/` | Ownership optimization | Preserve the shared forward-pair and stack-representation contract; any additional elision needs all-path destruction proof |
 | TIR ownership/reuse analysis and IR definition | Add together (P3) | Prove unique release + representation compatibility and emit a typed reuse operation after drop insertion |
 | Native, LLVM, and WASM lowering | Add together (P3) | Lower the typed operation; no backend may ignore metadata |
 | Runtime allocation/terminal-semantics authority | Add together (P3) | Reuse storage only after finalizer, weakref, child-edge, aux, and size proofs |
@@ -764,7 +757,7 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 - Statement-release plan authority: `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-passes/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.
 - Alias/borrow machinery: `runtime/molt-passes/src/tir/passes/alias_analysis.rs` (`build_alias_union_find`; `BorrowProvenance`; `build_borrow_provenance`; `op_borrow_source`; `CopyLowering`; `copy_kind_mints_fresh_owned_ref`; `classify_copy_kind`; `is_rc_barrier`)
 - Liveness (repr-filtered, root-space, borrow-keepalive): `runtime/molt-passes/src/tir/passes/liveness.rs` (`raw_i64_safe_values_for` import :47; `live_out_of` :197; `last_use_in_block` :98)
-- refcount_elim (the elision-to-zero machinery): `runtime/molt-passes/src/tir/passes/refcount_elim.rs` (`is_heap_exposing` :61; `build_heap_exposed_set` :89; `run` :130; `run_post_drop` :154; `post_drop` early-return :572; Step 5 :577; Step 6 :628)
+- refcount_elim: `runtime/molt-passes/src/tir/passes/refcount_elim/` (shared local and unconditional-edge forward pairing; pre/post-drop use one implementation).
 - Reuse/FBIP is design-only: there is no annotation pass, backend lowering, or runtime-token ABI in the executable tree.
 - Size classes / allocator: `runtime/molt-runtime/src/object/mod.rs` (`size_class_for` :768; `total_size_from_header_fields` :731; `HEADER_FLAG_IMMORTAL` :444; alloc births :1155,:1228; dealloc zero-transition :1812, finalizer near :1883)
 - Pipeline + gates: `runtime/molt-passes/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion`; `refcount_elim`; `drop_insertion`; `refcount_elim_post`; pinned pass-name list)

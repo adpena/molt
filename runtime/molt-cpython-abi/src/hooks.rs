@@ -461,7 +461,9 @@ pub struct RuntimeHooks {
     /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
     /// callable Molt function.  `flags` follows CPython's `METH_*` bitmask.
     /// `name_data[..name_len]` is the function's `__name__`.  Returns the bits
-    /// of the resulting Molt callable, 0 on failure (e.g. unsupported flags).
+    /// of the resulting owned Molt callable. Zero without an exception means
+    /// the convention is unsupported; zero with an exception is a construction
+    /// failure, and consumers must preserve it instead of taking a fallback.
     pub register_c_function: unsafe extern "C" fn(
         meth_addr: u64,
         flags: std::os::raw::c_int,

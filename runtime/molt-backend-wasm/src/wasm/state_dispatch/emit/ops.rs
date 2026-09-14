@@ -3,9 +3,9 @@ use crate::wasm::control_flow::{ControlKind, dispatch_control_panic};
 use crate::wasm::op_loop::WasmFunctionEmitContext;
 use crate::wasm::state_dispatch::DispatchMode;
 use crate::wasm::state_dispatch::common::{
-    emit_arena_free, emit_conditional_state_branch, emit_dispatch_check_exception,
-    emit_dispatch_if, emit_dispatch_loop_break_cond, emit_set_state_and_br, label_target,
-    loop_break_target, require_stateful,
+    emit_conditional_state_branch, emit_dispatch_check_exception, emit_dispatch_if,
+    emit_dispatch_loop_break_cond, emit_set_state_and_br, label_target, loop_break_target,
+    require_stateful,
 };
 use crate::wasm::state_dispatch::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use crate::wasm::state_dispatch::stateful_ops::{
@@ -214,14 +214,12 @@ pub(super) fn emit_dispatch_op(
                     format_args!("ret target args {:?} are not present", op.args),
                 );
             }
-            emit_arena_free(func, op_emitter);
             func.instruction(&Instruction::Return);
             true
         }
         kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)
             == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
         {
-            emit_arena_free(func, op_emitter);
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::Return);
             true

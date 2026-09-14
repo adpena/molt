@@ -276,11 +276,26 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert core.id in complement.data["dependencies"]
     assert set(core.toolchains) == {"cargo", "node", "wasm-ld"}
     assert "--lib" in core.argv
+    assert [
+        core.argv[index + 1]
+        for index, arg in enumerate(core.argv[:-1])
+        if arg == "--test"
+    ] == ["ownership_memory_contracts"]
     assert "--bins" not in core.argv
     assert "--include-ignored" not in core.argv
+    for command in (core, complement):
+        assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     filters = core.argv[core.argv.index("--") + 1 :]
-    assert {"tir::", "wasm::", "call::", "object::"}.issubset(filters)
+    assert {
+        "tir::",
+        "wasm::",
+        "call::",
+        "object::",
+        "arena::",
+        "builtins::attr::",
+        "builtins::classes::",
+    }.issubset(filters)
 
 
 @pytest.mark.parametrize(
@@ -309,6 +324,26 @@ def test_docs_only_change_skips_compiler_proofs() -> None:
     assert not any(
         selected for name, selected in classes.items() if name != "repository_policy"
     )
+
+
+def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    owners = {
+        "llvm.test.lowering": {"molt-backend-native"},
+        "llvm.clippy.backend": {"molt-backend", "molt-backend-native"},
+        "linker.test.generated-object-admission": {"molt-backend"},
+    }
+    for command_id, expected_packages in owners.items():
+        argv = commands[command_id].argv
+        packages = {
+            argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-p"
+        }
+        assert packages == expected_packages, command_id
+    lowering = commands["llvm.test.lowering"].argv
+    assert "--lib" in lowering
+    assert "llvm_backend::lowering" in lowering
+    linkage = commands["linker.test.generated-object-admission"].argv
+    assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 
 
 def test_python_source_change_selects_split_proof_topology() -> None:

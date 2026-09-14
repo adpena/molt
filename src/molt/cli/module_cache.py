@@ -19,7 +19,10 @@ from molt.cli.artifact_sync import (
     _read_artifact_sync_state,
     _write_artifact_sync_payload,
 )
-from molt.cli.cache_fingerprints import _frontend_semantic_tooling_fingerprint
+from molt.cli.cache_fingerprints import (
+    _frontend_semantic_tooling_fingerprint,
+    _source_tree_fingerprint_transaction,
+)
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.function_references import (
     format_function_reference_edges,
@@ -40,7 +43,7 @@ from molt.cli.models import (
     _ScopedLoweringInputs,
 )
 from molt.cli.module_dependencies import _module_dependency_closure
-from molt.cli.module_graph_discovery import _load_module_imports
+from molt.cli.module_graph_discovery import _load_module_import_scan
 from molt.cli.module_frontend_cache import (
     _frontend_lowering_cache_disabled,
     _hydrate_shared_frontend_cache,
@@ -49,7 +52,6 @@ from molt.cli.module_frontend_cache import (
     _shared_module_lowering_cache_path,
 )
 from molt.cli.module_graph_cache import (
-    _read_persisted_import_scan,
     _resolved_module_cache_key,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
@@ -966,6 +968,7 @@ def _validate_persisted_module_analysis_payload(
     return normalized, dict(cast(dict[str, str], raw_kinds)), cached_imports
 
 
+@_source_tree_fingerprint_transaction()
 def _read_persisted_module_analysis(
     project_root: Path,
     path: Path,
@@ -1025,6 +1028,7 @@ def _read_persisted_module_analysis(
     )
 
 
+@_source_tree_fingerprint_transaction()
 def _write_persisted_module_analysis(
     project_root: Path,
     path: Path,
@@ -1139,6 +1143,7 @@ def _decode_cached_json_value(value: Any) -> Any:
     return value
 
 
+@_source_tree_fingerprint_transaction()
 def _load_module_analysis(
     path: Path,
     *,
@@ -1200,19 +1205,35 @@ def _load_module_analysis(
         persisted_analysis[2] if persisted_analysis is not None else None
     )
     persisted_imports = persisted_imports_from_analysis
-    if persisted_imports is None and project_root is not None:
-        persisted_imports = _read_persisted_import_scan(
-            project_root,
+    import_cache_hit = persisted_imports is not None
+    scan_tree: ast.AST | None = None
+    if persisted_imports is None:
+        loaded_scan = _load_module_import_scan(
             path,
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
-            path_stat=path_stat,
+            resolution_cache=resolution_cache,
+            project_root=project_root,
+            source=source,
+            source_filename=logical_source_path,
+            retain_source=retain_source,
+            retain_tree=retain_tree,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
             target_python=target_python,
             capability_config_digest=capability_config_digest,
+            runtime_import_custody=runtime_import_custody,
         )
+        persisted_imports = loaded_scan.scan.imports
+        import_cache_hit = loaded_scan.cache_hit
+        scan_tree = loaded_scan.tree
+        if source is None:
+            source = loaded_scan.source
     if (
-        persisted_imports is not None
+        import_cache_hit
+        and persisted_imports is not None
         and persisted_defaults is not None
         and persisted_kinds is not None
     ):
@@ -1245,30 +1266,16 @@ def _load_module_analysis(
     if source is None:
         source = resolution_cache.read_module_source(path, retain=retain_source)
 
-    tree = resolution_cache.parse_module_ast(
-        path,
-        source,
-        filename=logical_source_path,
-        retain=retain_tree,
-        target_python=target_python,
-    )
-    imports = persisted_imports
-    if imports is None:
-        imports = _load_module_imports(
+    tree = scan_tree
+    if tree is None:
+        tree = resolution_cache.parse_module_ast(
             path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            tree=tree,
-            resolution_cache=resolution_cache,
-            project_root=project_root,
-            roots=roots,
-            stdlib_root=stdlib_root,
-            stdlib_allowlist=stdlib_allowlist,
+            source,
+            filename=logical_source_path,
+            retain=retain_tree,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
-            runtime_import_custody=runtime_import_custody,
         )
+    imports = persisted_imports
     func_defaults = persisted_defaults
     if func_defaults is None:
         func_defaults = _collect_func_defaults(tree)
@@ -1598,6 +1605,7 @@ def _type_facts_cache_payload(type_facts: Any) -> Any:
     }
 
 
+@_source_tree_fingerprint_transaction()
 def _module_lowering_context_digest_for_module(
     module_name: str,
     module_path: Path,
@@ -1839,6 +1847,7 @@ def _write_persisted_module_lowering(
     )
 
 
+@_source_tree_fingerprint_transaction()
 def _load_cached_module_lowering_result(
     project_root: Path | None,
     module_name: str,

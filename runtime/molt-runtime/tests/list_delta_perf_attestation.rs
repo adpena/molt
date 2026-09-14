@@ -31,10 +31,9 @@ use serde_json::{Value, json};
 use std::hint::black_box;
 use std::time::Instant;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    MoltObject::none().bits()
-}
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/list_delta_perf_attestation"
+));
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;

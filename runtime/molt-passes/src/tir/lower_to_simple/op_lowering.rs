@@ -310,12 +310,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::CallBuiltin => {
-            let kind =
-                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "call_builtin".to_string());
+            let call = op
+                .builtin_call()
+                .expect("malformed CallBuiltin identity or argument contract");
             Some(OpIR {
-                kind,
+                kind: call.wire_kind.to_string(),
                 args: Some(operand_args(op)),
-                s_value: attr_str(&op.attrs, "name"),
+                s_value: call.named_target().map(str::to_string),
                 out: out_var,
                 ..OpIR::default()
             })
@@ -733,17 +734,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // `__del__` and must not be stack-promoted / RC-stripped.
             defines_del: attr_bool(&op.attrs, "defines_del"),
             bound_local: attr_bool(&op.attrs, "bound_local"),
-            ..OpIR::default()
-        }),
-        OpCode::ObjectNewBoundStack => Some(OpIR {
-            kind: "object_new_bound_stack".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            type_hint: attr_str(&op.attrs, "_type_hint"),
-            // Inherited from the original `ObjectNewBound` — required
-            // for the StackSlot lowering to know the payload size.
-            value: attr_int(&op.attrs, "value"),
-            stack_eligible: Some(true),
             ..OpIR::default()
         }),
         OpCode::Free => Some(OpIR {

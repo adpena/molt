@@ -6,38 +6,17 @@ import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from molt.compiler_analysis.hashing import stable_payload_hash as _stable_payload_hash
 
 
-def _ast_metrics(tree: ast.AST | None) -> dict[str, int]:
-    metrics = {
-        "ast_nodes": 0,
-        "function_defs": 0,
-        "class_defs": 0,
-        "import_statements": 0,
-        "loops": 0,
-        "branches": 0,
-        "calls": 0,
-    }
-    if tree is None:
-        return metrics
-    for node in ast.walk(tree):
-        metrics["ast_nodes"] += 1
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            metrics["function_defs"] += 1
-        elif isinstance(node, ast.ClassDef):
-            metrics["class_defs"] += 1
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            metrics["import_statements"] += 1
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-            metrics["loops"] += 1
-        elif isinstance(node, (ast.If, ast.IfExp, ast.Match)):
-            metrics["branches"] += 1
-        elif isinstance(node, ast.Call):
-            metrics["calls"] += 1
-    return metrics
+class _ModuleSourceProjection(NamedTuple):
+    """Diagnostic outputs only; never retain the captured source or AST."""
+
+    metrics: dict[str, int]
+    source_bytes: int
+    identity: dict[str, Any]
 
 
 def _sum_metrics(items: Sequence[dict[str, int]]) -> dict[str, int]:
@@ -90,43 +69,53 @@ def _source_text_for_module(
     return source, module_path
 
 
-def _module_source_and_ast_metrics(
+def _module_source_projection(
     *,
     import_plan: Any,
     frontend_analysis: Any,
-    module_names: set[str],
-) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
-    module_metrics: dict[str, dict[str, int]] = {}
-    source_bytes: dict[str, int] = {}
-    for name in sorted(module_names):
-        tree = frontend_analysis.module_trees.get(name)
-        source, module_path = _source_text_for_module(
-            import_plan=import_plan,
-            frontend_analysis=frontend_analysis,
-            module_name=name,
-        )
-        if tree is None and source is not None:
-            try:
-                tree = ast.parse(source, filename=os.fspath(module_path or f"<{name}>"))
-            except SyntaxError:
-                tree = None
-        module_metrics[name] = _ast_metrics(tree)
-        if source is not None:
-            source_bytes[name] = len(source.encode("utf-8"))
-        else:
-            source_bytes[name] = frontend_analysis.module_source_catalog.source_size(
-                name,
-                module_path,
+    module_name: str,
+    target_python_tag: str,
+    native_module_names: frozenset[str],
+) -> _ModuleSourceProjection:
+    # Capture one module through its existing lease, project both consumers,
+    # then release the source/AST on return. Do not populate frontend retention
+    # maps or a process cache just to produce diagnostics.
+    tree = frontend_analysis.module_trees.get(module_name)
+    source, module_path = _source_text_for_module(
+        import_plan=import_plan,
+        frontend_analysis=frontend_analysis,
+        module_name=module_name,
+    )
+    if tree is None and source is not None:
+        try:
+            tree = ast.parse(
+                source, filename=os.fspath(module_path or f"<{module_name}>")
             )
-    return module_metrics, source_bytes
+        except SyntaxError:
+            tree = None
+    encoded_source = (source or "").encode("utf-8")
+    source_bytes = (
+        len(encoded_source)
+        if source is not None
+        else frontend_analysis.module_source_catalog.source_size(
+            module_name, module_path
+        )
+    )
+    metrics, identity = _source_site_module_projection(
+        module_name=module_name,
+        logical_path=_logical_source_path_for_module(
+            import_plan, module_name, native_module_names
+        ),
+        source_bytes=encoded_source,
+        tree=tree,
+        target_python=target_python_tag,
+        roles=_module_roles(import_plan, module_name, native_module_names),
+    )
+    return _ModuleSourceProjection(metrics, source_bytes, identity)
 
 
 def _source_bytes_for(source_bytes: Mapping[str, int], module_names: set[str]) -> int:
     return sum(source_bytes.get(name, 0) for name in module_names)
-
-
-def _source_sha256(source: str) -> str:
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def _source_site_id(
@@ -153,22 +142,44 @@ def _source_site_id(
     )
 
 
-def _source_site_module_payload(
+def _source_site_module_projection(
     *,
     module_name: str,
     logical_path: str,
-    source: str,
+    source_bytes: bytes,
     tree: ast.AST | None,
     target_python: str,
     roles: Sequence[str],
-) -> dict[str, Any]:
-    source_hash = _source_sha256(source)
+) -> tuple[dict[str, int], dict[str, Any]]:
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    metrics = {
+        "ast_nodes": 0,
+        "function_defs": 0,
+        "class_defs": 0,
+        "import_statements": 0,
+        "loops": 0,
+        "branches": 0,
+        "calls": 0,
+    }
     kind_counts: Counter[str] = Counter()
     site_ids: list[str] = []
 
     def visit(
         node: ast.AST, *, path: tuple[int, ...], qualname: tuple[str, ...]
     ) -> None:
+        metrics["ast_nodes"] += 1
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            metrics["function_defs"] += 1
+        elif isinstance(node, ast.ClassDef):
+            metrics["class_defs"] += 1
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            metrics["import_statements"] += 1
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            metrics["loops"] += 1
+        elif isinstance(node, (ast.If, ast.IfExp, ast.Match)):
+            metrics["branches"] += 1
+        elif isinstance(node, ast.Call):
+            metrics["calls"] += 1
         child_qualname = qualname
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             child_qualname = (*qualname, node.name)
@@ -206,7 +217,7 @@ def _source_site_module_payload(
     if tree is not None:
         visit(tree, path=(), qualname=())
     site_ids_sorted = sorted(site_ids)
-    return {
+    return metrics, {
         "module": module_name,
         "logical_path": logical_path,
         "source_sha256": source_hash,
@@ -217,8 +228,9 @@ def _source_site_module_payload(
     }
 
 
-def _module_roles(import_plan: Any, module_name: str) -> list[str]:
-    native_module_names = import_plan.native_artifact_plan.native_module_names()
+def _module_roles(
+    import_plan: Any, module_name: str, native_module_names: frozenset[str]
+) -> list[str]:
     role_sets = (
         ("declared_root", import_plan.declared_root_modules),
         ("entry_reachable", import_plan.entry_reachable_modules),
@@ -236,7 +248,9 @@ def _module_roles(import_plan: Any, module_name: str) -> list[str]:
     return roles
 
 
-def _logical_source_path_for_module(import_plan: Any, module_name: str) -> str:
+def _logical_source_path_for_module(
+    import_plan: Any, module_name: str, native_module_names: frozenset[str]
+) -> str:
     logical_path = import_plan.module_graph_metadata.logical_source_path_by_module.get(
         module_name
     )
@@ -245,7 +259,7 @@ def _logical_source_path_for_module(import_plan: Any, module_name: str) -> str:
     module_path = import_plan.module_graph.get(module_name)
     if module_path is not None:
         return str(module_path)
-    if module_name in import_plan.native_artifact_plan.native_module_names():
+    if module_name in native_module_names:
         return f"<external-native:{module_name}>"
     if module_name in import_plan.namespace_module_names:
         return f"<namespace:{module_name}>"
@@ -255,32 +269,9 @@ def _logical_source_path_for_module(import_plan: Any, module_name: str) -> str:
 def _source_site_identity_payload(
     *,
     import_plan: Any,
-    frontend_analysis: Any,
+    modules: Sequence[dict[str, Any]],
     target_python_tag: str,
 ) -> dict[str, Any]:
-    modules: list[dict[str, Any]] = []
-    for name in sorted(import_plan.known_modules):
-        source, module_path = _source_text_for_module(
-            import_plan=import_plan,
-            frontend_analysis=frontend_analysis,
-            module_name=name,
-        )
-        tree = frontend_analysis.module_trees.get(name)
-        if tree is None and source is not None:
-            try:
-                tree = ast.parse(source, filename=os.fspath(module_path or f"<{name}>"))
-            except SyntaxError:
-                tree = None
-        modules.append(
-            _source_site_module_payload(
-                module_name=name,
-                logical_path=_logical_source_path_for_module(import_plan, name),
-                source=source or "",
-                tree=tree,
-                target_python=target_python_tag,
-                roles=_module_roles(import_plan, name),
-            )
-        )
     compile_modules = set(import_plan.compile_modules)
     compile_site_count = sum(
         int(module["site_count"])
@@ -350,11 +341,21 @@ def _frontend_binary_image_analysis_payload(
         )[:10]
     ]
     if include_source_details:
-        module_metrics, source_bytes = _module_source_and_ast_metrics(
-            import_plan=import_plan,
-            frontend_analysis=frontend_analysis,
-            module_names=known_modules,
-        )
+        native_module_names = import_plan.native_artifact_plan.native_module_names()
+        module_metrics: dict[str, dict[str, int]] = {}
+        source_bytes: dict[str, int] = {}
+        source_modules: list[dict[str, Any]] = []
+        for name in sorted(known_modules):
+            projection = _module_source_projection(
+                import_plan=import_plan,
+                frontend_analysis=frontend_analysis,
+                module_name=name,
+                target_python_tag=target_python_tag,
+                native_module_names=native_module_names,
+            )
+            module_metrics[name] = projection.metrics
+            source_bytes[name] = projection.source_bytes
+            source_modules.append(projection.identity)
         known_metric_totals = _sum_metrics(
             [
                 metrics
@@ -371,7 +372,7 @@ def _frontend_binary_image_analysis_payload(
         )
         source_identity = _source_site_identity_payload(
             import_plan=import_plan,
-            frontend_analysis=frontend_analysis,
+            modules=source_modules,
             target_python_tag=target_python_tag,
         )
         source_ast = {

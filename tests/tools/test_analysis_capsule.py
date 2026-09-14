@@ -140,7 +140,7 @@ def _build_diagnostics() -> dict[str, object]:
                     "source_coverage_ratio": 0.75,
                     "events_by_category": {
                         "heap_alloc_root": 1,
-                        "arena_eligible": 1,
+                        "heap_exposure": 1,
                         "ref_retain": 1,
                         "ref_release": 1,
                     },

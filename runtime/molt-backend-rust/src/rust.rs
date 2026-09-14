@@ -379,7 +379,7 @@ impl RustBackend {
 
             // Track last store for jump early-return inference.
             match ops[i].kind.as_str() {
-                "store_local" | "store" | "store_init" => {
+                "store_local" | "store" => {
                     // store_local(var, val) → var holds the return value directly
                     if let Some(ref v) = ops[i].var {
                         let dst = rust_ident(v);

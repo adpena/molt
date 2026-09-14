@@ -26,6 +26,21 @@ from molt.cli.source_extension_link_requirements import (
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
+from molt.compiler_analysis.backend_ir import backend_ir_allocation_categories
+
+
+def test_image_capture_events_use_shared_positive_local_operand_facts() -> None:
+    for kind in ["add", "index", "get_attr_name", "future_callback"]:
+        assert "heap_exposure" in backend_ir_allocation_categories(
+            {"kind": kind, "args": ["obj"]}
+        )
+    for kind in ["inc_ref", "release", "copy", "is"]:
+        assert "heap_exposure" not in backend_ir_allocation_categories(
+            {"kind": kind, "args": ["obj"]}
+        )
+    assert "heap_exposure" not in backend_ir_allocation_categories(
+        {"kind": "call", "args": []}
+    )
 
 
 def _resolve_entry(
@@ -93,6 +108,8 @@ def _prepare_analysis_for_plan(project_root: Path, import_plan):
         entry_module=import_plan.image_scope.entry_module,
         json_output=False,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        dependency_known_modules=import_plan.known_modules,
+        runtime_import_scan_custody=import_plan.runtime_import_scan_custody,
     )
     assert error is None
     assert analysis is not None
@@ -361,6 +378,7 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         diagnostics_start=time.perf_counter(),
         phase_starts={},
         module_graph=import_plan.module_graph,
+        module_graph_operation_counts=dict(import_plan.module_graph_operation_counts),
         module_reasons={"app": {"entry_root"}, "helper": {"entry_closure"}},
         allocation_diagnostics_enabled=False,
         frontend_parallel_details={},
@@ -594,17 +612,17 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
                         {
                             "kind": "call",
                             "s_value": "helper__value",
+                            "args": ["input"],
                             "source_line": 4,
                         },
                         {
                             "kind": "object_new_bound",
                             "source_line": 5,
-                            "arena_eligible": True,
                             "defines_del": True,
                         },
-                        {"kind": "stack_alloc", "source_line": 5},
                         {"kind": "borrow", "source_line": 6},
                         {"kind": "release", "source_line": 7},
+                        {"kind": "stack_alloc", "source_line": 8},
                     ],
                 }
             ]
@@ -653,10 +671,11 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
     assert allocation["source_coverage_ratio"] == 1.0
     assert allocation["events_by_category"]["heap_alloc_root"] == 1
     assert allocation["events_by_category"]["stack_alloc_root"] == 1
+    assert "frame_candidate" not in allocation["events_by_category"]
     assert allocation["events_by_category"]["ref_retain"] == 1
     assert allocation["events_by_category"]["ref_release"] == 1
     assert allocation["events_by_category"]["heap_exposure"] == 1
-    assert allocation["events_by_category"]["arena_eligible"] == 1
+    assert "arena_eligible" not in allocation["events_by_category"]
     assert allocation["events_by_category"]["finalizer_sensitive"] == 1
     assert allocation["allocation_ownership_digest"]
     assert allocation["top_source_lines_by_events"][0]["source_file"] == "app.py"

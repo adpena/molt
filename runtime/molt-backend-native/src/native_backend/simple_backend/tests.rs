@@ -112,7 +112,10 @@ fn compile_trace_probe_object(
     SimpleBackend::new().compile(ir).bytes
 }
 
-fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
+fn compile_function_to_clif(
+    functions: Vec<FunctionIR>,
+    target_name: &str,
+) -> cranelift_codegen::ir::Function {
     let ir = SimpleIR {
         functions,
         profile: None,
@@ -153,6 +156,11 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         .find(|deferred| deferred.name == target_name)
         .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
         .func
+        .clone()
+}
+
+fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
+    compile_function_to_clif(functions, target_name)
         .display()
         .to_string()
 }
@@ -231,3 +239,5 @@ mod llvm_backend;
 mod module_metadata;
 mod tir_analysis;
 mod trampolines;
+
+mod field_access;

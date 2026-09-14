@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .primitive_effects import comparison_warning_pairs
+
 from .schema import (
     _COUNTED_LOOP_COMPARISON_ROLES,
     _LIR_VERIFY_RULES,
@@ -12,7 +14,6 @@ from .schema import (
     _SCCP_CONSTANT_EVAL_RULES,
     _SCCP_CONSTANT_SEED_RULES,
     _SCEV_EXPR_RULES,
-    _SROA_CONST_IMMEDIATE_RULES,
     _STRENGTH_REDUCTION_RULES,
     _TIR_VERIFY_ATTR_RULES,
     _TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
@@ -56,84 +57,142 @@ def _render_predicate_semantics(opcodes: list[dict], data: dict) -> str:
         category = row.get("predicate_semantics")
         result = (
             f"Some(PredicateSemantics::{category.title()})"
-            if category is not None else "None"
+            if category is not None
+            else "None"
         )
         lines.append(f"        OpCode::{row['name']} => {result},\n")
     lines.append("    }\n}\n\n")
     lines.append("/// Exact scalar domain, never an annotation/subclass assertion.\n")
-    lines.append("pub fn comparison_scalar_domain(ty: &crate::tir::types::TirType) -> Option<(u8, bool)> {\n")
-    lines.append("    use crate::tir::types::TirType;\n    match ty {\n")
+    lines.append(
+        "pub fn comparison_scalar_domain(ty: &crate::tir::types::TirType) -> Option<(u8, bool)> {\n"
+    )
+    lines.append(
+        "    use crate::tir::types::TirType;\n    match ty.semantic_type() {\n"
+    )
     for index, domain in enumerate(data["comparison_scalar_domains"]):
         patterns = " | ".join(f"TirType::{ty}" for ty in domain["tir_types"])
-        lines.append(f"        {patterns} => Some(({index}, {str(domain['ordering']).lower()})),\n")
-    lines.append("        TirType::Box(inner) => comparison_scalar_domain(inner),\n")
+        lines.append(
+            f"        {patterns} => Some(({index}, {str(domain['ordering']).lower()})),\n"
+        )
     lines.append("        _ => None,\n    }\n}\n\n")
-    lines.append("pub fn comparison_scalar_pair_nothrow(category: PredicateSemantics, left: (u8, bool), right: (u8, bool)) -> bool {\n")
-    lines.append("    category == PredicateSemantics::Equality || (left == right && left.1)\n}\n\n")
-    lines.append("pub fn opcode_exact_scalar_result_tir_type(opcode: OpCode, result_index: usize) -> Option<crate::tir::types::TirType> {\n")
+    lines.append(
+        "pub fn comparison_scalar_pair_effects(category: PredicateSemantics, left: &crate::tir::types::TirType, right: &crate::tir::types::TirType) -> OpcodeEffects {\n"
+    )
+    lines.append("    use crate::tir::types::TirType;\n")
+    lines.append(
+        "    let (left, right) = (left.semantic_type(), right.semantic_type());\n"
+    )
+    patterns = " | ".join(
+        f"(TirType::{a}, TirType::{b}) | (TirType::{b}, TirType::{a})"
+        for a, b in comparison_warning_pairs(data)
+    )
+    if patterns:
+        lines.append(
+            f"    if category == PredicateSemantics::Equality && matches!((left, right), {patterns}) {{ return OPCODE_EFFECTS_IMPURE; }}\n"
+        )
+    lines.append(
+        "    let (Some(left), Some(right)) = (comparison_scalar_domain(left), comparison_scalar_domain(right)) else { return OPCODE_EFFECTS_IMPURE; };\n"
+    )
+    lines.append(
+        "    if category == PredicateSemantics::Equality || (category == PredicateSemantics::Ordering && left == right && left.1) { OPCODE_EFFECTS_PURE } else { OPCODE_EFFECTS_PURE_MAY_THROW }\n}\n\n"
+    )
+    lines.append(
+        "pub fn opcode_exact_scalar_result_tir_type(opcode: OpCode, result_index: usize) -> Option<crate::tir::types::TirType> {\n"
+    )
     lines.append("    match (opcode, result_index) {\n")
     for row in opcodes:
         if "exact_scalar_result_type" in row:
-            lines.append(f"        (OpCode::{row['name']}, 0) => Some(crate::tir::types::TirType::{row['exact_scalar_result_type']}),\n")
-    lines.append("        _ => opcode_operand_independent_result_tir_type(opcode, result_index).filter(|ty| comparison_scalar_domain(ty).is_some()),\n    }\n}\n\n")
+            lines.append(
+                f"        (OpCode::{row['name']}, 0) => Some(crate::tir::types::TirType::{row['exact_scalar_result_type']}),\n"
+            )
+    lines.append(
+        "        _ => opcode_operand_independent_result_tir_type(opcode, result_index).filter(|ty| comparison_scalar_domain(ty).is_some()),\n    }\n}\n\n"
+    )
     return "".join(lines)
 
 
 def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
     lines = [
-        "/// Result-indexed intrinsic types, independent of effect/scheduling purity.\n",
-        "/// Operand-dependent slots remain None; another result of the same opcode\n",
-        "/// can still have an exact type (for example an iterator status flag).\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum OperandIndependentResultType {\n",
-        "    I64,\n",
-        "    F64,\n",
-        "    Bool,\n",
-        "    Str,\n",
-        "    None,\n",
-        "    Bytes,\n",
-        "    DynBox,\n",
-        "    ListDynBox,\n",
-        "    DictDynBoxDynBox,\n",
-        "    SetDynBox,\n",
-        "}\n\n",
-        "impl OperandIndependentResultType {\n",
-        "    #[inline]\n",
-        "    pub fn to_tir_type(self) -> TirType {\n",
-        "        match self {\n",
-        "            OperandIndependentResultType::I64 => TirType::I64,\n",
-        "            OperandIndependentResultType::F64 => TirType::F64,\n",
-        "            OperandIndependentResultType::Bool => TirType::Bool,\n",
-        "            OperandIndependentResultType::Str => TirType::Str,\n",
-        "            OperandIndependentResultType::None => TirType::None,\n",
-        "            OperandIndependentResultType::Bytes => TirType::Bytes,\n",
-        "            OperandIndependentResultType::DynBox => TirType::DynBox,\n",
-        "            OperandIndependentResultType::ListDynBox => {\n",
-        "                TirType::List(Box::new(TirType::DynBox))\n",
-        "            }\n",
-        "            OperandIndependentResultType::DictDynBoxDynBox => {\n",
-        "                TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox))\n",
-        "            }\n",
-        "            OperandIndependentResultType::SetDynBox => {\n",
-        "                TirType::Set(Box::new(TirType::DynBox))\n",
-        "            }\n",
-        "        }\n",
-        "    }\n",
-        "}\n\n",
-        "/// Operand-independent result type by opcode. EXHAUSTIVE over OpCode so new\n",
-        "/// opcodes cannot silently inherit or miss an intrinsic result-type fact.\n",
+        "/// Canonical semantic operand admission; ungoverned opcodes remain permissive.\n",
+        "/// Variable builders are explicit; dictionary operands are key/value pairs.\n",
         "#[inline]\n",
-        "pub fn opcode_operand_independent_result_type_table(\n",
-        "    opcode: OpCode,\n",
-        "    result_index: usize,\n",
-        ") -> Option<OperandIndependentResultType> {\n",
-        "    let results: &[Option<OperandIndependentResultType>] = match opcode {\n",
+        "pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {\n",
+        "    match opcode {\n",
     ]
+    for row in opcodes:
+        arity = row.get("operand_arity")
+        acceptance = (
+            f"count == {arity}"
+            if type(arity) is int
+            else "count % 2 == 0"
+            if arity == "variable_pairs"
+            else "true"
+        )
+        lines.append(f"        OpCode::{row['name']} => {acceptance},\n")
+    lines.extend(
+        [
+            "    }\n}\n\n",
+            "/// One instance-shape gate for result inference and every TIR consumer.\n",
+            "#[inline]\n",
+            "pub fn opcode_accepts_shape(opcode: OpCode, operands: usize, results: usize) -> bool {\n",
+            "    opcode_accepts_operand_count(opcode, operands)\n",
+            "        && opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)\n",
+            "}\n\n",
+            "/// Result-indexed intrinsic types, independent of effect/scheduling purity.\n",
+            "/// Operand-dependent slots remain None; another result of the same opcode\n",
+            "/// can still have an exact type (for example an iterator status flag).\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum OperandIndependentResultType {\n",
+            "    I64,\n",
+            "    F64,\n",
+            "    Bool,\n",
+            "    Str,\n",
+            "    None,\n",
+            "    Bytes,\n",
+            "    DynBox,\n",
+            "    ListDynBox,\n",
+            "    DictDynBoxDynBox,\n",
+            "    SetDynBox,\n",
+            "}\n\n",
+            "impl OperandIndependentResultType {\n",
+            "    #[inline]\n",
+            "    pub fn to_tir_type(self) -> TirType {\n",
+            "        match self {\n",
+            "            OperandIndependentResultType::I64 => TirType::I64,\n",
+            "            OperandIndependentResultType::F64 => TirType::F64,\n",
+            "            OperandIndependentResultType::Bool => TirType::Bool,\n",
+            "            OperandIndependentResultType::Str => TirType::Str,\n",
+            "            OperandIndependentResultType::None => TirType::None,\n",
+            "            OperandIndependentResultType::Bytes => TirType::Bytes,\n",
+            "            OperandIndependentResultType::DynBox => TirType::DynBox,\n",
+            "            OperandIndependentResultType::ListDynBox => {\n",
+            "                TirType::List(Box::new(TirType::DynBox))\n",
+            "            }\n",
+            "            OperandIndependentResultType::DictDynBoxDynBox => {\n",
+            "                TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox))\n",
+            "            }\n",
+            "            OperandIndependentResultType::SetDynBox => {\n",
+            "                TirType::Set(Box::new(TirType::DynBox))\n",
+            "            }\n",
+            "        }\n",
+            "    }\n",
+            "}\n\n",
+            "/// Operand-independent result type by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// opcodes cannot silently inherit or miss an intrinsic result-type fact.\n",
+            "#[inline]\n",
+            "pub fn opcode_operand_independent_result_type_table(\n",
+            "    opcode: OpCode,\n",
+            "    result_index: usize,\n",
+            ") -> Option<OperandIndependentResultType> {\n",
+            "    let results: &[Option<OperandIndependentResultType>] = match opcode {\n",
+        ]
+    )
     for row in opcodes:
         name = row["name"]
         variants = [
-            "None" if type_name == "operand" else
-            f"Some({_OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS[type_name]})"
+            "None"
+            if type_name == "operand"
+            else f"Some({_OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS[type_name]})"
             for type_name in row.get("operand_independent_result_types", [])
         ]
         lines.append(f"        OpCode::{name} => &[{', '.join(variants)}],\n")
@@ -203,7 +262,7 @@ def _render_type_refine_operand_type_rule(opcodes: list[dict], data: dict) -> st
     lines = [
         "/// Type-refine operand-dependent result-type rule by opcode. This table\n",
         "/// owns opcode membership for inference that depends on operand types;\n",
-        "/// type_refine.rs owns the semantics of each rule.\n",
+        "/// op_semantics owns scalar operator facts; type_refine owns container transfer.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
         "pub enum TypeRefineOperandTypeRule {\n",
         "    None,\n",
@@ -618,7 +677,8 @@ def _render_repr_projectable_result_rules(opcodes: list[dict], data: dict) -> st
     }
     bool_rule_by_opcode.update(
         (row["name"], "comparison_operands")
-        for row in opcodes if row.get("predicate_semantics") in {"equality", "ordering"}
+        for row in opcodes
+        if row.get("predicate_semantics") in {"equality", "ordering"}
     )
     float_rule_by_opcode = {
         row["opcode"]: row["rule"]
@@ -988,20 +1048,6 @@ def _render_residual_tir_semantic_roles(opcodes: list[dict], data: dict) -> str:
                 "Required op-level attr/operand validation role for verify.rs.",
                 "Opcode membership lives in op_kinds.toml; verify.rs owns",
                 "diagnostic text and payload value checks.",
-            ],
-        ),
-        "\n",
-        _render_simple_opcode_rule_table(
-            opcodes,
-            data,
-            table_key="sroa_const_immediate_rules",
-            enum_name="SroaConstImmediateRule",
-            fn_name="opcode_sroa_const_immediate_rule_table",
-            variants=_SROA_CONST_IMMEDIATE_RULES,
-            docs=[
-                "SROA constant-immediate recognition role. Opcode membership",
-                "lives in op_kinds.toml; sroa.rs owns range proof for",
-                "inline integer immediates.",
             ],
         ),
         "\n",

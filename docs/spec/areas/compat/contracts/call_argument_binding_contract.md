@@ -2,7 +2,7 @@
 
 **Spec ID:** 0016
 **Status:** Draft
-**Last updated:** 2026-06-23
+**Last updated:** 2026-09-13
 **Audience:** compiler engineers, runtime engineers
 **Goal:** Add Python-compatible call argument binding (positional, keyword, varargs, varkw) while preserving Molt Tier 0 performance via specialization and allocation-free fast paths.
 
@@ -10,7 +10,7 @@
 
 ## 1. Motivation
 
-Molt’s stated direction is “a verified per-application subset of Python” compiled AOT into **small, fast native binaries** (and optionally WASM). Python’s ergonomic calling conventions—keyword arguments plus `*args` and `**kwargs`—are a major part of that ergonomics surface, especially for modern APIs that rely on keyword-only parameters.
+Molt’s stated direction is “a verified per-application subset of Python” compiled AOT into small, fast native and WASM binaries. Both targets share the binding contract. Python’s ergonomic calling conventions—keyword arguments plus `*args` and `**kwargs`—are a major part of that surface, especially for APIs that rely on keyword-only parameters.
 
 However, naïvely implementing argument binding by always allocating intermediate `tuple`/`dict` objects (or always falling back to a generic slow path) would conflict with Molt’s Tier 0 goals (structification, monomorphic call sites, and Cranelift-compiled codegen).
 
@@ -322,6 +322,54 @@ The compiler may inline or specialize parts of binding for small shapes, but the
   - `*args` tuple and/or `**kwargs` dict allocated at entry when required.
 
 ---
+
+### 7.5 Callable ownership and metadata publication
+
+`builtins/methods/common.rs` owns runtime builtin callable construction, defaults,
+and signature setup. An atomic cache owns one reference; its readers borrow it.
+Allocation failure returns zero with a pending exception and leaves the cache
+unset. Python `None` is never a failed callable cache entry. Classless bootstrap
+callables retain their explicit bootstrap boundary but use the same metadata
+operations. Optional method dispatch distinguishes an absent name from a pending
+failure; a zero allocation result must not become an ordinary scalar method.
+
+`call/class_init.rs` owns function dictionary allocation and string-keyed
+metadata writes. The first dictionary is prepared before publication; allocation
+failure must neither dereference a null pointer nor install a partial dictionary.
+An existing dictionary keeps its identity. Internal metadata writes and user
+set/delete operations commit binder/task facts before releasing displaced
+references; user defaults changes also invalidate compiled default guards before
+a finalizer can reenter the function. Projection of those facts does not allocate
+or call Python. Callback-capable task flags remain unevaluated until the call
+boundary, where normal truth semantics apply.
+
+The `types`, `functools`, and `operator` runtime classes use
+`types::init_cached_runtime_class`: class edge, base, layout, complete method
+signatures, namespace entries, and definition finalization precede cache
+publication. Narrow source checks or one native test receipt do not establish
+CPython-version, OS/architecture, or WASM matrix conformance.
+
+### 7.6 Typed function fields and user dictionaries
+
+Python-visible typed fields (`__defaults__`, `__kwdefaults__`, `__name__`,
+`__qualname__`, `__doc__`, `__code__`, `__globals__`, and `__closure__`) do not
+derive their values from equally named entries in the ordinary function
+`__dict__`. Updating, clearing, or replacing that dictionary must not alter
+execution, defaults-version admission, or typed descriptor reads. Conversely,
+typed assignment/deletion must not edit the user's same-named dictionary key.
+
+The conformance capsule
+`tests/differential/basic/function_metadata_dictionary_isolation.py` covers these
+ownership boundaries. CPython 3.12, 3.13, and 3.14 agree on its output. Molt's
+current shared metadata dictionary does **not** satisfy this contract; the
+callable-publication tests alone do not close this surface.
+
+Closure requires one typed function payload, one GC/reference-field traversal,
+and one retain/publish/release transaction for related field changes. Python
+signature facts belong to the code object; ordinary `__molt_*` dictionary keys
+must not be executable signature or task-classification authority. Binder,
+call-cache, constructor, metadata ABI, and frontend producers must migrate
+together; a dictionary-epoch workaround would preserve the wrong semantics.
 
 ## 8. Compatibility & Restrictions
 

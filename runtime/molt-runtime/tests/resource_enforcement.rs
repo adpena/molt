@@ -3,6 +3,10 @@
 //! These tests verify that the ResourceTracker is actually called during
 //! heap allocation and that memory limits are enforced.
 
+molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
+    "molt-runtime/resource_enforcement"
+));
+
 use molt_runtime::resource::{
     LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker,
     clear_global_tracker_factory, install_address_space_backstop, parse_human_size, set_tracker,

@@ -180,7 +180,7 @@ impl SimpleBackend {
         let FunctionPreanalysis {
             has_ret,
             stateful,
-            has_store,
+            needs_field_store_profile,
             var_names,
             last_use,
             cfg_liveness,
@@ -198,8 +198,6 @@ impl SimpleBackend {
             const_int_map: _const_int_map,
             loop_body_out_vars,
             loop_body_init_vars,
-            has_arena_eligible,
-            arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
             field_store_modes,
             drop_inserted,
@@ -530,7 +528,7 @@ impl SimpleBackend {
         } else {
             None
         };
-        let local_profile_struct = has_store.then(|| {
+        let local_profile_struct = needs_field_store_profile.then(|| {
             import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -541,7 +539,7 @@ impl SimpleBackend {
                 &[],
             )
         });
-        let local_profile_enabled = has_store.then(|| {
+        let local_profile_enabled = needs_field_store_profile.then(|| {
             import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -873,30 +871,6 @@ impl SimpleBackend {
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
-
-        // -----------------------------------------------------------------
-        // Scope arena lifecycle: MLKit/Cyclone region allocator integration.
-        //
-        // When escape analysis has marked any allocation in this function as
-        // NoEscape (arena_eligible), emit a scope arena at function entry.
-        // Arena-eligible allocs use molt_arena_alloc instead of molt_alloc,
-        // and the arena is freed once at function exit instead of individual
-        // per-object frees.
-        // -----------------------------------------------------------------
-        let scope_arena_ptr: Option<Value> = if has_arena_eligible {
-            let arena_new = Self::import_func_id_split(
-                &mut self.module,
-                &mut self.import_ids,
-                "molt_arena_new",
-                &[],
-                &[types::I64],
-            );
-            let local_arena_new = self.module.declare_func_in_func(arena_new, builder.func);
-            let call = builder.ins().call(local_arena_new, &[]);
-            Some(builder.inst_results(call)[0])
-        } else {
-            None
-        };
 
         // Scalarized tuples: keep element SSA Values in a side table so
         // `len`/`index` can fold without touching the runtime. The tuple
@@ -1965,7 +1939,6 @@ impl SimpleBackend {
                         &mut entry_vars,
                         &mut already_decrefed,
                         defined_functions,
-                        scope_arena_ptr,
                         &mut output_is_ptr,
                         stateful,
                         entry_block,
@@ -2362,22 +2335,6 @@ impl SimpleBackend {
                 let val = builder.ins().stack_load(types::I64, *slot, 0);
                 builder.ins().call(local_dec_ref_obj, &[val]);
             }
-        }
-
-        // -----------------------------------------------------------------
-        // Scope arena teardown: free the arena before returning.
-        // All bump-allocated (NoEscape) values are released in O(1).
-        // -----------------------------------------------------------------
-        if let Some(arena_ptr) = scope_arena_ptr {
-            let arena_free = Self::import_func_id_split(
-                &mut self.module,
-                &mut self.import_ids,
-                "molt_arena_free",
-                &[types::I64],
-                &[],
-            );
-            let local_arena_free = self.module.declare_func_in_func(arena_free, builder.func);
-            builder.ins().call(local_arena_free, &[arena_ptr]);
         }
 
         let final_res = if returns_value {

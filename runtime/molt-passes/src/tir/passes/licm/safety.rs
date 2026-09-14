@@ -5,18 +5,18 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::TirOp;
 /// Returns `true` if the op is pure and safe to hoist out of a loop.
 ///
-/// The opcode-level purity decision is delegated to the single source of truth
-/// in `effects::opcode_is_pure_movable` (deterministic + side-effect-free +
-/// never-throwing). LICM additionally permits a structural SSA value copy,
-/// which is a property of the op *instance* (its operand/result arity and empty
-/// attrs), not of the opcode, so that check stays here.
+/// The operand-aware purity decision is delegated to the shared effects
+/// authority. LICM additionally permits a structural SSA value copy, which is
+/// a property of the op *instance* (its operand/result arity and empty attrs),
+/// not of the opcode, so that check stays here.
 ///
 /// Hoisting requires the FULL pure-movable property (including `nothrow`):
 /// moving an op above the loop guard changes whether/when it would raise, so a
 /// may-throw op (e.g. `Div`) must not be hoisted even though it is CSE-safe -
 /// UNLESS its specific throw condition is *disproven* at the hoist site, which
 /// [`throw_condition_disproven`] decides per-instance from the value-range proof
-/// (a shift whose count is in `[0, 63]`, a divide whose divisor is non-zero).
+/// (an exact-integer shift whose count is in `[0, 63]`, or exact-integer floor
+/// division/modulo whose divisor is non-zero). True division remains may-throw.
 pub(super) fn is_hoistable(
     op: &TirOp,
     vr: &ValueRangeResult,
@@ -25,18 +25,20 @@ pub(super) fn is_hoistable(
         crate::tir::types::TirType,
     >,
 ) -> bool {
-    super::super::effects::op_is_pure_movable_with_types(op, value_types)
+    let effects = super::super::effects::op_effects_with_types(op, value_types);
+    (effects.consistent && effects.effect_free && effects.nothrow)
         || op.is_plain_value_copy()
-        || (super::super::effects::opcode_is_pure_may_throw(op.opcode)
-            && throw_condition_disproven(op, vr))
+        || (effects.consistent
+            && effects.effect_free
+            && !effects.nothrow
+            && throw_condition_disproven(op, vr, value_types))
 }
 
-/// True when a `pure_may_throw` op (`{Div, FloorDiv, Mod, Pow, Shl, Shr}`) is
+/// True when an operand-proven `pure_may_throw` operator instance is
 /// PROVEN not to raise on its operands - so hoisting it above the loop guard
 /// cannot move an observable raise earlier (it would never have raised). This is
-/// the honest generalization of the hoist gate: "throw-condition disproven",
-/// parameterized per opcode, each arm reusing the SINGLE value-range proof the
-/// raw-i64 lane already uses (no duplicated proof logic).
+/// the domain-aware shared "throw-condition disproven" gate, with this pass
+/// supplying only its value-range evidence.
 ///
 ///   * **`Shl` / `Shr`**: a negative shift count raises `ValueError`, and a
 ///     count `>= 64` is a wrong-value machine shift on the raw lane. The op is
@@ -49,33 +51,42 @@ pub(super) fn is_hoistable(
 ///     correctly, exactly once. The only property hoisting needs is that the
 ///     shift does not *raise* where the loop guard used to protect it, i.e. a
 ///     non-negative, in-machine-range count.
-///   * **`Div` / `FloorDiv` / `Mod`**: a zero divisor raises
-///     `ZeroDivisionError`. The op is nothrow iff the divisor operand
-///     `proves_nonzero()` - the same predicate the WASM raw `sdiv`/`srem` lane
-///     uses (#42). (Integer `i64::MIN / -1` overflow is a separate concern that
-///     does not raise in Python - it produces a bigint - and is handled by the
-///     boxed lowering, not a raise, so it does not block the hoist.)
+///   * **`FloorDiv` / `Mod`**: exact builtin integer operands plus a divisor
+///     whose range `proves_nonzero()` discharge `ZeroDivisionError`. Python
+///     integer floor division and modulo do not overflow at `i64::MIN / -1`;
+///     the semantic result may be a BigInt and remains a representation concern.
+///   * **`Div`**: REFUSED. Even exact semantic integers can overflow while being
+///     converted to the float result, so a nonzero divisor is not a complete
+///     exception proof. Mixed integer/float instances retain the same conversion
+///     risk.
 ///   * **`Pow`**: REFUSED. `x ** y` raises `ZeroDivisionError` for `0 ** -1` and
 ///     returns a float for a negative integer exponent, so the nothrow
 ///     condition couples base AND exponent ranges (and the int/float result
 ///     repr); it is not trivially range-provable. We never hoist `Pow` here -
 ///     documenting the refusal rather than shipping an unsound or fragile gate.
 ///     CSE of `Pow` (under dominance) is unaffected; only the hoist is withheld.
-pub(super) fn throw_condition_disproven(op: &TirOp, vr: &ValueRangeResult) -> bool {
-    if opcode_requires_i64_shift_count_guard_table(op.opcode) {
-        // Count operand proven in the valid machine-shift range [0, 63].
-        return op
+pub(super) fn throw_condition_disproven(
+    op: &TirOp,
+    vr: &ValueRangeResult,
+    value_types: &std::collections::HashMap<
+        crate::tir::values::ValueId,
+        crate::tir::types::TirType,
+    >,
+) -> bool {
+    let shift_count_valid = opcode_requires_i64_shift_count_guard_table(op.opcode)
+        && op
             .operands
             .get(1)
             .is_some_and(|&count| vr.range_of(count).proves_i64_shift_count());
-    }
-    if opcode_requires_i64_zero_divisor_guard_table(op.opcode) {
-        // Divisor proven to exclude zero.
-        return op
+    let divisor_nonzero = opcode_requires_i64_zero_divisor_guard_table(op.opcode)
+        && op
             .operands
             .get(1)
             .is_some_and(|&divisor| vr.range_of(divisor).proves_nonzero());
-    }
-    // Pow's throw condition is not a single-operand range fact - refuse.
-    false
+    super::super::effects::guarded_throw_condition_disproven(
+        op,
+        value_types,
+        shift_count_valid,
+        divisor_nonzero,
+    )
 }

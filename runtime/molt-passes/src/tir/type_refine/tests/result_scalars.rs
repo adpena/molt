@@ -1,6 +1,96 @@
 use super::*;
 
 #[test]
+fn operator_scalar_facts_reach_comparisons_without_promoting_parameter_hints() {
+    for (left, right, opcode, expected) in [
+        (
+            OpCode::ConstBool,
+            OpCode::ConstBool,
+            OpCode::Add,
+            TirType::I64,
+        ),
+        (
+            OpCode::ConstBigInt,
+            OpCode::ConstInt,
+            OpCode::InplaceAdd,
+            TirType::I64,
+        ),
+        (
+            OpCode::ConstBool,
+            OpCode::ConstFloat,
+            OpCode::InplaceMul,
+            TirType::F64,
+        ),
+        (
+            OpCode::ConstBytes,
+            OpCode::ConstBytes,
+            OpCode::Add,
+            TirType::Bytes,
+        ),
+        (
+            OpCode::ConstBytes,
+            OpCode::ConstBool,
+            OpCode::Mul,
+            TirType::Bytes,
+        ),
+        (
+            OpCode::ConstBigInt,
+            OpCode::ConstStr,
+            OpCode::InplaceMul,
+            TirType::Str,
+        ),
+    ] {
+        let mut func = single_block_func(
+            vec![
+                make_op(left, vec![], vec![ValueId(1)], AttrDict::new()),
+                make_op(right, vec![], vec![ValueId(2)], AttrDict::new()),
+                make_op(
+                    opcode,
+                    vec![ValueId(1), ValueId(2)],
+                    vec![ValueId(3)],
+                    AttrDict::new(),
+                ),
+                make_op(
+                    OpCode::Eq,
+                    vec![ValueId(3), ValueId(3)],
+                    vec![ValueId(4)],
+                    AttrDict::new(),
+                ),
+                make_op(
+                    OpCode::Add,
+                    vec![ValueId(0), ValueId(0)],
+                    vec![ValueId(5)],
+                    AttrDict::new(),
+                ),
+                make_op(
+                    OpCode::Eq,
+                    vec![ValueId(5), ValueId(5)],
+                    vec![ValueId(6)],
+                    AttrDict::new(),
+                ),
+            ],
+            7,
+        );
+        func.param_types = vec![TirType::I64];
+        func.value_types.insert(ValueId(0), TirType::I64);
+        for refined in [false, true] {
+            if refined {
+                refine_types(&mut func);
+            }
+            let exact = extract_exact_scalar_map(&func);
+            assert_eq!(exact.get(&ValueId(3)), Some(&expected), "{opcode:?}");
+            assert_eq!(exact.get(&ValueId(4)), Some(&TirType::Bool));
+            assert!(!exact.contains_key(&ValueId(0)));
+            assert!(!exact.contains_key(&ValueId(5)));
+            assert!(!exact.contains_key(&ValueId(6)));
+            let reprs = crate::representation_facts::repr_by_value_for(&func, None);
+            assert_eq!(reprs[&ValueId(4)], crate::repr::Repr::Bool);
+            assert_eq!(reprs[&ValueId(6)], crate::repr::Repr::DynBox);
+        }
+    }
+}
+
+#[test]
 fn intrinsic_result_slots_preserve_exact_status_without_payload_or_purity_inference() {
     for opcode in [
         OpCode::CheckedAdd,
@@ -197,82 +287,94 @@ fn intrinsic_overflow_status_survives_loop_fanin_but_dynamic_edges_poison_exactn
 
 #[test]
 fn exact_labelled_loop_facts_only_widen_for_admitted_exception_edges() {
-    for has_exception_edge in [false, true] {
-        let mut func = single_block_func(
-            vec![
-                make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(0)),
-                make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], int_attr(10)),
-            ],
-            6,
-        );
-        let header = BlockId(1);
-        let exit = BlockId(2);
-        func.next_block = 3;
-        func.label_id_map.insert(header.0, 20);
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.terminator = Terminator::Branch {
-            target: header,
-            args: vec![ValueId(0)],
-        };
-        if has_exception_edge {
-            entry
-                .ops
-                .push(make_op(OpCode::TryStart, vec![], vec![], int_attr(20)));
-            func.has_exception_handling = true;
-        }
-        func.blocks.insert(
-            header,
-            TirBlock {
-                id: header,
-                args: vec![TirValue {
-                    id: ValueId(2),
-                    ty: TirType::I64,
-                }],
-                ops: vec![
-                    make_op(OpCode::ConstInt, vec![], vec![ValueId(3)], int_attr(1)),
-                    make_op(
-                        OpCode::Add,
-                        vec![ValueId(2), ValueId(3)],
-                        vec![ValueId(4)],
-                        AttrDict::new(),
-                    ),
-                    make_op(
-                        OpCode::Lt,
-                        vec![ValueId(4), ValueId(1)],
-                        vec![ValueId(5)],
-                        AttrDict::new(),
-                    ),
+    // Block IDs are storage identities, never a topological execution order.
+    for (entry_id, header, exit) in [
+        (BlockId(0), BlockId(1), BlockId(2)),
+        (BlockId(0), BlockId(2), BlockId(1)),
+        (BlockId(1), BlockId(0), BlockId(2)),
+        (BlockId(1), BlockId(2), BlockId(0)),
+        (BlockId(2), BlockId(0), BlockId(1)),
+        (BlockId(2), BlockId(1), BlockId(0)),
+    ] {
+        for has_exception_edge in [false, true] {
+            let mut func = single_block_func(
+                vec![
+                    make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(0)),
+                    make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], int_attr(10)),
                 ],
-                terminator: Terminator::CondBranch {
-                    cond: ValueId(5),
-                    then_block: header,
-                    then_args: vec![ValueId(4)],
-                    else_block: exit,
-                    else_args: vec![],
+                6,
+            );
+            let mut entry = func.blocks.remove(&func.entry_block).unwrap();
+            entry.id = entry_id;
+            func.entry_block = entry_id;
+            func.blocks.insert(entry_id, entry);
+            func.next_block = 3;
+            func.label_id_map.insert(header.0, 20);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![ValueId(0)],
+            };
+            if has_exception_edge {
+                entry
+                    .ops
+                    .push(make_op(OpCode::TryStart, vec![], vec![], int_attr(20)));
+                func.has_exception_handling = true;
+            }
+            func.blocks.insert(
+                header,
+                TirBlock {
+                    id: header,
+                    args: vec![TirValue {
+                        id: ValueId(2),
+                        ty: TirType::I64,
+                    }],
+                    ops: vec![
+                        make_op(OpCode::ConstInt, vec![], vec![ValueId(3)], int_attr(1)),
+                        make_op(
+                            OpCode::Add,
+                            vec![ValueId(2), ValueId(3)],
+                            vec![ValueId(4)],
+                            AttrDict::new(),
+                        ),
+                        make_op(
+                            OpCode::Lt,
+                            vec![ValueId(4), ValueId(1)],
+                            vec![ValueId(5)],
+                            AttrDict::new(),
+                        ),
+                    ],
+                    terminator: Terminator::CondBranch {
+                        cond: ValueId(5),
+                        then_block: header,
+                        then_args: vec![ValueId(4)],
+                        else_block: exit,
+                        else_args: vec![],
+                    },
                 },
-            },
-        );
-        func.blocks.insert(
-            exit,
-            TirBlock {
-                id: exit,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-        let exact = extract_exact_scalar_map(&func);
-        let representations = crate::representation_facts::repr_by_value_for(&func, None);
-        if has_exception_edge {
-            assert!(!exact.contains_key(&ValueId(2)));
-            assert!(!exact.contains_key(&ValueId(4)));
-            assert!(!exact.contains_key(&ValueId(5)));
-            assert_eq!(representations[&ValueId(5)], crate::repr::Repr::DynBox);
-        } else {
-            assert_eq!(exact.get(&ValueId(2)), Some(&TirType::I64));
-            assert_eq!(exact.get(&ValueId(4)), Some(&TirType::I64));
-            assert_eq!(exact.get(&ValueId(5)), Some(&TirType::Bool));
-            assert_eq!(representations[&ValueId(5)], crate::repr::Repr::Bool);
+            );
+            func.blocks.insert(
+                exit,
+                TirBlock {
+                    id: exit,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let exact = extract_exact_scalar_map(&func);
+            let representations = crate::representation_facts::repr_by_value_for(&func, None);
+            if has_exception_edge {
+                assert!(!exact.contains_key(&ValueId(2)));
+                assert!(!exact.contains_key(&ValueId(4)));
+                assert!(!exact.contains_key(&ValueId(5)));
+                assert_eq!(representations[&ValueId(5)], crate::repr::Repr::DynBox);
+            } else {
+                assert_eq!(exact.get(&ValueId(2)), Some(&TirType::I64));
+                assert_eq!(exact.get(&ValueId(4)), Some(&TirType::I64));
+                assert_eq!(exact.get(&ValueId(5)), Some(&TirType::Bool));
+                assert_eq!(representations[&ValueId(5)], crate::repr::Repr::Bool);
+            }
         }
     }
 }
@@ -489,6 +591,61 @@ fn rich_comparison_annotations_do_not_prove_scalar_results_or_effects() {
 }
 
 #[test]
+fn overloaded_operator_annotations_do_not_prove_instance_effects() {
+    for (opcode, arity) in [
+        (OpCode::Add, 2),
+        (OpCode::Sub, 2),
+        (OpCode::Mul, 2),
+        (OpCode::InplaceAdd, 2),
+        (OpCode::InplaceSub, 2),
+        (OpCode::InplaceMul, 2),
+        (OpCode::Div, 2),
+        (OpCode::FloorDiv, 2),
+        (OpCode::Mod, 2),
+        (OpCode::Pow, 2),
+        (OpCode::BitAnd, 2),
+        (OpCode::BitOr, 2),
+        (OpCode::BitXor, 2),
+        (OpCode::Shl, 2),
+        (OpCode::Shr, 2),
+        (OpCode::Neg, 1),
+        (OpCode::Pos, 1),
+        (OpCode::BitNot, 1),
+    ] {
+        let operands = if arity == 1 {
+            vec![ValueId(0)]
+        } else {
+            vec![ValueId(0), ValueId(1)]
+        };
+        let mut func = single_block_func(
+            vec![make_op(opcode, operands, vec![ValueId(2)], AttrDict::new())],
+            3,
+        );
+        func.param_types = vec![TirType::I64, TirType::I64];
+        func.value_types.extend([
+            (ValueId(0), TirType::I64),
+            (ValueId(1), TirType::I64),
+            (ValueId(2), TirType::I64),
+        ]);
+        let exact = extract_exact_scalar_map(&func);
+        assert!(
+            exact.is_empty(),
+            "{opcode:?}: annotations are not exact facts"
+        );
+        let facts = crate::tir::op_semantics::op_instance_facts_for_op(
+            &func.blocks[&BlockId(0)].ops[0],
+            &exact,
+        )
+        .unwrap();
+        assert_eq!(
+            facts.effects,
+            crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE,
+            "{opcode:?}: annotation-only operands must retain callback effects"
+        );
+    }
+}
+
+#[test]
 fn exact_scalar_provenance_survives_arithmetic_and_comparison_chains() {
     let func = single_block_func(
         vec![
@@ -634,9 +791,8 @@ fn malformed_result_shapes_do_not_mint_exact_scalar_facts() {
         let exact = extract_exact_scalar_map(&func);
         assert!(results.iter().all(|value| !exact.contains_key(value)));
         let op = &func.blocks[&BlockId(0)].ops[2];
-        let comparison =
-            crate::tir::predicate_semantics::predicate_facts_for_op(op, &exact).unwrap();
-        assert_eq!(comparison.result_type, TirType::DynBox);
+        let comparison = crate::tir::op_semantics::op_instance_facts_for_op(op, &exact).unwrap();
+        assert_eq!(comparison.result_type, None);
         assert!(!comparison.effects.effect_free);
         assert!(!comparison.effects.nothrow);
         let reprs = crate::representation_facts::repr_by_value_for(&func, None);
@@ -1020,5 +1176,163 @@ fn dynamic_operand_selects_do_not_inherit_stale_bool_representations() {
                 .iter()
                 .any(|op| op.results.contains(&ValueId(2)))
         );
+    }
+}
+
+#[test]
+fn gpu_intrinsic_shapes_are_producer_facts_not_return_hints() {
+    for (kind, symbol, expected) in [
+        ("gpu_thread_id", "molt_gpu_thread_id", TirType::I64),
+        ("gpu_block_id", "molt_gpu_block_id", TirType::I64),
+        ("gpu_block_dim", "molt_gpu_block_dim", TirType::I64),
+        ("gpu_grid_dim", "molt_gpu_grid_dim", TirType::I64),
+        ("gpu_barrier", "molt_gpu_barrier", TirType::None),
+    ] {
+        let mut attrs = AttrDict::new();
+        attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
+        attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        let mut func = single_block_func(
+            vec![make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs)],
+            1,
+        );
+        // A contradictory hint cannot replace the fixed intrinsic's ABI fact.
+        func.value_types.insert(ValueId(0), TirType::F64);
+        let exact = extract_exact_scalar_map(&func);
+        assert_eq!(exact.get(&ValueId(0)), Some(&expected), "{kind}");
+        let ranges = crate::representation_facts::value_range_for(&func);
+        let reprs = crate::representation_facts::repr_by_value_for(&func, Some(&ranges));
+        assert_eq!(
+            reprs[&ValueId(0)].is_raw_i64_safe(),
+            expected == TirType::I64,
+            "{kind}"
+        );
+        let liveness = crate::tir::passes::liveness::compute_liveness(&func);
+        assert!(liveness.is_raw_scalar(ValueId(0)), "{kind}");
+    }
+}
+
+#[test]
+fn ordinary_opaque_and_internal_calls_cannot_borrow_gpu_scalar_or_nonheap_facts() {
+    for symbol in [
+        "molt_gpu_thread_id",
+        "molt_gpu_block_id",
+        "molt_gpu_block_dim",
+        "molt_gpu_grid_dim",
+        "molt_gpu_barrier",
+    ] {
+        for original_kind in [
+            None,
+            Some("call"),
+            Some("call_internal"),
+            Some("call_func"),
+            Some("call_function"),
+            Some("call_indirect"),
+            Some("call_bind"),
+            Some("call_guarded"),
+            Some("invoke_ffi"),
+        ] {
+            let mut attrs = AttrDict::new();
+            attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
+            if let Some(kind) = original_kind {
+                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            }
+            let mut func = single_block_func(
+                vec![make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs)],
+                1,
+            );
+            func.value_types.insert(ValueId(0), TirType::I64);
+            assert!(
+                !extract_exact_scalar_map(&func).contains_key(&ValueId(0)),
+                "{symbol}: {original_kind:?}"
+            );
+            let ranges = crate::representation_facts::value_range_for(&func);
+            let reprs = crate::representation_facts::repr_by_value_for(&func, Some(&ranges));
+            assert_eq!(
+                reprs[&ValueId(0)],
+                crate::repr::Repr::MaybeBigInt,
+                "{symbol}: {original_kind:?}"
+            );
+            let liveness = crate::tir::passes::liveness::compute_liveness(&func);
+            assert!(
+                !liveness.is_raw_scalar(ValueId(0)),
+                "{symbol}: {original_kind:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_operand_shapes_never_seed_scalar_results_or_representations() {
+    use crate::tir::op_kinds_generated::{
+        ALL_OPCODES, opcode_accepts_operand_count, opcode_fixed_result_count_table,
+    };
+    for &opcode in ALL_OPCODES {
+        let Some(results) = opcode_fixed_result_count_table(opcode) else {
+            continue;
+        };
+        if results == 0 {
+            continue;
+        }
+        for operands in 0..=4 {
+            if opcode_accepts_operand_count(opcode, operands) {
+                continue;
+            }
+            let mut ops: Vec<_> = (0..operands)
+                .map(|index| {
+                    make_op(
+                        OpCode::ConstInt,
+                        vec![],
+                        vec![ValueId(index as u32)],
+                        int_attr(1),
+                    )
+                })
+                .collect();
+            let result_ids: Vec<_> = (0..results)
+                .map(|index| ValueId(16 + index as u32))
+                .collect();
+            ops.push(make_op(
+                opcode,
+                (0..operands).map(|index| ValueId(index as u32)).collect(),
+                result_ids.clone(),
+                AttrDict::new(),
+            ));
+            let func = single_block_func(ops, 16 + results as u32);
+            let exact = extract_exact_scalar_map(&func);
+            let proven = extract_proven_map(&func);
+            let reprs = crate::representation_facts::repr_by_value_for(&func, None);
+            for result in result_ids {
+                assert!(
+                    !exact.contains_key(&result),
+                    "{opcode:?}: {operands} operands"
+                );
+                assert!(
+                    !proven.contains_key(&result),
+                    "{opcode:?}: malformed proven result"
+                );
+                assert_eq!(reprs[&result], crate::repr::Repr::DynBox);
+            }
+            let errors =
+                crate::tir::verify::verify_function(&func).expect_err("shape verifier must reject");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("invalid operand count"))
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_guard_shape_cannot_broadcast_an_attribute_hint() {
+    let mut attrs = AttrDict::new();
+    attrs.insert("expected_type".into(), AttrValue::Str("int".into()));
+    for (operands, results) in [(0, 1), (2, 1), (1, 2)] {
+        let facts = super::super::result_inference::infer_result_facts_with_attrs(
+            OpCode::TypeGuard,
+            &vec![TirType::I64; operands],
+            Some(&attrs),
+            results,
+        );
+        assert_eq!(facts, vec![TirType::DynBox; results]);
     }
 }

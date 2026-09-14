@@ -53,19 +53,12 @@ pub(super) fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
         for (op_idx, op) in block.ops.iter().enumerate() {
             match opcode_range_devirt_role_table(op.opcode) {
                 RangeDevirtRole::RangeCallCandidate => {
-                    let name = op
-                        .attrs
-                        .get("name")
-                        .and_then(|v| match v {
-                            AttrValue::Str(s) => Some(s.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    if (name == "range" || name == "builtin_range" || name == "molt_range")
-                        && !op.results.is_empty()
-                        && (1..=3).contains(&op.operands.len())
+                    if let Some(call) = op.builtin_call()
+                        && call.wire_kind == "range_new"
+                        && op.results.len() == 1
                     {
-                        call_builtin_defs.insert(op.results[0], (bid, op_idx, op.operands.clone()));
+                        call_builtin_defs
+                            .insert(op.results[0], (bid, op_idx, call.arguments.to_vec()));
                     }
                 }
                 RangeDevirtRole::IteratorCandidate
@@ -164,25 +157,12 @@ fn extract_range_args(
 ) -> (ValueId, ValueId, ValueId, Option<i64>) {
     let const_map = build_const_map(func, block_ids);
 
-    match range_args.len() {
-        1 => {
-            let stop = range_args[0];
-            (ValueId(u32::MAX - 1), stop, ValueId(u32::MAX), Some(1))
-        }
-        2 => {
-            let start = range_args[0];
-            let stop = range_args[1];
-            (start, stop, ValueId(u32::MAX), Some(1))
-        }
-        3 => {
-            let start = range_args[0];
-            let stop = range_args[1];
-            let step = range_args[2];
-            let step_const = const_map.get(&step).copied();
-            (start, stop, step, step_const)
-        }
-        _ => unreachable!("range_args len already validated as 1..=3"),
-    }
+    // The source primitive already materialized all three bounds. Generic
+    // range lookup does not establish constructor identity or default values.
+    let [start, stop, step] = range_args else {
+        unreachable!("range_new argument shape admitted by builtin_call")
+    };
+    (*start, *stop, *step, const_map.get(step).copied())
 }
 
 fn build_const_map(func: &TirFunction, block_ids: &[BlockId]) -> HashMap<ValueId, i64> {

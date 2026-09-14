@@ -3,7 +3,7 @@ use crate::PyToken;
 use crate::*;
 
 pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    match name {
+    super::method_dispatch(_py, || match name {
         "read" => {
             let neg_one = MoltObject::from_int(-1).bits();
             Some(builtin_func_bits_with_defaults_tuple(
@@ -201,5 +201,5 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             1,
         )),
         _ => None,
-    }
+    })
 }

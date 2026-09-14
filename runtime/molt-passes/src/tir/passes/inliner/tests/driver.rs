@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
+    for kind in [
+        "call_func",
+        "call_function",
+        "call_indirect",
+        "call_bind",
+        "call_guarded",
+        "invoke_ffi",
+    ] {
+        for symbol in ["molt_gpu_thread_id", "constfn"] {
+            let mut caller = caller_calling_const(symbol);
+            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                .attrs
+                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            assert!(
+                collect_call_sites(&caller, &[symbol.into()]).is_empty(),
+                "{kind}: {symbol}"
+            );
+        }
+    }
+    for (gpu_kind, symbol) in [
+        ("gpu_thread_id", "molt_gpu_thread_id"),
+        ("gpu_block_id", "molt_gpu_block_id"),
+        ("gpu_block_dim", "molt_gpu_block_dim"),
+        ("gpu_grid_dim", "molt_gpu_grid_dim"),
+        ("gpu_barrier", "molt_gpu_barrier"),
+    ] {
+        for original in [None, Some("call"), Some("call_internal")] {
+            let mut caller = caller_calling_const(symbol);
+            if let Some(kind) = original {
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
+                    .attrs
+                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            }
+            let sites = collect_call_sites(&caller, &[symbol.into()]);
+            assert_eq!(sites.len(), 1, "{symbol}: {original:?}");
+        }
+        let mut intrinsic = caller_calling_const(symbol);
+        intrinsic
+            .blocks
+            .get_mut(&intrinsic.entry_block)
+            .unwrap()
+            .ops[0]
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str(gpu_kind.into()));
+        assert!(
+            collect_call_sites(&intrinsic, &[symbol.into()]).is_empty(),
+            "{gpu_kind}"
+        );
+    }
+    let mut caller = caller_calling_const("constfn");
+    let op = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0];
+    op.opcode = OpCode::Copy;
+    op.attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("call_internal".into()),
+    );
+    assert!(collect_call_sites(&caller, &["constfn".into()]).is_empty());
+}
+
+#[test]
 fn run_inliner_inlines_const_call() {
     // g() { x = constfn(); return x + 1 }, constfn() = 42.
     // After inlining + re-running the pipeline, the Call is gone, the merged

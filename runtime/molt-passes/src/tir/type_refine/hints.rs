@@ -39,7 +39,7 @@ pub(super) fn parse_return_type_str(name: &str) -> Option<TirType> {
 pub(super) fn structural_builtin_return_type(name: &str) -> Option<TirType> {
     match name {
         "len" | "id" | "ord" => Some(TirType::I64),
-        "bool" | "hasattr" | "isinstance" | "issubclass" => Some(TirType::Bool),
+        "hasattr" | "isinstance" | "issubclass" => Some(TirType::Bool),
         "chr" => Some(TirType::Str),
         _ => None,
     }

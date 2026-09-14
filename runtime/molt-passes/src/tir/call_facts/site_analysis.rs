@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use super::{CallFacts, CallTargetFact, FactValue, InlineEligibility};
 use crate::repr::Repr;
 use crate::tir::call_graph::CallGraph;
-use crate::tir::call_targets::is_gpu_runtime_symbol;
+use crate::tir::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{CallOpcodeRole, opcode_call_role_table};
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::passes::inliner::classify_inline_eligibility;
 use crate::tir::passes::ip_summary::ModuleSummaries;
 use crate::tir::target_info::TargetInfo;
@@ -41,29 +41,13 @@ fn call_role_records_facts(role: CallOpcodeRole) -> bool {
     )
 }
 
-/// Read an op's `s_value` string attr (the `Call` callee name), if present.
-fn s_value(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("s_value") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
-/// Read a `CallBuiltin`'s builtin name. The SSA lift stores it under the `name`
-/// attr key (not `s_value`); `range_new` is normalized to `name = "range"`.
-fn builtin_name(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("name") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
 /// The typed return `Repr` for a call op's result, derived from the result
 /// `ValueId`'s `TirType` in `func.value_types`. `Some(repr)` when the type is
-/// precise (non-`DynBox`); `None` when `DynBox` (the boxed universal carrier) or
-/// when the type is unknown. The lattice floor [`Repr::default_for`] maps a
+/// known (non-`DynBox`); `None` when the semantic type is unknown. A known
+/// semantic type can still require the `DynBox` carrier. [`Repr::default_for`] maps a
 /// `TirType` to its conservative carrier — Phase 1 reports that floor (e.g.
-/// `I64 → MaybeBigInt`); the value-range / unboxing passes raise it later, and a
+/// `I64 → MaybeBigInt`, `F64/Bool → DynBox`), never exact scalar provenance.
+/// The value-range / unboxing passes raise it later, and a
 /// future coverage join over `typed_repr_report` reads the *post-pass* repr.
 fn typed_return_for(result: ValueId, func: &TirFunction) -> Option<Repr> {
     match func.value_types.get(&result) {
@@ -72,34 +56,19 @@ fn typed_return_for(result: ValueId, func: &TirFunction) -> Option<Repr> {
     }
 }
 
-/// Builtins that provably cannot raise for *any* arguments — the Phase-1 no-throw
-/// allowlist (doc 47 §2). Conservative: only pure, total builtins whose molt
-/// runtime implementation has no error path for valid (already type-checked)
-/// operands. A builtin not on this list is `Unknown` (fail-closed), never
-/// asserted no-throw. `len` is intentionally EXCLUDED — it dispatches `__len__`,
-/// which can raise.
-fn builtin_is_no_throw(name: &str) -> bool {
-    matches!(
-        name,
-        // Identity / introspection on an already-realized object: no dispatch,
-        // no allocation failure path that surfaces as a Python exception.
-        "id" | "type" | "is" | "isinstance_fast"
-    )
-}
-
 /// The typed call target for a `Call` op, resolved against the module's defined
-/// function set. `StaticDirect` iff the `Call`'s `s_value` names a defined,
-/// non-gpu-runtime function; else `Opaque`. Dynamic-method opcodes and
+/// function set. `StaticDirect` iff the `Call` has a proven direct source role
+/// naming a defined, non-gpu-runtime function; else `Opaque`. Dynamic-method opcodes and
 /// `CallBuiltin` (runtime helper) are always `Opaque`. This mirrors
-/// `call_graph::classify_call_op` exactly — same `s_value`/defined predicate, same
-/// gpu-runtime carve-out — but returns the *typed* fact rather than a `CallEdge`.
+/// `call_graph::classify_call_op` exactly — same operation-aware call identity
+/// and defined predicate — but returns the *typed* fact rather than a `CallEdge`.
 fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
     match opcode_call_role_table(op.opcode) {
-        CallOpcodeRole::UserCall => match s_value(op) {
+        CallOpcodeRole::UserCall => match direct_call_symbol_for_op(op) {
             // A gpu_* runtime symbol lifts to `Call` but is a runtime helper, not
             // a user function — the call graph excludes it as an edge, so it is
             // not a static-direct user target here either.
-            Some(name) if is_gpu_runtime_symbol(name) => CallTargetFact::Opaque,
+            Some(_) if gpu_runtime_result_type_for_op(op).is_some() => CallTargetFact::Opaque,
             Some(name) if call_graph.is_defined(name) => CallTargetFact::StaticDirect {
                 callee: name.to_string(),
             },
@@ -130,7 +99,7 @@ pub(super) fn analyze_call_site_module(
     let target = target_for_module(op, call_graph);
     let typed_return = typed_return_for(result, func);
 
-    // leaf / inlinable / callee-handler no_throw are callee-side: resolved only
+    // leaf / inlinable are callee-side: resolved only
     // for a StaticDirect target whose body is in this module.
     let resolved_callee: Option<&TirFunction> = target
         .static_callee()
@@ -143,9 +112,7 @@ pub(super) fn analyze_call_site_module(
         None => FactValue::Unknown,
     };
 
-    // no_throw: opcode statically no-throw ∨ resolved callee has no handlers ∨
-    // a no-throw-allowlisted builtin. Else Unknown (fail-closed).
-    let no_throw = no_throw_for(op, resolved_callee);
+    let no_throw = no_throw_for(op);
 
     // inlinable: the inliner's own decision (single source of truth). Only a
     // StaticDirect, module-resident callee is even a candidate; everything else
@@ -180,11 +147,7 @@ pub(super) fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFac
     // cannot prove).
     let typed_return = typed_return_for(result, func);
 
-    // no_throw: only the *locally* decidable halves — a statically-no-throw
-    // opcode (none of the call opcodes are, but a future opcode might be) or a
-    // no-throw builtin. The callee-has-no-handlers half needs the body, so it is
-    // omitted here (yields `Unknown`, not a false claim).
-    let no_throw = no_throw_for(op, None);
+    let no_throw = no_throw_for(op);
 
     CallFacts {
         target: CallTargetFact::Opaque,
@@ -196,39 +159,14 @@ pub(super) fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFac
     }
 }
 
-/// The Phase-1 `no_throw` skeleton (doc 47 §2). `Proven` iff:
-///   1. the opcode is statically no-throw (per the generated `op_kinds` registry —
-///      the authoritative effect oracle, read never re-decided, doc 47 §7), OR
-///   2. `resolved_callee` is `Some` and has no exception **handler** region
-///      (`TirFunction::has_exception_handlers` — a callee that cannot itself
-///      enter a handler cannot raise *through* one on this edge), OR
-///   3. the op is a `CallBuiltin` whose builtin is on the no-throw allowlist.
-///
-/// Otherwise `Unknown` (fail-closed).
-///
-/// `resolved_callee` is `None` on the intraprocedural floor and for opaque/builtin
-/// targets, so case 2 only fires when the precise module path resolved a body.
-fn no_throw_for(op: &TirOp, resolved_callee: Option<&TirFunction>) -> FactValue {
-    // (1) The op-kind registry is the single source of truth for may_throw. All
-    // three call opcodes have may_throw = true today, but reading the registry
-    // (never hardcoding) means a future statically-no-throw call opcode is picked
-    // up for free — and keeps the discovery-vs-authority rule (doc 46 §1).
+/// The generated operation contract is the no-throw authority for both local
+/// and module tables. Absence of a handler does not prove absence of a raise;
+/// even an innocent callee body does not prove call admission cannot fail.
+/// Likewise a builtin name alone proves neither argument validity nor its
+/// allocation/dispatch behavior. A may-throw contract yields `Unknown`, not
+/// `False`: it permits a raise but does not prove this execution raises.
+fn no_throw_for(op: &TirOp) -> FactValue {
     if !crate::tir::op_kinds_generated::opcode_may_throw_table(op.opcode) {
-        return FactValue::Proven;
-    }
-    // (2) A resolved callee with no handler region.
-    if let Some(callee) = resolved_callee
-        && !callee.has_exception_handlers()
-    {
-        return FactValue::Proven;
-    }
-    // (3) A no-throw-allowlisted builtin.
-    if matches!(
-        opcode_call_role_table(op.opcode),
-        CallOpcodeRole::RuntimeBuiltin
-    ) && let Some(name) = builtin_name(op)
-        && builtin_is_no_throw(name)
-    {
         return FactValue::Proven;
     }
     FactValue::Unknown

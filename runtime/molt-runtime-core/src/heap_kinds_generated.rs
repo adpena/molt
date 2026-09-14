@@ -58,10 +58,11 @@ pub const TYPE_ID_GLOB_ITER: u32 = 253;
 pub const TYPE_ID_FOREIGN: u32 = 254;
 pub const TYPE_ID_WEAK_CONTAINER_STATE: u32 = 255;
 pub const TYPE_ID_WEAKREF: u32 = 256;
+pub const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
 
 pub const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_WEAKREF;
-pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
+pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_NATIVE_DESCRIPTOR;
+pub const ALL_HEAP_TYPE_IDS: [u32; 59] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -120,6 +121,7 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_FOREIGN,
     TYPE_ID_WEAK_CONTAINER_STATE,
     TYPE_ID_WEAKREF,
+    TYPE_ID_NATIVE_DESCRIPTOR,
 ];
 
 #[repr(u16)]
@@ -160,6 +162,7 @@ pub enum ObjectShapeId {
     IoWait = 31,
     WebsocketWait = 32,
     GenericTaskPayload = 33,
+    BoxedFields = 34,
     DictSubclass = 64,
     OperatorItemGetter = 65,
     OperatorAttrGetter = 66,
@@ -233,6 +236,7 @@ impl ObjectShapeId {
             31 => Self::IoWait,
             32 => Self::WebsocketWait,
             33 => Self::GenericTaskPayload,
+            34 => Self::BoxedFields,
             64 => Self::DictSubclass,
             65 => Self::OperatorItemGetter,
             66 => Self::OperatorAttrGetter,
@@ -271,6 +275,7 @@ impl ObjectShapeId {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectShapeLifecycleFamily {
+    BoxedFields,
     DictSubclass,
     Functools,
     Itertools,
@@ -324,6 +329,7 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::IoWait => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::WebsocketWait => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::GenericTaskPayload => ObjectShapeLifecycleFamily::Task,
+        ObjectShapeId::BoxedFields => ObjectShapeLifecycleFamily::BoxedFields,
         ObjectShapeId::DictSubclass => ObjectShapeLifecycleFamily::DictSubclass,
         ObjectShapeId::OperatorItemGetter => ObjectShapeLifecycleFamily::Operator,
         ObjectShapeId::OperatorAttrGetter => ObjectShapeLifecycleFamily::Operator,
@@ -397,6 +403,7 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::IoWait => ObjectShapeResourceSlot::IoSocket,
         ObjectShapeId::WebsocketWait => ObjectShapeResourceSlot::Websocket,
         ObjectShapeId::GenericTaskPayload => ObjectShapeResourceSlot::None,
+        ObjectShapeId::BoxedFields => ObjectShapeResourceSlot::None,
         ObjectShapeId::DictSubclass => ObjectShapeResourceSlot::None,
         ObjectShapeId::OperatorItemGetter => ObjectShapeResourceSlot::None,
         ObjectShapeId::OperatorAttrGetter => ObjectShapeResourceSlot::None,

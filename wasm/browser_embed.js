@@ -35,6 +35,7 @@ const {
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
   remapDefaultAppRuntimeSharedTableIndex,
+  runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
   callableTableSignature,
@@ -441,9 +442,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   const errPending =
     typeof runtime.exports?.molt_err_pending === 'function' &&
     Number(runtime.exports.molt_err_pending()) !== 0;
-  const exceptionPending =
-    typeof runtime.exports?.molt_exception_pending === 'function' &&
-    Number(runtime.exports.molt_exception_pending()) !== 0;
+  const exceptionPending = runtimeExceptionPending(runtime);
   const exceptionPendingFast =
     typeof runtime.exports?.molt_exception_pending_fast === 'function' &&
     Number(runtime.exports.molt_exception_pending_fast()) !== 0;
@@ -1280,12 +1279,14 @@ export const loadMoltBrowserKernel = async (options = {}) => {
       return;
     }
     const hostInit = embed.appInstance.exports.molt_host_init;
-    const isolateBootstrap = embed.appInstance.exports.molt_isolate_bootstrap;
-    if (typeof hostInit === 'function') {
-      hostInit();
-    } else if (typeof isolateBootstrap === 'function') {
-      isolateBootstrap();
+    if (typeof hostInit !== 'function') {
+      throw new Error('molt_host_init export missing for host-export initialization');
     }
+    if (runtimeExceptionPending(embed.runtimeInstance)) {
+      throw new Error(pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory) ||
+        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+    }
+    hostInit();
     const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
     if (pending) {
       throw new Error(pending);
