@@ -21,7 +21,7 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     "cloudflare": {
         "wasm_opt_level": "Oz",
         "wasm_profile": "pure",
-        "precompile": True,
+        "precompile": False,
         "tmp_quota_mb": 32,
         "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
@@ -43,7 +43,7 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     "fastly": {
         "wasm_opt_level": "Oz",
         "wasm_profile": "pure",
-        "precompile": True,
+        "precompile": False,
         "tmp_quota_mb": 64,
         "stdlib_profile": AUTO_STDLIB_PROFILE,
     },

@@ -12,6 +12,4 @@ default = []
 vfs_bundle_tar = ["dep:tar"]
 
 [dependencies]
-serde_json = { workspace = true }
-sha2 = "0.11"
 tar = { version = "0.4", optional = true }

@@ -11,6 +11,10 @@ import pytest
 
 import tests.wasm_linked_runner as wasm_runner
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
+from molt.cli.wasm_host import (
+    molt_wasm_host_exe_name,
+    resolve_molt_wasm_host_binary,
+)
 
 
 def _require_node_binary() -> str:
@@ -109,10 +113,10 @@ def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     target_host = (
-        tmp_path / "target" / "dev-fast" / wasm_runner._molt_wasm_host_exe_name()
+        tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
     )
     target_host.parent.mkdir(parents=True)
     target_host.write_bytes(b"target")
@@ -120,21 +124,50 @@ def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_host.parent.parent))
 
-    assert wasm_runner._resolve_molt_wasm_host_binary(tmp_path) == str(host_bin)
+    assert (
+        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast")
+        == str(host_bin)
+    )
 
 
 def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    host_bin = tmp_path / "target" / "dev-fast" / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
     host_bin.parent.mkdir(parents=True)
     host_bin.write_bytes(b"host")
 
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
-    monkeypatch.setenv("MOLT_WASM_TEST_CARGO_TARGET_DIR", str(host_bin.parent.parent))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(host_bin.parent.parent))
 
-    assert wasm_runner._resolve_molt_wasm_host_binary(tmp_path) == str(host_bin)
+    assert (
+        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast")
+        == str(host_bin)
+    )
+
+
+def test_resolve_molt_wasm_host_binary_uses_requested_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    host_bin = tmp_path / "target" / "release-output" / molt_wasm_host_exe_name()
+    host_bin.parent.mkdir(parents=True)
+    host_bin.write_bytes(b"host")
+
+    assert (
+        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="release-output")
+        == str(host_bin)
+    )
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
+
+
+def test_resolve_molt_wasm_host_binary_rejects_missing_explicit_binary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(tmp_path / "missing-host"))
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
 
 
 def test_run_wasm_linked_uses_molt_wasm_host(
@@ -145,7 +178,7 @@ def test_run_wasm_linked_uses_molt_wasm_host(
     wasm_path.write_bytes(b"\x00asm")
     manifest = tmp_path / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
-    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     recorded: dict[str, Any] = {}
@@ -172,7 +205,7 @@ def test_run_wasm_linked_preserves_inherited_child_rlimit_by_default(
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
     (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
-    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
@@ -197,7 +230,7 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
     (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
-    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     recorded: dict[str, Any] = {}
@@ -230,7 +263,7 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
     (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
-    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("MOLT_WASM_DIRECT_LINK", "1")
@@ -442,6 +475,7 @@ def test_build_wasm_linked_does_not_mutate_process_runtime_env(
     assert "MOLT_RUNTIME_WASM" not in os.environ
 
 
+@pytest.mark.slow
 def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     tmp_path: Path,
 ) -> None:
@@ -454,6 +488,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     assert result.stdout.strip().endswith("42")
 
 
+@pytest.mark.slow
 def test_run_wasm_linked_bench_sum_has_no_table_signature_trap(
     tmp_path: Path,
 ) -> None:
@@ -467,6 +502,7 @@ def test_run_wasm_linked_bench_sum_has_no_table_signature_trap(
     assert "null function or function signature mismatch" not in result.stderr
 
 
+@pytest.mark.slow
 def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     tmp_path: Path,
 ) -> None:
@@ -516,6 +552,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     assert result.stdout.strip().splitlines() == ["after"]
 
 
+@pytest.mark.slow
 def test_linked_wasm_exports_table_base_setter_when_available(
     tmp_path: Path,
 ) -> None:

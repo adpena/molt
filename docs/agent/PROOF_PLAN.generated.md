@@ -10,7 +10,7 @@
 | CI selection families | 5 | 11 |
 | Hashed executable authority inputs | 1 | 169 |
 | Local path rules | 35 | 40 |
-| Unique local commands | 73 | 89 |
+| Unique local commands | 73 | 90 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -43,7 +43,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 15 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 70 min | 3960 s | 240 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
+| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 22 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -240,10 +240,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Rule | Input globs | Commands | Fresh toolchain |
 |---|---:|---:|---:|
-| `backend-native` | 2 | 2 | yes |
+| `backend-native` | 4 | 2 | yes |
 | `backend-llvm` | 2 | 1 | yes |
 | `tir-midend` | 9 | 4 | yes |
-| `wasm-host` | 3 | 2 | yes |
+| `wasm-host` | 5 | 2 | yes |
 | `gpu-core` | 3 | 1 | no |
 | `gpu-runtime` | 3 | 2 | no |
 | `runtime-vfs` | 4 | 3 | yes |

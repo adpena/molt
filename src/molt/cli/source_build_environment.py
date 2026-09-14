@@ -298,25 +298,22 @@ def _probe_source_build_python(
     probe_environment.pop("PYTHONHOME", None)
     probe_environment.pop("PYTHONPATH", None)
     probe_environment["PYTHONNOUSERSITE"] = "1"
-    probe_environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    probe_source = Path(python_environment_identity.__file__).resolve(strict=True)
-    probe_argv = [
-        str(python_executable),
-        "-I",
-    ]
     if root is None:
         # A recipe addresses the base interpreter, not installed site startup
         # hooks. Realized environment bootstrap is admitted separately below.
-        probe_argv.extend(("-S", str(probe_source), "--capture-runtime"))
+        probe_arguments = ["--capture-runtime"]
     else:
-        probe_argv.extend(
-            (
-                str(probe_source),
-                "--capture-environment",
-                str(root.resolve()),
-                "--admit-virtualenv-bootstrap",
-            )
-        )
+        probe_arguments = [
+            "--capture-environment",
+            str(root.resolve()),
+            "--admit-virtualenv-bootstrap",
+        ]
+    probe_argv = [
+        str(python_executable),
+        *python_environment_identity.python_identity_probe_arguments(
+            probe_arguments, no_site=root is None
+        ),
+    ]
     kind = "runtime" if root is None else "environment"
     result = process_guard.run_completed_command(
         probe_argv,

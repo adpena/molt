@@ -10,7 +10,7 @@ pub(super) fn define_isolate_host_imports(
         &mut *store,
         bootstrap_ty,
         |mut caller: Caller<'_, HostState>, params, results| {
-            debug_log(|| "env::molt_isolate_bootstrap -> app export".to_string());
+            log::debug!("env::molt_isolate_bootstrap -> app export");
             let func = caller
                 .data()
                 .isolate_bootstrap_export
@@ -20,7 +20,7 @@ pub(super) fn define_isolate_host_imports(
                     wasmtime::Error::msg("molt_isolate_bootstrap export not registered")
                 })?;
             let result = func.call(&mut caller, params, results);
-            debug_log(|| format!("env::molt_isolate_bootstrap <- {result:?}"));
+            log::debug!("env::molt_isolate_bootstrap <- {result:?}");
             result
         },
     );
@@ -31,7 +31,7 @@ pub(super) fn define_isolate_host_imports(
         &mut *store,
         import_ty,
         |mut caller: Caller<'_, HostState>, params, results| {
-            debug_log(|| format!("env::molt_isolate_import -> app export params={params:?}"));
+            log::debug!("env::molt_isolate_import -> app export params={params:?}");
             let func = caller
                 .data()
                 .isolate_import_export
@@ -39,7 +39,7 @@ pub(super) fn define_isolate_host_imports(
                 .cloned()
                 .ok_or_else(|| wasmtime::Error::msg("molt_isolate_import export not registered"))?;
             let result = func.call(&mut caller, params, results);
-            debug_log(|| format!("env::molt_isolate_import <- {result:?} results={results:?}"));
+            log::debug!("env::molt_isolate_import <- {result:?} results={results:?}");
             result
         },
     );
@@ -52,41 +52,14 @@ pub(super) fn register_isolate_exports(
     instance: &Instance,
 ) -> Result<()> {
     let bootstrap = instance
-        .get_func(&mut *store, "molt_isolate_bootstrap")
-        .context("missing molt_isolate_bootstrap export")?;
+        .get_typed_func::<(), i64>(&mut *store, "molt_isolate_bootstrap")
+        .context("missing or malformed molt_isolate_bootstrap export")?;
     let import = instance
-        .get_func(&mut *store, "molt_isolate_import")
-        .context("missing molt_isolate_import export")?;
+        .get_typed_func::<i64, i64>(&mut *store, "molt_isolate_import")
+        .context("missing or malformed molt_isolate_import export")?;
+    // Publish only after both signatures match the runtime import ABI.
     let state = store.data_mut();
-    state.isolate_bootstrap_export = Some(bootstrap);
-    state.isolate_import_export = Some(import);
+    state.isolate_bootstrap_export = Some(bootstrap.func().to_owned());
+    state.isolate_import_export = Some(import.func().to_owned());
     Ok(())
-}
-
-fn call_zero_arg_export(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-    export_name: &'static str,
-) -> Result<()> {
-    let func = instance
-        .get_func(&mut *store, export_name)
-        .with_context(|| format!("missing {export_name} export"))?;
-    debug_log(|| format!("calling {export_name}"));
-    let mut results = alloc_results(&func.ty(&*store), export_name)?;
-    func.call(&mut *store, &[], &mut results)
-        .map_err(|err| anyhow::anyhow!("call {export_name}: {err}"))?;
-    debug_log(|| format!("{export_name} returned"));
-    Ok(())
-}
-
-pub(super) fn call_app_startup_entries(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-) -> Result<()> {
-    // Normal execution has exactly one startup authority: the exported
-    // molt_main wrapper. It owns runtime init, manifest install, table init, and
-    // app entry execution. Host-export setup is routed through molt_host_init
-    // in the JS/browser hosts; pre-calling raw isolate bootstrap here creates a
-    // second initialization lane before the wrapper has run.
-    call_zero_arg_export(store, instance, "molt_main")
 }

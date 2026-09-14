@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NoReturn
 
@@ -97,6 +98,24 @@ if _bootstrap_root is not None:
 def _probe_error(message: str) -> NoReturn:
     print(message, file=sys.stderr)
     raise SystemExit(2)
+
+
+def python_identity_probe_arguments(
+    arguments: Sequence[str], *, no_site: bool = False
+) -> list[str]:
+    """Launch this read-only authority with isolation and no bytecode writes.
+
+    Isolation ignores PYTHONDONTWRITEBYTECODE, so the no-write policy must be
+    an interpreter flag before either site startup or the authority imports.
+    Interpreter/launcher selection belongs to the caller; this owns its suffix.
+    """
+    return [
+        "-B",
+        "-I",
+        *(["-S"] if no_site else []),
+        str(Path(__file__).resolve(strict=True)),
+        *arguments,
+    ]
 
 
 def python_capture_authority_paths() -> tuple[Path, ...]:

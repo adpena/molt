@@ -338,7 +338,7 @@ WASM resumes:   result is now available
 - `tools/wasm_link.py` — add Asyncify pass to post-link pipeline
 - `runtime/molt-backend/src/wasm.rs` — mark external call sites for Asyncify
 - `runtime/molt-wasm-host/` — implement save/restore/serialize
-- New: `runtime/molt-snapshot/` crate for state serialization
+- Historical proposal (retired): `runtime/molt-snapshot/` serialized invented state but never owned capture/resume
 
 ### B3. Embeddable SDK (molt-embed)
 
@@ -449,7 +449,7 @@ Each wave includes tests:
 | A3 | Uncatchable exception propagation | `tests/test_uncatchable_exceptions.py` |
 | A4 | Audit event emission | `runtime/molt-runtime/tests/audit.rs` |
 | B1 | Manifest parsing + migration | `tests/test_capability_manifest.py` |
-| B2 | Snapshot serialize/deserialize roundtrip | `runtime/molt-snapshot/tests/` |
+| B2 | Snapshot metadata admission and execution identity | `tests/test_wasm_snapshot.py` |
 | C2 | Fuzz: no panics on random input | `runtime/molt-backend/fuzz/` |
 | C3 | Compile-fail: unsafe patterns rejected | `runtime/molt-runtime/tests/compile_fail/` |
 
@@ -458,7 +458,7 @@ Each wave includes tests:
 **New files:**
 - `runtime/molt-runtime/src/resource.rs` — ResourceTracker trait + LimitedTracker
 - `runtime/molt-runtime/src/audit.rs` — AuditSink trait + structured logging
-- `runtime/molt-snapshot/` — new crate for WASM state serialization
+- `runtime/molt-snapshot/` — historical prototype, since retired; no executable snapshot authority exists
 - `runtime/molt-embed/` — new crate for embeddable SDK
 - `runtime/molt-backend/fuzz/` — fuzz targets
 - `molt.capabilities.toml` — example manifest in new format

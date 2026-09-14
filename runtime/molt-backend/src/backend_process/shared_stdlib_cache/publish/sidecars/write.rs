@@ -1,7 +1,7 @@
 use std::{io, path::Path};
 
 use super::cleanup::remove_shared_stdlib_derived_sidecars;
-use crate::backend_process::atomic_publish::write_text_atomically;
+use molt_artifact_publish::write_text_atomically;
 
 use super::super::files::sha256_file_hex;
 use super::super::paths::{

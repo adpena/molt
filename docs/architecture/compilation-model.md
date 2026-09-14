@@ -64,6 +64,16 @@ for the crate-extraction and incremental-build routing plan.
   edits track `molt-backend-native`, and shared `molt-ir`/`molt-tir`/
   `molt-passes`/`molt-codegen-abi` edits invalidate the backend lanes that
   actually depend on them.
+- `molt-artifact-publish` owns the shared Rust atomic-file publication boundary.
+  Backend output, native archives, JSON/sidecars, and WASM attestations call the
+  crate directly; the backend-private publication module and reexports are
+  removed. The crate has no backend features or compiler/runtime dependencies.
+  It flushes and syncs same-directory staged bytes before replacement, uses
+  Windows write-through replacement or Unix parent-directory sync, and preserves
+  `PublicationState::Unchanged` versus `Replaced` through errors and cleanup.
+  A post-replacement durability failure must not be interpreted as rollback.
+  Its unit tests own the publication/error-state contract independently of
+  backend feature selection; backend tests retain their consumer obligations.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.

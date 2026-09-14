@@ -40,7 +40,7 @@ This is described in Cloudflare’s own docs and blog posts.
 
 | Topic | What Cloudflare does | Molt classification | What Molt should do |
 |------|-----------------------|--------------------|---------------------|
-| Cold starts | Deploy-time imports + snapshot | **STEAL** | Strict init phase + snapshot artifact for WASM and native |
+| Cold starts | Deploy-time imports + snapshot | **ADAPT** | Use precompiled modules now; admit executable snapshots only with complete continuation and runtime-state custody |
 | Packaging UX | Strong tooling story, `uv` integration | **STEAL** | Make `uv.lock` the canonical input; artifact ID = lock hash |
 | Isolation | V8 isolates, multi-tenant | **ADAPT** | Support isolate-like sandboxing for “hosted Molt” / multi-tenant |
 | Limits | CPU/memory constraints; graceful handling | **STEAL** | Make limits first-class in runtime APIs + metrics |
@@ -57,7 +57,10 @@ Cloudflare’s deploy-time snapshot strategy is a direct operational instantiati
 - reuse the frozen state for fast startup
 
 ### 3.1 Molt artifact proposal: `molt.snapshot`
-A snapshot is a build artifact that packages:
+
+The current `molt.snapshot.json` v2 artifact is a non-restorable metadata
+template (spec 0968), not an executable snapshot. A future executable snapshot
+would have to package:
 - compiled module(s) (WASM or native)
 - schema registry (Schema IR IDs + versions)
 - pre-initialized runtime state (init-only)
@@ -95,7 +98,7 @@ Molt’s core properties are aligned with what an edge runtime needs:
 - explicit boundaries (schemas)
 - strong cancellation/backpressure
 - ability to compile to WASM
-- small artifacts and fast startup (via snapshots)
+- small artifacts and fast startup (via precompiled modules today; full-state snapshots only in the future)
 
 An edge runtime wants predictable, bounded compute. Molt is being designed to enforce that.
 
@@ -113,7 +116,7 @@ Add an explicit “Edge/Workers tier” as a product target:
   - WASM-first
   - strict tier only (or strict-by-default)
   - schema-only boundary IO
-  - snapshot-required deployment
+  - verified execution-identity and capability metadata required for deployment
   - banned features: dynamic imports, reflection-heavy code, monkeypatching
 
 This is not a promise that Molt will replace Cloudflare Workers.

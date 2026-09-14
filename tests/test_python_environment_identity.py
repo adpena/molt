@@ -6,15 +6,20 @@ import base64
 import copy
 from contextlib import contextmanager
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from molt import python_capture as capture
 from molt import python_environment_custody as environment
+from molt import python_environment_identity as identity
 from molt import python_environment_location as location
 from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
@@ -27,6 +32,51 @@ _PORTABLE_PATH_ALIASES = [
     pytest.param("caf\u00e9", "cafe\u0301", id="unicode-normalization"),
     pytest.param("stra\u00dfe", "STRASSE", id="unicode-casefold"),
 ]
+
+
+@pytest.mark.slow
+def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkeypatch):
+    """Exercise real imports without relying on isolation-ignored environment flags."""
+    source_root = Path(identity.__file__).resolve().parents[2]
+    disposable = tmp_path / "source"
+    for source in identity.python_capture_authority_paths():
+        destination = disposable / source.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    copied_authority = disposable / "src" / "molt" / "python_environment_identity.py"
+    monkeypatch.setattr(identity, "__file__", str(copied_authority))
+
+    def snapshot():
+        return {
+            path.relative_to(disposable).as_posix(): (
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+                path.stat().st_mtime_ns,
+            )
+            for path in disposable.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot()
+    assert not list(disposable.rglob("__pycache__"))
+    command = [
+        str(getattr(sys, "_base_executable", sys.executable)),
+        *identity.python_identity_probe_arguments(("--capture-runtime",), no_site=True),
+    ]
+    for _ in range(2):
+        completed = subprocess.run(
+            command,
+            cwd=disposable,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        identity.validate_python_runtime_identity(json.loads(completed.stdout))
+        assert not list(disposable.rglob("__pycache__"))
+        assert snapshot() == before
 
 
 def _tree(root: Path, context: files.PythonFileCaptureContext):

@@ -15,7 +15,6 @@ from tools.command_execution import CommandExecutor
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PYTHON_IDENTITY_PROBE = _REPO_ROOT / "src" / "molt" / "python_environment_identity.py"
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v4"

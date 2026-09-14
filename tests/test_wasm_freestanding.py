@@ -673,8 +673,8 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
 
 
 @pytest.mark.slow
-def test_precompile_produces_cwasm(tmp_path):
-    """--precompile should produce a .cwasm alongside the .wasm."""
+def test_precompile_produces_host_container(tmp_path):
+    """--precompile delegates source-bound container publication to the host."""
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     result = _run_wasm_test_process(
@@ -699,14 +699,9 @@ def test_precompile_produces_cwasm(tmp_path):
     assert result.returncode == 0, (
         f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
-    cwasm = linked.with_suffix(".cwasm")
-    if shutil.which("wasmtime"):
-        assert cwasm.exists(), f"Expected .cwasm at {cwasm}"
-        assert cwasm.stat().st_size > 0, ".cwasm file is empty"
-        assert "Precompiled to" in result.stderr
-    else:
-        # wasmtime not installed; precompilation should be skipped gracefully
-        assert "wasmtime not found" in result.stderr
+    cwasm = linked.with_suffix(".molt.cwasm")
+    assert cwasm.exists(), f"Expected host container at {cwasm}"
+    assert cwasm.stat().st_size > 0, "host container is empty"
 
 
 # ---------------------------------------------------------------------------

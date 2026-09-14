@@ -67,12 +67,12 @@ pub(super) struct PendingDbRequest {
 
 enum WorkerMessage {
     Response(WorkerResponse),
-    Error(anyhow::Error),
+    Error(wasmtime::Error),
 }
 
 enum WorkerError {
-    Unavailable(anyhow::Error),
-    SendFailed(anyhow::Error),
+    Unavailable(wasmtime::Error),
+    SendFailed(wasmtime::Error),
 }
 
 fn decode_worker_frame(frame: &[u8]) -> Result<WorkerResponse> {
@@ -171,7 +171,7 @@ impl DbWorker {
         let mut stdin = self
             .stdin
             .lock()
-            .map_err(|_| anyhow::anyhow!("stdin lock poisoned"))?;
+            .map_err(|_| wasmtime::Error::msg("stdin lock poisoned"))?;
         write_frame(&mut *stdin, &bytes)?;
         Ok(request_id)
     }
@@ -191,7 +191,7 @@ fn send_worker_cancel(stdin: &Arc<Mutex<ChildStdin>>, target_id: u64) -> Result<
     let bytes = serde_json::to_vec(&msg)?;
     let mut guard = stdin
         .lock()
-        .map_err(|_| anyhow::anyhow!("stdin lock poisoned"))?;
+        .map_err(|_| wasmtime::Error::msg("stdin lock poisoned"))?;
     write_frame(&mut *guard, &bytes)?;
     Ok(())
 }

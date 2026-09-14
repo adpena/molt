@@ -171,7 +171,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7e63c4c1a014f66ae4d13ec5580833fb50ae984e94b0bd3484ed2122718995fa",
+  "authority_sha256": "6963ce48d8b21df154f76421410838a07f0318814eb18ec8f1c262bd381146e0",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -422,6 +422,7 @@
         "tests/cli/test_native_link*.py",
         "tools/bootstrap_llvm.py",
         "runtime/molt-backend/**",
+        "runtime/molt-artifact-publish/**",
         "runtime/molt-backend-mlir/**",
         "runtime/molt-backend-native/**",
         "runtime/molt-ir/**",
@@ -3380,6 +3381,8 @@
         "--test",
         "generated_artifact_custody",
         "-p",
+        "molt-artifact-publish",
+        "-p",
         "molt-codegen-abi",
         "-p",
         "molt-ir",
@@ -4196,8 +4199,8 @@
       "local.apparatus-learning-protection.1": "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
-      "local.backend-native.0": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend --features native-backend --lib",
+      "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib",
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
@@ -4282,12 +4285,14 @@
         ],
         "description": "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary.",
         "gates": [
-          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
-          "cargo test --locked --profile release-fast -p molt-backend --features native-backend --lib"
+          "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+          "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib"
         ],
         "globs": [
           "runtime/molt-backend/**/*.rs",
-          "runtime/molt-backend/**/Cargo.toml"
+          "runtime/molt-backend/**/Cargo.toml",
+          "runtime/molt-artifact-publish/**/*.rs",
+          "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
         "require_fresh_toolchain": true
@@ -4348,7 +4353,9 @@
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
           "runtime/molt-wasm-host/**/*.toml",
-          "runtime/molt-wasm-host/Cargo.toml"
+          "runtime/molt-wasm-host/Cargo.toml",
+          "runtime/molt-artifact-publish/**/*.rs",
+          "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "wasm-host",
         "require_fresh_toolchain": true

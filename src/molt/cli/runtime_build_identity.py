@@ -36,7 +36,10 @@ from molt.cli.runtime_identity_schema import (
 from molt.dx import _memory_bounded_worker_count
 from molt.file_hashing import content_change_time_ns
 from molt.exact_json import ExactJsonError, loads_exact
-from molt.python_environment_identity import python_capture_authority_paths
+from molt.python_environment_identity import (
+    python_capture_authority_paths,
+    python_identity_probe_arguments,
+)
 from molt.toolchain_identity import (
     probe_executable,
     resolve_executable,
@@ -509,7 +512,6 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
     if path is None:
         raise ValueError("runtime build Python is unresolved")
     # Build and environment provisioning consume the same isolated capture.
-    probe = Path(__file__).resolve().parents[1] / "python_environment_identity.py"
     with stable_executable_probe(path, label="runtime build Python") as (
         entrypoint,
         executable,
@@ -517,12 +519,14 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
         completed = process_guard.run_completed_command(
             [
                 os.fspath(entrypoint),
-                "-I",
-                "-S",
-                os.fspath(probe),
-                "--capture-runtime",
-                "--hash-workers",
-                str(_RUNTIME_BUILD_PYTHON_HASH_WORKERS),
+                *python_identity_probe_arguments(
+                    (
+                        "--capture-runtime",
+                        "--hash-workers",
+                        str(_RUNTIME_BUILD_PYTHON_HASH_WORKERS),
+                    ),
+                    no_site=True,
+                ),
             ],
             check=False,
             capture_output=True,

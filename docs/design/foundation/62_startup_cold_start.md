@@ -77,8 +77,8 @@ leaking onto the user's first run.** Concretely, the steady state is:
    per-module eager init (≈0 ms) are **three orders of magnitude** below the OS
    floor; this arc **does not** add a startup heap-snapshot / AOT-init-snapshot /
    module-init deferral mechanism (that would be a workaround chasing a non-problem
-   — `molt-snapshot` is for *WASM execution pause/resume across machines*, not
-   startup). The arc *guards* runtime-init against regression with a micro-budget,
+   — executable WASM pause/resume has no production authority today and must not
+   be simulated from partial state). The arc *guards* runtime-init against regression with a micro-budget,
    and otherwise leaves it alone.
 
 **The class this arc retires:** **"artifact-growth cold-start surprise"** — the
@@ -831,8 +831,9 @@ made a release-gating correctness property, not an aspiration.**
   `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py`;
   ship profile `Cargo.toml [profile.release-output]` (opt-`z`, ThinLTO, cgu=16,
   debug=0, panic=abort, strip — measured memory-bounded authority).
-- **NOT a startup mechanism (scope guard):** `runtime/molt-snapshot/` (WASM
-  execution pause/resume across machines — *not* startup; do not repurpose).
+- **NOT a startup mechanism (scope guard):** the removed orphan
+  `runtime/molt-snapshot/` serializer never owned capture or resume. Do not
+  recreate it without complete continuation and runtime-state custody.
 
 ## Appendix B — Why this is the compression-ladder unit, not "make startup faster"
 

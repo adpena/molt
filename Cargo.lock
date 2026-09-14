@@ -1481,7 +1481,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd40cfd4196d7a8f882ace95d623d4d6734588e502b4e188675a7c2f55eb4fb4"
 dependencies = [
- "env_logger",
+ "env_logger 0.9.3",
  "hashbrown 0.15.5",
  "indexmap",
  "log",
@@ -1523,11 +1523,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
 dependencies = [
+ "log",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
+dependencies = [
+ "env_filter",
  "log",
 ]
 
@@ -2783,6 +2803,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-artifact-publish"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "molt-backend"
 version = "0.1.0"
 dependencies = [
@@ -2794,6 +2821,7 @@ dependencies = [
  "memmap2",
  "metal",
  "mlx-rs",
+ "molt-artifact-publish",
  "molt-backend-luau",
  "molt-backend-native",
  "molt-backend-rust",
@@ -3295,8 +3323,6 @@ dependencies = [
 name = "molt-runtime-vfs"
 version = "0.1.0"
 dependencies = [
- "serde_json",
- "sha2 0.11.0",
  "tar",
 ]
 
@@ -3314,16 +3340,6 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
-]
-
-[[package]]
-name = "molt-snapshot"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "rmp-serde",
- "serde",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -3378,21 +3394,24 @@ dependencies = [
 name = "molt-wasm-host"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64",
+ "env_logger 0.11.11",
  "libc",
- "memmap2",
- "molt-lang-obj-model",
- "molt-runtime",
+ "log",
+ "molt-artifact-publish",
+ "molt-runtime-resource",
  "molt-wasm-facts",
  "num-format",
  "os_pipe",
  "rmpv",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "socket2",
  "tungstenite",
+ "unicode-casefold",
+ "unicode-normalization",
  "url",
  "wasmtime",
  "wasmtime-wasi",

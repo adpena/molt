@@ -6,6 +6,8 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(feature = "wasm-backend")]
+use molt_artifact_publish::AtomicFilePublication;
 use std::env;
 use std::io;
 use std::path::Path;

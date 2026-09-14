@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,7 +51,11 @@ from molt.cli.models import (
     _RuntimeArtifactState,
     _StagedExternalPackageNativeArtifact,
 )
-from molt.cli.output import CliFailure as _CliFailure, fail as _fail
+from molt.cli.output import (
+    CliFailure as _CliFailure,
+    fail as _fail,
+    subprocess_output_text,
+)
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
@@ -60,6 +65,7 @@ from molt.cli.runtime_wasm_validation import (
     _is_reusable_wasm_artifact,
     _validate_wasm_structural,
 )
+from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.cli.source_extension_link_requirements import (
     render_source_extension_link_arguments,
 )
@@ -79,6 +85,7 @@ from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_browser_signature,
 )
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
@@ -110,6 +117,78 @@ def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
         "size": path.stat().st_size,
         "sha256": h.hexdigest(),
     }
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _precompile_receipt_artifacts(stdout: str) -> dict[str, dict[str, object]]:
+    """Validate the sole receipt emitted by the Rust precompile authority."""
+    try:
+        receipt = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"molt-wasm-host returned invalid precompile JSON: {exc}") from exc
+    if not isinstance(receipt, dict):
+        raise ValueError("molt-wasm-host precompile receipt must be an object")
+    if (
+        type(receipt.get("version")) is not int
+        or receipt.get("version") != 1
+        or receipt.get("kind") != "molt-wasm-precompile"
+    ):
+        raise ValueError("molt-wasm-host returned an unsupported precompile receipt")
+    artifacts = receipt.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts).difference(
+        {"main", "runtime"}
+    ):
+        raise ValueError("molt-wasm-host precompile receipt has invalid artifacts")
+    validated: dict[str, dict[str, object]] = {}
+    for name in ("main", "runtime"):
+        if name not in artifacts and name == "runtime":
+            continue
+        artifact = artifacts.get(name)
+        if not isinstance(artifact, dict):
+            raise ValueError(f"molt-wasm-host precompile receipt lacks {name} artifact")
+        if set(artifact) != {"source", "path", "source_sha256", "sha256", "size"}:
+            raise ValueError(
+                f"molt-wasm-host precompile receipt has invalid {name} fields"
+            )
+        source, path = artifact.get("source"), artifact.get("path")
+        size = artifact.get("size")
+        source_sha256 = artifact.get("source_sha256")
+        sha256 = artifact.get("sha256")
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(path, str)
+            or not path
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            or not isinstance(source_sha256, str)
+            or not _SHA256_RE.fullmatch(source_sha256)
+            or not isinstance(sha256, str)
+            or not _SHA256_RE.fullmatch(sha256)
+        ):
+            raise ValueError(
+                f"molt-wasm-host precompile receipt has invalid {name} artifact"
+            )
+        validated[name] = artifact
+    return validated
+
+
+def _validate_precompile_receipt_outputs(
+    artifacts: dict[str, dict[str, object]]
+) -> None:
+    """Fail before success if the host receipt does not name its published bytes."""
+    for name, artifact in artifacts.items():
+        path = Path(str(artifact["path"]))
+        if not path.is_file():
+            raise ValueError(f"molt-wasm-host did not publish {name} artifact: {path}")
+        observed = stable_regular_file_identity(path, label=f"host precompiled {name}")
+        if observed.size != artifact["size"] or observed.sha256 != artifact["sha256"]:
+            raise ValueError(
+                f"molt-wasm-host published corrupt {name} artifact: {path}"
+            )
 
 
 def _bytes_asset(payload: bytes, asset_path: str) -> dict[str, object]:
@@ -405,6 +484,95 @@ def _is_reusable_split_runtime_artifacts(
     return True
 
 
+def _snapshot_manifest_asset_digest(
+    *, manifest_path: Path, modules: object, role: str
+) -> str:
+    if not isinstance(modules, dict):
+        raise ValueError("snapshot execution manifest modules must be an object")
+    descriptor = modules.get(role)
+    if not isinstance(descriptor, dict):
+        raise ValueError(f"snapshot execution manifest missing modules.{role}")
+    path_value = descriptor.get("path")
+    size_value = descriptor.get("size")
+    digest_value = descriptor.get("sha256")
+    if not isinstance(path_value, str) or not path_value:
+        raise ValueError(f"snapshot execution manifest modules.{role}.path is invalid")
+    descriptor_path = Path(path_value)
+    if (
+        descriptor_path.name != path_value
+        or descriptor_path.drive
+        or any(character in path_value for character in "\\:")
+    ):
+        raise ValueError(
+            f"snapshot execution manifest modules.{role}.path must name an adjacent file"
+        )
+    if (
+        not isinstance(size_value, int)
+        or isinstance(size_value, bool)
+        or size_value < 0
+    ):
+        raise ValueError(f"snapshot execution manifest modules.{role}.size is invalid")
+    if (
+        not isinstance(digest_value, str)
+        or len(digest_value) != 64
+        or any(character not in "0123456789abcdef" for character in digest_value)
+    ):
+        raise ValueError(
+            f"snapshot execution manifest modules.{role}.sha256 is invalid"
+        )
+    module_path = manifest_path.parent / descriptor_path
+    if not module_path.is_file():
+        raise ValueError(
+            f"snapshot execution manifest modules.{role}.path is not a file: {module_path}"
+        )
+    actual = _file_asset(module_path, path_value)
+    if actual["size"] != size_value:
+        raise ValueError(
+            f"snapshot execution manifest modules.{role} size mismatch: "
+            f"manifest={size_value} actual={actual['size']}"
+        )
+    if actual["sha256"] != digest_value:
+        raise ValueError(
+            f"snapshot execution manifest modules.{role} SHA-256 mismatch: "
+            f"manifest={digest_value} actual={actual['sha256']}"
+        )
+    return f"sha256:{digest_value}"
+
+
+def _snapshot_execution_identity(output_wasm: Path) -> str | None:
+    manifest_path = output_wasm.parent / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"failed to read snapshot execution manifest: {exc}") from exc
+    if not isinstance(manifest, dict) or manifest.get("version") != 2:
+        raise ValueError("snapshot execution manifest must use version 2")
+    mode = manifest.get("mode")
+    modules = manifest.get("modules")
+    if mode == "linked":
+        linked = _snapshot_manifest_asset_digest(
+            manifest_path=manifest_path,
+            modules=modules,
+            role="linked",
+        )
+        return f"molt.snapshot.execution.v2|linked|linked={linked}"
+    if mode == "split-runtime":
+        app = _snapshot_manifest_asset_digest(
+            manifest_path=manifest_path,
+            modules=modules,
+            role="app",
+        )
+        runtime = _snapshot_manifest_asset_digest(
+            manifest_path=manifest_path,
+            modules=modules,
+            role="runtime",
+        )
+        return f"molt.snapshot.execution.v2|split-runtime|app={app}|runtime={runtime}"
+    raise ValueError(f"snapshot execution manifest has unsupported mode: {mode!r}")
+
+
 def _generate_snapshot_header(
     *,
     output_wasm: Path,
@@ -412,24 +580,11 @@ def _generate_snapshot_header(
     resolved_capability_policy: ResolvedRuntimePolicy,
     verbose: bool,
 ) -> None:
-    """Generate a molt.snapshot.json header alongside the WASM output.
-
-    The header captures mount plan, capability manifest, and module hash
-    metadata needed by edge hosts to restore a post-init snapshot (Plan D).
-    The binary memory blob capture is deferred to the wasmtime host
-    integration.
-    """
+    """Generate a non-restorable v2 snapshot metadata template."""
     snapshot_dir = output_wasm.parent
     snapshot_path = snapshot_dir / "molt.snapshot.json"
 
-    # Compute module hash from the WASM binary.
-    module_hash = "sha256:unknown"
-    if output_wasm.exists():
-        h = hashlib.sha256()
-        with open(output_wasm, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        module_hash = f"sha256:{h.hexdigest()}"
+    execution_identity = _snapshot_execution_identity(output_wasm)
 
     mount_plan = [
         {
@@ -458,21 +613,29 @@ def _generate_snapshot_header(
         ) from exc
 
     header = {
-        "snapshot_version": 1,
+        "snapshot_version": 2,
+        "artifact_kind": "metadata-template",
+        "restorable": False,
+        "state_scope": None,
         "abi_version": "0.1.0",
         "target_profile": target_profile,
-        "module_hash": module_hash,
+        "execution_identity": execution_identity,
         "mount_plan": mount_plan,
         "capability_manifest": list(resolved_capability_policy.grants.capabilities),
         "capability_policy": resolved_capability_policy.canonical_payload(),
         "capability_policy_digest": resolved_capability_policy.digest(),
         "determinism_stamp": determinism_stamp,
         "init_state_size": 0,
+        "payload_hash": None,
+        "integrity_hash": None,
     }
 
     _atomic_write_json(snapshot_path, header, indent=2)
     if verbose:
-        print(f"Wrote snapshot header: {snapshot_path}", file=sys.stderr)
+        print(
+            f"Wrote non-restorable snapshot metadata template: {snapshot_path}",
+            file=sys.stderr,
+        )
 
 
 def _browser_native_callable_manifest(
@@ -1152,46 +1315,8 @@ def _prepare_non_native_build_result(
             artifacts["runtime_wasm"] = str(staged_runtime_wasm)
         if resolved_linked_output is not None:
             artifacts["linked_wasm"] = str(resolved_linked_output)
-        # -- Precompile step: produce .cwasm for faster startup -----------
-        cwasm_path: Path | None = None
-        if precompile:
-            precompile_target = (
-                resolved_linked_output
-                if resolved_linked_output is not None
-                else output_wasm
-            )
-            cwasm_path = precompile_target.with_suffix(".cwasm")
-            wasmtime_bin = shutil.which("wasmtime")
-            if wasmtime_bin:
-                precompile_proc = _run_completed_command(
-                    [
-                        wasmtime_bin,
-                        "compile",
-                        str(precompile_target),
-                        "-o",
-                        str(cwasm_path),
-                    ],
-                    cwd=molt_root,
-                    env=None,
-                    capture_output=True,
-                    memory_guard_prefix="MOLT_WASM_LINK",
-                    timeout=60,
-                )
-                if precompile_proc.returncode == 0:
-                    print(f"Precompiled to {cwasm_path}", file=sys.stderr)
-                else:
-                    print(
-                        f"Precompilation failed (non-fatal): {precompile_proc.stderr.strip()}",
-                        file=sys.stderr,
-                    )
-                    cwasm_path = None
-            else:
-                print("wasmtime not found; skipping precompilation", file=sys.stderr)
-                cwasm_path = None
-        # -- End precompile step -------------------------------------------
-        if cwasm_path is not None:
-            artifacts["cwasm"] = str(cwasm_path)
-
+        cwasm_path: str | None = None
+        runtime_cwasm_path: str | None = None
         primary_output = output_wasm
         if require_linked and resolved_linked_output is not None:
             primary_output = resolved_linked_output
@@ -1203,9 +1328,6 @@ def _prepare_non_native_build_result(
         )
         if resolved_linked_output is not None and not require_linked:
             success_messages.append(f"Successfully linked {resolved_linked_output}")
-        if cwasm_path is not None:
-            success_messages.append(f"Precompiled {cwasm_path}")
-
         if linked and not _split_runtime and resolved_linked_output is not None:
             assert app_export_contract is not None
             try:
@@ -1553,6 +1675,71 @@ def _prepare_non_native_build_result(
                 f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
             )
 
+        if precompile:
+            manifest_value = artifacts.get("manifest")
+            if not isinstance(manifest_value, str):
+                return None, _fail(
+                    "--precompile requires linked or split-runtime output with a canonical manifest",
+                    json_output,
+                    command="build",
+                )
+            host_binary = resolve_molt_wasm_host_binary(
+                molt_root,
+                cargo_profile=runtime_cargo_profile,
+            )
+            if host_binary is None:
+                return None, _fail(
+                    "--precompile requires a matching molt-wasm-host binary "
+                    "(set MOLT_WASM_HOST_BIN or build the runtime Cargo profile)",
+                    json_output,
+                    command="build",
+                )
+            try:
+                precompile_proc = _run_completed_command(
+                    [host_binary, "--precompile", manifest_value],
+                    cwd=molt_root,
+                    env=None,
+                    capture_output=True,
+                    memory_guard_prefix="MOLT_WASM_LINK",
+                    timeout=60,
+                )
+                if precompile_proc.returncode != 0:
+                    detail = (
+                        subprocess_output_text(precompile_proc.stderr).strip()
+                        or subprocess_output_text(precompile_proc.stdout).strip()
+                    )
+                    raise ValueError(
+                        "molt-wasm-host precompilation failed"
+                        + (f": {detail}" if detail else "")
+                    )
+                receipt_artifacts = _precompile_receipt_artifacts(
+                    subprocess_output_text(precompile_proc.stdout)
+                )
+                _validate_precompile_receipt_outputs(receipt_artifacts)
+            except subprocess.TimeoutExpired as exc:
+                detail = (
+                    subprocess_output_text(exc.stderr).strip()
+                    or subprocess_output_text(exc.stdout).strip()
+                )
+                return None, _fail(
+                    f"Precompilation timed out after {exc.timeout} seconds"
+                    + (f": {detail}" if detail else ""),
+                    json_output,
+                    command="build",
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(
+                    f"Precompilation failed: {exc}",
+                    json_output,
+                    command="build",
+                )
+            cwasm_path = str(receipt_artifacts["main"]["path"])
+            artifacts["cwasm"] = cwasm_path
+            if "runtime" in receipt_artifacts:
+                runtime_cwasm_path = str(receipt_artifacts["runtime"]["path"])
+                artifacts["runtime_cwasm"] = runtime_cwasm_path
+            success_messages.append(f"Precompiled {cwasm_path}")
+
         return _PreparedNonNativeResult(
             primary_output=primary_output,
             consumer_output=consumer_output,
@@ -1567,7 +1754,12 @@ def _prepare_non_native_build_result(
                     if resolved_linked_output is not None
                     else {}
                 ),
-                **({"cwasm_output": str(cwasm_path)} if cwasm_path is not None else {}),
+                **({"cwasm_output": cwasm_path} if cwasm_path is not None else {}),
+                **(
+                    {"runtime_cwasm_output": runtime_cwasm_path}
+                    if runtime_cwasm_path is not None
+                    else {}
+                ),
             },
             artifacts=artifacts,
         ), None

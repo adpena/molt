@@ -86,7 +86,7 @@ Monty-inspired resource controls, audit logging, quality harness, formal verific
 |------|---------|
 | `runtime/molt-runtime-protobuf/src/{encode,decode,audit_event}.rs` | Protobuf codec + audit event schema |
 | `runtime/molt-runtime/tests/resource_enforcement.rs` | Resource enforcement integration tests |
-| `runtime/molt-snapshot/benches/format_comparison.rs` | Snapshot format benchmark |
+| `runtime/molt-snapshot/` | Historical prototype, since retired because it owned serialization but no capture/resume authority |
 | `src/molt/proto.py` | `@molt.proto` decorator |
 | `tests/harness/{adapt_monty_tests,run_molt_conformance}.py` | Conformance adapter and runner |
 | `tests/harness/conformance_analysis.md` | Failure pattern analysis |
