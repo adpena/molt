@@ -12,7 +12,7 @@ from tests.proof_queue_custody_test_support import (
     assert_execution_context_rejects_substitutions,
     publish_receipt_custody,
 )
-from tools.proof_queue_pkg import command_admission
+from tools.proof_queue_pkg import command_admission, supervisor_custody
 
 pytestmark = pytest.mark.slow
 
@@ -41,9 +41,14 @@ def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifact
     def execute(command: list[str]) -> None:
         run_custody_subject_process(command, check=True)
 
+    binary = _native_supervisor_binary()
+    required_environment = supervisor_custody.required_execution_environment(
+        binary=binary, mode="leaf", cwd=tmp_path, env={}
+    )
     factory = partial(
         publish_receipt_custody,
-        supervisor_binary=_native_supervisor_binary(),
+        supervisor_binary=binary,
         execute_supervisor=execute,
+        required_environment=required_environment,
     )
     assert_execution_context_rejects_substitutions(tmp_path, factory)

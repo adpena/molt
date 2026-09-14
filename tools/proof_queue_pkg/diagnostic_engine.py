@@ -235,6 +235,15 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    capacity_failure = diagnostic_build_rules._disk_capacity_diagnostic(
+        row, log_tail + "\n" + live.text
+    )
+    if capacity_failure is not None:
+        # A linker ENOSPC is not a semantic Rust defect or a queue custody bug.
+        # Keep preceding independent custody observations, then the actionable cause.
+        diagnostics.append(capacity_failure)
+        return diagnostics
+
     fatal_queue_failure = (
         "proof queue fatal infrastructure failure" in log_tail
         or "proof queue failed before command execution" in log_tail

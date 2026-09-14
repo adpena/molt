@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import sqlite3
 import time
@@ -11,6 +12,7 @@ import uuid
 from pathlib import Path
 
 from tools.proof_queue_pkg import (
+    cargo_cache_custody,
     custody,
     evidence,
     policy,
@@ -319,7 +321,6 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    runner._ensure_disk_headroom_before_build()
     conn = state._connect(state._db_path(args))
     conn.row_factory = sqlite3.Row
     queue_size = state._configured_queue_size(getattr(args, "queue_size", None))
@@ -533,6 +534,77 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print(dag_summary)
         diagnostic_reporting._print_status_diagnostics(row)
     return 0
+
+
+def _cmd_reclaim_cargo_generation(args: argparse.Namespace) -> int:
+    """Inspect by default; delete only a persisted terminal run's owned output."""
+    payload: dict[str, object] = {
+        "schema": "molt.proof-cargo-generation-reclamation.v1",
+        "run_id": args.run_id,
+        "apply": args.apply,
+        "state": "not-authorized" if args.apply else "inspection-failed",
+    }
+    try:
+        db = state._db_path(args).resolve()
+        # Inspection must not provision a queue database or migrate its schema.
+        with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
+            row = state._row_by_run_id(conn, args.run_id)
+        if row is None:
+            raise ValueError(f"unknown proof run {args.run_id!r}")
+        raw = state._row_value(row, "receipt_context_json")
+        context = json.loads(raw) if isinstance(raw, str) else None
+        if not isinstance(context, dict):
+            raise ValueError("proof run has no persisted terminal receipt context")
+        evidence._validate_terminal_evidence(row, context)
+        generation = evidence._cargo_generation_terminal(row, context, required=True)
+        assert generation is not None
+        provenance, projection = generation
+        result_root = Path(str(row["log_path"])).parent
+        if args.apply:
+            # Persist intent before touching artifacts; the owner retains the
+            # result even if a later queue-note write is interrupted.
+            conn = state._connect(db)
+            try:
+                state._insert_note(
+                    conn,
+                    run_id=args.run_id,
+                    kind="decision",
+                    body=json.dumps(
+                        {**payload, "state": "requested", "generation": projection},
+                        sort_keys=True,
+                    ),
+                )
+                payload["state"] = "reclamation-in-progress"
+                outcome = cargo_cache_custody.reclaim_terminal_unsealed(
+                    result_root=result_root,
+                    provenance=provenance,
+                    projection=projection,
+                )
+                payload.update(outcome)
+                state._insert_note(
+                    conn,
+                    run_id=args.run_id,
+                    kind="finding",
+                    body=json.dumps(payload, sort_keys=True),
+                )
+            finally:
+                conn.close()
+        else:
+            payload.update(
+                cargo_cache_custody.inspect_terminal_generation(
+                    result_root=result_root,
+                    provenance=provenance,
+                    projection=projection,
+                )
+            )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        if payload["state"] == "reclamation-in-progress":
+            payload["state"] = "reclamation-indeterminate"
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    print(json.dumps(payload, sort_keys=True))
+    return 2 if payload["state"] in {"not-reclaimable", "reclaim-blocked"} else 0
 
 
 def _cmd_prune_stale(args: argparse.Namespace) -> int:

@@ -161,6 +161,7 @@ from molt.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     inherit_stdio_kwargs,
 )
+from molt import temporary_artifacts as _temporary_artifacts  # noqa: E402
 from tools import win_job as _win_job  # noqa: E402
 
 WindowsJobCleanup = _win_job.WindowsJobCleanup
@@ -296,6 +297,126 @@ def _validated_termination_reports(
     return tuple(
         _validated_termination_report(report, caller=caller) for report in reports
     )
+
+
+def _temporary_artifact_descendant_closure(
+    *,
+    proc: subprocess.Popen[Any] | None,
+    child_process: GuardedChildProcess | None,
+    tracker: ProcessTreeTracker | None,
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+    windows_job_cleanup: WindowsJobCleanup | None,
+    windows_process_model: bool,
+    posix_process_model: bool,
+    cleanup_orphans: bool,
+    guard_interrupted: bool,
+    termination_wait_expired: bool,
+    sampling_telemetry: GuardSamplingTelemetry | None,
+    termination_reports: Sequence[GuardTerminationReport],
+    probe_grace: float,
+) -> tuple[bool, dict[str, object]]:
+    """Return non-actuating evidence that no guarded child can still use scratch.
+
+    Windows Job accounting is exact.  The POSIX authority is intentionally
+    named as sampled process-group custody: it combines the guard's complete
+    observation history with a final process-group liveness probe and a fresh
+    process-table observation after the existing cleanup boundary.
+    """
+
+    if proc is None:
+        return True, {
+            "schema": "molt.guard-scratch-closure.v1",
+            "authority": "no-child-launched",
+            "closed": True,
+            "direct_child_reaped": True,
+        }
+
+    direct_child_reaped = proc.returncode is not None
+    if windows_process_model:
+        closed = bool(
+            direct_child_reaped
+            and windows_job_cleanup is not None
+            and windows_job_cleanup.completed
+        )
+        return closed, {
+            "schema": "molt.guard-scratch-closure.v1",
+            "authority": "windows-job-accounting",
+            "closed": closed,
+            "direct_child_reaped": direct_child_reaped,
+            "windows_job_cleanup": windows_job_cleanup_payload(windows_job_cleanup),
+        }
+
+    action_gaps = [
+        {
+            "report": report.reason,
+            "target_kind": action.target_kind,
+            "target_id": action.target_id,
+            "result": action.result,
+        }
+        for report in termination_reports
+        for action in report.actions
+        if action.result in {"failed", "still_live"}
+        or action.result.startswith("skipped_")
+    ]
+    sampling_complete = bool(
+        sampling_telemetry is not None
+        and sampling_telemetry.attempts > 0
+        and sampling_telemetry.enforcement_complete
+    )
+    evidence: dict[str, object] = {
+        "schema": "molt.guard-scratch-closure.v1",
+        "authority": (
+            "posix-sampled-process-group" if posix_process_model else "unsupported"
+        ),
+        "closed": False,
+        "direct_child_reaped": direct_child_reaped,
+        "guard_interrupted": guard_interrupted,
+        "termination_wait_expired": termination_wait_expired,
+        "cleanup_orphans_enabled": cleanup_orphans,
+        "sampling_enforcement_complete": sampling_complete,
+        "termination_action_gaps": action_gaps,
+        "termination_report_count": len(termination_reports),
+    }
+    if (
+        not posix_process_model
+        or not direct_child_reaped
+        or not cleanup_orphans
+        or guard_interrupted
+        or termination_wait_expired
+        or not sampling_complete
+        or action_gaps
+        or child_process is None
+        or child_process.pgid is None
+        or tracker is None
+    ):
+        return False, evidence
+
+    root_pgid = child_process.pgid
+    group_closed = _process_group_exited_or_unobservable(
+        root_pgid,
+        grace=max(0.02, probe_grace),
+    )
+    evidence["root_pgid"] = root_pgid
+    evidence["root_process_group_closed"] = group_closed
+    try:
+        final_samples = sampler()
+        remaining_tracked = tuple(sorted(tracker.update(final_samples)))
+        root_group_members = tuple(
+            sorted(
+                sample.pid
+                for sample in final_samples.values()
+                if _sample_pgid(sample) == root_pgid
+            )
+        )
+    except (KeyboardInterrupt, Exception) as exc:
+        evidence["final_sample_error"] = f"{type(exc).__name__}: {exc}"
+        return False, evidence
+    evidence["final_sample_process_count"] = len(final_samples)
+    evidence["remaining_tracked_pids"] = list(remaining_tracked)
+    evidence["root_process_group_members"] = list(root_group_members)
+    closed = group_closed and not remaining_tracked and not root_group_members
+    evidence["closed"] = closed
+    return closed, evidence
 
 
 def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
@@ -719,10 +840,87 @@ def run_guarded(
     child_process: GuardedChildProcess | None = None
     tracker: ProcessTreeTracker | None = None
     termination_reports: list[GuardTerminationReport] = []
+    scratch_lease: _temporary_artifacts.GuardScratchLease | None = None
+    temporary_artifacts: dict[str, object] | None = None
+    scratch_finalized = False
+    scratch_cleanup_error: str | None = None
+    caught_exception: BaseException | None = None
     stdout_capture: Any = None
     stderr_capture: Any = None
     guard_interrupted = False
+
+    def finish_temporary_artifacts(
+        *,
+        closed: bool,
+        success: bool,
+        evidence: Mapping[str, object],
+    ) -> str | None:
+        nonlocal scratch_finalized, scratch_cleanup_error, temporary_artifacts
+        if scratch_lease is None or scratch_finalized:
+            return scratch_cleanup_error
+        scratch_finalized = True
+        finalize_started = time.monotonic()
+        try:
+            outcome = _temporary_artifacts.finish_guard_scratch(
+                scratch_lease,
+                closed=closed,
+                success=success,
+                evidence=evidence,
+            )
+            temporary_artifacts = {
+                **dict(outcome),
+                "closure": dict(evidence),
+            }
+        except BaseException as exc:
+            scratch_cleanup_error = f"{type(exc).__name__}: {exc}"
+            temporary_artifacts = {
+                "state": "cleanup-error",
+                "error": scratch_cleanup_error,
+                "closure": dict(evidence),
+            }
+            generation = getattr(scratch_lease, "generation", None)
+            if generation is not None:
+                generation_path = Path(generation)
+                finish_error_receipt = generation_path / "finish-error.json"
+                temporary_artifacts["receipt"] = str(
+                    finish_error_receipt
+                    if finish_error_receipt.exists()
+                    else generation_path / "owner.json"
+                )
+        finally:
+            # finish_guard_scratch owns the normal release. Keep this idempotent
+            # fallback for every partial/exceptional terminalization path.
+            try:
+                scratch_lease.release()
+            except BaseException as exc:
+                release_error = f"{type(exc).__name__}: {exc}"
+                scratch_cleanup_error = (
+                    release_error
+                    if scratch_cleanup_error is None
+                    else f"{scratch_cleanup_error}; lease release failed: {release_error}"
+                )
+                temporary_artifacts = {
+                    **({} if temporary_artifacts is None else temporary_artifacts),
+                    "state": "cleanup-error",
+                    "error": scratch_cleanup_error,
+                    "closure": dict(evidence),
+                }
+        assert temporary_artifacts is not None
+        temporary_artifacts["finalize_elapsed_s"] = max(
+            0.0, time.monotonic() - finalize_started
+        )
+        return scratch_cleanup_error
+
     try:
+        scratch_lease = _temporary_artifacts.acquire_guard_scratch(ROOT, child_env)
+        inherited_scratch = child_env.get(_temporary_artifacts.SCRATCH_ENV)
+        if (
+            inherited_scratch
+            and child_env.get("PYTEST_DEBUG_TEMPROOT") == inherited_scratch
+        ):
+            # Rebind only the inherited guard default, never a caller's root.
+            child_env["PYTEST_DEBUG_TEMPROOT"] = str(scratch_lease.target)
+        child_env[_temporary_artifacts.SCRATCH_ENV] = str(scratch_lease.target)
         launch = _guarded_launch(
             command,
             child_env,
@@ -733,6 +931,10 @@ def run_guarded(
             guard_token,
             status="launch_prepared",
             launch_command=list(launch.command),
+            temporary_artifacts={
+                "state": "leased",
+                "target": str(scratch_lease.target),
+            },
         )
         if capture_output:
             if stdout_capture_path is not None:
@@ -1740,6 +1942,23 @@ def run_guarded(
                 "the summary JSON.\n",
                 text=text,
             )
+        descendants_closed, scratch_closure_evidence = (
+            _temporary_artifact_descendant_closure(
+                proc=proc,
+                child_process=child_process,
+                tracker=tracker,
+                sampler=sampler,
+                windows_job_cleanup=windows_job_cleanup,
+                windows_process_model=_is_windows_process_model(),
+                posix_process_model=os.name == "posix",
+                cleanup_orphans=cleanup_orphans,
+                guard_interrupted=guard_interrupted,
+                termination_wait_expired=termination_wait_expired,
+                sampling_telemetry=final_sampling_telemetry,
+                termination_reports=termination_reports,
+                probe_grace=termination_wait_s,
+            )
+        )
         final_returncode = GUARD_RETURN_CODE if returncode is None else returncode
         cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
         cargo_interruption_reason = _cargo_interruption_reason(
@@ -1776,6 +1995,67 @@ def run_guarded(
             if windows_job_cleanup is None
             else windows_job_cleanup.after.peak_job_commit_bytes
         )
+        scratch_clean_success = bool(
+            descendants_closed
+            and final_returncode == 0
+            and violation is None
+            and not timed_out
+            and guard_signal is None
+            and not termination_wait_expired
+            and not orphaned_process_groups
+            and not termination_reports
+            and (
+                windows_job_cleanup is None
+                or not windows_job_cleanup.terminated_remaining_processes
+            )
+        )
+        cleanup_error = finish_temporary_artifacts(
+            closed=descendants_closed,
+            success=scratch_clean_success,
+            evidence=scratch_closure_evidence,
+        )
+        # Guard elapsed time includes exact descendant closure plus scratch
+        # retirement/reclamation; storage cleanup latency must remain visible.
+        elapsed_s = max(0.0, time.monotonic() - elapsed_start)
+        scratch_state = (
+            None if temporary_artifacts is None else temporary_artifacts.get("state")
+        )
+        retention_errors: tuple[str, ...] = ()
+        if temporary_artifacts is not None:
+            retention = temporary_artifacts.get("retention")
+            if isinstance(retention, Mapping):
+                raw_errors = retention.get("errors")
+                if isinstance(raw_errors, Sequence) and not isinstance(
+                    raw_errors, (str, bytes)
+                ):
+                    retention_errors = tuple(str(error) for error in raw_errors)
+        scratch_failure_details: list[str] = []
+        if cleanup_error:
+            scratch_failure_details.append(cleanup_error)
+        if not descendants_closed:
+            scratch_failure_details.append(
+                "guarded descendant closure remained indeterminate"
+            )
+        if scratch_state in {"blocked", "cleanup-error", "indeterminate"}:
+            scratch_failure_details.append(
+                f"temporary artifact terminal state is {scratch_state!r}"
+            )
+        if retention_errors:
+            scratch_failure_details.append(
+                "temporary artifact retention sweep reported errors: "
+                + json.dumps(list(retention_errors), sort_keys=True)
+            )
+        scratch_infrastructure_failure = bool(scratch_failure_details)
+        if scratch_infrastructure_failure:
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: temporary artifact custody incomplete: "
+                f"{'; '.join(scratch_failure_details)}; "
+                "see temporary_artifacts in the guard summary\n",
+                text=text,
+            )
+            if final_returncode == 0:
+                final_returncode = GUARD_RETURN_CODE
         result = GuardResult(
             returncode=final_returncode,
             violation=violation,
@@ -1794,6 +2074,7 @@ def run_guarded(
             sampling_telemetry=final_sampling_telemetry,
             peak_job_commit_bytes=peak_job_commit_bytes,
             windows_job_cleanup=windows_job_cleanup,
+            temporary_artifacts=temporary_artifacts,
         )
         _update_active_guard_marker(
             guard_marker,
@@ -1813,6 +2094,7 @@ def run_guarded(
             ),
             sampling_telemetry=_sampling_telemetry_payload(result.sampling_telemetry),
             windows_job_cleanup=windows_job_cleanup_payload(result.windows_job_cleanup),
+            temporary_artifacts=result.temporary_artifacts,
             limit_at_violation=(
                 None
                 if result.limit_at_violation is None
@@ -1826,6 +2108,7 @@ def run_guarded(
         )
         return result
     except BaseException as exc:
+        caught_exception = exc
         _update_active_guard_marker(
             guard_marker,
             guard_token,
@@ -1835,6 +2118,7 @@ def run_guarded(
             child_process=guarded_child_process_payload(child_process),
             child_returncode=None if proc is None else proc.returncode,
             termination_reports=termination_reports_payload(tuple(termination_reports)),
+            temporary_artifacts=temporary_artifacts,
         )
         raise
     finally:
@@ -1879,6 +2163,50 @@ def run_guarded(
                 termination_reports=termination_reports_payload(
                     tuple(termination_reports)
                 ),
+            )
+        if scratch_lease is not None and not scratch_finalized:
+            no_child_launched = proc is None
+            exceptional_evidence = {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": (
+                    "no-child-launched"
+                    if no_child_launched
+                    else "guard-exception-indeterminate"
+                ),
+                "closed": no_child_launched,
+                "direct_child_reaped": (
+                    True if proc is None else proc.returncode is not None
+                ),
+                "exception_type": (
+                    None
+                    if caught_exception is None
+                    else type(caught_exception).__name__
+                ),
+            }
+            exceptional_cleanup_error = finish_temporary_artifacts(
+                closed=no_child_launched,
+                success=False,
+                evidence=exceptional_evidence,
+            )
+            if exceptional_cleanup_error and caught_exception is not None:
+                caught_exception.add_note(
+                    "temporary artifact terminalization failed: "
+                    f"{exceptional_cleanup_error}"
+                )
+            _update_active_guard_marker(
+                guard_marker,
+                guard_token,
+                status=(
+                    "guard_exception"
+                    if caught_exception is not None
+                    else "finalizer_completed"
+                ),
+                child_process=guarded_child_process_payload(child_process),
+                child_returncode=None if proc is None else proc.returncode,
+                termination_reports=termination_reports_payload(
+                    tuple(termination_reports)
+                ),
+                temporary_artifacts=temporary_artifacts,
             )
         if stdout_capture is not None and not getattr(stdout_capture, "closed", False):
             stdout_capture.close()

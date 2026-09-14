@@ -86,27 +86,6 @@ def _command_basename(command: str) -> str:
     return Path(command).name.lower()
 
 
-_CARGO_OPTIONS_WITH_VALUES = frozenset(
-    {
-        "-p",
-        "--package",
-        "--manifest-path",
-        "--target",
-        "--target-dir",
-        "--features",
-        "--profile",
-        "--jobs",
-        "--config",
-        "--message-format",
-        "--color",
-        "--bin",
-        "--example",
-        "--test",
-        "--bench",
-    }
-)
-
-
 def _normalized_cargo_args(cargo_args: list[str]) -> list[str]:
     args = list(cargo_args)
     if args[:1] == ["--"]:
@@ -116,42 +95,13 @@ def _normalized_cargo_args(cargo_args: list[str]) -> list[str]:
     return args
 
 
-def _cargo_arg_has_flag(cargo_args: list[str], flag: str) -> bool:
-    return any(arg == flag for arg in cargo_args)
-
-
-def _cargo_test_filters(cargo_args: list[str]) -> list[str]:
-    args = _normalized_cargo_args(cargo_args)
-    if args[:1] != ["test"]:
-        return []
-    filters: list[str] = []
-    skip_value = False
-    for arg in args[1:]:
-        if arg == "--":
-            break
-        if skip_value:
-            skip_value = False
-            continue
-        if arg in _CARGO_OPTIONS_WITH_VALUES:
-            skip_value = True
-            continue
-        if any(
-            arg.startswith(f"{option}=")
-            for option in _CARGO_OPTIONS_WITH_VALUES
-            if option.startswith("--")
-        ):
-            continue
-        if arg.startswith("-"):
-            continue
-        filters.append(arg)
-    return filters
-
-
 def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
-    args = _normalized_cargo_args(cargo_args)
-    if args[:1] != ["test"] or not _cargo_arg_has_flag(args, "--lib"):
+    invocation = command_admission.parse_cargo_invocation(
+        ["cargo", *_normalized_cargo_args(cargo_args)]
+    )
+    if invocation.proof_kind != "test-execution" or "--lib" not in invocation.flags:
         return None
-    filters = _cargo_test_filters(args)
+    filters = invocation.positionals
     if len(filters) != 1:
         return None
     return (
@@ -368,11 +318,12 @@ def _uv_active_python_command(
 
 
 def _cargo_package_for_contention(cargo_args: list[str]) -> str:
-    for index, arg in enumerate(cargo_args):
-        if arg in {"-p", "--package"} and index + 1 < len(cargo_args):
-            return state._slug(cargo_args[index + 1])
-        if arg.startswith("--package="):
-            return state._slug(arg.split("=", 1)[1])
+    invocation = command_admission.parse_cargo_invocation(
+        ["cargo", *_normalized_cargo_args(cargo_args)]
+    )
+    for name, value in invocation.option_values:
+        if name == "--package":
+            return state._slug(value)
     return "workspace"
 
 

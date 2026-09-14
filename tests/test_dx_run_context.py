@@ -114,7 +114,7 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path.resolve() / "tmp")
     assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
     assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(tmp_path.resolve() / "tmp" / "uv-project-envs")
+        str(tmp_path.resolve() / "uv-project-envs")
     )
     assert env["PIP_CACHE_DIR"] == str(tmp_path.resolve() / ".pip-cache")
     assert env["PYTHONPYCACHEPREFIX"] == str(tmp_path.resolve() / "tmp" / "pycache")
@@ -568,36 +568,7 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
     ]
 
 
-def test_run_context_env_can_emit_session_scoped_uv_project_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _clear_run_context_env(monkeypatch)
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
-
-    assert (
-        run_context_env.main(
-            [
-                "--root",
-                str(tmp_path),
-                "--dx",
-                "--session-scoped-uv-project-env",
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    env = payload["env"]
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(
-        tmp_path.resolve() / "tmp" / "uv-project-envs" / env["MOLT_SESSION_ID"]
-    )
-
-
-def test_run_context_env_session_id_overrides_missing_ambient_session(
+def test_run_context_env_session_id_scopes_cargo_not_uv_project_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -613,7 +584,6 @@ def test_run_context_env_session_id_overrides_missing_ambient_session(
                 "--session-id",
                 "witness-warm",
                 "--dx",
-                "--session-scoped-uv-project-env",
                 "--format",
                 "json",
             ]
@@ -629,7 +599,9 @@ def test_run_context_env_session_id_overrides_missing_ambient_session(
         tmp_path.resolve() / "target" / "sessions" / "witness-warm"
     )
     assert env["UV_PROJECT_ENVIRONMENT"] == str(
-        tmp_path.resolve() / "tmp" / "uv-project-envs" / "witness-warm"
+        dx.stable_uv_project_env_dir(
+            tmp_path, purpose="dx", python="3.12", source_root=tmp_path
+        )
     )
 
 
@@ -1320,19 +1292,6 @@ def test_uv_project_env_isolated_by_editable_source_root(tmp_path: Path) -> None
     assert "src-worktree-b-" in env_b.name
 
 
-def test_uv_project_env_session_scoped_opt_in(tmp_path: Path) -> None:
-    """MOLT_UV_PROJECT_ENV_SESSION_SCOPED restores per-session isolation on demand."""
-    ctx = RunContext(tmp_path, session_prefix="proof")
-    base = {
-        "MOLT_EXT_ROOT": str(tmp_path),
-        "MOLT_UV_PROJECT_ENV_SESSION_SCOPED": "1",
-    }
-    env_a = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-aaa-111"})
-    env_b = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-bbb-222"})
-    assert env_a != env_b
-    assert env_a == (tmp_path / "tmp" / "uv-project-envs" / "sess-aaa-111").resolve()
-
-
 def test_uv_project_env_explicit_override_is_honored(tmp_path: Path) -> None:
     ctx = RunContext(tmp_path, session_prefix="proof")
     explicit = tmp_path / "explicit-venv"
@@ -1355,50 +1314,6 @@ def test_uv_project_env_custom_purpose_and_python(tmp_path: Path) -> None:
     assert env == dx.stable_uv_project_env_dir(
         tmp_path, purpose="witness", python="3.13", source_root=tmp_path
     )
-
-
-def test_auto_janitor_throttled_and_optout(monkeypatch, tmp_path):
-    # Stale artifacts are cleaned BY DEFAULT: canonical_env fires a throttled,
-    # detached, best-effort janitor sweep. Verify it spawns once, then throttles,
-    # and honors the opt-out.
-    import molt.dx as dx
-
-    popen_calls = []
-    monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
-    monkeypatch.setattr(dx, "_running_under_pytest", lambda: False)
-    monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
-
-    dx._maybe_sweep_stale_artifacts(tmp_path)
-    assert len(popen_calls) == 1
-    assert (tmp_path / ".molt_janitor_last_run").exists()
-
-    # Immediately again -> throttled (recent marker), no second spawn.
-    dx._maybe_sweep_stale_artifacts(tmp_path)
-    assert len(popen_calls) == 1
-
-    # Opt-out on a fresh root -> never spawns.
-    other = tmp_path / "other"
-    other.mkdir()
-    monkeypatch.setenv("MOLT_DISABLE_AUTO_JANITOR", "1")
-    dx._maybe_sweep_stale_artifacts(other)
-    assert len(popen_calls) == 1
-    assert not (other / ".molt_janitor_last_run").exists()
-
-
-def test_auto_janitor_skips_under_pytest(monkeypatch, tmp_path):
-    import molt.dx as dx
-
-    popen_calls = []
-    monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
-    monkeypatch.setenv(
-        "PYTEST_CURRENT_TEST", "tests/test_dx_run_context.py::test (call)"
-    )
-    monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
-
-    dx._maybe_sweep_stale_artifacts(tmp_path)
-
-    assert popen_calls == []
-    assert not (tmp_path / ".molt_janitor_last_run").exists()
 
 
 def test_onedrive_paths_rejected_fail_closed():

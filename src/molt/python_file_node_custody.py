@@ -25,6 +25,8 @@ from molt.python_identity_common import (
     _valid_sha256,
 )
 
+PYTHON_RUNTIME_PRUNED_COMPONENTS = frozenset({"site-packages", "dist-packages"})
+
 
 def _is_file_entry(value: Mapping[str, object]) -> bool:
     return value.get("kind") in {"file", "hardlink", "symlink"}
@@ -847,7 +849,7 @@ def _runtime_root_inventory(root: Path, *, root_id: str) -> dict[str, object]:
         root_id=root_id,
         label="Python runtime",
         pool=pool,
-        pruned_components=frozenset({"site-packages", "dist-packages"}),
+        pruned_components=PYTHON_RUNTIME_PRUNED_COMPONENTS,
     )
     return inventory
 

@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from tools import harness_memory_guard
+from molt.temporary_artifacts import new_guarded_directory
 from molt.cargo_execution_policy import (
     default_nested_process_timeout_seconds,
     enforce_owning_proof_timeout,
@@ -229,6 +230,12 @@ def guarded_temporary_directory(
 ) -> Iterator[Path]:
     """Own scratch used by guarded children without masking their failures."""
 
+    if dir is None:
+        # Child-tree closure, not the Python context exit, owns reclamation.
+        yield new_guarded_directory(
+            Path(__file__).resolve().parents[1], os.environ, prefix=prefix
+        )
+        return
     path = Path(tempfile.mkdtemp(prefix=prefix, dir=dir))
     with preserve_primary_during_cleanup(
         lambda: shutil.rmtree(path),

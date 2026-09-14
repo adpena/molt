@@ -707,13 +707,12 @@ Read these first instead of rediscovering project structure:
   before uv touches `.venv` on an exFAT fallback root. Windows bootstrap:
   `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
   POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
-  In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
-  (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env,
-  so repeated checks reuse the same uv environment while ordinary Cargo output
-  remains the persistent `<MOLT_EXT_ROOT>/target` unless the caller explicitly
-  pins a session id for isolation. Use
-  `--session-scoped-uv-project-env` only when the uv environment must be
-  isolated too. Do not use `uv run` to obtain this first env in a cold checkout,
+  In `--dx` mode the bootstrap emits a durable, source-keyed
+  `UV_PROJECT_ENVIRONMENT` under `<MOLT_EXT_ROOT>/uv-project-envs/`, so repeated
+  checks reuse the same uv environment while ordinary Cargo output remains the
+  persistent `<MOLT_EXT_ROOT>/target` unless the caller explicitly pins a
+  session id for isolation. An explicit caller-owned `UV_PROJECT_ENVIRONMENT`
+  is preserved. Do not use `uv run` to obtain this first env in a cold checkout,
   and never run parallel uv bootstrap/sync commands against the same project
   environment.
 - `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
@@ -1271,7 +1270,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   future CPython versions), do not let `uv run` rewrite the shared interactive
   `.venv`. Wrap the inner uv command with
   `uv run --python 3.12 python tools/uv_project_env.py --python <ver> --purpose <lane> -- uv run --python <ver> ...`;
-  the wrapper sets `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/<lane>__py<ver>`.
+  the wrapper sets a source-keyed environment under
+  `<MOLT_EXT_ROOT>/uv-project-envs/`.
 - If the panic mentions `system-configuration` (macOS proxy lookup), pin explicit
   proxy envs to bypass system proxy detection, for example:
   `HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1`.

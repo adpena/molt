@@ -6,6 +6,60 @@ exact command and git snapshot, writes guarded logs, enforces proof DAG
 dependencies, and projects each noted or linked run into a deterministic marimo
 notebook for collaborative inspection.
 
+## Registered source-extension producers
+
+`source-extension-produce` submits one registered package/version/module-set and
+target-Python/ABI/target cell. Use its `--help` for the shared producer options;
+`--print-spec` resolves the address without provisioning, and `--queue-only`
+performs setup then queues without starting the proof. The registry, not this
+command's parser, owns which version/platform/architecture cells are admitted.
+Named submissions normalize the target triple for replay.
+
+Standalone and queued setup share read-only output-topology validation: the
+build root must be fresh, and source, build and publication/candidate roots must
+be disjoint. Candidate-only custody is resolved before setup. Queued preparation
+revalidates these paths; checking a fresh root never creates its parent.
+Mutable publication and recovery state is still checked under the owning lock.
+
+One shared preparation boundary validates the pinned upstream checkout,
+provisions and verifies its recursive submodules, and provisions the
+content-addressed source-build environment through the canonical uv authority.
+The realized environment must retain its planned root, interpreter and manifest
+addresses. Recipe runtime capture uses the shared isolated base-interpreter
+probe, not the launcher's imported native modules; planning and realized
+environment probes share their capture imports. Distribution import roots
+belong to environment custody, not the runtime tree. Standalone `produce-set`
+and `attest-set-candidate` launchers use the
+same preparation boundary and then re-execute once with `--prepared`.
+Proof execution starts directly from that interpreter with `-P -m molt.cli`
+and requires `--prepared`. This typed precondition permits no submodule repair,
+environment provisioning or interpreter restart; it does not skip verification.
+Both prepared build modes validate the active locked environment and the pinned
+source/submodules before destination mutation or publication locking. Git
+inspection disables optional index writes. Missing or stale prerequisites fail
+without repair under proof custody. One typed invocation owns CLI
+options, locked re-execution, and queue argv. Envelope v4 declares Python, Git,
+and the target-derived compiler family; ordinary Python proofs remain leaves.
+Persisted command envelopes, execution requests and supervisor policies/receipts
+use the exact-JSON codec end to end; duplicate keys and non-finite numbers are
+rejected before admission or evidence interpretation, not collapsed by a decoder.
+Provider v2 records lexical compiler entrypoints, content images, target commands,
+the WASI sysroot manifest and the selected compiler-builtins archive. Capture
+uses the explicit selected environment; validation consumes recorded identities.
+The child consumes the captured archive through the queue-owned link-input
+contract instead of rediscovering it. Preconfigured compiler arguments share a
+positive grammar: unknown or external-input/helper selectors fail before probes.
+Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
+the producer's source/input/seal validation or prove an ecosystem matrix cell.
+
+The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapshot.
+Users cannot override it. The Python bootstrap exposes that same checkout's
+`src` only to the typed Molt module payload, including under `-P`; unrelated
+module, script, directory/ZIP, command and stdin import behavior is unchanged.
+Source, sysroot, compiler-builtins and executable inputs enter live custody
+before execution. Native requests preserve host CC/CXX selection separately
+from their recorded effective target triple.
+
 The executable is intentionally only a stable source-checkout entrypoint. The
 canonical implementation lives in `tools/proof_queue_pkg/`: `state` owns the
 SQLite schema, paths, rows, notes, DAG, and serialized mutex facts; `custody`
@@ -22,6 +76,76 @@ load NumPy/SciPy witness tooling. New behavior belongs in its owning module;
 `tools/proof_queue.py` must not become a compatibility facade or re-export
 internal implementation symbols.
 
+Build-capacity admission is synchronous and read-only, owned by
+`src/molt/disk_capacity.py`. Queue admission, guarded Cargo setup, generation
+acquisition, and the actual native/WASM Cargo execution consumer use this same
+threshold and receipt schema. The default minimum is 25 GiB; an explicit
+`MOLT_DISK_GUARD_HIGH_WATER_GB` must be positive and finite. Unknown capacity,
+invalid policy, or insufficient space rejects before launch with the measured
+path/free/required bytes. Tests inject measurements; pytest and cleanup-disable
+flags never waive admission. This is a launch floor, not a reservation or a
+promise that an arbitrarily large build will fit.
+
+Reclamation is separate: `tools/disk_guard.py` owns its existing narrow
+artifact allow-set. A reclaim plan or projected byte count is not admission.
+Environment selection and shell hooks do not launch an additional detached
+disk guard. Never broaden the generic allow-set to proof Cargo generations:
+their run ownership, exclusive lease, terminal receipts, and retained evidence
+belong to `cargo_cache_custody`. Disk failures are reported as
+`build-disk-capacity`, not requests to change compiler semantics. Inspect
+structured rejection evidence before reclaiming; source/WIP, active targets,
+uncertain owners, sealed candidates, and prior policy-denied paths stay intact.
+
+Cargo output environment is owned by `cargo_output_environment.CargoOutputEnvironment`.
+The admitted Cargo operation selects the same documenter requirement used by tool
+capture. Policy is carried explicitly through identity, acquisition, binding,
+and final validation; execution argv may already contain Python custody wrappers
+and must not be reparsed as a new logical command. The parent derives its policy
+independently from the original admitted envelope, not the child's policy claim.
+The exact transformed execution argv still participates in input identity.
+The input identity represents `CARGO_TARGET_DIR`, and documentation
+commands' `TEMP`/`TMP`/`TMPDIR`, as typed build-output bindings; the lease binds
+their actual values before returning its execution environment. Other commands'
+caller temporary paths remain semantic inputs. Both pre-execution validation and
+the parent terminal verifier require the exact leased paths, so symbolic identity
+does not admit a redirected or missing output variable. There is no post-identity
+temporary-directory rewrite. Input schema v2 makes the changed policy explicit;
+old receipts are not rewritten or retroactively made valid.
+
+Inspect one generation with `uv run --python 3.12 python tools/proof_queue.py
+reclaim-cargo-generation --run-id RUN_ID`. This emits JSON and does not create
+queue state, hash build outputs, or delete files. Add `--apply` only for an
+authorized cleanup. The command requires a persisted terminal queue result,
+its terminal digest, and a matching immutable generation receipt. Missing
+legacy ownership is retained, never inferred or adopted by this command.
+Unattested failures without a valid terminal queue digest also remain outside
+this command's cleanup authority. `inspection-failed` / `not-authorized` report
+that authority could not be established, not that artifact presence was proved.
+
+Each Cargo generation owns an `owner.json` under its exclusive identity lease;
+`state.json` is only a latest-generation navigation pointer. Closing a lease
+records publication but does not authorize reclamation. The parent validates
+guard and execution custody before binding terminal generation evidence.
+Reclamation revalidates the exact persisted terminal reference under the same
+identity lock, accepts only terminal-unsealed output with proven process
+closure, and preserves output manifests, timing files, terminal receipts, and
+an owner tombstone. Sealed candidates remain retained, without warm reuse until
+complete Cargo input closure is enforced. Interrupted or failed reclamation
+becomes `reclaim-blocked`, not an automatic retry. Inspecting an owner is an
+observation; apply always revalidates. Queue notes preserve cleanup intent and
+outcome without rewriting the original proof receipt.
+
+The actual command result and the final queue outcome are distinct authorities:
+a command can exit zero while dirty source makes the proof `non-evidence` with
+queue return code 2. Decide that final outcome before binding the parent terminal
+digest or Cargo generation receipt. Generation terminal schema v2 binds both
+facts, including the typed `molt.proof-queue-terminal.v1` outcome; reclamation
+checks the final outcome against the persisted queue row without replacing the
+actual command return code. Parent-added outcome data participates in the parent
+terminal digest, not the already-sealed child execution digest. Old terminal
+schemas remain retained rather than inferring new outcome fields or rewriting
+their original receipts.
+
 Process launch options come from the typed `src/molt/process_spawn.py` authority,
 shared by queue custody, the memory guard, and pytest bootstrap. Keep explicit
 launch arguments and text streams typed through their consumers. Named proof
@@ -35,10 +159,71 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
-Windows pytest scratch uses atomically reserved short `pt-*` directories under
-the selected custody root. Keep human-readable run/platform identity in receipts,
-not repeated in every scratch path: native compiler/linker descendants still
-have classic path-length limits. Explicit test roots remain caller-owned.
+Native supervisor capability v2 owns the required launch environment. The queue
+reads it from the captured supervisor binary before toolchain, process-image,
+and source capture; both inventory and proof policies seal the effective values.
+Native policy admission rejects missing or conflicting requirements. Windows
+requires `_NO_DEBUG_HEAP=1`: debugger-based process observation must not enable
+heap debug checks or disable the low-fragmentation heap. `DEBUG_PROCESS`, job
+containment, pre-entry image admission, and descendant accounting remain active.
+Other platforms advertise their own requirements rather than inheriting a
+Windows setting. Do not replace this contract with a host environment tweak.
+
+The native supervisor is itself a debugger. Its kernel tests must own that
+debugger boundary, not run inside another recursive debugger: nested debuggers
+can hide descendant events from the outer supervisor while job accounting still
+counts them. Build the standalone test targets through Cargo queue custody
+(`--manifest-path tools/proof_supervisor/Cargo.toml`, `--no-run`), then execute
+the exact built test images with the existing memory guard and record their
+content identities and results. Keep build custody and kernel-test receipts
+distinct. An incomplete nested queue receipt is never acceptance, even if an
+inner test succeeds; do not weaken process accounting to make it pass.
+
+Rust linker custody follows the selected compiler's host-tool search, including
+the selected sysroot and compiler sysroot `lib/rustlib/<host>/bin` directories.
+The compilation target does not own these executable tools. Explicit linker
+paths remain exact. Cargo cross-compiles additionally select native host-unit
+linkers for build scripts and proc macros; capture these through Cargo's real
+host proc-macro semantics with the original target/configuration, not by
+reconstructing host flags or admitting every installed linker. Receipts retain
+each unit's selection provenance and frozen images; verification rehashes those
+images without repeating compiler selection. Missing custody fails before the
+requested build rather than falling back to PATH changes or copied aliases.
+
+Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
+one short `pt-*` directory before child launch and passes it through
+`MOLT_GUARD_SCRATCH_ROOT`; pytest and guarded helpers consume that allocation.
+Keep human-readable run/platform identity in receipts, not every scratch path:
+native compiler/linker descendants still have classic path-length limits.
+Nested guards rebind an inherited guard-default pytest root to their new lease;
+explicit test/temp roots remain caller-owned. Managed UV environments use the
+durable `<artifact-root>/uv-project-envs/<purpose-python-source-key>` namespace;
+an explicit `UV_PROJECT_ENVIRONMENT` is honored without moving existing data.
+
+The parent holds an OS lock and its original allocation identity through closure.
+Windows requires completed empty-Job accounting; POSIX records sampled/process-
+group closure with a final sample and positive-bounded liveness probe, not a
+kernel-equivalent tree guarantee. Indeterminate closure preserves the allocation.
+After proven closure the parent exclusively retires the payload into its own
+`gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
+receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.
+Clean success reclaims; failed closed runs retain up to three eligible payloads
+within 2 GiB. Busy, blocked or invalid custody stays protected and is reported;
+contention can defer the retention bound until a later completion. A pending
+index discovers unfinished retention work without rescanning all historical
+receipts, but grants no deletion authority. Interrupted deletions are never
+retried: absence repairs the receipt, surviving payloads become blocked.
+Owner/terminal/error receipts survive payload cleanup. Guard summaries and command
+profiles expose outcome, evidence path and finalization time; elapsed command
+time includes cleanup. No age/LRU janitor adopts legacy scratch or environments.
+
+The disk space required to complete a build is a first-class optimization target,
+not only final binary size. Prerequisite footprint, successful cold/warm peak
+working storage, retained output, reusable cache and retired generations are
+separate metrics. A post-failure inventory is not a build-peak measurement.
+Record wall-clock and rebuild tradeoffs with any storage reduction; deleting warm
+artifacts is not a demonstrated reduction in the space required to build. Do not
+lower admission headroom to hide unknown demand.
 
 File-launched tools bind imports through `tools/import_file.py` before loading
 repository helpers. Already-executed foreign packages or descendants are errors;
@@ -95,12 +280,27 @@ wall time; their sequence numbers must not be interpreted as timestamps.
 
 `rust.test.ir-wasm-runtime-authorities` selects the IR/pass and WASM families
 alongside runtime call/frame/namespace/object ownership tests, without requesting
-native/Rust/Luau code generation or ignored runtime GC benchmarks. Its captured
+native/Rust/Luau code generation or ignored runtime GC benchmarks. Runtime
+families include arena cleanup, sealed attribute layouts and builtin class
+publication/rollback; these sibling contracts run in the same built image.
+Its captured
 Node and WASM-linker tools remain required for actual WASM consumers. The
 compiler-authorities command depends on this batch and owns the complementary
 native/Rust/Luau, IR and lowering tests; it does not repeat pass/WASM libtests.
 Use both command receipts when claiming complete compiler-family acceptance.
 Neither correctness batch replaces optimized-runtime proof.
+Both batches stream libtest diagnostics with `--nocapture`: a later runtime
+abort must not discard the earlier assertion details needed to classify the
+whole failure family. Retain the detailed run log and query it on failure;
+console summaries need not repeat passing test output.
+
+Public ownership/memory pass contracts live in the `ownership_memory_contracts`
+Cargo integration target and link the ordinary `molt-passes` library; private
+analysis/kernel tests remain in libtest. The core batch selects both targets,
+with the integration modules retaining the `tir::` family namespace. Keep target
+selection and filters together when changing test topology so coverage cannot
+silently disappear. Compare Cargo timings only under matching profiles, source
+inputs, cache state, and toolchains; test counts are not a wall-clock prediction.
 
 Receipt unit tests use `tests/proof_queue_custody_test_support.py`: real Python
 validation, CAS hashing and custody binding over synthetic test inputs, with
@@ -129,6 +329,12 @@ Source eligibility decisions and live mutation evidence are unchanged: receipt
 compaction never converts dirty or transiently mutated inputs into reusable
 cache proof.
 
+`ProofPlan.inventory_hash_workers` owns hashing concurrency for both Python/toolchain
+and Git-source inventories. Source telemetry retains total `capture_s` and the shared
+file-capture `inventory_profile` (worker count, files, bytes, hash time), so hashing
+can be distinguished from enumeration, metadata checks, fences, and CAS publication.
+Worker count never changes content identity or weakens mutation detection.
+
 Before queueing, always inspect live custody:
 
 ```powershell
@@ -149,19 +355,19 @@ checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
 `.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
 Use an already-installed host Python 3.12+ for this dependency-free resolver
 script; after the env is imported, use `uv run --active --project . --python
-3.12 ...` for project commands. In `--dx` mode the resolver emits the stable
-project environment `tmp/uv-project-envs/dx__py3.12` by default, so repeated
-checks in one checkout reuse the same uv environment instead of creating
-per-process `run-<pid>` environments. Use
-`--session-scoped-uv-project-env` only when the uv environment itself must be
-isolated with `MOLT_SESSION_ID`. Do not run two uv bootstrap/sync commands in
-parallel in the same fresh checkout; one process owns project-environment
+3.12 ...` for project commands. In `--dx` mode the resolver emits one durable,
+source-keyed project environment under `<MOLT_EXT_ROOT>/uv-project-envs/`, so
+repeated checks in one checkout reuse the same uv environment instead of
+creating per-session environments. A caller-owned explicit
+`UV_PROJECT_ENVIRONMENT` is preserved. Do not run two uv bootstrap/sync commands
+in parallel in the same fresh checkout; one process owns project-environment
 creation.
 
 The healthy default is `MOLT_EXT_ROOT=C:\Molt`,
 `CARGO_TARGET_DIR=C:\Molt\target`, and
 `MOLT_TARGET_ROOT=C:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
-`C:\Molt\tmp\uv-project-envs\dx__py3.12` for the standard Python 3.12 DX lane.
+`C:\Molt\uv-project-envs\<dx-python-source-key>` for the standard Python 3.12
+DX lane.
 Rows with any canonical run root on `D:` fail closed; there is no preservation
 flag or volume-label fallback. `MOLT_EXT_ROOT` may be explicitly configured for
 non-custodial output on approved volumes, but named inputs, package seals,
@@ -347,6 +553,32 @@ its runtime versions/configuration/global paths, Quint binds the resolved npm
 package tree, and environment-selected compiler/linker/wrapper executables are
 content-hashed. All toolchains are re-captured after the command; a missing,
 empty, changed, or extra closure cannot become evidence.
+
+Cargo build-script header discovery is independent of Rust linker selection.
+The queue pins a selected Clang driver through `CLANG_PATH` and independently
+binds available `llvm-config` through `LLVM_CONFIG_PATH` before capturing the
+execution environment. Bindgen's formatter is independently bound through
+`RUSTFMT`; Rustup proxies use the same content-proven resolver as runtime
+compiler/Cargo planning, including symlink aliases while preserving custom
+binaries. The typed leading `cargo +toolchain` selector is projected into the
+effective `RUSTUP_TOOLCHAIN` before all build-tool and Rust toolchain capture;
+it takes precedence over an inherited selection without changing Cargo argv.
+These tools use the ordinary environment-executable identity
+and supervisor projection, including lexical and resolved paths; there is no
+separate Clang image allowlist. Explicit hooks require absolute executable paths
+because Cargo build scripts do not share the invocation cwd. Target-specific
+bindgen arguments and both dynamic/static libclang path hooks remain semantic
+inputs. An unavailable optional selector retains its diagnostic transcript and
+does not require an unused capability from pure Rust builds. A missing optional
+Rustup formatter component is recorded without selecting an alternate tool;
+an explicit formatter hook or malformed successful selector still fails.
+
+Conventional Cargo configuration discovery is shared with runtime build planning,
+including default Cargo home and extensionless-config precedence. Cargo-owned
+`[env]` overrides of driver/discovery hooks that cannot be resolved before
+capture reject explicitly; this is not a claim of complete Cargo environment
+precedence support. Full libclang/header content closure is also separate from
+this executable-process contract.
 
 The queue resolves its guard budget through the shared
 `harness_memory_guard.limits_from_env("MOLT_PROOF_QUEUE", ...)` authority. Use

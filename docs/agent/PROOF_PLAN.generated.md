@@ -8,9 +8,9 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 160 |
+| Hashed executable authority inputs | 1 | 169 |
 | Local path rules | 35 | 40 |
-| Unique local commands | 73 | 88 |
+| Unique local commands | 73 | 89 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -47,7 +47,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 78 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 80 |
 
 ## Scheduled families
 
@@ -89,30 +89,31 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 
 ## Toolchain contracts
 
-Receipts record resolved path, version text, and the repository-relative probe working directory, bind their identity hash to all three, and fail unless the version satisfies this authority.
+Executable identities bind resolved path, version text, and the repository-relative probe working directory. Target-derived identities use their declared provider to capture the selected target's tool family and input custody; they have no single setup executable or probe cwd. Both kinds must satisfy their declared version authority.
 
-| Toolchain | Required version | Probe cwd | Setup value | Setup evidence |
-|---|---|---|---|---:|
-| `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
-| `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
-| `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
-| `lune` | `^lune 0\.10\.5$` | `.` | `0.10.5` | 1 |
-| `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
-| `git` | `^git version 2\.` | `.` | `2.x` | 1 |
-| `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
-| `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
-| `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `ld.lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `ld64.lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lld-link` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 3 |
-| `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
-| `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
-| `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
-| `wasm-ld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `wasm-tools` | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
+| Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
+|---|---|---|---|---|---|---:|
+| `python` | `executable` | — | `^Python 3\.12\.` | `.` | `3.12` | 1 |
+| `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
+| `uv` | `executable` | — | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
+| `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
+| `rustc` | `executable` | — | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 1 |
+| `cargo` | `executable` | — | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
+| `rustfmt` | `executable` | — | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
+| `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
+| `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `lean` | `executable` | — | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 3 |
+| `quint` | `executable` | — | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
+| `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
+| `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
+| `wasm-ld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
 
 ## Cargo execution contracts
 
@@ -263,7 +264,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-leaf` | 2 | 1 | no |
 | `stringprep-tables` | 3 | 2 | no |
 | `llvm-runtime-abi` | 8 | 2 | no |
-| `source-extension-package-sets` | 35 | 2 | no |
+| `source-extension-package-sets` | 45 | 3 | no |
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |

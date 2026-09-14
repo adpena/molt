@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -13,14 +14,27 @@ from typing import Mapping, NotRequired, Sequence, TypedDict
 from molt.browser_asset_closure import wasm_loader_asset_scope_paths
 from molt.cli.source_extension_set_registry import (
     SourceExtensionSet,
+    SourceExtensionVariant,
+    load_source_extension_registry,
+    source_extension_set,
+    source_extension_set_expected_identity,
 )
+from molt.cli.source_build_environment import (
+    LockedSourceBuildEnvironment,
+    source_build_environment,
+)
+from molt.cli.source_extension_target import (
+    SourceExtensionTargetPlan,
+    resolve_source_extension_target_plan,
+)
+from molt.target_python import _parse_target_python_version
 from molt.cli.source_extension_set_validation import (
     validate_source_extension_set_seal,
 )
 from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
 )
-from molt.dx import checkout_custody
+from molt.dx import DxConfigError, _reject_onedrive, checkout_custody
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
@@ -139,6 +153,236 @@ _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
     "PYTHONUTF8",
     "PYTHONIOENCODING",
 )
+
+
+_SOURCE_EXTENSION_PRODUCER_LOGICAL_ID = "source-extension-produce"
+_SOURCE_EXTENSION_PRODUCER_LOCKED_ENV = (
+    "PATH",
+    "VIRTUAL_ENV",
+    "PYTHONUTF8",
+    "PYTHONIOENCODING",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceExtensionProducerPlan:
+    repo_root: Path
+    source_root: Path
+    build_root: Path
+    extension_set: SourceExtensionSet
+    variant: SourceExtensionVariant
+    target_plan: SourceExtensionTargetPlan
+    environment: LockedSourceBuildEnvironment
+
+
+def _source_extension_producer_plan(
+    *,
+    package: str,
+    package_version: str,
+    module_set: str,
+    python_version: str,
+    source: str,
+    build_root: str,
+    target: str,
+    abi_tier: str,
+    repo_root: Path,
+) -> _SourceExtensionProducerPlan:
+    """Resolve one immutable producer address without mutating source or tools."""
+
+    from molt.cli.source_extension_producer import resolve_source_extension_destination
+
+    root = repo_root.resolve(strict=True)
+    source_root = Path(source).expanduser().resolve(strict=True)
+    resolved_build_root = Path(build_root).expanduser().resolve(strict=False)
+    try:
+        _reject_onedrive(source_root, "source-extension source root")
+        _reject_onedrive(resolved_build_root, "source-extension build root")
+    except DxConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+    registry = load_source_extension_registry()
+    extension_set = source_extension_set(
+        package,
+        package_version,
+        module_set,
+        registry=registry,
+    )
+    target_plan = resolve_source_extension_target_plan(target)
+    variant = SourceExtensionVariant(
+        target_python=_parse_target_python_version(python_version),
+        abi_tier=abi_tier,
+        target_triple=target_plan.target_triple,
+    )
+    try:
+        source_extension_set_expected_identity(
+            extension_set, variant=variant, registry=registry
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            "source-extension producer tuple is outside the registered verified "
+            f"subset: {variant.cpython}/{variant.abi_tier}/{variant.target_triple}: "
+            f"{exc}"
+        ) from exc
+    resolve_source_extension_destination(
+        extension_set,
+        variant=variant,
+        source_root=source_root,
+        build_root=resolved_build_root,
+        registry=registry,
+    )
+    environment = source_build_environment(root, extension_set.build_dependency_group)
+    return _SourceExtensionProducerPlan(
+        repo_root=root,
+        source_root=source_root,
+        build_root=resolved_build_root,
+        extension_set=extension_set,
+        variant=variant,
+        target_plan=target_plan,
+        environment=environment,
+    )
+
+
+def _prepare_source_extension_producer(plan: _SourceExtensionProducerPlan) -> None:
+    """Perform setup mutations before the guarded proof snapshots its inputs."""
+
+    from molt.cli.source_extension_producer import (
+        prepare_source_extension_prerequisites,
+        resolve_source_extension_destination,
+    )
+
+    resolve_source_extension_destination(
+        plan.extension_set,
+        variant=plan.variant,
+        source_root=plan.source_root,
+        build_root=plan.build_root,
+    )
+    prepare_source_extension_prerequisites(
+        plan.extension_set,
+        plan.source_root,
+        repo_root=plan.repo_root,
+        planned_environment=plan.environment,
+    )
+
+
+def _source_extension_producer_spec_from_plan(
+    plan: _SourceExtensionProducerPlan,
+    *,
+    expected_identity_sha256: str | None,
+    expected_candidate_identity_sha256: str | None,
+    timeout: float | None,
+    json_output: bool = True,
+) -> NamedProofSpec:
+    from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
+    from molt.cli.source_extension_producer import _locked_console_tool_path
+
+    package = plan.extension_set.package
+    package_version = plan.extension_set.package_version
+    module_set = plan.extension_set.name
+    source_root = plan.source_root
+    resolved_build_root = plan.build_root
+    target_plan = plan.target_plan
+    environment = plan.environment
+    invocation = SourceExtensionSetInvocation(
+        command="produce-set",
+        prepared=True,
+        package=package,
+        package_version=package_version,
+        module_set=module_set,
+        python_version=plan.variant.cpython,
+        source=str(source_root),
+        build_root=str(resolved_build_root),
+        # A frozen triple must not turn host CC/CXX selection into the explicit
+        # cross-target MOLT_CROSS_CC/Zig lane. The envelope records both facts.
+        target=(
+            target_plan.requested
+            if target_plan.compiler_target_triple is None
+            else target_plan.target_triple
+        ),
+        abi_tier=plan.variant.abi_tier,
+        json_output=json_output,
+        expected_identity_sha256=expected_identity_sha256,
+        expected_candidate_identity_sha256=expected_candidate_identity_sha256,
+    )
+    if expected_candidate_identity_sha256 is not None:
+        expected = source_extension_set_expected_identity(
+            plan.extension_set, variant=plan.variant
+        )
+        if expected_candidate_identity_sha256 != expected:
+            raise ValueError(
+                "source-extension expected candidate identity differs from the registered target cell"
+            )
+    command = list(invocation.module_argv(str(environment.python_executable)))
+    env_overrides = {
+        "PATH": _locked_console_tool_path(
+            environment.python_executable.parent, os.environ.get("PATH")
+        ),
+        "VIRTUAL_ENV": str(environment.root.resolve()),
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    return {
+        "logical_id": (
+            f"{_SOURCE_EXTENSION_PRODUCER_LOGICAL_ID}-{state._slug(package)}-"
+            f"{state._slug(target_plan.target_triple)}"
+        ),
+        "reason": (
+            f"Produce the registered {package} {package_version} {module_set} "
+            f"source-extension set for {target_plan.target_triple} from its "
+            "pre-attested locked Python environment."
+        ),
+        "command": command,
+        "resource_family": "compiler-build-resource",
+        "contention_key": (
+            f"source-extension-{state._slug(package)}-"
+            f"{state._slug(target_plan.target_triple)}"
+        ),
+        "scopes": [
+            str(source_root),
+            str(resolved_build_root),
+            str(environment.root.resolve()),
+        ],
+        "env_overrides": env_overrides,
+        "locked_env": _SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+        "notes": [
+            "Environment provisioning is a separate setup mutation; the queued "
+            "proof starts directly from the exact attested interpreter and may "
+            "not provision or restart Python.",
+        ],
+        "timeout": timeout if timeout is not None else 3600.0,
+    }
+
+
+def _source_extension_producer_spec(
+    *,
+    package: str,
+    package_version: str,
+    module_set: str,
+    python_version: str,
+    source: str,
+    build_root: str,
+    target: str,
+    abi_tier: str,
+    expected_identity_sha256: str | None,
+    expected_candidate_identity_sha256: str | None,
+    timeout: float | None,
+    repo_root: Path,
+) -> NamedProofSpec:
+    plan = _source_extension_producer_plan(
+        package=package,
+        package_version=package_version,
+        module_set=module_set,
+        python_version=python_version,
+        source=source,
+        build_root=build_root,
+        target=target,
+        abi_tier=abi_tier,
+        repo_root=repo_root,
+    )
+    return _source_extension_producer_spec_from_plan(
+        plan,
+        expected_identity_sha256=expected_identity_sha256,
+        expected_candidate_identity_sha256=expected_candidate_identity_sha256,
+        timeout=timeout,
+    )
 
 
 def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
@@ -491,6 +735,35 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
     return _run_named_spec(
         args, _pact_witness_acceptance_spec(args.timeout, state._repo_root(args))
     )
+
+
+def _cmd_source_extension_produce(args: argparse.Namespace) -> int:
+    policy._named_spec_user_env_overrides(
+        _SOURCE_EXTENSION_PRODUCER_LOGICAL_ID,
+        _SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+        args.env,
+    )
+    plan = _source_extension_producer_plan(
+        package=args.package,
+        package_version=args.package_version,
+        module_set=args.module_set,
+        python_version=args.python_version,
+        source=args.source,
+        build_root=args.build_root,
+        target=args.target,
+        abi_tier=args.abi_tier,
+        repo_root=state._repo_root(args),
+    )
+    spec = _source_extension_producer_spec_from_plan(
+        plan,
+        expected_identity_sha256=args.expected_identity_sha256,
+        expected_candidate_identity_sha256=args.expected_candidate_identity_sha256,
+        timeout=args.timeout,
+        json_output=args.json,
+    )
+    if not args.print_spec:
+        _prepare_source_extension_producer(plan)
+    return _run_named_spec(args, spec)
 
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:

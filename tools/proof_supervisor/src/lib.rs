@@ -19,6 +19,7 @@ pub use evidence::{ArtifactSummary, EventJournal, IdentitySummary, PublishedEvid
 pub use image_cache::{ImageCacheKey, ImageHashCache};
 
 pub const POLICY_SCHEMA: &str = "molt.proof-process-closure.v2";
+pub const CAPABILITY_SCHEMA: &str = "molt.proof-supervisor-capability.v2";
 pub const RECEIPT_SCHEMA: &str = "molt.proof-process-closure-receipt.v3";
 const MAX_DIAGNOSTICS_PER_CLASS: usize = 16;
 const MAX_DIAGNOSTIC_BYTES: usize = 2048;
@@ -172,6 +173,7 @@ pub struct Capability {
     pub available: bool,
     pub pre_entry_exec_authority: bool,
     pub recursive_descendant_authority: bool,
+    pub required_environment: BTreeMap<String, String>,
     pub reason: Option<String>,
 }
 
@@ -412,6 +414,19 @@ impl Policy {
             }
             if !environment_keys.insert(key.to_ascii_lowercase()) {
                 return Err("policy environment keys must be unique ignoring ASCII case".to_owned());
+            }
+        }
+        for (key, value) in platform::required_environment() {
+            match self.environment.get(&key) {
+                None => {
+                    return Err(format!(
+                        "policy environment requires canonical key {key}={value}"
+                    ));
+                }
+                Some(actual) if actual != &value => {
+                    return Err(format!("policy environment requires {key}={value}"));
+                }
+                Some(_) => {}
             }
         }
         if self.root_role.is_empty() {
@@ -706,7 +721,7 @@ mod tests {
             mode: ClosureMode::DeclaredTree,
             cwd: std::env::current_dir().unwrap(),
             command: vec![lexical_command.clone(), "build".to_owned()],
-            environment: BTreeMap::new(),
+            environment: platform::required_environment(),
             root_role: "cargo".to_owned(),
             fixed_images: vec![
                 FixedImage {
@@ -751,7 +766,7 @@ mod tests {
                 mode: ClosureMode::Leaf,
                 cwd: PathBuf::from("."),
                 command: vec!["proof".to_owned()],
-                environment: BTreeMap::new(),
+                environment: platform::required_environment(),
                 root_role: "root".to_owned(),
                 fixed_images: Vec::new(),
                 derived_roots: Vec::new(),
@@ -761,13 +776,14 @@ mod tests {
             derived: Vec::new(),
         };
         let capability = Capability {
-            schema: "molt.proof-supervisor-capability.v1".to_owned(),
+            schema: CAPABILITY_SCHEMA.to_owned(),
             platform: "test".to_owned(),
             mode: ClosureMode::Leaf,
             backend: "test".to_owned(),
             available: false,
             pre_entry_exec_authority: false,
             recursive_descendant_authority: false,
+            required_environment: platform::required_environment(),
             reason: Some("test".to_owned()),
         };
         let mut receipt = Receipt::rejected(&policy, &capability, "unavailable");
@@ -796,7 +812,7 @@ mod tests {
                 mode: ClosureMode::Leaf,
                 cwd: PathBuf::from("."),
                 command: vec!["proof".to_owned()],
-                environment: BTreeMap::new(),
+                environment: platform::required_environment(),
                 root_role: "root".to_owned(),
                 fixed_images: Vec::new(),
                 derived_roots: Vec::new(),
@@ -806,13 +822,14 @@ mod tests {
             derived: Vec::new(),
         };
         let capability = Capability {
-            schema: "molt.proof-supervisor-capability.v1".to_owned(),
+            schema: CAPABILITY_SCHEMA.to_owned(),
             platform: "test".to_owned(),
             mode: ClosureMode::Leaf,
             backend: "test".to_owned(),
             available: false,
             pre_entry_exec_authority: false,
             recursive_descendant_authority: false,
+            required_environment: platform::required_environment(),
             reason: Some("test".to_owned()),
         };
         let mut receipt = Receipt::rejected(&policy, &capability, "unavailable");

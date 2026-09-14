@@ -29,6 +29,7 @@ from molt.cli.cargo_target_cfg import (
     select_cargo_target_flags,
 )
 from molt.exact_json import canonical_json_sha256
+from molt.rust_toolchain import cargo_configuration_paths, resolve_rustup_proxy
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
@@ -661,44 +662,6 @@ def _resolve_c_build_resources(
     )
 
 
-def _pin_rustup_proxy(
-    path: Path, *, role: str, root: Path, env: Mapping[str, str]
-) -> Path:
-    """Resolve a proven rustup proxy once, never infer proxy status from its name."""
-    rustup = path.parent / ("rustup.exe" if os.name == "nt" else "rustup")
-    if not rustup.is_file():
-        return path
-    with stable_executable_probe(path, label=f"runtime {role} selection") as (
-        _,
-        selected,
-    ):
-        with stable_executable_probe(rustup, label="runtime rustup selection") as (
-            entrypoint,
-            proxy,
-        ):
-            if selected.sha256 != proxy.sha256:
-                return path
-            result = process_guard.run_completed_command(
-                [os.fspath(entrypoint), "which", role],
-                cwd=root,
-                env=dict(env),
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
-                memory_guard_prefix=None,
-            )
-            value = result.stdout.strip()
-            if result.returncode != 0 or not value or "\n" in value or "\r" in value:
-                raise ValueError(
-                    f"runtime rustup {role} selection failed: {result.stderr.strip()}"
-                )
-            return resolve_executable(
-                value, environment=env, label=f"runtime selected {role}"
-            )
-
-
 @contextmanager
 def _rust_probe_command(
     rustc: Path, wrappers: Mapping[str, Path], *, label: str
@@ -1093,27 +1056,6 @@ def _apply_cargo_environment(
         if force:
             forced.append(name)
     return result, tuple(sorted(forced)), tuple(resources)
-
-
-def _config_paths(root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
-    home = Path(env.get("CARGO_HOME") or Path.home() / ".cargo").expanduser()
-    if not home.is_absolute():
-        home = root / home
-    locations = (home, *(path / ".cargo" for path in reversed((root, *root.parents))))
-    paths: list[Path] = []
-    seen: set[Path] = set()
-    for location in locations:
-        location = location.resolve(strict=False)
-        if location in seen:
-            continue
-        seen.add(location)
-        # Cargo documents that extensionless config wins when both exist.
-        for name in ("config", "config.toml"):
-            candidate = location / name
-            if candidate.is_file():
-                paths.append(candidate)
-                break
-    return tuple(paths)
 
 
 def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
@@ -1573,7 +1515,7 @@ class RuntimeCargoPlan:
                 "runtime Rust linker selection differs from captured tools"
             )
         if (
-            _config_paths(self.project_root, self.environment)
+            cargo_configuration_paths(self.project_root, self.environment)
             != self.configuration_paths
         ):
             raise ValueError(
@@ -1765,7 +1707,7 @@ def resolve_runtime_cargo_plan(
             "runtime Cargo toolchain selector must be resolved through RUSTUP_TOOLCHAIN"
         )
     environment = _CargoEnvironment(env)
-    paths = _config_paths(root, environment)
+    paths = cargo_configuration_paths(root, environment)
     inputs = [
         _capture_config(path, label=f"cargo-config/{index}/{path.name}")
         for index, path in enumerate(paths)
@@ -1825,7 +1767,7 @@ def resolve_runtime_cargo_plan(
         "rustc",
     )
     rustc = _tool_path(rustc_selector, root=root, env=environment, role="rustc")
-    rustc = _pin_rustup_proxy(rustc, role="rustc", root=root, env=environment)
+    rustc = resolve_rustup_proxy(rustc, role="rustc", root=root, env=environment)
     rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
     environment["RUSTC"] = os.fspath(rustc)
     wrappers: dict[str, Path] = {}
@@ -1976,7 +1918,7 @@ def resolve_runtime_cargo_plan(
     )
     assert flag_plan is not None
     cargo = _tool_path(cargo_command[0], root=root, env=environment, role="cargo")
-    cargo = _pin_rustup_proxy(cargo, role="cargo", root=root, env=environment)
+    cargo = resolve_rustup_proxy(cargo, role="cargo", root=root, env=environment)
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
     defaults = _target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):

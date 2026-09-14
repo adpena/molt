@@ -505,6 +505,7 @@ def _dispatch_entrypoint_command(
             )
         if args.extension_command == "produce-set":
             return produce_source_extension_set(
+                prepared=args.prepared,
                 package=args.package,
                 package_version=args.package_version,
                 module_set=args.module_set,
@@ -521,6 +522,7 @@ def _dispatch_entrypoint_command(
             )
         if args.extension_command == "attest-set-candidate":
             return attest_source_extension_set_candidate(
+                prepared=args.prepared,
                 package=args.package,
                 package_version=args.package_version,
                 module_set=args.module_set,

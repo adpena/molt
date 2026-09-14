@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 import re
 import sys
@@ -42,6 +43,9 @@ def test_python_capture_source_closure_is_proof_authority(
         root / "src/molt/_version.py",
         root / "src/sitecustomize.py",
         root / "src/molt/pytest_memory_guard_bootstrap.py",
+        root / "src/molt/temporary_artifacts.py",
+        root / "src/molt/file_deletion.py",
+        root / "src/molt/file_locks.py",
         root / "src/molt/memory_guard_paths.py",
         root / "src/molt/process_spawn.py",
         root / "pyproject.toml",
@@ -71,9 +75,10 @@ def test_python_capture_source_closure_is_proof_authority(
                 assert dependency in capture_paths, (path, dependency)
 
 
-def _sealed_terminal_context(
-    run_id: str, context: dict[str, object]
-) -> dict[str, object]:
+def _sealed_terminal_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Construct one completed queue row and seal its matching parent outcome."""
+    run_id = row["run_id"]
+    context = json.loads(row["receipt_context_json"])
     toolchains = context.get("toolchains")
     if isinstance(toolchains, dict):
         context["toolchain_custody"] = {
@@ -107,14 +112,28 @@ def _sealed_terminal_context(
         {
             "run_id": run_id,
             "execution_nonce_sha256": "9" * 64,
+            "queue_terminal": {
+                "schema": supervisor_custody.QUEUE_TERMINAL_SCHEMA,
+                "status": row["status"],
+                "returncode": row["returncode"],
+                "command_returncode": row["returncode"],
+                "execution_error": None,
+            },
         }
     )
     context["terminal_evidence_sha256"] = supervisor_custody.terminal_evidence_sha256(
         context,
         run_id=run_id,
-        returncode=0,
+        returncode=row["returncode"],
     )
-    return context
+    return {
+        **row,
+        "finished_at": (
+            datetime.fromisoformat(row["started_at"])
+            + timedelta(seconds=row["elapsed_s"])
+        ).isoformat(),
+        "receipt_context_json": json.dumps(context),
+    }
 
 
 def _classes(*paths: str) -> dict[str, bool]:
@@ -589,6 +608,118 @@ def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> Non
     assert re.fullmatch(pattern, "wasm-tools 1.253.0 (c799bb87b 2026-07-07)")
     assert not re.fullmatch(pattern, "wasm-tools 1.253.1")
     assert not re.fullmatch(pattern, "wasm-tools 1.253.0 (local build)")
+
+
+def test_source_extension_toolchain_requires_target_context_capture() -> None:
+    policy = next(
+        policy
+        for policy in PLAN.toolchain_policies
+        if policy.name == "source-extension"
+    )
+
+    assert policy.identity_kind == "target-derived"
+    assert policy.data["identity_provider"] == "source-extension"
+    assert "identity_kind" not in policy.data
+    assert "setup_value" not in policy.data
+    assert "executable" not in policy.data
+    assert "version_args" not in policy.data
+    with pytest.raises(ValueError, match="requires target-context capture"):
+        proof_plan._version_fingerprint(policy)
+    with pytest.raises(ValueError, match="requires target-context capture"):
+        proof_plan.toolchain_fingerprints(PLAN, ("source-extension",))
+
+
+def test_toolchain_documentation_projects_provider_and_executable_contracts() -> None:
+    markdown = gen_proof_plan._markdown_projection(PLAN)
+    for policy in PLAN.toolchain_policies:
+        data = policy.data
+        prefix = f"| `{policy.name}` | `{policy.identity_kind}` | "
+        if policy.identity_kind == "target-derived":
+            row = (
+                prefix
+                + f"`{data['identity_provider']}` | `{data['version_pattern']}` | "
+                "— | — | — |"
+            )
+            assert "setup_value" not in data
+        else:
+            row = (
+                prefix + f"— | `{data['version_pattern']}` | "
+                f"`{data.get('probe_cwd', '.')}` | `{data['setup_value']}` | "
+                f"{len(data['setup_evidence'])} |"
+            )
+        assert row in markdown.splitlines()
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))
+    assert projection["toolchain_policies"] == [
+        policy.data for policy in PLAN.toolchain_policies
+    ]
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        ({"identity_kind": "target-derived"}, "must not declare identity_kind"),
+        ({"identity_provider": "ambient"}, "identity_provider must be one of"),
+        ({"executable": "cc"}, "must not declare executable"),
+        ({"version_args": ["--version"]}, "must not declare version_args"),
+        ({"setup_value": "target-derived"}, "must not declare setup_value"),
+    ],
+)
+def test_target_derived_toolchain_rejects_executable_probe_fields(
+    updates: dict[str, object], expected: str
+) -> None:
+    policies = tuple(
+        replace(policy, data={**policy.data, **updates})
+        if policy.name == "source-extension"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+
+    assert any(
+        error.startswith("source-extension:") and expected in error
+        for error in replace(PLAN, toolchain_policies=policies).validate()
+    )
+
+
+def test_executable_toolchain_requires_non_empty_version_probe() -> None:
+    policies = tuple(
+        replace(
+            policy,
+            data={
+                key: value
+                for key, value in policy.data.items()
+                if key != "version_args"
+            },
+        )
+        if policy.name == "uv"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+
+    assert (
+        "uv: executable identity requires non-empty version_args"
+        in replace(PLAN, toolchain_policies=policies).validate()
+    )
+
+
+def test_static_command_rejects_target_derived_toolchain() -> None:
+    command = PLAN.commands[0]
+    commands = tuple(
+        replace(
+            candidate,
+            data={
+                **candidate.data,
+                "toolchains": [*candidate.toolchains, "source-extension"],
+            },
+        )
+        if candidate.id == command.id
+        else candidate
+        for candidate in PLAN.commands
+    )
+
+    assert any(
+        error.startswith(f"{command.id}: static command cannot use target-derived")
+        for error in replace(PLAN, commands=commands).validate()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1948,21 +2079,20 @@ def test_heavy_queue_projects_the_same_receipt_schema(
         for name in envelope["toolchains"]
     }
     receipt: Any = proof_queue_evidence._queue_proof_receipt(
-        {
-            "run_id": "heavy-native-run",
-            "logical_id": "heavy-native",
-            "status": "passed",
-            "returncode": 0,
-            "command_json": json.dumps(command),
-            "command_envelope_json": json.dumps(envelope),
-            "cwd": str(tmp_path),
-            "resource_family": "native-build",
-            "started_at": "2026-07-18T00:00:00+00:00",
-            "elapsed_s": 1.25,
-            "summary_json": str(summary),
-            "receipt_context_json": json.dumps(
-                _sealed_terminal_context(
-                    "heavy-native-run",
+        _sealed_terminal_row(
+            {
+                "run_id": "heavy-native-run",
+                "logical_id": "heavy-native",
+                "status": "passed",
+                "returncode": 0,
+                "command_json": json.dumps(command),
+                "command_envelope_json": json.dumps(envelope),
+                "cwd": str(tmp_path),
+                "resource_family": "native-build",
+                "started_at": "2026-07-18T00:00:00+00:00",
+                "elapsed_s": 1.25,
+                "summary_json": str(summary),
+                "receipt_context_json": json.dumps(
                     {
                         "schema": PLAN.receipt_schema,
                         "authority_sha256": proof_plan._authority_sha256(PLAN),
@@ -1990,10 +2120,10 @@ def test_heavy_queue_projects_the_same_receipt_schema(
                             "ineligible_reasons": [],
                         },
                         "guard_receipt": {"sha256": "e" * 64},
-                    },
-                )
-            ),
-        }
+                    }
+                ),
+            }
+        )
     )
     assert receipt["schema"] == PLAN.receipt_schema
     assert receipt["authority_kind"] == "proof-queue-dynamic-command"
@@ -2009,41 +2139,40 @@ def test_heavy_queue_reuses_persisted_execution_receipt_context() -> None:
         name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
         for name in envelope["toolchains"]
     }
-    context = _sealed_terminal_context(
-        "heavy-native-run",
-        {
-            "schema": PLAN.receipt_schema,
-            "authority_sha256": "a" * 64,
-            "source_commit": "b" * 40,
-            "source_tree": "d" * 40,
-            "source_tree_state": "clean",
-            "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
-            "toolchains": toolchains,
-            "command_envelope": envelope,
-            "command_envelope_sha256": hashlib.sha256(
-                json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest(),
-            "source_custody": {
-                "evidence_eligible": True,
-                "ineligible_reasons": [],
-            },
-            "guard_receipt": {"sha256": "e" * 64},
+    context = {
+        "schema": PLAN.receipt_schema,
+        "authority_sha256": "a" * 64,
+        "source_commit": "b" * 40,
+        "source_tree": "d" * 40,
+        "source_tree_state": "clean",
+        "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
+        "toolchains": toolchains,
+        "command_envelope": envelope,
+        "command_envelope_sha256": hashlib.sha256(
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "source_custody": {
+            "evidence_eligible": True,
+            "ineligible_reasons": [],
         },
-    )
-    row = {
-        "run_id": "heavy-native-run",
-        "logical_id": "heavy-native",
-        "status": "passed",
-        "returncode": 0,
-        "command_json": json.dumps(command),
-        "command_envelope_json": json.dumps(envelope),
-        "cwd": ".",
-        "resource_family": "native-build",
-        "started_at": "2026-07-18T00:00:00+00:00",
-        "elapsed_s": 1.25,
-        "summary_json": None,
-        "receipt_context_json": json.dumps(context),
+        "guard_receipt": {"sha256": "e" * 64},
     }
+    row = _sealed_terminal_row(
+        {
+            "run_id": "heavy-native-run",
+            "logical_id": "heavy-native",
+            "status": "passed",
+            "returncode": 0,
+            "command_json": json.dumps(command),
+            "command_envelope_json": json.dumps(envelope),
+            "cwd": ".",
+            "resource_family": "native-build",
+            "started_at": "2026-07-18T00:00:00+00:00",
+            "elapsed_s": 1.25,
+            "summary_json": None,
+            "receipt_context_json": json.dumps(context),
+        }
+    )
     first = proof_queue_evidence._queue_proof_receipt(row)
     second = proof_queue_evidence._queue_proof_receipt(row)
     assert first["toolchains"] == context["toolchains"]

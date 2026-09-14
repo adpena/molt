@@ -10,6 +10,7 @@ from molt.cli import llvm_wasi_tools
 from molt.cli import source_extension_target
 from molt.cli import source_extension_toolchain
 from molt import llvm_toolchain
+from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 import pytest
 
@@ -454,7 +455,7 @@ def test_captured_search_environment_controls_execution_and_cache(
         "PATHEXT": ".EXE",
         "NoDefaultCurrentDirectoryInExePath": "1",
     }
-    command = llvm_wasi_tools.resolve_explicit_tool_command(
+    command = resolve_explicit_tool_command(
         "clang --version", label="captured compiler", environment=environment
     )
     assert Path(command[0]) == captured_paths["cc"].absolute()
@@ -487,9 +488,7 @@ def test_empty_captured_environment_never_uses_ambient_search(
     monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
     assert llvm_wasi_tools.llvm_tool_candidates("cc", environment={}) == ()
     with pytest.raises(ValueError, match="not found on PATH"):
-        llvm_wasi_tools.resolve_explicit_tool_command(
-            "clang", label="compiler", environment={}
-        )
+        resolve_explicit_tool_command("clang", label="compiler", environment={})
 
 
 def test_captured_managed_target_root_owns_candidate_precedence(
@@ -509,6 +508,54 @@ def test_captured_managed_target_root_owns_candidate_precedence(
             "PATHEXT": ".EXE",
         },
     ) == (captured["cc"].absolute(),)
+
+
+@pytest.mark.parametrize("selector", ["managed", "target_root", "sibling", "explicit"])
+def test_llvm_user_selectors_use_selected_home_and_cache_identity(
+    tmp_path, monkeypatch, selector
+):
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    homes = [tmp_path / "first", tmp_path / "second"]
+    monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    for home in homes:
+        relative = (
+            Path("target/toolchains/llvm-22/bin")
+            if selector in {"managed", "target_root"}
+            else Path("bin")
+        )
+        paths = _write_tool_family(home / relative)
+        environment = {home_key: str(home), "PATH": "", "PATHEXT": ".EXE"}
+        kwargs = {}
+        if selector == "managed":
+            environment["MOLT_TARGET_ROOT"] = "~/target"
+        elif selector == "target_root":
+            kwargs["target_root"] = Path("~/target")
+        elif selector == "sibling":
+            kwargs["sibling_directories"] = (Path("~/bin"),)
+        else:
+            kwargs["explicit_commands"] = ((f"~/bin/{paths['cc'].name}", "-c"),)
+        assert llvm_wasi_tools.llvm_tool_candidates(
+            "cc", environment=environment, **kwargs
+        ) == (paths["cc"],)
+
+
+def test_llvm_family_materializes_selected_user_command(tmp_path, monkeypatch):
+    home = tmp_path / "selected"
+    paths = _write_tool_family(home / "bin")
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    environment = {home_key: str(home), "PATH": "", "PATHEXT": ".EXE"}
+    monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, *, environment: "fixture"
+    )
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        explicit_commands={"cc": (f"~/bin/{paths['cc'].name}", "-DSELECTED=1")},
+        environment=environment,
+    )
+    assert family.cc.command == (str(paths["cc"]), "-DSELECTED=1")
+    assert family.cxx.path == paths["cxx"]
 
 
 @pytest.mark.skipif(
@@ -534,7 +581,7 @@ def test_windows_captured_pathext_and_cwd_policy_override_ambient(
         "PathExt": ".ALT",
         "NoDefaultCurrentDirectoryInExePath": "1",
     }
-    command = llvm_wasi_tools.resolve_explicit_tool_command(
+    command = resolve_explicit_tool_command(
         "clang", label="compiler", environment=captured
     )
     assert len(command) == 1
@@ -570,13 +617,17 @@ def test_captured_rust_tool_lookup_threads_actual_executable_and_environment(
 
     def run(command, **kwargs):
         seen.append((command, kwargs["env"]))
-        return subprocess.CompletedProcess(command, 0, str(sysroot), "")
+        output = "rustc fixture\nhost: host\n" if "-vV" in command else str(sysroot)
+        return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(llvm_wasi_tools, "_run_completed_command", run)
     assert llvm_wasi_tools._rust_llvm_bin_directories(environment=environment) == (
         reader.parent,
     )
-    assert seen == [([str(selected_rustc), "--print", "sysroot"], environment)]
+    assert seen == [
+        ([str(selected_rustc), "--print", "sysroot"], environment),
+        ([str(selected_rustc), "-vV"], environment),
+    ]
 
 
 def test_source_commands_share_family_and_never_duplicate_target() -> None:
@@ -661,7 +712,9 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     def family(
         *,
         explicit_commands: dict[llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
+        environment: object,
     ) -> llvm_wasi_tools.LlvmWasiToolFamily:
+        del environment
         return llvm_wasi_tools.LlvmWasiToolFamily(
             cc=tool("cc", explicit_commands["cc"]),
             cxx=tool("cxx", ("/tools/clang++",)),
@@ -675,7 +728,7 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     monkeypatch.setattr(
         source_extension_toolchain,
         "resolve_explicit_tool_command",
-        lambda _raw, *, label: compiler,
+        lambda _raw, *, label, environment: compiler,
     )
     monkeypatch.setattr(
         source_extension_toolchain,
@@ -690,7 +743,7 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     monkeypatch.setattr(
         source_extension_toolchain,
         "_probe_wasm_source_extension_compiler",
-        lambda _command, *, target_plan: None,
+        lambda _command, *, target_plan, environment: None,
     )
     target_plan = source_extension_target.resolve_source_extension_target_plan(
         "wasm",

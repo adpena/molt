@@ -32,6 +32,54 @@ def fake_popen_without_windows_job(monkeypatch: pytest.MonkeyPatch) -> None:
         "create_kill_on_close_job",
         lambda: None,
     )
+    _patch_temporary_artifact_closure_closed(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def isolated_guard_scratch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep memory-guard unit tests out of persistent repository scratch."""
+
+    class FakeLease:
+        def __init__(self) -> None:
+            self.target = tmp_path / f"guard-scratch-{time.time_ns()}"
+            self.released = False
+
+        def release(self) -> None:
+            self.released = True
+
+    def acquire(_root: Path, _env: Mapping[str, str]) -> FakeLease:
+        return FakeLease()
+
+    def finish(
+        lease: FakeLease,
+        *,
+        closed: bool,
+        success: bool,
+        evidence: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        del evidence
+        lease.release()
+        if not closed:
+            state = "indeterminate"
+        elif success:
+            state = "reclaimed"
+        else:
+            state = "retained"
+        return {"state": state, "receipt": str(tmp_path / "owner.json")}
+
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        acquire,
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        finish,
+    )
 
 
 def _guard_termination_report(
@@ -59,6 +107,60 @@ def _guard_termination_report(
     )
 
 
+def _complete_sampling_telemetry() -> memory_guard.GuardSamplingTelemetry:
+    return memory_guard.GuardSamplingTelemetry(
+        attempts=1,
+        successes=1,
+        transient_failures=0,
+    )
+
+
+def _guarded_child(
+    *, pid: int = 101, pgid: int | None = 101
+) -> memory_guard.GuardedChildProcess:
+    return memory_guard.GuardedChildProcess(
+        pid=pid,
+        pgid=pgid,
+        sid=pgid,
+        command=("python", "worker.py"),
+        started_at="2026-05-21T12:00:00Z",
+    )
+
+
+def _windows_job_cleanup(*, active_processes: int) -> memory_guard.WindowsJobCleanup:
+    accounting = memory_guard._win_job.WindowsJobAccounting(
+        total_processes=1,
+        active_processes=active_processes,
+        total_terminated_processes=0,
+        peak_job_commit_bytes=4096,
+        total_user_time_100ns=0,
+        total_kernel_time_100ns=0,
+        total_page_fault_count=0,
+    )
+    resources = memory_guard._win_job.WindowsSystemResources(
+        process_count=1,
+        thread_count=1,
+        system_handle_count=1,
+        guard_handle_count=1,
+        commit_total_bytes=1,
+        commit_limit_bytes=2,
+        commit_peak_bytes=1,
+        physical_total_bytes=2,
+        physical_available_bytes=1,
+    )
+    return memory_guard.WindowsJobCleanup(
+        before=accounting,
+        after=accounting,
+        system_before=resources,
+        system_after=resources,
+        terminated_remaining_processes=False,
+        elapsed_s=0.01,
+        initial_process_ids=(),
+        escalation_process_ids=(),
+        natural_exit_wait_s=0.0,
+    )
+
+
 def _patch_guard_popen_without_windows_job(
     monkeypatch: pytest.MonkeyPatch,
     popen_factory: object,
@@ -70,6 +172,24 @@ def _patch_guard_popen_without_windows_job(
         memory_guard._win_job,
         "create_kill_on_close_job",
         lambda: None,
+    )
+    _patch_temporary_artifact_closure_closed(monkeypatch)
+
+
+def _patch_temporary_artifact_closure_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "synthetic-test-closed",
+                "closed": True,
+            },
+        ),
     )
 
 
@@ -122,6 +242,318 @@ def test_termination_report_batch_validator_rejects_fake_drift() -> None:
             (_guard_termination_report(), None),
             caller="cleanup_tracked_orphans",
         )
+
+
+def test_temporary_artifact_closure_without_launched_child_is_exact() -> None:
+    sampled = False
+
+    def forbidden_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sampled
+        sampled = True
+        raise AssertionError("no-child closure must not sample")
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=None,
+        child_process=None,
+        tracker=None,
+        sampler=forbidden_sampler,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=False,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=None,
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is True
+    assert sampled is False
+    assert evidence["authority"] == "no-child-launched"
+    assert evidence["closed"] is True
+
+
+def test_temporary_artifact_windows_closure_requires_exact_empty_job() -> None:
+    proc = types.SimpleNamespace(returncode=0)
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=proc,
+        child_process=_guarded_child(),
+        tracker=None,
+        sampler=lambda: {},
+        windows_job_cleanup=_windows_job_cleanup(active_processes=0),
+        windows_process_model=True,
+        posix_process_model=False,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=None,
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is True
+    assert evidence["authority"] == "windows-job-accounting"
+    assert evidence["windows_job_cleanup"]["after"]["active_processes"] == 0
+
+
+@pytest.mark.parametrize(
+    ("returncode", "cleanup"),
+    [
+        (None, _windows_job_cleanup(active_processes=0)),
+        (0, None),
+        (0, _windows_job_cleanup(active_processes=1)),
+    ],
+)
+def test_temporary_artifact_windows_closure_rejects_incomplete_custody(
+    returncode: int | None,
+    cleanup: memory_guard.WindowsJobCleanup | None,
+) -> None:
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=returncode),
+        child_process=_guarded_child(),
+        tracker=None,
+        sampler=lambda: {},
+        windows_job_cleanup=cleanup,
+        windows_process_model=True,
+        posix_process_model=False,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=None,
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is False
+    assert evidence["closed"] is False
+
+
+def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=memory_guard.ProcessTreeTracker(101),
+        sampler=lambda: {},
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is True
+    assert evidence["root_process_group_closed"] is True
+    assert evidence["remaining_tracked_pids"] == []
+    assert evidence["root_process_group_members"] == []
+
+
+def test_temporary_artifact_posix_closure_rejects_final_survivor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+    tracker = memory_guard.ProcessTreeTracker(101)
+    tracker.known_pids.add(202)
+    tracker.known_identities[202] = memory_guard.ProcessIdentity(started_at_ns=22)
+    survivor = memory_guard.ProcessSample(
+        pid=202,
+        ppid=1,
+        rss_kb=1,
+        command="python survivor.py",
+        pgid=101,
+        started_at_ns=22,
+    )
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=tracker,
+        sampler=lambda: {202: survivor},
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is False
+    assert evidence["remaining_tracked_pids"] == [202]
+    assert evidence["root_process_group_members"] == [202]
+
+
+def test_temporary_artifact_posix_closure_rejects_final_sampler_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+
+    def broken_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        raise RuntimeError("snapshot unavailable")
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=memory_guard.ProcessTreeTracker(101),
+        sampler=broken_sampler,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is False
+    assert evidence["final_sample_error"] == "RuntimeError: snapshot unavailable"
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    [
+        "telemetry",
+        "zero_observations",
+        "termination_action",
+        "still_live_action",
+    ],
+)
+def test_temporary_artifact_posix_closure_rejects_prior_custody_gap(
+    failure_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+    telemetry = _complete_sampling_telemetry()
+    reports: tuple[memory_guard.GuardTerminationReport, ...] = ()
+    if failure_kind == "telemetry":
+        telemetry = dataclasses.replace(
+            telemetry,
+            attempts=2,
+            successes=1,
+            transient_failures=1,
+        )
+    elif failure_kind == "zero_observations":
+        telemetry = dataclasses.replace(telemetry, attempts=0, successes=0)
+    elif failure_kind == "termination_action":
+        reports = (
+            _guard_termination_report(
+                actions=(
+                    memory_guard.GuardTerminationAction(
+                        target_kind="process",
+                        target_id=202,
+                        signal=None,
+                        signal_name=None,
+                        result="skipped_missing_identity",
+                    ),
+                )
+            ),
+        )
+    else:
+        reports = (
+            _guard_termination_report(
+                actions=(
+                    memory_guard.GuardTerminationAction(
+                        target_kind="process",
+                        target_id=202,
+                        signal=memory_guard.signal.SIGTERM,
+                        signal_name="SIGTERM",
+                        result="still_live",
+                    ),
+                )
+            ),
+        )
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=memory_guard.ProcessTreeTracker(101),
+        sampler=lambda: {},
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=telemetry,
+        termination_reports=reports,
+        probe_grace=0.0,
+    )
+
+    assert closed is False
+    if failure_kind in {"telemetry", "zero_observations"}:
+        assert evidence["sampling_enforcement_complete"] is False
+    elif failure_kind == "termination_action":
+        assert evidence["termination_action_gaps"][0]["result"] == (
+            "skipped_missing_identity"
+        )
+    else:
+        assert evidence["termination_action_gaps"][0]["result"] == "still_live"
+
+
+def test_temporary_artifact_posix_closure_requires_orphan_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group_probed = False
+
+    def forbidden_group_probe(_pgid: int, *, grace: float) -> bool:
+        nonlocal group_probed
+        group_probed = True
+        raise AssertionError("disabled orphan cleanup must reject before probing")
+
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        forbidden_group_probe,
+    )
+
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=memory_guard.ProcessTreeTracker(101),
+        sampler=lambda: {},
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=False,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+
+    assert closed is False
+    assert group_probed is False
+    assert evidence["cleanup_orphans_enabled"] is False
 
 
 def test_parse_process_table_keeps_commands_with_spaces() -> None:
@@ -3228,6 +3660,7 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     # exact descendant cleanup authority and intentionally bypasses PID-table
     # orphan cleanup.
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    _patch_temporary_artifact_closure_closed(monkeypatch)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -3808,6 +4241,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    _patch_temporary_artifact_closure_closed(monkeypatch)
     monkeypatch.setattr(
         memory_guard,
         "_quarantine_cargo_incremental_state",
@@ -4787,7 +5221,18 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
         assert run_kwargs["stderr"] == "err"
 
 
-def test_run_guarded_marks_child_environment_as_guarded() -> None:
+@pytest.mark.parametrize("temproot_mode", ["managed", "explicit", "unset"])
+def test_run_guarded_marks_child_environment_as_guarded(
+    tmp_path, temproot_mode
+) -> None:
+    env = dict(os.environ)
+    env["MOLT_GUARD_SCRATCH_ROOT"] = str(tmp_path / "outer-scratch")
+    if temproot_mode == "managed":
+        env["PYTEST_DEBUG_TEMPROOT"] = env["MOLT_GUARD_SCRATCH_ROOT"]
+    elif temproot_mode == "explicit":
+        env["PYTEST_DEBUG_TEMPROOT"] = str(tmp_path / "explicit")
+    else:
+        env.pop("PYTEST_DEBUG_TEMPROOT", None)
     result = memory_guard.run_guarded(
         [
             sys.executable,
@@ -4799,19 +5244,291 @@ def test_run_guarded_marks_child_environment_as_guarded() -> None:
                 "print(os.environ.get('MOLT_MEMORY_GUARD_ACTIVE')); "
                 "print(bool(os.environ.get('MOLT_MEMORY_GUARD_PID'))); "
                 "print(bool(os.environ.get('MOLT_MEMORY_GUARD_TOKEN'))); "
+                "print(bool(os.environ.get('MOLT_GUARD_SCRATCH_ROOT'))); "
                 "print(marker.exists()); "
                 "print(payload['pid'] == int(os.environ['MOLT_MEMORY_GUARD_PID'])); "
-                "print(payload['token'] == os.environ['MOLT_MEMORY_GUARD_TOKEN'])"
+                "print(payload['token'] == os.environ['MOLT_MEMORY_GUARD_TOKEN']); "
+                "print(json.dumps({name: os.environ.get(name) for name in "
+                "('PYTEST_DEBUG_TEMPROOT', 'MOLT_GUARD_SCRATCH_ROOT')}))"
             ),
         ],
         max_rss_kb=512 * 1024,
         max_total_rss_kb=1024 * 1024,
         poll_interval=0.01,
         child_rlimit_kb=None,
+        env=env,
     )
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["1", "True", "True", "True", "True", "True"]
+    lines = result.stdout.splitlines()
+    assert lines[:-1] == [
+        "1",
+        "True",
+        "True",
+        "True",
+        "True",
+        "True",
+        "True",
+    ]
+    selected = json.loads(lines[-1])
+    assert selected["MOLT_GUARD_SCRATCH_ROOT"] != env["MOLT_GUARD_SCRATCH_ROOT"]
+    assert selected["PYTEST_DEBUG_TEMPROOT"] == (
+        selected["MOLT_GUARD_SCRATCH_ROOT"]
+        if temproot_mode == "managed"
+        else env.get("PYTEST_DEBUG_TEMPROOT")
+    )
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["state"] == "reclaimed"
+    finalize_elapsed = result.temporary_artifacts["finalize_elapsed_s"]
+    assert isinstance(finalize_elapsed, float)
+    assert finalize_elapsed >= 0.0
+    assert result.elapsed_s is not None and result.elapsed_s >= finalize_elapsed
+
+
+@pytest.mark.parametrize(
+    ("child_returncode", "expected_returncode"),
+    [(0, memory_guard.GUARD_RETURN_CODE), (7, 7)],
+)
+def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    expected_returncode: int,
+) -> None:
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        generation = tmp_path / "guard-generation"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    lease.generation.mkdir()
+    finish_error_receipt = lease.generation / "finish-error.json"
+    finish_error_receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+
+    def fail_finish(*_args: object, **_kwargs: object) -> Mapping[str, object]:
+        raise OSError("scratch cleanup failed")
+
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        fail_finish,
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "test-closed",
+                "closed": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        memory_guard._win_job,
+        "create_kill_on_close_job",
+        lambda: None,
+    )
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "memory_guard")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", f"raise SystemExit({child_returncode})"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        cleanup_orphans=False,
+        env=env,
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["state"] == "cleanup-error"
+    assert result.temporary_artifacts["error"] == ("OSError: scratch cleanup failed")
+    assert result.temporary_artifacts["receipt"] == str(finish_error_receipt)
+    finalize_elapsed = result.temporary_artifacts["finalize_elapsed_s"]
+    assert isinstance(finalize_elapsed, float)
+    assert finalize_elapsed >= 0.0
+    assert result.elapsed_s is not None and result.elapsed_s >= finalize_elapsed
+    assert "temporary artifact custody incomplete" in result.stderr
+    assert lease.release_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("child_returncode", "retention_errors", "expected_returncode"),
+    [
+        (0, ["prior generation receipt unreadable"], memory_guard.GUARD_RETURN_CODE),
+        (7, ["prior generation receipt unreadable"], 7),
+        (0, [], 0),
+    ],
+)
+def test_run_guarded_retention_sweep_health_preserves_primary_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    retention_errors: list[str],
+    expected_returncode: int,
+) -> None:
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        lambda *_args, **_kwargs: {
+            "state": "reclaimed",
+            "receipt": str(tmp_path / "owner.json"),
+            "retention": {
+                "reclaimed": [],
+                "retained_bytes": 0,
+                "retained_count": 0,
+                "protected_count": 3,
+                "errors": retention_errors,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "test-closed",
+                "closed": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        memory_guard._win_job,
+        "create_kill_on_close_job",
+        lambda: None,
+    )
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "memory_guard")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", f"raise SystemExit({child_returncode})"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        cleanup_orphans=False,
+        env=env,
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["state"] == "reclaimed"
+    assert result.temporary_artifacts["retention"]["protected_count"] == 3
+    if retention_errors:
+        assert "prior generation receipt unreadable" in result.stderr
+        assert "retention sweep reported errors" in result.stderr
+    else:
+        assert "temporary artifact custody incomplete" not in result.stderr
+    assert lease.release_calls == 1
+
+
+def test_run_guarded_exception_releases_lease_and_updates_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    finish_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+
+    def finish_scratch(
+        _lease: object,
+        *,
+        closed: bool,
+        success: bool,
+        evidence: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        finish_calls.append(
+            {
+                "closed": closed,
+                "success": success,
+                "evidence": dict(evidence),
+            }
+        )
+        return {"state": "retained", "receipt": str(tmp_path / "owner.json")}
+
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        finish_scratch,
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_guarded_launch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")),
+    )
+    env = dict(os.environ)
+    state_root = tmp_path / "memory_guard"
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(state_root)
+
+    with pytest.raises(RuntimeError, match="launch failed"):
+        memory_guard.run_guarded(
+            [sys.executable, "-c", "pass"],
+            max_rss_kb=512 * 1024,
+            max_total_rss_kb=1024 * 1024,
+            poll_interval=0.01,
+            child_rlimit_kb=None,
+            env=env,
+        )
+
+    assert finish_calls == [
+        {
+            "closed": True,
+            "success": False,
+            "evidence": {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "no-child-launched",
+                "closed": True,
+                "direct_child_reaped": True,
+                "exception_type": "RuntimeError",
+            },
+        }
+    ]
+    assert lease.release_calls == 1
+    markers = list((state_root / "active").glob("*.json"))
+    assert len(markers) == 1
+    marker = json.loads(markers[0].read_text(encoding="utf-8"))
+    assert marker["status"] == "guard_exception"
+    assert marker["temporary_artifacts"]["state"] == "retained"
+    assert marker["temporary_artifacts"]["closure"]["closed"] is True
+    assert marker["temporary_artifacts"]["finalize_elapsed_s"] >= 0.0
 
 
 def test_run_guarded_exports_backend_memory_contract() -> None:
@@ -5151,6 +5868,7 @@ def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(
         lambda _handle: 12_345,
     )
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    _patch_temporary_artifact_closure_closed(monkeypatch)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "pass"],

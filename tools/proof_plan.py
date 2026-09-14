@@ -89,12 +89,10 @@ REQUIRED_COMMAND_FIELDS = (
     "toolchains",
 )
 REQUIRED_TOOLCHAIN_FIELDS = (
-    "executable",
-    "version_args",
     "version_pattern",
-    "setup_value",
     "setup_evidence",
 )
+TARGET_DERIVED_IDENTITY_PROVIDERS = frozenset({"source-extension"})
 RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 
 
@@ -150,6 +148,12 @@ class ProofCommand:
 class ToolchainPolicy:
     name: str
     data: dict[str, Any]
+
+    @property
+    def identity_kind(self) -> str:
+        """Classify policy identity from its single declared provider boundary."""
+
+        return "target-derived" if "identity_provider" in self.data else "executable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,9 +450,47 @@ class ProofPlan:
             errors.append("toolchain policy names must be unique")
         dependency_graph: dict[str, tuple[str, ...]] = {}
         for policy in self.toolchain_policies:
+            if "identity_kind" in policy.data:
+                errors.append(
+                    f"{policy.name}: toolchain policy must not declare identity_kind; "
+                    "identity_provider is the target-derived discriminator"
+                )
             for field in REQUIRED_TOOLCHAIN_FIELDS:
                 if field not in policy.data:
                     errors.append(f"{policy.name}: missing toolchain field {field}")
+            identity_kind = policy.identity_kind
+            if identity_kind == "executable":
+                executable = policy.data.get("executable")
+                if not isinstance(executable, str) or not executable:
+                    errors.append(
+                        f"{policy.name}: executable identity requires a non-empty executable"
+                    )
+                args = policy.data.get("version_args")
+                if (
+                    not isinstance(args, list)
+                    or not args
+                    or not all(isinstance(item, str) and item for item in args)
+                ):
+                    errors.append(
+                        f"{policy.name}: executable identity requires non-empty version_args"
+                    )
+                setup_value = policy.data.get("setup_value")
+                if not isinstance(setup_value, str) or not setup_value:
+                    errors.append(
+                        f"{policy.name}: executable identity requires non-empty setup_value"
+                    )
+            else:
+                for field in ("executable", "version_args", "setup_value"):
+                    if field in policy.data:
+                        errors.append(
+                            f"{policy.name}: target-derived identity must not declare {field}"
+                        )
+                provider = policy.data.get("identity_provider")
+                if provider not in TARGET_DERIVED_IDENTITY_PROVIDERS:
+                    errors.append(
+                        f"{policy.name}: target-derived identity_provider must be one of "
+                        f"{sorted(TARGET_DERIVED_IDENTITY_PROVIDERS)!r}"
+                    )
             probe_cwd = policy.data.get("probe_cwd", ".")
             if not isinstance(probe_cwd, str) or not probe_cwd:
                 errors.append(f"{policy.name}: probe_cwd must be a non-empty string")
@@ -479,11 +521,6 @@ class ProofPlan:
                                 f"{policy.name}: probe_cwd is not a directory: "
                                 f"{probe_cwd!r}"
                             )
-            args = policy.data.get("version_args")
-            if not isinstance(args, list) or not all(
-                isinstance(item, str) and item for item in args
-            ):
-                errors.append(f"{policy.name}: version_args must be a string list")
             content_path_command = policy.data.get("content_path_command")
             if content_path_command is not None and (
                 not isinstance(content_path_command, list)
@@ -966,6 +1003,9 @@ class ProofPlan:
         known_commands = set(command_ids)
         known_cells = set(cell_ids)
         known_toolchains = set(policy_names)
+        toolchain_identity_kinds = {
+            policy.name: policy.identity_kind for policy in self.toolchain_policies
+        }
         known_resources = set(resource_names)
         execution_families = {
             **{family.name: family.data for family in self.families},
@@ -1017,6 +1057,18 @@ class ProofPlan:
                 errors.append(
                     f"{command.id}: unknown toolchains {sorted(unknown_toolchains)!r}"
                 )
+            else:
+                target_derived_toolchains = sorted(
+                    name
+                    for name in toolchains
+                    if toolchain_identity_kinds[name] == "target-derived"
+                )
+                if target_derived_toolchains:
+                    errors.append(
+                        f"{command.id}: static command cannot use target-derived "
+                        f"toolchains {target_derived_toolchains!r}; typed target "
+                        "context is required"
+                    )
             timeout_env = command.data.get("timeout_env", [])
             if not isinstance(timeout_env, list) or not all(
                 isinstance(name, str) and name for name in timeout_env
@@ -1730,6 +1782,11 @@ def _normalized_arch() -> str:
 
 
 def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
+    if policy.identity_kind != "executable":
+        raise ValueError(
+            f"{policy.name}: {policy.identity_kind} toolchain identity "
+            "requires target-context capture"
+        )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
     path = shutil.which(requested)
@@ -1807,6 +1864,18 @@ def toolchain_fingerprints(
     names: tuple[str, ...],
 ) -> dict[str, dict[str, str]]:
     policies = {policy.name: policy for policy in plan.toolchain_policies}
+    target_derived = [
+        name for name in names if policies[name].identity_kind != "executable"
+    ]
+    if target_derived:
+        raise ValueError(
+            "toolchain contract violation: "
+            + "; ".join(
+                f"{name}: {policies[name].identity_kind} toolchain identity "
+                "requires target-context capture"
+                for name in target_derived
+            )
+        )
     fingerprints: dict[str, dict[str, str]] = {}
     errors: list[str] = []
     domains: dict[str, list[str]] = {}
@@ -2526,8 +2595,10 @@ def replay_recent_commits(plan: ProofPlan, count: int) -> dict[str, Any]:
 
 write_github_outputs = _proof_plan_cli.write_github_outputs
 
+
 def main(argv: list[str] | None = None) -> int:
     return _proof_plan_cli.main(sys.modules[__name__], argv)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -11,10 +11,12 @@ import tomllib
 
 from molt.cli import wasm_link_inputs
 from molt.cli.command_runtime import _run_completed_command
-from molt.toolchain_identity import stable_executable_probe
+from molt.toolchain_identity import (
+    resolve_explicit_tool_command,
+    stable_executable_probe,
+)
 from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
-    resolve_explicit_tool_command,
 )
 from molt.llvm_linker_roles import executable_selects_linker_role
 from molt.wasi_sysroot import (
@@ -225,7 +227,7 @@ def ensure_rustup_target(
         detail = (add.stderr or add.stdout).strip() or "unknown error"
         warnings.append(f"rustup target add failed for {target_triple}: {detail}")
         return False
-    wasm_link_inputs.rust_target_libdir.cache_clear()
+    wasm_link_inputs.clear_rust_target_libdir_cache()
     return True
 
 

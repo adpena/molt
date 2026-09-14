@@ -538,13 +538,16 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None
     assert [python for _args, python in batches] == list(module.TEST_PYTHONS)
     for index, (args, _python) in enumerate(batches):
         commands = []
-        monkeypatch.setattr(dev_test_runner, "_run", lambda cmd: commands.append(list(cmd)))
+        monkeypatch.setattr(
+            dev_test_runner, "_run", lambda cmd: commands.append(list(cmd))
+        )
         monkeypatch.setattr(dev_test_runner.sys, "argv", args[1:])
         dev_test_runner.main()
         assert commands[0][:2] == ["pytest", "-q"]
         expected_tail = (
             [[dev_test_runner.sys.executable, "tools/verified_subset.py", "check"]]
-            if index == 0 else []
+            if index == 0
+            else []
         )
         assert commands[1:] == expected_tail
 
@@ -598,7 +601,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
     assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(module.ROOT / "tmp" / "uv-project-envs")
+        str(module.ROOT / "uv-project-envs")
     )
     assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
     assert env["PYTHONPYCACHEPREFIX"] == str(module.ROOT / "tmp" / "pycache")

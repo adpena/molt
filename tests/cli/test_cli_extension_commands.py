@@ -17,6 +17,7 @@ from molt.cli import extension_commands as cli_commands
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extension_target as cli_source_extension_target
+from molt.cli import source_extension_link_inputs as cli_source_extension_link_inputs
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli.extension_manifest import (
     _CURRENT_MOLT_C_API_VERSION,
@@ -2065,8 +2066,9 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
         *,
         explicit_commands: dict[cli_llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
+        environment: object,
     ) -> cli_llvm_wasi_tools.LlvmWasiToolFamily:
-        del sibling_directories
+        del sibling_directories, environment
         return cli_llvm_wasi_tools.LlvmWasiToolFamily(
             cc=_resolved_llvm_tool("cc", explicit_commands["cc"]),
             cxx=None,
@@ -2333,12 +2335,14 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_wasm_toolchain",
-        lambda _target: cli_source_extension_toolchain._SourceExtensionWasmToolchain(
-            ok=True,
-            compiler_kind="clang",
-            tools=tools,
-            wasi_sysroot=sysroot,
-            detail="deterministic producer fixture tool family",
+        lambda _target, *, environment: (
+            cli_source_extension_toolchain._SourceExtensionWasmToolchain(
+                ok=True,
+                compiler_kind="clang",
+                tools=tools,
+                wasi_sysroot=sysroot,
+                detail="deterministic producer fixture tool family",
+            )
         ),
     )
     _install_extension_object_symbol_facts(
@@ -3114,7 +3118,7 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_wasm_toolchain",
-        lambda target_plan: (
+        lambda target_plan, *, environment: (
             cli_source_extension_toolchain._SourceExtensionWasmToolchain(
                 ok=True,
                 compiler_kind="zig",
@@ -3127,9 +3131,9 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     compiler_builtins = tmp_path / "libclang_rt.builtins-wasm32.a"
     compiler_builtins.write_bytes(b"compiler-builtins")
     monkeypatch.setattr(
-        cli_source_extension_toolchain,
+        cli_source_extension_link_inputs.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
-        lambda _target: compiler_builtins,
+        lambda _target, *, environment: compiler_builtins,
     )
     out_dir = tmp_path / "metadata"
     rc = cli_commands.extension_metadata(
@@ -3207,6 +3211,9 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
             "nm": ("/tools/llvm-nm",),
         },
         wasi_sysroot=None,
+        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+            target_plan.target_triple, None, None, None
+        ),
         detail="host LLVM family",
     )
     seen_plans: list[cli_source_extension_target.SourceExtensionTargetPlan] = []
@@ -3299,6 +3306,9 @@ def test_native_target_metadata_commands_drive_real_extension_build(
             "nm": ("/tools/llvm-nm",),
         },
         wasi_sysroot=None,
+        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+            target_plan.target_triple, None, None, None
+        ),
         detail="host LLVM family",
     )
     monkeypatch.setattr(
@@ -3378,8 +3388,9 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
         *,
         explicit_commands: dict[cli_llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
+        environment: object,
     ) -> cli_llvm_wasi_tools.LlvmWasiToolFamily:
-        del sibling_directories
+        del sibling_directories, environment
         seen_explicit.append(dict(explicit_commands))
         return cli_llvm_wasi_tools.LlvmWasiToolFamily(
             cc=_resolved_llvm_tool("cc", explicit_commands["cc"]),
@@ -3444,7 +3455,7 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_wasi_sysroot",
-        lambda: pytest.fail("freestanding resolution must not probe WASI"),
+        lambda *, env: pytest.fail("freestanding resolution must not probe WASI"),
     )
     probe_sources: list[str] = []
     probe_commands: list[list[str]] = []
@@ -3470,9 +3481,9 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
         lambda plan: resolved if plan == target_plan else pytest.fail("target drift"),
     )
     monkeypatch.setattr(
-        cli_source_extension_toolchain,
+        cli_source_extension_link_inputs.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
-        lambda _target: pytest.fail(
+        lambda _target, *, environment: pytest.fail(
             "freestanding metadata must not require compiler-builtins"
         ),
     )
@@ -3536,6 +3547,9 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
             "strip": ("/tools/llvm-strip",),
         },
         wasi_sysroot=None,
+        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+            target_plan.target_triple, None, None, None
+        ),
         detail="freestanding LLVM family",
     )
     monkeypatch.setattr(
@@ -3544,9 +3558,11 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         lambda plan: resolved if plan == target_plan else pytest.fail("target drift"),
     )
     monkeypatch.setattr(
-        cli_source_extension_toolchain,
+        cli_source_extension_link_inputs.wasm_link_inputs,
         "wasm_compiler_builtins_archive",
-        lambda _target: pytest.fail("freestanding metadata needs no builtins"),
+        lambda _target, *, environment: pytest.fail(
+            "freestanding metadata needs no builtins"
+        ),
     )
     metadata, errors = (
         cli_source_extension_toolchain._materialize_source_extension_target_metadata(
@@ -4282,7 +4298,7 @@ def test_extension_build_wasm_target_requires_wasi_sysroot(
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_wasi_sysroot",
-        lambda: None,
+        lambda *, env: None,
         raising=True,
     )
 
@@ -4366,6 +4382,9 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
                 "nm": ("/usr/bin/llvm-nm",),
             },
             wasi_sysroot=None,
+            link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+                target_plan.target_triple, None, None, None
+            ),
             detail="fixture cross compiler family",
         )
         monkeypatch.setattr(

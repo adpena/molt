@@ -50,15 +50,24 @@ const COMPLETION_KEY: usize = 0x4d4f_4c54;
 // process event for arbitrarily long periods.
 const DEBUG_EVENT_WAIT_MS: u32 = u32::MAX;
 
+pub(super) fn required_environment() -> BTreeMap<String, String> {
+    // DEBUG_PROCESS is required for pre-entry recursive image custody. Windows
+    // otherwise enables debugger heap options that prevent the normal LFH.
+    // Seal the normal-heap setting in the caller's exact environment; never
+    // silently mutate the launched environment after policy capture.
+    BTreeMap::from([("_NO_DEBUG_HEAP".to_owned(), "1".to_owned())])
+}
+
 pub fn capability(mode: ClosureMode) -> Capability {
     Capability {
-        schema: "molt.proof-supervisor-capability.v1".to_owned(),
+        schema: crate::CAPABILITY_SCHEMA.to_owned(),
         platform: "windows".to_owned(),
         mode,
         backend: "debug-process+nested-job".to_owned(),
         available: true,
         pre_entry_exec_authority: true,
         recursive_descendant_authority: true,
+        required_environment: super::required_environment(),
         reason: None,
     }
 }

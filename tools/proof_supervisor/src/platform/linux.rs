@@ -12,13 +12,14 @@ use std::time::Instant;
 
 pub fn capability(mode: ClosureMode) -> Capability {
     Capability {
-        schema: "molt.proof-supervisor-capability.v1".to_owned(),
+        schema: crate::CAPABILITY_SCHEMA.to_owned(),
         platform: "linux".to_owned(),
         mode,
         backend: "ptrace-exitkill".to_owned(),
         available: ptrace_scope_allows_children(),
         pre_entry_exec_authority: true,
         recursive_descendant_authority: true,
+        required_environment: super::required_environment(),
         reason: (!ptrace_scope_allows_children())
             .then(|| "ptrace of direct children is disabled by host policy".to_owned()),
     }

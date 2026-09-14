@@ -2,9 +2,8 @@
 
 use molt_proof_supervisor::{
     ClosureMode, FixedImage, ImageClass, POLICY_SCHEMA, Policy, ProcessEvent, Receipt,
-    RootExitDisposition, sha256_file,
+    RootExitDisposition, platform, sha256_file,
 };
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -76,7 +75,7 @@ fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
             "spawn-and-wait".to_owned(),
             runtime.display().to_string(),
         ],
-        environment: BTreeMap::new(),
+        environment: platform::required_environment(),
         root_role: "fixture-launcher".to_owned(),
         fixed_images: vec![FixedImage {
             role: "fixture-launcher".to_owned(),
@@ -172,7 +171,7 @@ fn declared_auxiliary_is_terminated_when_root_exits() {
             auxiliary.display().to_string(),
             marker.display().to_string(),
         ],
-        environment: BTreeMap::new(),
+        environment: platform::required_environment(),
         root_role: "fixture".to_owned(),
         fixed_images: vec![
             FixedImage {
@@ -243,7 +242,7 @@ fn failed_root_exec_can_never_reconcile_as_complete() {
         mode: ClosureMode::Leaf,
         cwd: std::env::current_dir().unwrap(),
         command: vec![non_executable.display().to_string()],
-        environment: BTreeMap::new(),
+        environment: platform::required_environment(),
         root_role: "invalid-root".to_owned(),
         fixed_images: vec![FixedImage {
             role: "invalid-root".to_owned(),
@@ -280,6 +279,24 @@ fn failed_root_exec_can_never_reconcile_as_complete() {
         .unwrap();
     assert!(verified.success());
     let _ = fs::remove_dir_all(directory);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn normal_heap_is_available_to_debugged_root_and_descendant() {
+    let leaf = supervise(ClosureMode::Leaf, "normal-heap-leaf");
+    assert!(leaf.complete, "{leaf:#?}");
+    assert_eq!(leaf.root_exit_code, Some(0), "{leaf:#?}");
+    assert_eq!(leaf.accounting.total_processes, 1);
+
+    for mode in [ClosureMode::DeclaredTree, ClosureMode::InventoryTree] {
+        let tree = supervise(mode, "normal-heap-tree");
+        assert!(tree.complete, "{tree:#?}");
+        assert_eq!(tree.root_exit_code, Some(0), "{tree:#?}");
+        assert_eq!(tree.accounting.observed_process_creates, 2);
+        assert_eq!(tree.accounting.observed_process_exits, 2);
+        assert_eq!(tree.accounting.active_processes, 0);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -331,7 +348,7 @@ fn outer_timeout_termination_closes_job_and_never_publishes_complete_receipt() {
             root_marker.display().to_string(),
             child_marker.display().to_string(),
         ],
-        environment: BTreeMap::new(),
+        environment: platform::required_environment(),
         root_role: "fixture".to_owned(),
         fixed_images: vec![FixedImage {
             role: "fixture".to_owned(),
@@ -427,7 +444,7 @@ fn supervise_with_fixture_args(mode: ClosureMode, fixture_args: &[&str]) -> Rece
         mode,
         cwd: std::env::current_dir().unwrap(),
         command,
-        environment: BTreeMap::new(),
+        environment: platform::required_environment(),
         root_role: "fixture".to_owned(),
         fixed_images: vec![FixedImage {
             role: "fixture".to_owned(),
@@ -438,8 +455,13 @@ fn supervise_with_fixture_args(mode: ClosureMode, fixture_args: &[&str]) -> Rece
         derived_roots: vec![],
     };
     fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    let operation = if mode == ClosureMode::InventoryTree {
+        "inventory"
+    } else {
+        "run"
+    };
     let status = Command::new(&binary)
-        .args(["run", "--policy"])
+        .args([operation, "--policy"])
         .arg(&policy_path)
         .arg("--receipt")
         .arg(&receipt_path)

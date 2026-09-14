@@ -9,11 +9,11 @@ import sys
 import pytest
 
 from tools import check_memory_guard_wiring
-from tools import check_subprocess_guard_coverage
 from tools import memory_guard
 from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
+from molt import temporary_artifacts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -115,34 +115,14 @@ def test_guard_authority_has_no_replaced_tool_or_router_implementation():
         assert not (REPO_ROOT / relative).exists()
 
 
-def _clean_subprocess_audit() -> check_subprocess_guard_coverage.SubprocessGuardAudit:
-    return check_subprocess_guard_coverage.SubprocessGuardAudit(
-        scanned_files=0,
-        raw_calls=(),
-        unexpected=(),
-        stale_allowlist=(),
-        expanded_allowlist=(),
-    )
-
-
-def test_memory_guard_wiring_for_harness_entrypoints_with_clean_subprocess_audit() -> (
-    None
-):
-    audit = check_memory_guard_wiring.audit_repo(
-        subprocess_guard_audit=_clean_subprocess_audit(),
-    )
+def test_memory_guard_wiring_uses_clean_raw_subprocess_audit() -> None:
+    audit = check_memory_guard_wiring.audit_repo()
 
     assert audit.missing_paths == ()
     assert audit.missing_tokens == ()
     assert audit.required_sentinel_missing == ()
     assert audit.sentinel_drift == ()
     assert audit.direct_test_guard_missing == ()
-    assert audit.ok is True
-
-
-def test_memory_guard_wiring_uses_clean_raw_subprocess_audit() -> None:
-    audit = check_memory_guard_wiring.audit_repo()
-
     assert audit.subprocess_guard_unexpected == ()
     assert audit.subprocess_guard_stale_allowlist == ()
     assert audit.subprocess_guard_expanded_allowlist == ()
@@ -1010,8 +990,25 @@ def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None
     )
 
 
+@pytest.fixture
+def scratch_lease(monkeypatch, tmp_path):
+    token = "a" * 32
+    root = tmp_path / "artifact-root"
+    state = root / "tmp" / "memory_guard"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(root))
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(state))
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_TOKEN", token)
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_MARKER", str(state / "active" / "guard.json"))
+    lease = temporary_artifacts.acquire_guard_scratch(REPO_ROOT, os.environ)
+    monkeypatch.setenv(temporary_artifacts.SCRATCH_ENV, str(lease.target))
+    try:
+        yield lease
+    finally:
+        lease.release()
+
+
 def test_windows_pytest_custody_roots_prepare_readable_defaults(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, scratch_lease
 ) -> None:
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
@@ -1020,10 +1017,11 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
 
-    assert pytest_memory_guard_bootstrap.install_windows_pytest_custody_roots()
+    assert pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     temproot = Path(os.environ["PYTEST_DEBUG_TEMPROOT"])
     assert temproot.parent == tmp_path / "artifact-root" / "tmp"
     assert temproot.name.startswith("pt-")
+    assert temproot == scratch_lease.target
     assert len(temproot.name) <= 16
     assert temproot.is_dir()
     assert any(temproot.iterdir())
@@ -1032,18 +1030,17 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
     ).is_dir()
 
 
-def test_windows_pytest_temp_roots_are_short_and_exclusively_created(
-    monkeypatch, tmp_path
+def test_pytest_temp_root_reuses_short_parent_owned_allocation(
+    monkeypatch, tmp_path, scratch_lease
 ) -> None:
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
-    first = pytest_memory_guard_bootstrap.windows_pytest_temp_root()
-    second = pytest_memory_guard_bootstrap.windows_pytest_temp_root()
-    assert first != second
+    first = pytest_memory_guard_bootstrap.guarded_pytest_temp_root()
+    second = pytest_memory_guard_bootstrap.guarded_pytest_temp_root()
+    assert first == second == scratch_lease.target
     for path in (first, second):
-        assert path.parent == tmp_path / "tmp"
+        assert path.parent == tmp_path / "artifact-root" / "tmp"
         assert path.is_dir()
         assert len(path.name) <= 16
 
@@ -1067,9 +1064,7 @@ def test_windows_native_proof_scratch_layout_retains_linker_path_budget() -> Non
         "RUNNER_ARCH": "X64",
     }.items():
         template = template.replace("${env:" + key + "}", value)
-    temp_name = (
-        pytest_memory_guard_bootstrap.WINDOWS_PYTEST_TEMP_ROOT_NAME + "-abcdefgh"
-    )
+    temp_name = "pt-abcdefgh"
     output = PureWindowsPath("D:/a/_temp", template, "tmp", temp_name) / (
         "pytest-of-runneradmin/pytest-0/test_guarded_identity_timeout_0/"
         "proof-supervisor-target/release/build/quote-529389acd85f5c85/"
@@ -1089,7 +1084,7 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
     explicit = tmp_path / "explicit-temproot"
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(explicit))
 
-    assert not pytest_memory_guard_bootstrap.install_windows_pytest_custody_roots()
+    assert not pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     assert os.environ["PYTEST_DEBUG_TEMPROOT"] == str(explicit)
     assert explicit.is_dir()
     assert any(explicit.iterdir())

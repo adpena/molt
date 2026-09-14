@@ -112,6 +112,23 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
         [command, fixture] if command == "fixture-child" && fixture == "application-breakpoint" => {
             application_breakpoint_fixture()
         }
+        #[cfg(windows)]
+        [command, fixture] if command == "fixture-child" && fixture == "normal-heap-leaf" => {
+            normal_heap_fixture()?;
+            Ok(0)
+        }
+        #[cfg(windows)]
+        [command, fixture] if command == "fixture-child" && fixture == "normal-heap-tree" => {
+            normal_heap_fixture()?;
+            let status = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args(["fixture-child", "normal-heap-leaf"])
+                .status()
+                .map_err(|error| error.to_string())?;
+            if !status.success() {
+                return Err(format!("normal-heap descendant failed: {status}"));
+            }
+            Ok(0)
+        }
         [command, fixture, marker]
             if command == "fixture-child" && fixture == "write-pid-and-sleep-leaf" =>
         {
@@ -134,6 +151,70 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
         }
         _ => Err("usage: capability <leaf|declared-tree|inventory-tree> | run --policy FILE --receipt FILE | inventory --policy FILE --receipt FILE | verify --policy FILE --receipt FILE".to_owned()),
     }
+}
+
+#[cfg(windows)]
+fn normal_heap_fixture() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+    use windows_sys::Win32::System::Memory::{
+        HeapCompatibilityInformation, HeapCreate, HeapDestroy, HeapQueryInformation,
+        HeapSetInformation,
+    };
+
+    struct Heap(HANDLE);
+    impl Drop for Heap {
+        fn drop(&mut self) {
+            unsafe { HeapDestroy(self.0) };
+        }
+    }
+
+    if unsafe { IsDebuggerPresent() } == 0 {
+        return Err("normal-heap fixture requires active debugger custody".to_owned());
+    }
+    let handle = unsafe { HeapCreate(0, 0, 0) };
+    if handle.is_null() {
+        return Err(format!(
+            "HeapCreate failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let heap = Heap(handle);
+    let compatibility = 2_u32;
+    if unsafe {
+        HeapSetInformation(
+            heap.0,
+            HeapCompatibilityInformation,
+            (&compatibility as *const u32).cast(),
+            std::mem::size_of_val(&compatibility),
+        )
+    } == 0
+    {
+        return Err(format!(
+            "cannot enable LFH under debugger custody: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut observed = 0_u32;
+    if unsafe {
+        HeapQueryInformation(
+            heap.0,
+            HeapCompatibilityInformation,
+            (&mut observed as *mut u32).cast(),
+            std::mem::size_of_val(&observed),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(format!(
+            "cannot query LFH: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if observed != compatibility || unsafe { IsDebuggerPresent() } == 0 {
+        return Err("normal LFH and debugger custody must remain active together".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -203,6 +284,7 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
     println!(
         "{}",
         serde_json::json!({
+            "capability": platform::capability(policy.policy.mode),
             "schema": receipt.schema,
             "state": receipt.state,
             "complete": receipt.complete,

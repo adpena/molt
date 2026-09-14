@@ -16,55 +16,11 @@ from molt.cli.build_output_layout import (
 )
 from molt.cli.config_resolution import STDLIB_PROFILE_CHOICES
 from molt.cli.dx_cli import add_dx_parser
+from molt.cli.source_extension_invocation import (
+    add_source_extension_set_build_arguments,
+)
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 from molt.wasm_optimization import WASM_OPT_LEVELS
-
-
-def _add_source_extension_set_build_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--package",
-        required=True,
-        help="Registered package name (for example: scipy).",
-    )
-    parser.add_argument(
-        "--package-version",
-        required=True,
-        help="Registered upstream package version (for example: 1.18.0).",
-    )
-    parser.add_argument(
-        "--module-set",
-        required=True,
-        help="Configured extension-set name (for example: pact-witness).",
-    )
-    parser.add_argument(
-        "--python-version",
-        required=True,
-        help="Registered target CPython feature version (for example: 3.12).",
-    )
-    parser.add_argument(
-        "--source",
-        required=True,
-        help="Pinned upstream source checkout.",
-    )
-    parser.add_argument(
-        "--build-root",
-        required=True,
-        help="Absent or empty build root for the single upstream Meson setup.",
-    )
-    parser.add_argument(
-        "--target",
-        default="wasm",
-        help=(
-            "Extension-set target: native, wasm, wasm-freestanding, or an explicit "
-            "Rust target triple (default: wasm)."
-        ),
-    )
-    parser.add_argument(
-        "--abi-tier",
-        choices=("cpython-abi",),
-        default="cpython-abi",
-        help="Extension-set ABI tier (default: cpython-abi).",
-    )
 
 
 def _build_entrypoint_parser() -> argparse.ArgumentParser:
@@ -249,7 +205,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "After linking, run wasmtime compile to produce a precompiled "
-            ".cwasm artifact for 10-50x faster startup in production."
+            ".cwasm artifact plus source-binding custody manifest for faster "
+            "startup in production."
         ),
     )
     build_parser.add_argument(
@@ -257,9 +214,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Generate a molt.snapshot.json header alongside the WASM output "
-            "for sub-millisecond cold starts on edge platforms. "
-            "Records mount plan, capabilities, and module hash metadata."
+            "Generate a non-restorable molt.snapshot.json metadata template "
+            "alongside the WASM output. Records mount plan, capabilities, and "
+            "complete linked or split-runtime execution identity; executable "
+            "pause/resume snapshots are not yet supported."
         ),
     )
     build_parser.add_argument(
@@ -656,25 +614,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "from upstream Meson metadata."
         ),
     )
-    _add_source_extension_set_build_arguments(extension_produce_set_parser)
-    extension_produce_set_parser.add_argument(
-        "--expected-identity-sha256",
-        help=(
-            "Reproduce an existing canonical seal transactionally and publish "
-            "nothing unless both incumbent and candidate match this canonical "
-            "target/content identity."
-        ),
-    )
-    extension_produce_set_parser.add_argument(
-        "--expected-candidate-identity-sha256",
-        help=(
-            "Require the transactionally built candidate to match this declared "
-            "canonical identity; equal incumbent/candidate identities are a no-op, "
-            "different identities use crash-recoverable compare-and-swap publication."
-        ),
-    )
-    extension_produce_set_parser.add_argument(
-        "--json", action="store_true", help="Emit JSON output for tooling."
+    add_source_extension_set_build_arguments(
+        extension_produce_set_parser, command="produce-set"
     )
 
     extension_attest_set_candidate_parser = extension_subparsers.add_parser(
@@ -684,14 +625,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "detached candidate custody without publication authority."
         ),
     )
-    _add_source_extension_set_build_arguments(extension_attest_set_candidate_parser)
-    extension_attest_set_candidate_parser.add_argument(
-        "--output",
-        required=True,
-        help=("New detached bundle root below canonical package-candidates custody."),
-    )
-    extension_attest_set_candidate_parser.add_argument(
-        "--json", action="store_true", help="Emit JSON output for tooling."
+    add_source_extension_set_build_arguments(
+        extension_attest_set_candidate_parser, command="attest-set-candidate"
     )
 
     extension_publish_set_candidate_parser = extension_subparsers.add_parser(
