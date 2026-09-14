@@ -38,6 +38,30 @@ artifact selection.
 
 ## Runtime identity consolidation (2026-09-05)
 
+### Build storage and profile inheritance
+
+`Cargo.toml` owns profile settings through Cargo inheritance, including package
+overrides. `dev-fast` inherits the backend/runtime debug and optimization policy
+from `dev`; `release-fast` changes only its iteration-specific fields. Shipping
+policy flows from `release-output` into `release-size`, whose hot-crate size
+overrides also serve `wasm-release`. `dev-release` retains the release policy
+with symbols. Do not copy inherited fields into child profiles: test effective
+policy and preserve target-specific artifact selection instead.
+
+Build storage is an optimization target alongside wall clock and peak memory.
+Measure prerequisite footprint (toolchains, SDKs and dependencies), additional
+peak working storage for cold and warm builds, final retained outputs, reusable
+cache, and retired generations separately. Attribute measurements to the source
+revision, target, profile and cache state. A post-failure directory size is only
+partial retained output, not a measured successful-build peak. Logical file sizes
+can double-count hard links; filesystem free-space deltas can include unrelated
+host activity.
+Report those qualifications with before/after measurements. The capacity floor
+in `molt.disk_capacity` is an admission guardrail, never a footprint target or
+evidence that a build fits. Reduce unnecessary artifact production and duplicate
+retention before changing that floor; keep useful diagnostics and valid warm
+reuse explicit in the tradeoff.
+
 `runtime_identity_schema.py` owns exact v3 compile/family/member receipts;
 `runtime_build_identity.py` captures inputs and projects those receipts. The
 immutable resolved Cargo plan owns effective configuration, selected tools,
@@ -51,7 +75,12 @@ Rust sysroots, codegen backends, extern files, and library search directories ha
 live byte-generation custody. The WASM input-capture hook observes the resolved
 environment, tools, and ordered target library roots once; it does not rediscover
 ambient configuration. Inherited profile overrides use the same profile ancestry
-as debug policy.
+as debug policy. Environment attribution discovers the complete profile namespace
+from the captured manifest, config files and CLI configuration before excluding
+unselected siblings. Exact supported controls take precedence over profile-name
+prefixes: a profile named `release-build-override` cannot hide release build-script
+controls. Hyphen/underscore aliases share Cargo's environment spelling. Unknown
+controls belonging to selected profiles still fail closed.
 
 Cargo target predicates are parsed once by `cargo_target_cfg.py` against a shared
 typed rustc target-metadata query, never guessed from the host platform. The

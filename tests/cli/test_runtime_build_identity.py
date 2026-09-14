@@ -333,6 +333,33 @@ def test_canonical_profile_and_publication_transform_are_identity_inputs(
     assert release.family_digest != unstripped.family_digest
 
 
+@pytest.mark.parametrize("kind", ["shared", "reloc"])
+def test_dependency_profile_fields_invalidate_compile_and_member_identity(
+    identity_root: Path, kind: str
+) -> None:
+    manifest = identity_root / "Cargo.toml"
+    original = manifest.read_text(encoding="utf-8")
+    identities = []
+    for debug, opt in ((0, 1), (1, 1), (1, 2)):
+        manifest.write_text(
+            original
+            + f'\n[profile.dev.package."*"]\ndebug = {debug}\n'
+            + f"[profile.dev.package.cranelift-codegen]\nopt-level = {opt}\n",
+            encoding="utf-8",
+        )
+        identities.append(
+            _resolve(
+                identity_root,
+                kind=kind,
+                publication="profile-contract",
+                profile="dev-fast",
+            )
+        )
+    assert len({item.compile_digest for item in identities}) == 3
+    assert len({item.family_digest for item in identities}) == 3
+    assert len({item.digest for item in identities}) == 3
+
+
 def test_publication_authority_content_is_family_identity_input(
     identity_root: Path,
 ) -> None:
