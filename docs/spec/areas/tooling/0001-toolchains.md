@@ -180,6 +180,24 @@ support; shipping native runtimes use `release-output`/`release-size`, and WASM
 uses `wasm-release`. Select profiles explicitly rather than changing policy by
 launching Cargo from a different directory.
 
+Development dependency symbols have one Cargo-native owner:
+`[profile.dev.package."*"] debug = 0`. The wildcard covers non-workspace
+dependencies, including external path dependencies and future additions; it
+does not classify packages by a name prefix. Workspace members keep the parent
+profile's debuginfo unless explicitly overridden. Cargo merges named package
+settings per field, so the Cranelift-codegen/regalloc2 optimization overrides
+inherit the wildcard's symbol policy. `dev-fast` and Cargo's built-in `test`
+profile inherit `dev`; release-derived profiles and isolated workspaces do not.
+Do not mirror dependency lists or implement another profile resolver in tooling.
+Cargo input/cache identity includes the complete root manifest.
+
+Debuginfo, optimization, debug assertions, and overflow checks are separate
+settings. Dependency `debug = 0` does not disable assertions or overflow checks,
+but Cargo also projects debuginfo into build scripts' `DEBUG` environment input.
+Consequently a symbol-policy change needs real consumer verification; it is not
+guaranteed to be storage-only. Measure cold build cost separately from runtime
+speed before introducing new per-package optimization overrides.
+
 ## Platform Pitfalls
 - **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
 - **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).

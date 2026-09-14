@@ -283,6 +283,26 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert {"tir::", "wasm::", "call::", "object::"}.issubset(filters)
 
 
+@pytest.mark.parametrize(
+    "path", ["Cargo.toml", ".cargo/config.toml", "runtime/molt-wasm-host/Cargo.toml"]
+)
+def test_cargo_profile_authority_selects_its_complete_contract_tests(path: str) -> None:
+    assert _classes(path)["python_unit"] is True
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.id == "python.unit.runtime-artifacts"
+    )
+    for test_path in (
+        "tests/cli/test_backend_manifest_contract.py",
+        "tests/cli/test_runtime_build_identity.py",
+        "tests/cli/test_runtime_family_authority.py",
+        "tests/test_cargo_workspace.py",
+        "tests/test_cli_build_profile_policy.py",
+    ):
+        assert command.argv.count(test_path) == 1
+
+
 def test_docs_only_change_skips_compiler_proofs() -> None:
     classes = _classes("docs/agent/INDEX.md")
     assert classes["repository_policy"] is True

@@ -251,9 +251,12 @@ Verified against the worktree tree at `origin/main` HEAD `18ed35b063`:
   (backend-daemon iteration). Ship profiles `[profile.release-output]` and
   `[profile.wasm-release]` now uses measured ThinLTO, 16 codegen units, debug=0,
   and `opt-level="z"`.
-- **Per-package opt-level layering — LANDED.** Extensive `[profile.dev.package.*]`
-  and `[profile.dev-fast.package.*]` overrides (molt-backend=1, molt-runtime=2,
-  cranelift-codegen=1, …) + hot-crate opt policy for the shipped runtime.
+- **Per-package opt-level layering — LANDED.** The historical snapshot had
+  mirrored `dev`/`dev-fast` package tables. Current root profiles own dependency
+  symbols once through `[profile.dev.package."*"] debug=0`; `dev-fast` inherits
+  that policy and explicit workspace/hot-crate optimization settings. See
+  [Cargo workspace truth custody](../../spec/areas/tooling/0001-toolchains.md#cargo-workspace-truth-custody)
+  for the current authority and the separate shipped-runtime policies.
 - **Config-lattice reuse + stable dep-cache — LANDED (opt-in).** V1
   (018d83e104/8bc067ee27 single combined compile, now the sole split-runtime
   `both` producer with no dual-compile kill switch/retry), V2 (7e248d384b stable dep-cache

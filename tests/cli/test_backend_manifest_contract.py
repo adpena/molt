@@ -23,6 +23,32 @@ def _load_native_backend_manifest() -> dict[str, object]:
         return tomllib.load(handle)
 
 
+def _canonical_profile_value(key: str, value: object) -> object:
+    if type(value) is bool:
+        if key == "debug":
+            return 2 if value else 0
+        if key == "strip":
+            return "symbols" if value else "none"
+    return value
+
+
+def _effective_profile(profiles: dict, name: str) -> dict:
+    """Independent Cargo-inheritance oracle for declarative profile contracts."""
+    declared = profiles[name]
+    parent = declared.get("inherits")
+    resolved = _effective_profile(profiles, parent) if parent is not None else {}
+    for key, value in declared.items():
+        if key == "inherits":
+            continue
+        if key == "package":
+            packages = resolved.setdefault("package", {})
+            for package, policy in value.items():
+                packages.setdefault(package, {}).update(policy)
+        else:
+            resolved[key] = _canonical_profile_value(key, value)
+    return resolved
+
+
 def test_backend_manifest_does_not_depend_on_obj_model() -> None:
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]
@@ -72,67 +98,64 @@ def test_backend_manifest_has_no_duplicate_cranelift_target_overlays() -> None:
     )
 
 
-def test_workspace_dev_profile_trims_backend_debug_info() -> None:
-    manifest = _load_workspace_manifest()
-    profiles = manifest["profile"]
-    dev_packages = profiles["dev"]["package"]
-    dev_fast_packages = profiles["dev-fast"]["package"]
-    expected_packages = {
-        "molt-backend",
-        "cranelift-codegen",
-        "cranelift-frontend",
-        "gimli",
-        "cranelift-module",
-        "cranelift-native",
-        "cranelift-object",
-        "object",
+def _declared_workspace_package_names(manifest: dict) -> set[str]:
+    # Read the explicit workspace authority, not a molt-* name classifier.
+    return {
+        tomllib.loads((ROOT / member / "Cargo.toml").read_text(encoding="utf-8"))[
+            "package"
+        ]["name"]
+        for member in manifest["workspace"]["members"]
     }
 
-    for packages in (dev_packages, dev_fast_packages):
-        assert expected_packages <= packages.keys()
-        for package in expected_packages:
-            assert packages[package]["debug"] == 0
 
-
-def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
+def test_workspace_dev_dependency_symbols_have_one_wildcard_authority() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
-    dev_packages = profiles["dev"]["package"]
-    dev_fast_packages = profiles["dev-fast"]["package"]
-    expected_packages = {
-        "molt-runtime",
-        "aws-lc-rs",
-        "aws-lc-sys",
-        "httparse",
-        "libbz2-rs-sys",
-        "proc-macro2",
-        "quote",
-        "rustpython-parser",
-        "rustpython-ast",
-        "rustpython-parser-core",
-        "rustls",
-        "rustls-pemfile",
-        "rustls-webpki",
-        "serde",
-        "serde_core",
-        "serde_json",
-        "simdutf",
-        "syn",
-        "thiserror",
-        "tungstenite",
-        "unicode_names2",
-        "url",
-        "webpki-roots",
-        "xz2",
-        "zlib-rs",
-        "lzma-sys",
-        "zip",
-    }
+    workspace_names = _declared_workspace_package_names(manifest)
+    assert profiles["dev-fast"]["inherits"] == "dev"
+    assert "package" not in profiles["dev-fast"]
 
-    for packages in (dev_packages, dev_fast_packages):
-        assert expected_packages <= packages.keys()
-        for package in expected_packages:
-            assert packages[package]["debug"] == 0
+    for profile_name in ("dev", "dev-fast"):
+        packages = _effective_profile(profiles, profile_name)["package"]
+        # Cargo applies this to every non-workspace member, including future
+        # dependencies. Named overrides merge per field, so opt-only hot
+        # exceptions still use wildcard debug=0, without duplicated rows.
+        assert packages["*"] == {"debug": 0}
+        assert {
+            name: policy
+            for name, policy in packages.items()
+            if name != "*" and name not in workspace_names
+        } == {
+            "cranelift-codegen": {"opt-level": 1},
+            "regalloc2": {"opt-level": 1},
+        }
+
+
+def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
+    manifest = _load_workspace_manifest()
+    profiles = manifest["profile"]
+    workspace_names = _declared_workspace_package_names(manifest)
+    expected_hot_members = {
+        "molt-backend": {"opt-level": 1, "debug": 0},
+        "molt-backend-native": {"opt-level": 1, "debug": 0},
+        "molt-backend-luau": {"opt-level": 1, "debug": 0},
+        "molt-backend-rust": {"opt-level": 1, "debug": 0},
+        "molt-runtime": {"opt-level": 2, "debug": 0},
+    }
+    assert expected_hot_members.keys() <= workspace_names
+
+    for profile_name, member_debug in (("dev", 2), ("dev-fast", 1)):
+        profile = _effective_profile(profiles, profile_name)
+        # Cargo excludes workspace members from package."*". Members without
+        # a named override keep the profile's debug/optimization settings;
+        # the existing workspace hot exceptions retain their complete policy.
+        assert profile["debug"] == member_debug
+        assert profile["opt-level"] == 0
+        assert {
+            name: policy
+            for name, policy in profile["package"].items()
+            if name in workspace_names
+        } == expected_hot_members
 
 
 def test_workspace_dev_fast_does_not_force_opt_level() -> None:
@@ -142,28 +165,52 @@ def test_workspace_dev_fast_does_not_force_opt_level() -> None:
     assert "opt-level" not in dev_fast_profile
 
 
+def test_profile_children_have_no_mirrored_inherited_settings() -> None:
+    profiles = _load_workspace_manifest()["profile"]
+    for name, declared in profiles.items():
+        parent = declared.get("inherits")
+        if parent is None:
+            continue
+        inherited = _effective_profile(profiles, parent)
+        for key, value in declared.items():
+            if key == "inherits":
+                continue
+            if key == "package":
+                for package, policy in value.items():
+                    inherited_policy = inherited.get("package", {}).get(package, {})
+                    for setting, selected in policy.items():
+                        assert selected != inherited_policy.get(setting), (
+                            f"{name}.{package}.{setting} mirrors {parent}"
+                        )
+            else:
+                assert _canonical_profile_value(key, value) != inherited.get(key), (
+                    f"{name}.{key} mirrors {parent}"
+                )
+
+
 def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
 
-    release_fast = profiles["release-fast"]
-    assert release_fast["inherits"] == "release"
+    assert profiles["release-fast"]["inherits"] == "release"
+    assert profiles["release-size"]["inherits"] == "release-output"
+    assert profiles["wasm-release"]["inherits"] == "release-size"
+    release_fast = _effective_profile(profiles, "release-fast")
     assert release_fast["lto"] == "off"
     assert release_fast["codegen-units"] == 256
     assert release_fast["debug"] == 0
     assert release_fast["panic"] == "unwind"
 
     shipping_policy = {
-        "inherits": "release",
         "opt-level": "z",
         "lto": "thin",
         "codegen-units": 16,
         "debug": 0,
         "panic": "abort",
-        "strip": True,
+        "strip": "symbols",
     }
     for profile_name in ("release-output", "release-size", "wasm-release"):
-        shipping_profile = profiles[profile_name]
+        shipping_profile = _effective_profile(profiles, profile_name)
         assert {
             key: shipping_profile[key] for key in shipping_policy
         } == shipping_policy
@@ -177,7 +224,21 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
                 "codegen partitioning"
             )
 
-    dev_release = profiles["dev-release"]
+    hot_crates = {
+        "molt-runtime",
+        "molt-runtime-core",
+        "molt-lang-obj-model",
+        "molt-runtime-collections",
+    }
+    for name, level in (
+        ("release-output", 3),
+        ("release-size", "s"),
+        ("wasm-release", "s"),
+    ):
+        packages = _effective_profile(profiles, name)["package"]
+        assert all(packages[crate]["opt-level"] == level for crate in hot_crates)
+
+    dev_release = _effective_profile(profiles, "dev-release")
     assert dev_release["debug"] == 1
     assert dev_release["strip"] == "none"
 

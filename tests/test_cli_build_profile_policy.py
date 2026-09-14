@@ -93,9 +93,13 @@ def test_build_args_profile_detection_keeps_platform_profile_separate() -> None:
     )
 
 
-def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
+@pytest.mark.parametrize("build_profile", ["dev", "release"])
+@pytest.mark.parametrize("platform_profile", [None, "browser"])
+def test_nested_build_keeps_platform_profile_and_forwards_build_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    build_profile: str,
+    platform_profile: str | None,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -117,6 +121,7 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
         },
     )
     build_cmds: list[list[str]] = []
+    run_cmds: list[list[str]] = []
 
     def fake_subprocess_run(
         cmd: list[str],
@@ -131,14 +136,24 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
         cli_commands, "_find_molt_root", lambda start, cwd=None: project
     )
     monkeypatch.setattr(wrapper_build, "_run_completed_command", fake_subprocess_run)
-    monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
+    # Profile forwarding owns neither import closure computation nor cache
+    # publication. Exercise an uncacheable entry; the real closure/cache
+    # contracts live in test_cli_binary_image_closure and import-collection tests.
+    monkeypatch.setattr(wrapper_build, "_wrapper_build_cache_input", lambda **_: None)
+
+    def fake_run_command(cmd: list[str], **_kwargs: object) -> int:
+        run_cmds.append(list(cmd))
+        return 0
+
+    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
+    platform_args = ["--profile", platform_profile] if platform_profile else []
 
     rc = cli_commands.run_script(
         str(entry),
         None,
         [],
-        build_args=["--profile", "browser"],
-        build_profile="dev",
+        build_args=platform_args,
+        build_profile=build_profile,
         json_output=False,
     )
 
@@ -150,13 +165,13 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
             "molt.cli",
             "build",
             "--json",
-            "--profile",
-            "browser",
+            *platform_args,
             "--build-profile",
-            "dev",
+            build_profile,
             str(entry),
         ]
     ]
+    assert run_cmds == [[str(output_binary)]]
 
 
 # ---------------------------------------------------------------------------

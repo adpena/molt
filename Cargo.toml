@@ -80,17 +80,19 @@ incremental = true
 opt-level = 3
 lto = "thin"
 codegen-units = 4
-# panic = "unwind" is required for the backend's catch_unwind retry
-# mechanism (handles Cranelift optimizer panics gracefully).
-# panic = "abort" broke this entirely — catch_unwind was a no-op.
+# Development/host profiles retain unwind-based panic reporting. Shipping
+# runtime profiles select their cfg(panic="abort") FFI boundary explicitly.
 panic = "unwind"
 strip = "symbols"
 debug = 1
 
-# Dev per-package overrides: opt-level 1 for hot compilation dependencies
-# so that the backend and Cranelift pipeline are not painfully slow even in
-# debug builds. debug = 0 on large transitive deps to cut link time and
-# artifact size.
+# One dependency-symbol policy, including future non-workspace dependencies.
+# Cargo excludes workspace members from this wildcard and merges named package
+# settings per field. dev-fast and the built-in test profile inherit dev.
+# Keep workspace debug policy and hot-crate optimization explicit below.
+[profile.dev.package."*"]
+debug = 0
+
 [profile.dev.package.molt-backend]
 opt-level = 1
 debug = 0
@@ -109,112 +111,14 @@ debug = 0
 
 [profile.dev.package.cranelift-codegen]
 opt-level = 1
-debug = 0
 
 [profile.dev.package.regalloc2]
 opt-level = 1
-debug = 0
-
-[profile.dev.package.cranelift-frontend]
-debug = 0
-
-[profile.dev.package.cranelift-module]
-debug = 0
-
-[profile.dev.package.cranelift-native]
-debug = 0
-
-[profile.dev.package.cranelift-object]
-debug = 0
-
-[profile.dev.package.gimli]
-debug = 0
-
-[profile.dev.package.object]
-debug = 0
 
 # Runtime at opt-level 2 even in dev: this code runs inside compiled
 # output, so a sluggish runtime masks the actual perf of user programs.
 [profile.dev.package.molt-runtime]
 opt-level = 2
-debug = 0
-
-[profile.dev.package.aws-lc-rs]
-debug = 0
-
-[profile.dev.package.aws-lc-sys]
-debug = 0
-
-[profile.dev.package.httparse]
-debug = 0
-
-[profile.dev.package.libbz2-rs-sys]
-debug = 0
-
-[profile.dev.package.rustpython-parser]
-debug = 0
-
-[profile.dev.package.rustpython-ast]
-debug = 0
-
-[profile.dev.package.rustpython-parser-core]
-debug = 0
-
-[profile.dev.package.rustls]
-debug = 0
-
-[profile.dev.package.rustls-pemfile]
-debug = 0
-
-[profile.dev.package.rustls-webpki]
-debug = 0
-
-[profile.dev.package.serde]
-debug = 0
-
-[profile.dev.package.serde_core]
-debug = 0
-
-[profile.dev.package.serde_json]
-debug = 0
-
-[profile.dev.package.simdutf]
-debug = 0
-
-[profile.dev.package.thiserror]
-debug = 0
-
-[profile.dev.package.tungstenite]
-debug = 0
-
-[profile.dev.package.webpki-roots]
-debug = 0
-
-[profile.dev.package.zlib-rs]
-debug = 0
-
-[profile.dev.package.proc-macro2]
-debug = 0
-
-[profile.dev.package.quote]
-debug = 0
-
-[profile.dev.package.syn]
-debug = 0
-
-[profile.dev.package.unicode_names2]
-debug = 0
-
-[profile.dev.package.url]
-debug = 0
-
-[profile.dev.package.xz2]
-debug = 0
-
-[profile.dev.package.lzma-sys]
-debug = 0
-
-[profile.dev.package.zip]
 debug = 0
 
 [profile.dev-fast]
@@ -223,130 +127,8 @@ debug = 1
 codegen-units = 256
 lto = "off"
 
-[profile.dev-fast.package.molt-backend]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.molt-backend-native]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.molt-backend-luau]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.molt-backend-rust]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.cranelift-codegen]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.regalloc2]
-opt-level = 1
-debug = 0
-
-[profile.dev-fast.package.cranelift-frontend]
-debug = 0
-
-[profile.dev-fast.package.cranelift-module]
-debug = 0
-
-[profile.dev-fast.package.cranelift-native]
-debug = 0
-
-[profile.dev-fast.package.cranelift-object]
-debug = 0
-
-[profile.dev-fast.package.gimli]
-debug = 0
-
-[profile.dev-fast.package.object]
-debug = 0
-
-# Runtime at opt-level 2 even in dev-fast: same rationale as dev profile.
-[profile.dev-fast.package.molt-runtime]
-opt-level = 2
-debug = 0
-
-[profile.dev-fast.package.aws-lc-rs]
-debug = 0
-
-[profile.dev-fast.package.aws-lc-sys]
-debug = 0
-
-[profile.dev-fast.package.httparse]
-debug = 0
-
-[profile.dev-fast.package.libbz2-rs-sys]
-debug = 0
-
-[profile.dev-fast.package.rustpython-parser]
-debug = 0
-
-[profile.dev-fast.package.rustpython-ast]
-debug = 0
-
-[profile.dev-fast.package.rustpython-parser-core]
-debug = 0
-
-[profile.dev-fast.package.rustls]
-debug = 0
-
-[profile.dev-fast.package.rustls-pemfile]
-debug = 0
-
-[profile.dev-fast.package.rustls-webpki]
-debug = 0
-
-[profile.dev-fast.package.serde]
-debug = 0
-
-[profile.dev-fast.package.serde_core]
-debug = 0
-
-[profile.dev-fast.package.serde_json]
-debug = 0
-
-[profile.dev-fast.package.simdutf]
-debug = 0
-
-[profile.dev-fast.package.thiserror]
-debug = 0
-
-[profile.dev-fast.package.tungstenite]
-debug = 0
-
-[profile.dev-fast.package.webpki-roots]
-debug = 0
-
-[profile.dev-fast.package.zlib-rs]
-debug = 0
-
-[profile.dev-fast.package.proc-macro2]
-debug = 0
-
-[profile.dev-fast.package.quote]
-debug = 0
-
-[profile.dev-fast.package.syn]
-debug = 0
-
-[profile.dev-fast.package.unicode_names2]
-debug = 0
-
-[profile.dev-fast.package.url]
-debug = 0
-
-[profile.dev-fast.package.xz2]
-debug = 0
-
-[profile.dev-fast.package.lzma-sys]
-debug = 0
-
-[profile.dev-fast.package.zip]
-debug = 0
+# Package optimization/debug policy is inherited from dev, including future
+# additions. Only genuinely different per-profile settings belong here.
 
 # Fast-ITERATION profile for the backend DAEMON (the molt compiler itself), NOT a
 # ship profile. The shipped user-binary runtime staticlib is built with
@@ -371,10 +153,8 @@ debug = 0
 # Zero shipped user-binary runtime-perf risk: release-fast is not the shipped
 # runtime profile; release-output and wasm-release use their separately measured
 # shipping policy below.
-# panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
-opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon hot paths
 lto = "off"
 # codegen-units: release-fast is a build-ITERATION profile (the backend daemon
 # + runtime staging), not a ship profile — the shipping native runtime is built with release-output and
@@ -383,24 +163,14 @@ lto = "off"
 # serialized it into a ~72s one-line-edit rebuild; cgu=256 parallelizes across cores)
 # and avoids paying an LTO merge in every pass/backend edit loop.
 codegen-units = 256
-strip = "symbols"
 # debug = 0: release-fast is a build-ITERATION profile that strips symbols anyway,
 # so inheriting release's debug=1 only pays rustc debuginfo emission + a Windows
 # PDB link (on the link.exe long pole) for artifacts that are immediately stripped.
 # Turning it off directly cuts iteration wall-clock with zero observable loss
 # (symbols were already gone). Backtraces here are symbol-less regardless of strip.
 debug = 0
-panic = "unwind"       # required for catch_unwind in Cranelift retry path
-
-# Hot-path dependency overrides for release-fast: ensure the register
-# allocator and codegen core are maximally optimized even if the overall
-# profile inherits a different default.  These crates dominate compile-time
-# CPU in Cranelift's pipeline and benefit most from O3 auto-vectorization.
-[profile.release-fast.package.cranelift-codegen]
-opt-level = 3
-
-[profile.release-fast.package.regalloc2]
-opt-level = 3
+# Optimization, unwind policy, symbol stripping, and hot dependency overrides
+# have one owner in release; this profile changes only iteration tradeoffs.
 
 # Output-binary profile: used when building the runtime staticlib that gets
 # linked into user output binaries. Key differences from release-fast:
@@ -438,11 +208,9 @@ opt-level = 3
 [profile.release-output]
 inherits = "release"
 opt-level = "z"
-lto = "thin"
 codegen-units = 16
 debug = 0
 panic = "abort"
-strip = true
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) at profile scope with the same
@@ -475,44 +243,21 @@ strip = true
 # (wasm). Do NOT revert to unwind — that re-inflates the size profile with dead
 # unwind tables for zero correctness gain.
 [profile.release-size]
-inherits = "release"
-opt-level = "z"
-lto = "thin"
-codegen-units = 16
-debug = 0
-panic = "abort"
-strip = true
+inherits = "release-output"
 
 # WASM-optimized release profile: the same bounded ThinLTO/16-CGU authority as
 # native shipping artifacts. The former fat-LTO/one-CGU primary plus a
 # thin-LTO/16-CGU retry profile duplicated policy and made invalid output trigger
 # a different compiler configuration. One primary policy now either produces a
 # valid artifact or fails closed.
-# NOTE: the profile-scope opt-level="z" below governs bulk stdlib crates only;
-# the four hot runtime crates are re-asserted to opt-"s" in the hot-crate
-# opt-level policy block (they would otherwise inherit opt-3 from `release` and
-# inflate the shipped runtime by ~1.65 MB / 25.5%, measured).
+# Inherit the complete size policy, including opt-"s" hot runtime crates. This
+# keeps native size and WASM size consumers on one authority, not mirrored rows.
 [profile.wasm-release]
-inherits = "release"
-opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
-lto = "thin"
-codegen-units = 16
-debug = 0
-panic = "abort"  # WASM doesn't use catch_unwind; unwind tables are pure bloat
-strip = true
+inherits = "release-size"
 
 [profile.dev-release]
 inherits = "release"
-lto = "thin"
-codegen-units = 4
-debug = 1
 strip = "none"  # keep symbols for dev-release debugging
-
-[profile.dev-release.package.cranelift-codegen]
-opt-level = 3
-
-[profile.dev-release.package.regalloc2]
-opt-level = 3
 
 # Hot-path dependency overrides for base release: ensure the register
 # allocator and codegen core are maximally optimized. These crates
@@ -580,16 +325,4 @@ opt-level = "s"
 opt-level = "s"
 
 [profile.release-size.package.molt-runtime-collections]
-opt-level = "s"
-
-[profile.wasm-release.package.molt-runtime]
-opt-level = "s"
-
-[profile.wasm-release.package.molt-runtime-core]
-opt-level = "s"
-
-[profile.wasm-release.package.molt-lang-obj-model]
-opt-level = "s"
-
-[profile.wasm-release.package.molt-runtime-collections]
 opt-level = "s"

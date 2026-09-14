@@ -952,6 +952,10 @@ def _resolve_rust_flag_resources(
     )
 
 
+def _profile_environment_prefix(profile: str) -> str:
+    return "CARGO_PROFILE_" + profile.upper().replace("-", "_") + "_"
+
+
 def _table(value: object, *, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise ValueError(f"runtime Cargo {label} must be a string-keyed table")
@@ -1615,6 +1619,7 @@ class RuntimeCargoPlan:
             profile = parent
 
     def profile_environment(self, cargo_profile: str) -> dict[str, str]:
+        """Attribute controls before filtering the complete profile namespace."""
         controls = {
             "OPT_LEVEL",
             "DEBUG",
@@ -1628,27 +1633,48 @@ class RuntimeCargoPlan:
             "CODEGEN_UNITS",
             "RPATH",
         }
+        # Cargo disallows link-wide settings in build-script/proc-macro
+        # overrides, just as it does in per-package overrides.
+        controls |= {
+            "BUILD_OVERRIDE_" + control
+            for control in controls - {"PANIC", "LTO", "RPATH"}
+        }
+        ancestry = self.profile_ancestry(cargo_profile)
+        selected_prefixes = {_profile_environment_prefix(name) for name in ancestry}
+        known_profiles = {"dev", "release", "test", "bench", *ancestry}
+        for configuration in (self.profile_configuration, self.cli_configuration):
+            known_profiles.update(
+                _table(configuration.get("profile", {}), label="profile")
+            )
         prefixes = sorted(
-            (
-                "CARGO_PROFILE_" + profile.upper().replace("-", "_") + "_"
-                for profile in self.profile_ancestry(cargo_profile)
-            ),
-            key=len,
-            reverse=True,
+            {_profile_environment_prefix(name) for name in known_profiles},
+            key=lambda prefix: (-len(prefix), prefix),
         )
+        known_controls = {
+            prefix + control for prefix in prefixes for control in controls
+        }
+        selected_controls = {
+            prefix + control for prefix in selected_prefixes for control in controls
+        }
         result: dict[str, str] = {}
         for name, value in self.environment.items():
+            # Cargo constructs a key for each profile field. A legal ancestor
+            # control can also match a longer profile name (release-build-override
+            # or release-debug); longest-prefix selection must not hide it.
+            if name in known_controls:
+                if name in selected_controls:
+                    result[name] = value
+                continue
             prefix = next(
                 (prefix for prefix in prefixes if name.startswith(prefix)), None
             )
-            if prefix is None:
-                continue
-            suffix = name.removeprefix(prefix)
-            if suffix.removeprefix("BUILD_OVERRIDE_") not in controls:
+            # Discover siblings from every captured configuration source before
+            # rejecting unknown controls, so RELEASE_SIZE_LTO is not diagnosed
+            # as an unknown RELEASE control when release-size is not selected.
+            if prefix in selected_prefixes:
                 raise ValueError(
                     f"unsupported output-bearing Cargo profile override: {name}"
                 )
-            result[name] = value
         return result
 
     def preserve_debug_for_profile(self, cargo_profile: str) -> bool:
@@ -1660,7 +1686,7 @@ class RuntimeCargoPlan:
                 self.cli_configuration,
                 self.environment,
                 ("profile", profile, "debug"),
-                ("CARGO_PROFILE_" + profile.upper().replace("-", "_") + "_DEBUG",),
+                (_profile_environment_prefix(profile) + "DEBUG",),
             )
             if value is not None:
                 if value in (False, 0, "0", "false", "none"):

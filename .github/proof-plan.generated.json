@@ -171,7 +171,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "5ebcdb53112cac07394381b89a5c7b4296104f9d0d85c50ca7905a60da59626d",
+  "authority_sha256": "7e63c4c1a014f66ae4d13ec5580833fb50ae984e94b0bd3484ed2122718995fa",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -307,6 +307,9 @@
         ".python-version",
         "pyproject.toml",
         "uv.lock",
+        "Cargo.toml",
+        ".cargo/**",
+        "runtime/**/Cargo.toml",
         "src/**",
         "tests/**",
         "tools/**"
@@ -3134,6 +3137,9 @@
         "-q",
         "-m",
         "not slow",
+        "tests/cli/test_backend_manifest_contract.py",
+        "tests/test_cargo_workspace.py",
+        "tests/test_cli_build_profile_policy.py",
         "tests/cli/test_runtime_build_identity.py",
         "tests/cli/test_runtime_family_authority.py",
         "tests/cli/test_runtime_artifact_selection.py",
