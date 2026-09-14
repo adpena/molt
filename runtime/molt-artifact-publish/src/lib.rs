@@ -375,22 +375,45 @@ fn temporary_name(file_name: &OsStr, pid: u32, nonce: u64) -> OsString {
 }
 
 #[cfg(windows)]
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+/// Encode an entry for a Win32 namespace operation, independently of the host
+/// executable's long-path manifest. Resolve the parent, never the final entry:
+/// replacement must replace a symlink itself rather than its referent.
+pub fn windows_namespace_path_wide(path: &Path) -> io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt as _;
+
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows namespace path contains a NUL",
+        ));
+    }
+    // GetFullPathNameW semantics normalize ordinary relative paths, separators
+    // and trailing dots/spaces before conversion to verbatim form. Explicit
+    // verbatim paths keep their distinct spelling and semantics.
+    let absolute = std::path::absolute(path)?;
+    let name = absolute.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "namespace path must name a file",
+        )
+    })?;
+    let parent = std::fs::canonicalize(publication_parent(&absolute))?;
+    Ok(parent
+        .join(name)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let source = windows_namespace_path_wide(source)?;
+    let destination = windows_namespace_path_wide(destination)?;
     let replaced = unsafe {
         MoveFileExW(
             source.as_ptr(),
@@ -491,6 +514,73 @@ mod tests {
         );
         assert!(!temporary.exists());
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn deep_paths_publish_new_and_existing_files_through_both_commit_apis() {
+        let root = test_directory("deep");
+        let directory = root.join("nested-publication-directory/".repeat(12));
+        let output = directory.join("artifact-\u{03bb}.bin");
+        assert!(output.as_os_str().len() > 260);
+        write_bytes_atomically(&output, b"new").expect("publish deep new file");
+        write_bytes_atomically(&output, b"replacement").expect("replace deep file");
+        assert_eq!(std::fs::read(&output).unwrap(), b"replacement");
+        for name in ["producer-new.bin", "artifact-\u{03bb}.bin"] {
+            let temporary = directory.join("producer.tmp");
+            let destination = directory.join(name);
+            std::fs::write(&temporary, b"producer").unwrap();
+            commit_existing_file_atomically(&temporary, &destination)
+                .expect("publish deep producer file");
+            assert_eq!(std::fs::read(&destination).unwrap(), b"producer");
+            assert!(!temporary.exists());
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(root).expect("remove deep publication fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_namespace_encoding_preserves_entry_identity_and_rejects_nul() {
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+        let root = test_directory("encoding");
+        let output = root.join("artifact.bin");
+        let ordinary = windows_namespace_path_wide(&output).unwrap();
+        assert_eq!(ordinary.last(), Some(&0));
+        assert_eq!(ordinary.iter().filter(|&&unit| unit == 0).count(), 1);
+        assert_eq!(
+            windows_namespace_path_wide(&root.join("./artifact.bin. ")).unwrap(),
+            ordinary,
+            "ordinary Win32 leaf normalization must precede verbatim encoding"
+        );
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let literal = canonical_root.join("artifact.bin. ");
+        let literal_wide = windows_namespace_path_wide(&literal).unwrap();
+        assert_eq!(
+            literal_wide,
+            literal
+                .as_os_str()
+                .encode_wide()
+                .chain([0])
+                .collect::<Vec<_>>()
+        );
+        let mut non_unicode_name = OsString::from_wide(&[0xd800]);
+        non_unicode_name.push(".bin");
+        let non_unicode = canonical_root.join(non_unicode_name);
+        assert_eq!(
+            windows_namespace_path_wide(&non_unicode).unwrap(),
+            non_unicode
+                .as_os_str()
+                .encode_wide()
+                .chain([0])
+                .collect::<Vec<_>>()
+        );
+        let invalid = root.join(OsString::from_wide(&[b'x' as u16, 0, b'y' as u16]));
+        assert_eq!(
+            windows_namespace_path_wide(&invalid).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

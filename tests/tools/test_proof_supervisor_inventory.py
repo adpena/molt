@@ -17,6 +17,51 @@ from tools.proof_queue_pkg import (
 )
 
 
+def test_supervisor_sources_follow_local_dependencies_and_workspace_inheritance(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "tools" / "proof_supervisor"
+    shared = tmp_path / "runtime" / "shared"
+    for crate in (source, shared):
+        (crate / "src").mkdir(parents=True)
+        (crate / "src" / "lib.rs").write_text("// authority\n", encoding="utf-8")
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers=["runtime/shared"]\n'
+        '[workspace.package]\nedition="2024"\n',
+        encoding="utf-8",
+    )
+    (source / "Cargo.toml").write_text(
+        '[package]\nname="supervisor"\nversion="0.1.0"\n'
+        "[workspace]\nmembers=[]\n"
+        "[target.'cfg(windows)'.dependencies]\n"
+        'shared={path="../../runtime/shared"}\n',
+        encoding="utf-8",
+    )
+    (shared / "Cargo.toml").write_text(
+        '[package]\nname="shared"\nversion="0.1.0"\nedition.workspace=true\n',
+        encoding="utf-8",
+    )
+    for name in ("build.py", "Cargo.lock"):
+        (source / name).write_text("", encoding="utf-8")
+    shared_asset = shared / "src" / "schema.json"
+    shared_asset.write_text("{}", encoding="utf-8")
+    unrelated = tmp_path / "src" / "unrelated.rs"
+    unrelated.parent.mkdir()
+    unrelated.write_text("// not a supervisor crate\n", encoding="utf-8")
+
+    paths = supervisor_custody.source_authority_paths(tmp_path)
+
+    assert paths == tuple(sorted(set(paths)))
+    assert (tmp_path / "Cargo.toml").resolve() in paths
+    assert (shared / "Cargo.toml").resolve() in paths
+    assert (shared / "src" / "lib.rs").resolve() in paths
+    assert shared_asset.resolve() in paths
+    assert unrelated.resolve() not in paths
+    (shared / "Cargo.toml").unlink()
+    with pytest.raises(ValueError, match="Cargo manifest"):
+        supervisor_custody.source_authority_paths(tmp_path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
