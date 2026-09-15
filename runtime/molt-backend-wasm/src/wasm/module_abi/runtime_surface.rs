@@ -5,13 +5,11 @@ use crate::wasm_abi::{
     IMPORT_REGISTRY, RESERVED_RUNTIME_CALLABLE_SPECS, WasmRuntimeImport, runtime_callable_arity,
     runtime_callable_import, wasm_runtime_import,
 };
-use crate::wasm_abi_generated::{
-    PYTHON_BUILTIN_CALLABLES, op_loop_runtime_call, python_builtin_callable,
-};
+use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
 use crate::{FunctionIR, OpIR, SimpleIR};
-use molt_ir::tir::simple_def_use::visit_simple_ir_defined_names;
+use molt_tir::passes::collect_app_callable_requirements;
 
 pub(super) struct WasmRuntimeSurfacePlan {
     pub(super) max_func_arity: usize,
@@ -24,24 +22,37 @@ pub(super) struct WasmRuntimeSurfacePlan {
 }
 
 impl WasmRuntimeSurfacePlan {
-    pub(super) fn build(ir: &SimpleIR) -> Self {
+    pub(super) fn build(ir: &SimpleIR, profile: WasmProfile) -> Self {
         let defined_function_names: BTreeSet<&str> =
             ir.functions.iter().map(|func| func.name.as_str()).collect();
         let known_imports: BTreeSet<WasmRuntimeImport> =
             IMPORT_REGISTRY.iter().map(|spec| spec.import).collect();
+        let requirements = collect_app_callable_requirements(&ir.functions);
         let mut plan = Self {
             max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
-            builtin_trampoline_specs: BTreeMap::new(),
+            builtin_trampoline_specs: requirements.builtin_trampolines,
             direct_import_call_specs: BTreeMap::new(),
-            manifest_intrinsic_names: BTreeSet::new(),
+            manifest_intrinsic_names: requirements
+                .intrinsic_names
+                .into_iter()
+                // Resolver candidates do not demand a capability. Like native
+                // staticlib admission, retain only providers this profile has;
+                // an unavailable dynamic lookup must stay unavailable. Actual
+                // calls/materializations below remain mandatory requirements.
+                .filter(|name| {
+                    runtime_callable_import(name)
+                        .is_some_and(|import| profile.allows_runtime_import(import))
+                })
+                .collect(),
             required_imports: BTreeSet::new(),
         };
 
         for func_ir in &ir.functions {
             plan.observe_function(func_ir, &defined_function_names, &known_imports);
         }
+        plan.validate_profile(profile);
         plan
     }
 
@@ -62,7 +73,7 @@ impl WasmRuntimeSurfacePlan {
         if profile == WasmProfile::Pure {
             for import in self.reachable_imports() {
                 assert!(
-                    !crate::wasm_abi_generated::pure_profile_skips_import(import.name()),
+                    profile.allows_runtime_import(import),
                     "WASM pure profile cannot admit reachable runtime import '{}'; select a profile supporting this callable closure",
                     import.name()
                 );
@@ -107,58 +118,11 @@ impl WasmRuntimeSurfacePlan {
             return;
         }
         let is_poll = func_ir.name.ends_with("_poll");
-        // SimpleIR is mutable transport, not SSA. A whole-function constant
-        // fact is valid only when no parameter or other definition can replace
-        // it. Unknown builtin names conservatively retain the generated family.
-        let mut definitions = BTreeMap::<&str, usize>::new();
-        for name in &func_ir.params {
-            *definitions.entry(name.as_str()).or_default() += 1;
-        }
-        for op in &func_ir.ops {
-            visit_simple_ir_defined_names(op, |name| {
-                *definitions.entry(name).or_default() += 1;
-            });
-        }
-        let const_strings: BTreeMap<&str, &str> = func_ir
-            .ops
-            .iter()
-            .filter_map(|op| {
-                if op.kind == "const_str" && definitions.get(op.out.as_deref()?) == Some(&1) {
-                    Some((op.out.as_deref()?, op.s_value.as_deref()?))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let runtime_lookup_vars: BTreeSet<&str> = func_ir
-            .ops
-            .iter()
-            .filter_map(|op| {
-                if op.kind == "builtin_func"
-                    && matches!(
-                        op.s_value.as_deref(),
-                        Some("molt_require_intrinsic_runtime" | "molt_load_intrinsic_runtime")
-                    )
-                {
-                    op.out.as_deref()
-                } else {
-                    None
-                }
-            })
-            .collect();
-
         if !is_poll {
             self.max_func_arity = self.max_func_arity.max(func_ir.params.len());
         }
         for op in &func_ir.ops {
-            self.observe_op(
-                op,
-                is_poll,
-                &const_strings,
-                &runtime_lookup_vars,
-                defined_function_names,
-                known_imports,
-            );
+            self.observe_op(op, is_poll, defined_function_names, known_imports);
         }
     }
 
@@ -166,8 +130,6 @@ impl WasmRuntimeSurfacePlan {
         &mut self,
         op: &OpIR,
         is_poll: bool,
-        const_strings: &BTreeMap<&str, &str>,
-        runtime_lookup_vars: &BTreeSet<&str>,
         defined_function_names: &BTreeSet<&str>,
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
@@ -221,70 +183,6 @@ impl WasmRuntimeSurfacePlan {
                 );
             }
         }
-        // Runtime lookup is a reachability edge, not a direct-call rewrite.
-        // The generated callable root must survive even when a mutable global
-        // has no explicit builtin_func producer in this application.
-        let args = op.args.as_deref().unwrap_or_default();
-        let runtime_call = match kind {
-            "module_get_global" => Some((WasmRuntimeImport::ModuleGetGlobal, args)),
-            "call"
-                if !op
-                    .s_value
-                    .as_deref()
-                    .is_some_and(|name| defined_function_names.contains(name)) =>
-            {
-                op.s_value
-                    .as_deref()
-                    .and_then(wasm_runtime_import)
-                    .map(|import| (import, args))
-            }
-            "call_func" => args.split_first().and_then(|(callee, args)| {
-                // Both helper identities have the same name operand. Retain
-                // any observed helper definition, rather than last-write-wins.
-                runtime_lookup_vars
-                    .contains(callee.as_str())
-                    .then_some((WasmRuntimeImport::RequireIntrinsicRuntime, args))
-            }),
-            _ => None,
-        };
-        match runtime_call {
-            Some((WasmRuntimeImport::ModuleGetGlobal, [_, name])) => {
-                self.record_builtin_lookup(const_strings.get(name.as_str()).copied());
-            }
-            Some((
-                WasmRuntimeImport::RequireIntrinsicRuntime
-                | WasmRuntimeImport::LoadIntrinsicRuntime,
-                [name, ..],
-            )) => {
-                if let Some(name) = const_strings.get(name.as_str()) {
-                    self.manifest_intrinsic_names.insert((*name).to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn record_builtin_lookup(&mut self, name: Option<&str>) {
-        if let Some(name) = name {
-            if let Some(spec) = python_builtin_callable(name) {
-                self.record_arity(
-                    spec.runtime_name,
-                    spec.arity,
-                    RuntimeArityPlan::BuiltinTrampoline,
-                );
-            }
-        } else {
-            // A computed name can select any supported Python builtin. Only
-            // this genuinely dynamic case needs the complete generated family;
-            // ordinary source-level global names retain exact tree shaking.
-            for spec in PYTHON_BUILTIN_CALLABLES {
-                self.record_arity(
-                    spec.runtime_name,
-                    spec.arity,
-                    RuntimeArityPlan::BuiltinTrampoline,
-                );
-            }
-        }
     }
 
     fn record_arity(&mut self, name: &str, arity: usize, plan: RuntimeArityPlan) {
@@ -333,15 +231,86 @@ impl RuntimeArityPlan {
 mod tests {
     use super::*;
     use crate::wasm_import_tracking::TrackedImportIds;
+    use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
+
+    #[test]
+    fn stored_intrinsic_names_share_resolver_and_import_reachability() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "sys_bootstrap".into(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".into(),
+                        out: Some("name".into()),
+                        s_value: Some("molt_sys_version".into()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "store_var".into(),
+                        var: Some("later".into()),
+                        args: Some(vec!["name".into()]),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "const_str".into(),
+                        out: Some("message".into()),
+                        s_value: Some("molt_not_a_callable: diagnostic".into()),
+                        ..Default::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+        let plan = WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Auto);
+        let symbols = BTreeSet::from(["molt_sys_version".into()]);
+        assert_eq!(
+            plan.manifest_intrinsic_names,
+            molt_tir::passes::compute_app_callable_manifest(&ir.functions, &symbols)
+        );
+        assert!(
+            plan.reachable_imports()
+                .any(|import| Some(import) == runtime_callable_import("molt_sys_version"))
+        );
+    }
 
     #[test]
     fn named_lookup_plan_roots_only_the_matching_generated_callable() {
         for spec in PYTHON_BUILTIN_CALLABLES {
-            let mut plan = WasmRuntimeSurfacePlan::build(&SimpleIR {
-                functions: vec![],
-                profile: None,
-            });
-            plan.record_builtin_lookup(Some(spec.python_name));
+            let plan = WasmRuntimeSurfacePlan::build(
+                &SimpleIR {
+                    functions: vec![FunctionIR {
+                        name: "lookup".into(),
+                        params: vec!["module".into()],
+                        ops: vec![
+                            OpIR {
+                                kind: "const_str".into(),
+                                out: Some("name".into()),
+                                s_value: Some(spec.python_name.into()),
+                                ..Default::default()
+                            },
+                            OpIR {
+                                kind: "module_get_global".into(),
+                                args: Some(vec!["module".into(), "name".into()]),
+                                out: Some("value".into()),
+                                ..Default::default()
+                            },
+                        ],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                        codegen_partition: false,
+                        execution_context: Default::default(),
+                    }],
+                    profile: None,
+                },
+                WasmProfile::Auto,
+            );
             assert_eq!(
                 plan.builtin_trampoline_specs,
                 BTreeMap::from([(spec.runtime_name.to_string(), spec.arity)])
@@ -392,7 +361,7 @@ mod tests {
                 }],
                 profile: None,
             };
-            let plan = WasmRuntimeSurfacePlan::build(&ir);
+            let plan = WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Auto);
             for spec in PYTHON_BUILTIN_CALLABLES {
                 assert_eq!(
                     plan.builtin_trampoline_specs.get(spec.runtime_name),

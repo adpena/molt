@@ -1,4 +1,129 @@
 use super::*;
+use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
+
+#[test]
+fn app_callable_manifest_canonicalizes_explicit_intrinsic_alias_candidates() {
+    let function = manifest_func(vec![
+        make_const_str("alias", "_molt_time_time"),
+        make_const_str("primary", "molt_time_time"),
+        make_const_str("not_an_alias", "__molt_getframe"),
+    ]);
+    let symbols = BTreeSet::from(["molt_time_time".into(), "molt_getframe".into()]);
+    assert_eq!(
+        compute_app_callable_manifest(&[function], &symbols),
+        BTreeSet::from(["molt_time_time".into()])
+    );
+}
+
+#[test]
+fn app_callable_manifest_retains_every_named_builtin_without_specializing_lookup() {
+    let symbols = PYTHON_BUILTIN_CALLABLES
+        .iter()
+        .map(|spec| spec.runtime_name.to_owned())
+        .collect();
+    for spec in PYTHON_BUILTIN_CALLABLES {
+        for target in [
+            None,
+            Some("molt_module_get_global"),
+            Some("module_get_global"),
+        ] {
+            let lookup = OpIR {
+                kind: if target.is_some() {
+                    "call"
+                } else {
+                    "module_get_global"
+                }
+                .into(),
+                s_value: target.map(str::to_owned),
+                args: Some(vec!["module".into(), "name".into()]),
+                out: Some("callable".into()),
+                ..Default::default()
+            };
+            let function = manifest_func(vec![make_const_str("name", spec.python_name), lookup]);
+            let result = compute_app_callable_manifest(std::slice::from_ref(&function), &symbols);
+            assert_eq!(
+                result,
+                BTreeSet::from([spec.runtime_name.to_owned()]),
+                "{}",
+                spec.python_name
+            );
+            assert!(function.ops[1].runtime_symbol.is_none());
+        }
+    }
+}
+
+#[test]
+fn app_callable_manifest_computed_or_redefined_names_retain_only_generated_builtins() {
+    let expected: BTreeSet<String> = PYTHON_BUILTIN_CALLABLES
+        .iter()
+        .map(|spec| spec.runtime_name.to_owned())
+        .collect();
+    let mut symbols = expected.clone();
+    symbols.insert("molt_unreachable_intrinsic".into());
+    for redefinition in [
+        None,
+        Some(make_store_var("name", "dynamic")),
+        Some(make_const_str("name", "unrelated")),
+    ] {
+        let mut function = manifest_func(vec![make_const_str("name", "globals")]);
+        if let Some(redefinition) = redefinition {
+            function.ops.push(redefinition);
+        } else {
+            function.params.push("name".into());
+        }
+        function.ops.push(OpIR {
+            kind: "module_get_global".into(),
+            args: Some(vec!["module".into(), "name".into()]),
+            ..Default::default()
+        });
+        assert_eq!(
+            compute_app_callable_manifest(&[function], &symbols),
+            expected
+        );
+    }
+}
+
+#[test]
+fn app_callable_manifest_unrelated_names_and_shadowed_runtime_calls_add_no_builtin_roots() {
+    let symbols = PYTHON_BUILTIN_CALLABLES
+        .iter()
+        .map(|spec| spec.runtime_name.to_owned())
+        .collect();
+    let function = manifest_func(vec![
+        make_const_str("name", "application_global"),
+        OpIR {
+            kind: "module_get_global".into(),
+            args: Some(vec!["module".into(), "name".into()]),
+            ..Default::default()
+        },
+    ]);
+    assert!(compute_app_callable_manifest(&[function], &symbols).is_empty());
+    let mut shadow = manifest_func(vec![
+        make_const_str("name", "globals"),
+        OpIR {
+            kind: "call".into(),
+            s_value: Some("molt_module_get_global".into()),
+            args: Some(vec!["module".into(), "name".into()]),
+            ..Default::default()
+        },
+    ]);
+    shadow.name = "molt_module_get_global".into();
+    assert!(compute_app_callable_manifest(&[shadow], &symbols).is_empty());
+}
+
+#[test]
+fn app_callable_manifest_retains_qualified_acquisitions_without_literal_symbol_ops() {
+    let symbol = "molt_sys_gettrace";
+    let function = manifest_func(vec![OpIR {
+        kind: "module_get_attr".into(),
+        runtime_symbol: Some(symbol.into()),
+        ..Default::default()
+    }]);
+    assert_eq!(
+        compute_app_callable_manifest(&[function], &BTreeSet::from([symbol.into()])),
+        BTreeSet::from([symbol.into()])
+    );
+}
 
 /// A const-string intrinsic name passed as a call argument (the wrapper case,
 /// e.g. `_require_callable_intrinsic("molt_gc_collect")`) is captured even

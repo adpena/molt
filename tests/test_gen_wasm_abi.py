@@ -316,6 +316,13 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     assert gen._check(
         gen.OUT_RUNTIME_CALLABLES_RS, gen.render_runtime_callables_rs(data)
     )
+    assert gen._check(
+        gen.OUT_PYTHON_BUILTIN_CALLABLES_RS,
+        gen._rustfmt(
+            "python_builtin_callables_generated.rs",
+            gen.render_python_builtin_callables_rs(data),
+        ),
+    )
     assert gen._check(gen.OUT_PY, gen.render_py(data))
     assert gen._check(gen.OUT_JS_ABI, gen.render_js_abi(data))
     assert gen._check(
@@ -907,30 +914,39 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info" in rendered_runtime_rs
-    assert "pub(crate) fn python_builtin_callable(name: &str)" in rendered_rs
+    rendered_builtin_rs = gen.render_python_builtin_callables_rs(data)
+    assert "pub fn python_builtin_callable(name: &str)" in rendered_builtin_rs
+    assert "PYTHON_BUILTIN_CALLABLES" not in rendered_rs
     builtin_entries = sorted(
-        gen._python_builtin_global_callables(data), key=lambda entry: entry["python_name"]
+        gen._python_builtin_global_callables(data),
+        key=lambda entry: entry["python_name"],
     )
     offsets = []
     for entry in builtin_entries:
         marker = f'python_name: "{entry["python_name"]}",'
-        offsets.append(rendered_rs.index(marker))
+        offsets.append(rendered_builtin_rs.index(marker))
         assert (
-            marker + f'\n        runtime_name: "{entry["runtime_name"]}",'
-            + f'\n        arity: {entry["arity"]},'
-        ) in rendered_rs
+            marker
+            + f'\n        runtime_name: "{entry["runtime_name"]}",'
+            + f"\n        arity: {entry['arity']},"
+        ) in rendered_builtin_rs
     assert offsets == sorted(offsets), "binary-search projection must be name-sorted"
     assert '        "len" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
     assert "            index: 2," in rendered_runtime_rs
     assert '            runtime_name: "molt_len",' in rendered_runtime_rs
-    assert "pub(crate) fn python_builtin_function_target_ptr(" in rendered_runtime_rs
+    assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
     assert (
-        '        "molt_len" => Some(crate::molt_len as *const ()),'
-        in rendered_runtime_rs
-    )
+        "#[cfg(test)]\n#[rustfmt::skip]\n"
+        "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64>"
+    ) in rendered_runtime_rs
+    for runtime_name in {entry["runtime_name"] for entry in builtin_entries}:
+        assert (
+            f'"{runtime_name}" => crate::{runtime_name} as *const (),'
+            in rendered_runtime_rs
+        )
     assert "pub(crate) fn python_builtin_function_info(" in rendered_runtime_rs
     assert "            fn_ptr:" not in rendered_runtime_rs
-    assert '#[cfg(not(target_arch = "wasm32"))]' in rendered_runtime_rs
+    assert '#[cfg(not(target_arch = "wasm32"))]' not in rendered_runtime_rs
     assert '            posonly_params: &["obj"],' in rendered_runtime_rs
     assert "            defaults: &[]," in rendered_runtime_rs
     assert '        "print" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
@@ -947,7 +963,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         '("flush", GeneratedBuiltinDefaultValue::Bool(false))],'
     ) in rendered_runtime_rs
     assert (
-        "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = 41;"
+        f"pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = {len(builtin_entries)};"
         in rendered_runtime_rs
     )
     assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
@@ -1027,6 +1043,11 @@ def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
     assert "pub(crate) fn try_app_resolve_runtime_callable" in registry
     assert "try_app_resolve_symbol(spec.symbol)" in registry
     assert "pub(crate) use registry::try_app_resolve_symbol;" in intrinsics_mod
+    function_abi = (
+        ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "try_app_resolve_symbol(info.runtime_name)" in function_abi
+    assert "python_builtin_function_target_ptr" not in function_abi
 
 
 def test_wasm_trampoline_keeps_the_cross_target_owned_result_contract() -> None:
@@ -1155,6 +1176,33 @@ def test_witness_frontier_runtime_callables_must_be_reserved() -> None:
         match="witness-frontier runtime callables are not reserved: molt_type_new",
     ):
         manifest.validate_loaded_manifest(broken)
+
+
+def test_dynamic_builtin_family_uses_shared_python_specs_and_reserved_abi() -> None:
+    gen = _load_gen_wasm_abi()
+    rows = {
+        entry["python_name"]: entry
+        for entry in gen._python_builtin_global_callables(gen.load_manifest())
+    }
+    for name, symbol, arity in (
+        ("globals", "molt_globals_builtin", 0),
+        ("locals", "molt_locals_builtin", 0),
+        ("vars", "molt_vars_builtin", 1),
+        ("__import__", "molt_importlib_import_transaction", 5),
+    ):
+        assert rows[name]["runtime_name"] == symbol
+        assert rows[name]["arity"] == arity
+    assert (
+        gen._rust_builtin_default_value(rows["__import__"]["defaults"][2])
+        == "GeneratedBuiltinDefaultValue::EmptyTuple"
+    )
+    assert rows["__import__"]["pos_or_kw_params"] == [
+        "name",
+        "globals",
+        "locals",
+        "fromlist",
+        "level",
+    ]
 
 
 def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
