@@ -18,6 +18,12 @@ STDLIB_INTRINSICS_PATH = ROOT / "src" / "molt" / "stdlib" / "_intrinsics.py"
 
 def test_builtins_facade_does_not_duplicate_runtime_namespace_publication() -> None:
     tree = ast.parse((STDLIB_INTRINSICS_PATH.parent / "builtins.py").read_text())
+    assert not any(
+        isinstance(node, (ast.FunctionDef, ast.Name))
+        and getattr(node, "name", getattr(node, "id", None))
+        == "_require_builtin_intrinsic"
+        for node in ast.walk(tree)
+    ), "builtin wrappers must use the canonical intrinsic resolver directly"
     rebound = set()
     for statement in ast.walk(tree):
         if isinstance(statement, ast.Assign):

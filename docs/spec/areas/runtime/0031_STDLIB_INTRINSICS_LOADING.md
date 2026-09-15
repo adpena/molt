@@ -58,6 +58,10 @@ classes, not their lower-level callable adapters. Canonical publication retains
 the supported callable family explicitly in the shared reachability collector.
 The Python facade supplies wrappers and projects its public list from this
 namespace; it does not duplicate primitive binding or platform/version gates.
+Its remaining intrinsic operations call the canonical `require_intrinsic`
+directly with the executing namespace. There is no builtin-local forwarding
+loader: the same literal operation evidence feeds build enforcement and stdlib
+audits, without bootstrap marker calls or a module-name exemption.
 
 Only the current ModuleTable initializer before its first publication can seed
 the namespace. A standalone same-named module or a repeated cache publication

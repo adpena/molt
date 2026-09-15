@@ -94,10 +94,6 @@ if False:  # TYPE_CHECKING
     molt_rlock_drop: Callable[[object], object]
 
 
-def _require_builtin_intrinsic(name: str) -> object:
-    return _require_intrinsic(name, _NS)
-
-
 def compile(
     source: object,
     filename: object,
@@ -109,7 +105,7 @@ def compile(
     _feature_version: int = -1,
 ):
     del _feature_version
-    intrinsic = _require_builtin_intrinsic("molt_compile_builtin")
+    intrinsic = _require_intrinsic("molt_compile_builtin", _NS)
     return intrinsic(source, filename, mode, flags, dont_inherit, optimize)
 
 
@@ -130,8 +126,8 @@ def exec(source, globals=None, locals=None, *, closure=None):
     raise _dynamic_execution_unavailable("exec")
 
 
-_MOLT_POW = _require_builtin_intrinsic("molt_pow")
-_MOLT_POW_MOD = _require_builtin_intrinsic("molt_pow_mod")
+_MOLT_POW = _require_intrinsic("molt_pow", _NS)
+_MOLT_POW_MOD = _require_intrinsic("molt_pow_mod", _NS)
 
 
 def pow(base, exp, mod=None):
@@ -141,7 +137,7 @@ def pow(base, exp, mod=None):
 
 
 def input(prompt: object = "", /) -> str:
-    intrinsic = _require_builtin_intrinsic("molt_input_builtin")
+    intrinsic = _require_intrinsic("molt_input_builtin", _NS)
     return intrinsic(prompt)
 
 
@@ -325,24 +321,24 @@ exit = _sitebuiltins.exit
 # Project the public list from that namespace instead of repeating its gates.
 __all__ = [name for name in __all__ if name in _NS]
 
-_molt_getargv = _require_builtin_intrinsic("molt_getargv")
-_molt_getframe = _require_builtin_intrinsic("molt_getframe")
-_molt_trace_enter_slot = _require_builtin_intrinsic("molt_trace_enter_slot")
-_molt_trace_exit = _require_builtin_intrinsic("molt_trace_exit")
-_molt_getrecursionlimit = _require_builtin_intrinsic("molt_getrecursionlimit")
-_molt_setrecursionlimit = _require_builtin_intrinsic("molt_setrecursionlimit")
-_molt_sys_version = _require_builtin_intrinsic("molt_sys_version")
-_molt_sys_stdin = _require_builtin_intrinsic("molt_sys_stdin")
-_molt_sys_stdout = _require_builtin_intrinsic("molt_sys_stdout")
-_molt_sys_stderr = _require_builtin_intrinsic("molt_sys_stderr")
-_molt_exception_last = _require_builtin_intrinsic("molt_exception_last")
-_molt_exception_last_pending = _require_builtin_intrinsic("molt_exception_last_pending")
-_molt_exception_active = _require_builtin_intrinsic("molt_exception_active")
-_molt_asyncgen_hooks_get = _require_builtin_intrinsic("molt_asyncgen_hooks_get")
-_molt_asyncgen_hooks_set = _require_builtin_intrinsic("molt_asyncgen_hooks_set")
-_molt_asyncgen_locals = _require_builtin_intrinsic("molt_asyncgen_locals")
-_molt_module_new = _require_builtin_intrinsic("molt_module_new")
-_molt_function_set_builtin = _require_builtin_intrinsic("molt_function_set_builtin")
+_molt_getargv = _require_intrinsic("molt_getargv", _NS)
+_molt_getframe = _require_intrinsic("molt_getframe", _NS)
+_molt_trace_enter_slot = _require_intrinsic("molt_trace_enter_slot", _NS)
+_molt_trace_exit = _require_intrinsic("molt_trace_exit", _NS)
+_molt_getrecursionlimit = _require_intrinsic("molt_getrecursionlimit", _NS)
+_molt_setrecursionlimit = _require_intrinsic("molt_setrecursionlimit", _NS)
+_molt_sys_version = _require_intrinsic("molt_sys_version", _NS)
+_molt_sys_stdin = _require_intrinsic("molt_sys_stdin", _NS)
+_molt_sys_stdout = _require_intrinsic("molt_sys_stdout", _NS)
+_molt_sys_stderr = _require_intrinsic("molt_sys_stderr", _NS)
+_molt_exception_last = _require_intrinsic("molt_exception_last", _NS)
+_molt_exception_last_pending = _require_intrinsic("molt_exception_last_pending", _NS)
+_molt_exception_active = _require_intrinsic("molt_exception_active", _NS)
+_molt_asyncgen_hooks_get = _require_intrinsic("molt_asyncgen_hooks_get", _NS)
+_molt_asyncgen_hooks_set = _require_intrinsic("molt_asyncgen_hooks_set", _NS)
+_molt_asyncgen_locals = _require_intrinsic("molt_asyncgen_locals", _NS)
+_molt_module_new = _require_intrinsic("molt_module_new", _NS)
+_molt_function_set_builtin = _require_intrinsic("molt_function_set_builtin", _NS)
 _molt_function_set_builtin(compile)
 _molt_function_set_builtin(input)
 _molt_function_set_builtin(breakpoint)
@@ -371,9 +367,9 @@ except Exception as _exc:  # noqa: BLE001
     raise RuntimeError(
         "builtins.compile/input/pow missing __text_signature__ support for inspect.signature parity"
     ) from _exc
-_molt_class_new = _require_builtin_intrinsic("molt_class_new")
-_molt_class_set_base = _require_builtin_intrinsic("molt_class_set_base")
-_molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_name")
-_molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
-_molt_getpid = _require_builtin_intrinsic("molt_getpid")
-_molt_getcwd = _require_builtin_intrinsic("molt_getcwd")
+_molt_class_new = _require_intrinsic("molt_class_new", _NS)
+_molt_class_set_base = _require_intrinsic("molt_class_set_base", _NS)
+_molt_class_apply_set_name = _require_intrinsic("molt_class_apply_set_name", _NS)
+_molt_sys_platform = _require_intrinsic("molt_sys_platform", _NS)
+_molt_getpid = _require_intrinsic("molt_getpid", _NS)
+_molt_getcwd = _require_intrinsic("molt_getcwd", _NS)
