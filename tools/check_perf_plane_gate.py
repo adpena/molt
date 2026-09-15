@@ -63,7 +63,10 @@ def _green_cell() -> dict[str, object]:
         "codon_ratio": None,
         "codon_equivalent": None,
         "cpython_peak_rss_mib": 15.0,
-        "output_parity": True,
+        "output_parity": schema.output_parity_evidence(
+            reference_observations=[("cpython:cold", "result\n", "", 0)],
+            molt_observations=[("molt:cold", "result\n", "", 0)],
+        ),
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
     }

@@ -97,7 +97,7 @@ from perf_scoreboard_model import (
     _dimensional_improvement as _dimensional_improvement,
     _llvm_sys_prefix as _llvm_sys_prefix,
     _load_cold_start_budgets as _load_cold_start_budgets,
-    _parse_safe_run_line as _parse_safe_run_line,
+    _parse_safe_run_stderr as _parse_safe_run_stderr,
     _repeat_stability as _repeat_stability,
     _robust_cell_stable as _robust_cell_stable,
     _safe_ratio as _safe_ratio,
@@ -1677,6 +1677,15 @@ def _rebuild_summary(
     except (OSError, json.JSONDecodeError) as exc:
         print(f"--rebuild-summary: cannot read {path}: {exc}", file=sys.stderr)
         return 2
+    source_problems = validate_board(prior)
+    if source_problems:
+        print(
+            "--rebuild-summary: source board is historical or invalid under "
+            f"schema v{SCHEMA_VERSION}; remeasure instead of manufacturing "
+            f"freshness: {'; '.join(source_problems)}",
+            file=sys.stderr,
+        )
+        return 3
     cells = [_cell_from_dict(c) for c in _flatten_cells(prior)]
     # Re-run the classifier on the stored measurements so the verdict reflects
     # the CURRENT finalize() logic (the 2-D verdict + budget), not whatever the
@@ -1775,6 +1784,15 @@ def _merge_boards(
         except (OSError, json.JSONDecodeError) as exc:
             print(f"--merge: cannot read {src}: {exc}", file=sys.stderr)
             return 2
+        source_problems = validate_board(doc)
+        if source_problems:
+            print(
+                f"--merge: source {src} is historical or invalid under schema "
+                f"v{SCHEMA_VERSION}; remeasure instead of manufacturing freshness: "
+                f"{'; '.join(source_problems)}",
+                file=sys.stderr,
+            )
+            return 3
         host = doc.get("host", host)
         method = doc.get("methodology", method)
         provenance = doc.get("provenance", provenance)

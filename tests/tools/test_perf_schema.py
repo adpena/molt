@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
 if str(TOOLS_ROOT) not in sys.path:
@@ -12,6 +14,13 @@ if str(TOOLS_ROOT) not in sys.path:
 import perf_schema as schema  # noqa: E402
 import perf_scoreboard as scoreboard  # noqa: E402
 import perf_authority as pa  # noqa: E402
+
+
+def _matching_output_parity() -> dict[str, object]:
+    return schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "result\n", "", 0)],
+        molt_observations=[("molt:cold", "result\n", "", 0)],
+    )
 
 
 def _cell(**overrides: object) -> dict[str, object]:
@@ -40,7 +49,7 @@ def _cell(**overrides: object) -> dict[str, object]:
         "codon_ratio": None,
         "codon_equivalent": None,
         "cpython_peak_rss_mib": 15.0,
-        "output_parity": True,
+        "output_parity": _matching_output_parity(),
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
         "fact_class": "repr_tir_type_lattice",
@@ -150,6 +159,15 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     assert perf_cell.attribution_confidence == 0.8
 
 
+def test_schema_rejects_historical_board_version() -> None:
+    doc = _doc(_cell())
+    doc["schema_version"] = schema.SCHEMA_VERSION - 1
+
+    problems = schema.validate_board(doc)
+
+    assert any("schema_version must be" in problem for problem in problems)
+
+
 def test_schema_accepts_modern_cpython_oracle_host_metadata() -> None:
     cell = _cell()
     doc = _doc(cell)
@@ -194,6 +212,99 @@ def test_schema_rejects_unknown_verdict_and_classification() -> None:
 
     assert any("unknown verdict" in problem for problem in problems)
     assert any("unknown classification" in problem for problem in problems)
+
+
+def test_schema_rejects_legacy_or_missing_parity_on_measured_cells() -> None:
+    legacy = _cell(output_parity=True)
+    assert any("output_parity must be an object" in p for p in schema.validate_cell(legacy))
+
+    missing = _cell(output_parity=None)
+    assert any("output_parity is missing" in p for p in schema.validate_cell(missing))
+
+
+def test_schema_rejects_forged_affirmative_parity_without_observations() -> None:
+    zero = _matching_output_parity()
+    zero["reference_observation_count"] = 0
+    zero["molt_observation_count"] = 0
+
+    problems = schema.validate_cell(_cell(output_parity=zero))
+
+    assert any("reference_observation_count must be at least 1" in p for p in problems)
+    assert any("molt_observation_count must be at least 1" in p for p in problems)
+
+    unequal = _matching_output_parity()
+    unequal["molt_observation_count"] = 2
+    assert any(
+        "reference and molt observation counts must match" in p
+        for p in schema.validate_cell(_cell(output_parity=unequal))
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value", "problem_text"),
+    [
+        (
+            "molt_stdout_sha256",
+            "f" * 64,
+            "stdout_match=true contradicts unequal representative stdout hashes",
+        ),
+        (
+            "molt_stderr_sha256",
+            "f" * 64,
+            "stderr_match=true contradicts unequal representative stderr hashes",
+        ),
+        (
+            "molt_returncode",
+            7,
+            "exit_match=true contradicts unequal representative return codes",
+        ),
+    ],
+)
+def test_schema_rejects_affirmative_axes_that_contradict_persisted_evidence(
+    field: str,
+    forged_value: object,
+    problem_text: str,
+) -> None:
+    parity = _matching_output_parity()
+    parity[field] = forged_value
+    cell = _cell(output_parity=parity)
+
+    problems = schema.validate_cell(cell)
+
+    assert any(problem_text in problem for problem in problems)
+    assert any(problem_text in problem for problem in schema.validate_board(_doc(cell)))
+    with pytest.raises(ValueError, match=problem_text):
+        schema.PerfCell.from_payload(cell)
+
+
+def test_schema_does_not_treat_equal_hashes_as_the_comparison_authority() -> None:
+    parity = schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "reference\n", "", 0)],
+        molt_observations=[("molt:cold", "different\n", "", 0)],
+    )
+    assert parity["stdout_match"] is False
+    parity["molt_stdout_sha256"] = parity["reference_stdout_sha256"]
+
+    assert schema.output_parity_evidence_problems(parity) == []
+
+
+def test_output_parity_evidence_tracks_warm_instability() -> None:
+    parity = schema.output_parity_evidence(
+        reference_observations=[
+            ("cpython:cold", "same\n", "", 0),
+            ("cpython:warm:p0:s0", "same\n", "", 0),
+        ],
+        molt_observations=[
+            ("molt:cold", "same\n", "", 0),
+            ("molt:warm:p0:s0", "changed\n", "", 0),
+        ],
+    )
+
+    assert parity["checked"] is True
+    assert parity["ok"] is False
+    assert parity["reason"] == "molt_unstable"
+    assert parity["mismatch_observation"] == "molt:warm:p0:s0"
+    assert schema.output_parity_evidence_problems(parity) == []
 
 
 def test_schema_rejects_invalid_attribution_fields() -> None:

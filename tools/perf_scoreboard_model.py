@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 import sys
@@ -30,6 +31,7 @@ from perf_schema import (
     VERDICT_RUN_ERROR,
     VERDICT_UNSTABLE,
     VERDICT_WARN_COLD_FLOOR,
+    output_parity_passes,
 )
 
 
@@ -62,12 +64,17 @@ NON_AUTHORITATIVE_NOTE = (
     "tool-modified, or quiescence authority failed)"
 )
 
+OUTPUT_PARITY_FAILURE_NOTE = (
+    "Molt/CPython observable output comparison did not produce an affirmative match"
+)
+
 _VERDICT_DERIVED_NOTES = frozenset(
     {
         NON_AUTHORITATIVE_NOTE,
         # Legacy notes may exist in stored boards; keep rebuild/merge summary
         # able to clear and rederive them.
         "non-authoritative tree (local != origin/main or dirty)",
+        OUTPUT_PARITY_FAILURE_NOTE,
     }
 )
 
@@ -187,6 +194,7 @@ class RunOutcome:
     status: str  # "ok" | "timeout" | "oom" | "error" | "nonzero"
     exit_code: int | None
     stdout: str | None = None
+    stderr: str | None = None
     stdout_tail: str | None = None
     stderr_tail: str | None = None
 
@@ -206,15 +214,14 @@ def _safe_run_json(
     rss_mb: int,
     timeout_s: float,
     label: str,
-    capture_stdout: bool = False,
+    capture_output: bool = False,
 ) -> RunOutcome:
     """Time one process through safe_run.py --json (RSS cap + timeout).
 
-    safe_run forwards the child's stdout live and reports status as a single
-    ``SAFE_RUN {json}`` line on stderr. We parse that line for elapsed_s +
-    peak_rss_mib. When ``capture_stdout`` is set the child's stdout is captured
-    here (for the one-time output-parity sanity); the repeated timed runs leave
-    it streaming so safe_run's accounting stays honest.
+    safe_run forwards the child's streams through its own streams and appends a
+    single ``SAFE_RUN {json}`` line on stderr. The outer guard already captures
+    those streams for every run; ``capture_output`` only retains exact child
+    stdout/stderr on the returned object after removing the wrapper receipt.
     """
     full = [
         sys.executable,
@@ -247,18 +254,28 @@ def _safe_run_json(
             None,
             "timeout",
             None,
+            stdout=proc.stdout if capture_output else None,
+            stderr=proc.stderr if capture_output else None,
             stdout_tail=_tail_text(proc.stdout),
             stderr_tail=_tail_text(proc.stderr),
         )
 
-    payload = _parse_safe_run_line(proc.stderr or "")
-    if payload is None:
+    payload, child_stderr = _parse_safe_run_stderr(proc.stderr or "")
+    if payload is None or not _safe_run_receipt_matches_invocation(
+        payload,
+        label=label,
+        returncode=proc.returncode,
+        rss_mb=rss_mb,
+        timeout_s=timeout_s,
+    ):
         return RunOutcome(
             False,
             None,
             None,
             "error",
             proc.returncode,
+            stdout=proc.stdout if capture_output else None,
+            stderr=proc.stderr if capture_output else None,
             stdout_tail=_tail_text(proc.stdout),
             stderr_tail=_tail_text(proc.stderr),
         )
@@ -275,21 +292,84 @@ def _safe_run_json(
         peak_rss_mib=float(peak) if isinstance(peak, (int, float)) else None,
         status=status,
         exit_code=exit_code if isinstance(exit_code, int) else None,
-        stdout=proc.stdout if capture_stdout else None,
+        stdout=proc.stdout if capture_output else None,
+        stderr=child_stderr if capture_output else None,
         stdout_tail=_tail_text(proc.stdout),
         stderr_tail=_tail_text(proc.stderr),
     )
 
 
-def _parse_safe_run_line(stderr_text: str) -> dict | None:
-    for line in reversed(stderr_text.splitlines()):
-        line = line.strip()
-        if line.startswith("SAFE_RUN ") and line[9:].lstrip().startswith("{"):
-            try:
-                return json.loads(line[9:].lstrip())
-            except json.JSONDecodeError:
-                continue
-    return None
+def _parse_safe_run_stderr(stderr_text: str) -> tuple[dict | None, str]:
+    """Split safe_run's terminal receipt from the child's exact stderr.
+
+    The wrapper inherits the child's streams and appends one ``SAFE_RUN`` JSON
+    record after the guarded child exits. Only that final newline-terminated
+    suffix is eligible: a malformed terminal receipt must not fall back to an
+    earlier child-emitted marker. Exact whitespace and missing-final-newline
+    differences remain observable to the shared parity law.
+
+    The receipt shares stderr with the child, so a hostile child can still spoof
+    the complete final envelope if the wrapper never emits one. Invocation
+    binding narrows that ambiguity, but cryptographic separation would require a
+    dedicated receipt channel.
+    """
+
+    marker = "SAFE_RUN "
+    start = stderr_text.rfind(marker)
+    if start < 0:
+        return None, stderr_text
+    line_end = stderr_text.find("\n", start)
+    if line_end < 0 or line_end + 1 != len(stderr_text):
+        return None, stderr_text
+    encoded = stderr_text[start + len(marker) : line_end].strip()
+    try:
+        payload = json.loads(encoded)
+    except json.JSONDecodeError:
+        return None, stderr_text
+    if not isinstance(payload, dict):
+        return None, stderr_text
+    return payload, stderr_text[:start]
+
+
+def _safe_run_receipt_matches_invocation(
+    payload: dict,
+    *,
+    label: str,
+    returncode: int,
+    rss_mb: int,
+    timeout_s: float,
+) -> bool:
+    """Validate the safe_run emitter envelope without redefining its status law."""
+
+    def finite_number(value: object) -> bool:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        return not isinstance(value, float) or math.isfinite(value)
+
+    receipt_exit = payload.get("exit")
+    receipt_status = payload.get("status")
+    if (
+        payload.get("label") != label
+        or not isinstance(receipt_status, str)
+        or receipt_status not in {"ok", "timeout", "oom"}
+        or not isinstance(receipt_exit, int)
+        or isinstance(receipt_exit, bool)
+        or receipt_exit != returncode
+    ):
+        return False
+    for field in ("elapsed_s", "peak_rss_mib", "rss_limit_mib", "timeout_s"):
+        if not finite_number(payload.get(field)):
+            return False
+    if payload["elapsed_s"] < 0 or payload["peak_rss_mib"] < 0:
+        return False
+    receipt_rss_mb = payload["rss_limit_mib"]
+    receipt_timeout_s = payload["timeout_s"]
+    return (
+        receipt_rss_mb > 0
+        and receipt_timeout_s > 0
+        and receipt_rss_mb == rss_mb
+        and receipt_timeout_s == timeout_s
+    )
 
 
 @dataclass
@@ -501,7 +581,7 @@ class Cell:
     cpython_incompatible: bool = False
 
     # Provenance.
-    output_parity: bool | None = None
+    output_parity: dict[str, object] | None = None
     molt_stats: dict | None = None
     cpython_stats: dict | None = None
     log_artifact: str | None = None
@@ -592,6 +672,15 @@ class Cell:
             self.verdict = VERDICT_RUN_ERROR
             if self.note is None:
                 self.note = "molt run failed/unmeasurable while CPython ran"
+            return
+        # A speed result is meaningful only for the same observable program.
+        # The evidence must be a complete affirmative receipt from the shared
+        # CPython-parity comparison law; missing/legacy/failed evidence closes
+        # the gate instead of rewarding a fast wrong answer.
+        if not output_parity_passes(self.output_parity):
+            self.verdict = VERDICT_RUN_ERROR
+            if self.note is None:
+                self.note = OUTPUT_PARITY_FAILURE_NOTE
             return
 
         self.warm_speedup = _safe_ratio(self.warm_cpython_s, self.warm_molt_s)

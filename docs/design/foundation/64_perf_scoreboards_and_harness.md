@@ -243,7 +243,8 @@ PerfCell:
   fact_class: str|None                   # the doc-51 fact family enum (Phase 5)
   attribution_confidence: float|None     # 0.0..1.0, joined when evidence artifacts exist
   # provenance / artifact
-  output_parity: bool; log_artifact: str
+  output_parity: {checked, ok, law, exact axes, stable observations, hashes};
+  log_artifact: str
 ```
 
 **Validation contract (fail-closed):** `perf_schema.validate_cell(cell)` rejects any cell
@@ -559,9 +560,13 @@ The plane's *own* tests must obey the same discipline the plane enforces on the 
 - **Golden-equivalence gate (Phase 1/7):** the refactor must not change a single verdict.
   Before/after `--no-gate` boards are diffed for semantic identity (the anti-regression for
   the keystone refactor itself).
-- **Parity oracle (always):** every cell carries `output_parity` (molt stdout == CPython
-  stdout). A perf number for a wrong-answer run is *invalid* and the cell is `RUN_ERROR`,
-  never GREEN. (The plane cannot reward a fast wrong answer — correctness is the floor.)
+- **Parity oracle (always):** every runnable cell carries affirmative, structured
+  `output_parity` from the single `tools.compat.comparison` law: exact stdout,
+  exact user stderr, exact exit status, and stable output across the cold
+  observation plus every existing warmup and timed warm sample. The hash-only receipt names
+  the first unstable/mismatching observation. Missing, legacy, mismatching, or
+  unstable evidence makes the cell `RUN_ERROR`, never GREEN. (The plane cannot
+  reward a fast wrong answer — correctness is the floor.)
 - **Quiescence + provenance gate (authoritative boards):** nightly job runs
   `--require-quiescent`; a non-quiescent board is `authoritative=false` and may not seed
   the baseline (Rule 2). Per-PR boards are explicitly non-authoritative-for-warm and gate

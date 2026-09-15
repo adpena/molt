@@ -446,6 +446,15 @@ gate constants, required top-level/provenance/host/summary/cell fields, and the
 `FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
 fails closed unless the build/run booleans, binary size, compile time, cold and
 warm timings, speedups, startup tax, RSS peaks, and log artifact are present. A
+measured runnable cell must also carry affirmative schema-v4 `output_parity`
+evidence from `tools.compat.comparison`: exact stdout, exact user stderr, exact
+exit status, and stable output across the cold observation plus every existing
+warmup and timed warm sample. The receipt stores hashes and the first mismatching sample
+identity, never raw output. Missing, legacy-boolean, mismatching, or unstable
+evidence is `RUN_ERROR`, never a performance verdict. Schema-v3 boards remain
+historical; `--rebuild-summary` and `--merge` refuse to promote them without a
+fresh measurement.
+ A
 `RED_STABLE` classification must also carry `measured_quiescent=true` plus a
 numeric repeat CI clearing below the CPython floor. When a board carries modern
 host metadata, `validate_board()` also verifies that `host.cpython_oracle` is
@@ -489,7 +498,7 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
@@ -568,7 +577,19 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       "codon_ratio": 0.30, "codon_warm_s": 0.018,     // codon_warm/molt_warm
       "codon_equivalent": true, "codon_note": "equivalent (codon -release AOT)",
       // provenance ---
-      "output_parity": true,
+      "output_parity": {
+        "checked": true, "ok": true, "reference_runtime": "cpython",
+        "comparison_law_version": "molt.compat-comparison.v1",
+        "mode": "exact", "stderr_mode": "exact", "exit_law": "exact",
+        "reason": "match", "detail": "",
+        "stdout_match": true, "stderr_match": true, "exit_match": true,
+        "reference_stable": true, "molt_stable": true,
+        "reference_observation_count": 36, "molt_observation_count": 36,
+        "mismatch_observation": null, "mismatch_observation_sha256": null,
+        "reference_stdout_sha256": "…", "molt_stdout_sha256": "…",
+        "reference_stderr_sha256": "…", "molt_stderr_sha256": "…",
+        "reference_returncode": 0, "molt_returncode": 0
+      },
       "molt_stats": { … }, "cpython_stats": { … },
       "log_artifact": "bench/scoreboard/logs_<gitrev>/<bench>__<backend>__<profile>.log"
     } } } }
@@ -589,7 +610,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",
