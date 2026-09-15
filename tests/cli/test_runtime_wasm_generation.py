@@ -9,6 +9,7 @@ import pytest
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmExpectedPair,
+    bind_runtime_wasm_codegen,
     _generation_receipts,
     hydrate_runtime_wasm_generation,
     publish_runtime_wasm_generation,
@@ -89,6 +90,47 @@ def _publish_pair(
         source_reloc=source_reloc,
     )
     return generation, shared_identity, reloc_identity
+
+
+def test_codegen_binding_survives_cache_selection_replacement(tmp_path: Path) -> None:
+    generation, shared_identity, reloc_identity = _publish_pair(tmp_path)
+    requirements = {"PyTuple_New"}
+    binding = bind_runtime_wasm_codegen(generation, requirements)
+    requirements.add("unplanned")
+    assert binding.required_exports == frozenset({"PyTuple_New"})
+    assert binding.generation.manifest != generation.manifest
+    assert binding.generation.shared == generation.shared
+    assert binding.generation.reloc == generation.reloc
+    _publish_pair(
+        tmp_path, pair_seed="other", shared=b"other-shared", reloc=b"other-reloc"
+    )
+    assert (
+        read_runtime_wasm_generation(
+            generation.manifest,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
+        )
+        is None
+    )
+    assert (
+        read_runtime_wasm_generation(
+            binding.generation.manifest,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
+        )
+        is not None
+    )
+    assert bind_runtime_wasm_codegen(binding.generation, {"PyTuple_New"}) == binding
+
+
+def test_codegen_binding_rejects_corrupt_immutable_receipt(tmp_path: Path) -> None:
+    generation, _, _ = _publish_pair(tmp_path)
+    binding = bind_runtime_wasm_codegen(generation, None)
+    binding.generation.manifest.write_text("{}", encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="immutable runtime generation receipt is corrupt"
+    ):
+        bind_runtime_wasm_codegen(generation, None)
 
 
 def test_generation_receipts_require_exact_string_keyed_pair() -> None:

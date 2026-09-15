@@ -27,8 +27,6 @@ from wasm_abi_gen.paths import (
 from wasm_abi_gen.intrinsic_availability import (
     IntrinsicAvailability,
     load_intrinsic_availability,
-    longest_prefix_value,
-    symbol_available_on_target_arch,
 )
 
 WASM_VAL_TYPES = {
@@ -631,22 +629,17 @@ def _load_runtime_availability_from_categories() -> IntrinsicAvailability:
         ) from exc
 
 
-def _load_runtime_feature_gates_from_categories() -> tuple[tuple[str, str], ...]:
-    return _load_runtime_availability_from_categories().feature_gates
-
-
 def _runtime_feature_gate_for_symbol(
     symbol: str,
-    gates: list[tuple[str, str]],
+    availability: IntrinsicAvailability | None = None,
 ) -> str | None:
-    return longest_prefix_value(symbol, tuple(gates))
+    availability = availability or _load_runtime_availability_from_categories()
+    return availability.feature_gate_for_symbol(symbol)
 
 
 def _runtime_symbol_available_on_wasm(symbol: str) -> bool:
-    return symbol_available_on_target_arch(
-        symbol,
-        "wasm32",
-        _load_runtime_availability_from_categories().target_arch_exclusions,
+    return _load_runtime_availability_from_categories().symbol_available_on_target_arch(
+        symbol, "wasm32"
     )
 
 
@@ -684,7 +677,6 @@ def _annotate_runtime_callable_features(
     *,
     reject_existing: bool = False,
 ) -> None:
-    gates = _load_runtime_feature_gates_from_categories()
     for idx, entry in enumerate(imports):
         export_name = runtime_export_name(entry)
         if not isinstance(export_name, str):
@@ -693,7 +685,7 @@ def _annotate_runtime_callable_features(
                     f"import entry {idx} has runtime_feature without a valid name"
                 )
             continue
-        feature = _runtime_feature_gate_for_symbol(export_name, gates)
+        feature = _runtime_feature_gate_for_symbol(export_name)
         existing = entry.get("runtime_feature")
         if existing is not None:
             if reject_existing:

@@ -1124,12 +1124,9 @@ def read_wasm_split_runtime_callable_layout(
         raise ValueError(f"invalid split runtime wasm: {exc}") from exc
     if table_boundary is None:
         raise ValueError("split runtime must import the shared callable table")
-    # Backend layout selection happens before the linker knows the app's exact
-    # runtime-export subset.  The conservative runtime artifact's table minimum
-    # is therefore an app-placement input, not a permanent claim that every
-    # smaller final runtime owns the whole region.  Final publication preserves
-    # the compiled app boundary and proves the deploy runtime's active entries
-    # fit below it.
+    # The admitted runtime generation is bound before backend layout selection.
+    # Final import validation and deployment consume that same physical pair;
+    # an app may not silently switch to a runtime with different table entries.
     slots = set(_collect_wasm_active_table_function_slots(data))
     if not slots:
         raise ValueError("split runtime active callable-table layout is empty")

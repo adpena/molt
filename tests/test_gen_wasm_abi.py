@@ -1047,10 +1047,27 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
     manifest.validate_loaded_manifest(copy.deepcopy(loaded))
     loaded_imports = {entry["name"]: entry for entry in loaded["import"]}
 
+    assert loaded_imports["hash_builtin"].get("runtime_feature") is None
+    for name in (
+        "hash_new",
+        "hash_update",
+        "hash_copy",
+        "hash_digest",
+        "hash_drop",
+    ):
+        assert loaded_imports[name]["runtime_feature"] == "stdlib_crypto"
+
+    runtime_callables = gen.render_runtime_callables_rs(loaded)
+    hash_builtin_projection = runtime_callables.split(
+        '        "hash" => Some(PythonBuiltinFunctionInfo {', 1
+    )[1].split("        }),", 1)[0]
+    assert 'runtime_name: "molt_hash_builtin"' in hash_builtin_projection
+    assert '#[cfg(feature = "stdlib_crypto")]' not in hash_builtin_projection
+
     raw = _raw_manifest()
     for entry in raw["import"]:
         if entry["name"] == "hash_builtin":
-            entry["runtime_feature"] = loaded_imports["hash_builtin"]["runtime_feature"]
+            entry["runtime_feature"] = "stdlib_crypto"
             break
     else:  # pragma: no cover - fixture corruption
         raise AssertionError("hash_builtin import missing")

@@ -247,6 +247,8 @@ def _run_backend_pipeline(
             is_luau_transpile=output_layout.is_luau_transpile,
             is_wasm=output_layout.is_wasm,
             emit_mode=output_layout.emit_mode,
+            is_wasm_freestanding=output_layout.is_wasm_freestanding,
+            required_link_features=required_link_features,
             molt_root=prepared_build_roots.molt_root,
             runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
             target_triple=output_layout.target_triple,

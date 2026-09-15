@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.cli.atomic_io import _atomic_write_json
+from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_publication import durable_replace, staged_file_path
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
 from molt.exact_json import read_exact
@@ -36,6 +37,55 @@ class RuntimeWasmGeneration:
     shared_member_identity: StableRegularFileIdentity
     reloc_member_identity: StableRegularFileIdentity
     payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class RuntimeWasmCodegenBinding:
+    """One physical runtime pair and build plan for an app's code generation."""
+
+    generation: RuntimeWasmGeneration
+    required_exports: frozenset[str] | None
+
+
+def bind_runtime_wasm_codegen(
+    generation: RuntimeWasmGeneration,
+    required_exports: set[str] | frozenset[str] | None,
+) -> RuntimeWasmCodegenBinding:
+    """Pin the validated pair independently of its mutable cache selection.
+
+    Keep members in their original immutable storage. Only the receipt needs a
+    content-named snapshot, so another build can publish a different selection
+    without redirecting this app's final admission or linker.
+    """
+    data = (
+        json.dumps(generation.payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode()
+    digest = hashlib.sha256(data).hexdigest()
+    manifest = generation.manifest.with_name(f"molt_runtime.{digest}.generation.json")
+    if manifest.exists():
+        if manifest.read_bytes() != data:
+            raise ValueError(
+                f"immutable runtime generation receipt is corrupt: {manifest}"
+            )
+    else:
+        _atomic_write_bytes(manifest, data)
+    pinned = read_runtime_wasm_generation(
+        manifest,
+        expected_shared_identity=generation.shared_identity,
+        expected_reloc_identity=generation.reloc_identity,
+    )
+    if (
+        pinned is None
+        or pinned.shared != generation.shared
+        or pinned.reloc != generation.reloc
+    ):
+        raise ValueError("runtime WASM pair changed while binding code generation")
+    return RuntimeWasmCodegenBinding(
+        generation=pinned,
+        required_exports=None
+        if required_exports is None
+        else frozenset(required_exports),
+    )
 
 
 @dataclass(frozen=True)

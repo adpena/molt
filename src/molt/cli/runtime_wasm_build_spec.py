@@ -359,6 +359,7 @@ def _compute_runtime_wasm_build_spec(
     resolved_modules: set[str] | frozenset[str] | None,
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
+    full_export_surface: bool = False,
 ) -> _RuntimeWasmBuildSpec:
     """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
     # The emitted app import ABI is the final link-time requirement authority.
@@ -400,9 +401,13 @@ def _compute_runtime_wasm_build_spec(
                 cpython_abi_requested_data_exports
             )
     if reloc:
-        runtime_exports = wasm_runtime_export_link_args(
-            required_exports,
-            resolved_modules=resolved_modules,
+        runtime_exports = (
+            wasm_runtime_shared_export_link_args(required_exports)
+            if full_export_surface
+            else wasm_runtime_export_link_args(
+                required_exports,
+                resolved_modules=resolved_modules,
+            )
         )
         link_flags = runtime_exports
     else:

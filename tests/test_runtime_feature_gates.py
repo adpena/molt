@@ -23,7 +23,9 @@ from pathlib import Path
 
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
+    RUNTIME_BUILTIN_SYMBOLS,
     RUNTIME_FEATURE_GATES,
+    feature_gate_for_symbol,
     link_affecting_features_unsupported_on_target,
     runtime_symbol_available_on_target,
 )
@@ -92,6 +94,31 @@ def test_link_affecting_features_match_runtime_crate_ground_truth() -> None:
 def test_link_affecting_is_subset_of_gate_table_features() -> None:
     gate_features = {feature for _prefix, feature in RUNTIME_FEATURE_GATES}
     assert LINK_AFFECTING_FEATURES <= gate_features
+
+
+def test_exact_builtin_authority_precedes_stdlib_prefix_gates() -> None:
+    categories = tomllib.loads(
+        (RUNTIME_CRATE / "src" / "intrinsics" / "categories.toml").read_text()
+    )
+    expected_builtins = {
+        symbol
+        for symbols in categories["builtin"].values()
+        for symbol in symbols
+    }
+
+    assert RUNTIME_BUILTIN_SYMBOLS == expected_builtins
+    for symbol in RUNTIME_BUILTIN_SYMBOLS:
+        assert feature_gate_for_symbol(symbol) is None
+
+    assert feature_gate_for_symbol("molt_hash_builtin") is None
+    for symbol in (
+        "molt_hash_new",
+        "molt_hash_update",
+        "molt_hash_copy",
+        "molt_hash_digest",
+        "molt_hash_drop",
+    ):
+        assert feature_gate_for_symbol(symbol) == "stdlib_crypto"
 
 
 def test_sqlite_target_availability_is_generated_for_profiles_and_admission() -> None:

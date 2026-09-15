@@ -28,6 +28,8 @@ import pytest
 from molt.capability_manifest import CapabilityManifest
 
 from molt.cli import artifact_state as runtime_artifact_state
+from molt.cli.backend_cache_setup import _build_cache_variant
+from molt.target_python import TargetPythonVersion
 from molt.cli import (
     runtime_build_identity,
     runtime_fingerprints,
@@ -53,6 +55,7 @@ from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
     _runtime_wasm_build_timings_snapshot,
 )
+from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     runtime_wasm_link_inputs,
@@ -103,6 +106,190 @@ def _specs(root: Path):
         root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
     )
     return _bind_specs(shared, reloc, root=root)
+
+
+def test_wasm_cache_variant_binds_runtime_member_identity() -> None:
+    common = dict(
+        profile="dev",
+        runtime_cargo="dev-fast",
+        backend_cargo="dev-fast",
+        emit="wasm",
+        stdlib_split=False,
+        codegen_env="same",
+        linked=True,
+        target_python=TargetPythonVersion(3, 12, 0),
+    )
+    first = _build_cache_variant(**common, runtime_wasm_codegen_digest="pair-a")
+    assert first != _build_cache_variant(**common, runtime_wasm_codegen_digest="pair-b")
+    assert first != _build_cache_variant(**common)
+
+
+@pytest.mark.parametrize("freestanding", [False, True])
+def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
+    tmp_path: Path,
+    freestanding: bool,
+) -> None:
+    common = {
+        **_COMMON,
+        "stdlib_profile": "micro",
+        "freestanding": freestanding,
+        "required_exports": {"PyTuple_New"},
+        "full_export_surface": True,
+    }
+    shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "molt_runtime.wasm",
+        reloc=False,
+        **common,
+    )
+    reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "molt_runtime_reloc.wasm",
+        reloc=True,
+        **common,
+    )
+    assert "--export-if-defined=molt_add" in reloc.runtime_exports
+    assert "--export-if-defined=PyTuple_New" in reloc.runtime_exports
+    assert reloc.runtime_exports == shared.runtime_exports
+    assert "stdlib_crypto" not in reloc.fingerprint_features
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["stable", "source-drift", "missing-export", "member-corrupt", "pointer-replaced"],
+)
+def test_codegen_bound_pair_never_rebuilds_for_final_imports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    shared_identity = make_runtime_build_identity("shared", "bound")
+    reloc_identity = make_runtime_build_identity("reloc", "bound")
+    source_shared = tmp_path / "source-shared"
+    source_reloc = tmp_path / "source-reloc"
+    source_shared.write_bytes(b"shared")
+    source_reloc.write_bytes(b"reloc")
+    generation = publish_runtime_wasm_generation(
+        tmp_path / "molt_runtime.wasm",
+        tmp_path / "molt_runtime_reloc.wasm",
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+        source_shared=source_shared,
+        source_reloc=source_reloc,
+    )
+    state = _RuntimeArtifactState(
+        runtime_wasm=tmp_path / "molt_runtime.wasm",
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+    )
+    plans = []
+    admissions = []
+    builds = []
+    shared_spec, reloc_spec = _specs(tmp_path)
+
+    def prepare(runtime_state, **kwargs):
+        plans.append((kwargs["required_exports"], kwargs["full_export_surface"]))
+        current_shared, current_reloc = shared_identity, reloc_identity
+        if len(plans) > 1 and outcome == "source-drift":
+            current_shared = make_runtime_build_identity("shared", "changed")
+            current_reloc = make_runtime_build_identity("reloc", "changed")
+        return runtime_wasm_pair_build._RuntimeWasmPairBuild(
+            runtime_state=runtime_state,
+            json_output=True,
+            cargo_profile="release",
+            cargo_timeout=5,
+            project_root=tmp_path,
+            simd_enabled=True,
+            freestanding=False,
+            stdlib_profile="micro",
+            resolved_modules=None,
+            required_link_features=frozenset(),
+            required_exports=kwargs["required_exports"],
+            runtime_wasm=tmp_path / "molt_runtime.wasm",
+            runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+            shared_spec=shared_spec,
+            reloc_spec=reloc_spec,
+            toolchain_manifest_path=tmp_path / "toolchain.json",
+            generation_manifest=generation.manifest,
+            pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
+                current_shared.toolchain_manifest,
+                current_shared,
+                current_reloc,
+            ),
+        )
+
+    def materialize(ctx):
+        builds.append("admit-before-codegen")
+        assert len(builds) == 1, (
+            "final import validation must not build or hydrate another pair"
+        )
+        assert ctx.accept_generation()
+        return runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
+
+    def shared_exports(path, required, *, reloc):
+        admissions.append(required)
+        return not (outcome == "missing-export" and required == {"add", "hash_builtin"})
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_materialize_runtime_wasm_pair", materialize
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_is_valid_runtime_wasm_artifact", lambda path: True
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_runtime_exports_satisfy_for_mode", shared_exports
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build._RuntimeWasmPairBuild,
+        "reloc_missing_required_symbols",
+        lambda self, path: set(),
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build._RuntimeWasmPairBuild,
+        "generation_rejection_details",
+        lambda self: {"required_exports": sorted(self.required_exports or ())},
+    )
+    kwargs = dict(
+        json_output=True,
+        cargo_profile="release",
+        cargo_timeout=5,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+    )
+    assert runtime_wasm_pair_build._ensure_runtime_wasm_both(
+        state, bind_for_codegen=True, **kwargs
+    )
+    binding = state.runtime_wasm_codegen_binding
+    assert binding is not None
+    if outcome == "member-corrupt":
+        generation.shared.write_bytes(b"corrupt")
+    if outcome == "pointer-replaced":
+        generation.manifest.write_text("{}", encoding="utf-8")
+    passed = runtime_wasm_pair_build._ensure_runtime_wasm_both(
+        state,
+        required_exports={"add", "hash_builtin"},
+        **kwargs,
+    )
+    assert passed == (outcome in {"stable", "pointer-replaced"})
+    assert plans == [(None, True), (None, True)]
+    assert builds == ["admit-before-codegen"]
+    assert state.runtime_wasm_codegen_binding is binding
+    assert state.runtime_wasm_selected == generation.shared
+    assert state.runtime_reloc_wasm_selected == generation.reloc
+    assert state.runtime_wasm_generation == binding.generation.manifest
+    if passed:
+        assert admissions[-1] == {"add", "hash_builtin"}
+    else:
+        assert state.runtime_wasm_build_failure is not None
+        assert state.runtime_wasm_build_failure.stage.startswith("codegen-")
 
 
 def test_synthetic_tools_do_not_mutate_read_only_source_root(
@@ -255,7 +442,11 @@ def test_reloc_linker_custody_tracks_exact_binary_bytes(
         inputs.verify()
 
 
-def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:
+@pytest.mark.parametrize("freestanding", [False, True])
+def test_native_plan_is_the_pre_staging_runtime_export_authority(
+    tmp_path: Path,
+    freestanding: bool,
+) -> None:
     artifact = type(
         "Artifact",
         (),
@@ -282,6 +473,12 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:
                     source="undefined_symbols",
                 ),
                 _ExternalNativeAbiSymbol(
+                    symbol="molt_hash_new",
+                    status="runtime_backed",
+                    primitive_class="wasm_runtime_import",
+                    source="runtime_symbols+undefined_symbols",
+                ),
+                _ExternalNativeAbiSymbol(
                     symbol="memcpy",
                     status="external_link",
                     primitive_class="wasm_libc_link_import",
@@ -293,8 +490,31 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:
     plan = _ExternalPackageNativeArtifactPlan(artifacts=(artifact,))  # type: ignore[arg-type]
 
     assert plan.runtime_export_symbols() == frozenset(
-        {"PyTuple_New", "PyExc_TypeError"}
+        {"PyTuple_New", "PyExc_TypeError", "molt_hash_new"}
     )
+    specs = [
+        runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+            tmp_path,
+            tmp_path / name,
+            reloc=reloc,
+            **{
+                **_COMMON,
+                "stdlib_profile": "micro",
+                "freestanding": freestanding,
+                "required_exports": plan.runtime_export_symbols(),
+                "full_export_surface": True,
+            },
+        )
+        for name, reloc in (
+            ("molt_runtime.wasm", False),
+            ("molt_runtime_reloc.wasm", True),
+        )
+    ]
+    for spec in specs:
+        assert "stdlib_crypto" in spec.fingerprint_features
+        for symbol in plan.runtime_export_symbols():
+            assert f"--export-if-defined={symbol}" in spec.runtime_exports
+    assert specs[0].fingerprint_features == specs[1].fingerprint_features
 
 
 def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
@@ -905,7 +1125,6 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
 import molt.cli.non_native_output as nno  # noqa: E402
 
 
-
 def _host_receipt(*, runtime: bool = False) -> str:
     artifacts = {
         "main": {
@@ -1198,7 +1417,9 @@ def _prepare_host_precompile_routing(
 
     def ensure_pair(required_exports=None) -> bool:  # noqa: ANN001
         assert required_exports == {"anchor"}
-        assert all(path.is_file() for path in (shared, reloc, generation, expected_identity))
+        assert all(
+            path.is_file() for path in (shared, reloc, generation, expected_identity)
+        )
         events.append("ensure-pair")
         return True
 
@@ -1208,7 +1429,9 @@ def _prepare_host_precompile_routing(
     def link_fingerprint(**kwargs):  # type: ignore[no-untyped-def]
         command = kwargs["link_cmd"]
         assert command[command.index("--runtime-generation") + 1] == str(generation)
-        assert command[command.index("--runtime-expected-identity") + 1] == str(expected_identity)
+        assert command[command.index("--runtime-expected-identity") + 1] == str(
+            expected_identity
+        )
         assert kwargs["stored_fingerprint"] == fingerprint
         return fingerprint
 
@@ -1259,9 +1482,13 @@ def _prepare_host_precompile_routing(
         admitted_manifest()
         events.append("invoke-host")
         if outcome == "child-error":
-            return subprocess.CompletedProcess(command, 1, "", "host compile rejected input")
+            return subprocess.CompletedProcess(
+                command, 1, "", "host compile rejected input"
+            )
         if outcome == "timeout":
-            raise subprocess.TimeoutExpired(command, 60, stderr=b"host compiler stalled")
+            raise subprocess.TimeoutExpired(
+                command, 60, stderr=b"host compiler stalled"
+            )
         assert outcome == "success"
         payload = b"opaque host-produced native container"
         native_path.write_bytes(payload)
@@ -1272,7 +1499,9 @@ def _prepare_host_precompile_routing(
                 "main": {
                     "source": str(linked_output),
                     "path": str(native_path),
-                    "source_sha256": hashlib.sha256(linked_output.read_bytes()).hexdigest(),
+                    "source_sha256": hashlib.sha256(
+                        linked_output.read_bytes()
+                    ).hexdigest(),
                     "sha256": hashlib.sha256(payload).hexdigest(),
                     "size": len(payload),
                 }
@@ -1291,7 +1520,9 @@ def _prepare_host_precompile_routing(
     )
     monkeypatch.setattr(nno._link_pipeline, "_link_fingerprint", link_fingerprint)
     monkeypatch.setattr(nno, "_artifact_needs_rebuild", reusable)
-    monkeypatch.setattr(nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {}
+    )
     monkeypatch.setattr(nno, "_app_export_manifest", app_exports)
     monkeypatch.setattr(nno, "resolve_molt_wasm_host_binary", resolve_host)
     monkeypatch.setattr(nno, "_run_completed_command", run_host)
@@ -1313,7 +1544,9 @@ def _prepare_host_precompile_routing(
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
-    assert events and events[0] == "ensure-pair", "upstream pair admission was not reached"
+    assert events and events[0] == "ensure-pair", (
+        "upstream pair admission was not reached"
+    )
     return prepared, error, events, native_path
 
 
@@ -1325,7 +1558,13 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
     )
     assert error is None
     assert prepared is not None
-    assert events == ["ensure-pair", "link-reuse", "app-exports", "resolve-host", "invoke-host"]
+    assert events == [
+        "ensure-pair",
+        "link-reuse",
+        "app-exports",
+        "resolve-host",
+        "invoke-host",
+    ]
     assert prepared.artifacts is not None
     assert prepared.artifacts["cwasm"] == str(native_path)
     assert prepared.artifacts["manifest"] == str(tmp_path / "manifest.json")
@@ -1339,8 +1578,16 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
     [
         ("missing-host", "requires a matching molt-wasm-host binary", ["resolve-host"]),
         ("child-error", "host compile rejected input", ["resolve-host", "invoke-host"]),
-        ("timeout", "timed out after 60 seconds: host compiler stalled", ["resolve-host", "invoke-host"]),
-        ("unlinked", "requires linked or split-runtime output with a canonical manifest", []),
+        (
+            "timeout",
+            "timed out after 60 seconds: host compiler stalled",
+            ["resolve-host", "invoke-host"],
+        ),
+        (
+            "unlinked",
+            "requires linked or split-runtime output with a canonical manifest",
+            [],
+        ),
     ],
 )
 def test_precompile_build_failures_reach_exact_routing_boundary(
