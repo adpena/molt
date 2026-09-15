@@ -1561,7 +1561,6 @@ mod tests {
             let target_bits = crate::bits_from_ptr(target_ptr);
             let target_header = unsafe { crate::header_from_obj_ptr(target_ptr) };
             unsafe {
-                (*target_header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
                 (*target_header).make_immortal();
             }
             assert_ne!(

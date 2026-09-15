@@ -45,6 +45,8 @@ pub(crate) mod gc;
 #[allow(dead_code)]
 pub(crate) mod heap_kinds_generated;
 pub(crate) mod heap_lifecycle;
+#[cfg(test)]
+mod immortal_owner_tests;
 #[allow(dead_code)]
 pub mod inline_cache;
 pub(crate) mod iterable;
@@ -434,12 +436,13 @@ impl MoltHeader {
         }
     }
 
-    /// Sole post-publication transition into immortal custody.
+    /// Establish immortal refcount and flags before canonical-owner publication.
     #[inline(always)]
     pub(crate) fn make_immortal(&self) {
-        // SAFETY: this transition is called only by the runtime's exclusive
-        // immortalization path after publication and before further owners.
+        // SAFETY: the canonical owner has exclusive custody before publishing
+        // this allocation. Ordinary caches must never immortalize shared values.
         unsafe { self.ref_count.make_immortal_exclusive() };
+        self.fetch_or_flags(HEADER_FLAG_IMMORTAL);
     }
 
     /// Runtime-shutdown-only inverse of `make_immortal`.
@@ -2080,7 +2083,10 @@ pub(crate) fn dec_ref_bits(_py: &PyToken<'_>, bits: u64) {
     }
 }
 
-pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
+/// Consume the canonical pool's exclusive physical-lifetime ownership, after
+/// all ordinary runtime edges and callbacks have drained. This is deliberately
+/// private to the object subsystem; a dictionary/cache owns only an edge.
+fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         return;
@@ -2094,20 +2100,6 @@ pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
         (*header_ptr).fetch_and_flags(!(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED));
     }
     dec_ref_bits(_py, bits);
-}
-
-pub(crate) fn release_shutdown_bits(_py: &PyToken<'_>, bits: u64) {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return;
-    };
-    unsafe {
-        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        if (*header_ptr).has_flag(HEADER_FLAG_INTERNED) {
-            return;
-        }
-    }
-    release_shutdown_owned_bits(_py, bits);
 }
 
 pub(crate) fn init_atomic_bits(

@@ -835,7 +835,7 @@ fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
         }
     }
     for bits in modules {
-        crate::object::release_shutdown_bits(_py, bits);
+        dec_ref_bits(_py, bits);
     }
     changed
 }
@@ -962,9 +962,6 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = vec![
         &state.special_cache.open_default_mode,
-        &state.special_cache.molt_missing,
-        &state.special_cache.molt_not_implemented,
-        &state.special_cache.molt_ellipsis,
         &state.special_cache.awaitable_await,
         &state.special_cache.function_code_descriptor,
         &state.special_cache.function_globals_descriptor,

@@ -2,8 +2,7 @@ use crate::PyToken;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
-use crate::object::{HEADER_FLAG_INTERNED, header_from_obj_ptr, obj_from_bits};
-use crate::{MoltObject, alloc_string, init_atomic_bits};
+use crate::{MoltObject, alloc_string, dec_ref_bits, init_atomic_bits};
 
 macro_rules! define_interned_names {
     (@unit $field:ident) => {
@@ -828,13 +827,7 @@ pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Result<
 
 fn release_atomic_cache_owner(_py: &PyToken<'_>, bits: u64) {
     if bits != 0 {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            let flags = unsafe { (*header_from_obj_ptr(ptr)).load_metadata_flags() };
-            if (flags & HEADER_FLAG_INTERNED) != 0 {
-                return;
-            }
-        }
-        crate::object::release_shutdown_bits(_py, bits);
+        dec_ref_bits(_py, bits);
     }
 }
 

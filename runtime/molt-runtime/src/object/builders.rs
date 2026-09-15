@@ -1275,6 +1275,9 @@ pub(crate) struct CanonicalObjectCache {
     empty_tuple: std::sync::atomic::AtomicPtr<u8>,
     empty_string: std::sync::atomic::AtomicPtr<u8>,
     empty_bytes: std::sync::atomic::AtomicPtr<u8>,
+    missing: std::sync::atomic::AtomicPtr<u8>,
+    not_implemented: std::sync::atomic::AtomicPtr<u8>,
+    ellipsis: std::sync::atomic::AtomicPtr<u8>,
     ascii_chars: [std::sync::atomic::AtomicPtr<u8>; 128],
     interned_strings: std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
 }
@@ -1286,6 +1289,9 @@ impl CanonicalObjectCache {
             empty_tuple: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             empty_string: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             empty_bytes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            missing: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            not_implemented: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            ellipsis: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             ascii_chars: [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128],
             interned_strings: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -1296,50 +1302,89 @@ impl CanonicalObjectCache {
 unsafe fn prepare_canonical_object(ptr: *mut u8, interned: bool) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        let flags = crate::object::HEADER_FLAG_IMMORTAL
-            | if interned {
-                crate::object::HEADER_FLAG_INTERNED
-            } else {
-                0
-            };
-        (*header).fetch_or_flags(flags);
+        if interned {
+            (*header).fetch_or_flags(crate::object::HEADER_FLAG_INTERNED);
+        }
         (*header).make_immortal();
+    }
+}
+
+/// One publication protocol for every fixed canonical singleton. The object is
+/// fully initialized and immortal before a lock-free reader can observe it.
+fn canonical_singleton(
+    py: &PyToken<'_>,
+    slot: &std::sync::atomic::AtomicPtr<u8>,
+    interned: bool,
+    allocate: impl FnOnce() -> *mut u8,
+) -> *mut u8 {
+    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
+    if !cached.is_null() {
+        return cached;
+    }
+    let _init = runtime_state(py)
+        .canonical_objects
+        .singleton_init
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
+    if !cached.is_null() {
+        return cached;
+    }
+    let ptr = allocate();
+    if !ptr.is_null() {
+        unsafe { prepare_canonical_object(ptr, interned) };
+        slot.store(ptr, std::sync::atomic::Ordering::Release);
+    }
+    ptr
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CanonicalSpecialSingleton {
+    Missing,
+    NotImplemented,
+    Ellipsis,
+}
+
+pub(crate) fn canonical_special_singleton_bits(
+    py: &PyToken<'_>,
+    kind: CanonicalSpecialSingleton,
+) -> u64 {
+    let cache = &runtime_state(py).canonical_objects;
+    let (slot, type_id) = match kind {
+        CanonicalSpecialSingleton::Missing => (&cache.missing, TYPE_ID_OBJECT),
+        CanonicalSpecialSingleton::NotImplemented => {
+            (&cache.not_implemented, TYPE_ID_NOT_IMPLEMENTED)
+        }
+        CanonicalSpecialSingleton::Ellipsis => (&cache.ellipsis, TYPE_ID_ELLIPSIS),
+    };
+    let ptr = canonical_singleton(py, slot, false, || {
+        alloc_object(py, std::mem::size_of::<MoltHeader>(), type_id)
+    });
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
     }
 }
 
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
-        let cache = &runtime_state(_py).canonical_objects;
-        let cached = cache.empty_tuple.load(std::sync::atomic::Ordering::Acquire);
-        if !cached.is_null() {
-            return cached;
-        }
-        let _init = cache
-            .singleton_init
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cached = cache.empty_tuple.load(std::sync::atomic::Ordering::Acquire);
-        if !cached.is_null() {
-            return cached;
-        }
-        let candidate = alloc_tuple_exact(_py, &[], false);
-        if candidate.is_null() {
-            return std::ptr::null_mut();
-        }
-        unsafe {
-            crate::object::gc::gc_untrack(
-                _py,
-                candidate,
-                TYPE_ID_TUPLE,
-                crate::object::gc::GcUntrackReason::DynamicProjection,
-            );
-            prepare_canonical_object(candidate, true);
-        }
-        cache
-            .empty_tuple
-            .store(candidate, std::sync::atomic::Ordering::Release);
-        return candidate;
+        let slot = &runtime_state(_py).canonical_objects.empty_tuple;
+        return canonical_singleton(_py, slot, true, || {
+            let candidate = alloc_tuple_exact(_py, &[], false);
+            if !candidate.is_null() {
+                unsafe {
+                    crate::object::gc::gc_untrack(
+                        _py,
+                        candidate,
+                        TYPE_ID_TUPLE,
+                        crate::object::gc::GcUntrackReason::DynamicProjection,
+                    );
+                }
+            }
+            candidate
+        });
     }
     alloc_tuple_exact(_py, elems, false)
 }
@@ -1939,33 +1984,19 @@ fn canonical_inline_bytes(
     kind: InlineBytesKind,
     interned: bool,
 ) -> *mut u8 {
-    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
-    if !cached.is_null() {
-        return cached;
-    }
-    let cache = &runtime_state(_py).canonical_objects;
-    let _init = cache
-        .singleton_init
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
-    if !cached.is_null() {
-        return cached;
-    }
-    let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), kind);
-    if ptr.is_null() {
-        return ptr;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            ptr.add(std::mem::size_of::<usize>()),
-            bytes.len(),
-        );
-        prepare_canonical_object(ptr, interned);
-    }
-    slot.store(ptr, std::sync::atomic::Ordering::Release);
-    ptr
+    canonical_singleton(_py, slot, interned, || {
+        let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), kind);
+        if !ptr.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    ptr.add(std::mem::size_of::<usize>()),
+                    bytes.len(),
+                );
+            }
+        }
+        ptr
+    })
 }
 
 /// Try to return an interned single-ASCII-character string.
@@ -2104,18 +2135,20 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
         .singleton_init
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut singleton_ptrs = [std::ptr::null_mut(); 131];
-    for (index, slot) in [&cache.empty_tuple, &cache.empty_string, &cache.empty_bytes]
-        .into_iter()
-        .enumerate()
-    {
-        singleton_ptrs[index] =
-            slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-    }
-    for (index, slot) in cache.ascii_chars.iter().enumerate() {
-        singleton_ptrs[index + 3] =
-            slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-    }
+    let singleton_slots = [
+        &cache.empty_tuple,
+        &cache.empty_string,
+        &cache.empty_bytes,
+        &cache.missing,
+        &cache.not_implemented,
+        &cache.ellipsis,
+    ];
+    let singleton_ptrs = singleton_slots
+        .map(|slot| slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel));
+    let ascii_ptrs = cache
+        .ascii_chars
+        .each_ref()
+        .map(|slot| slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel));
     let mut pool = cache
         .interned_strings
         .lock()
@@ -2124,12 +2157,12 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
     drop(pool);
     drop(init);
 
-    // These domains are disjoint by construction: empty values have dedicated
-    // slots, every one-byte ASCII string has a dedicated slot, and the pool
-    // only admits remaining nonempty strings. Teardown must not hide an
-    // authority collision behind deduplication.
+    // These domains are disjoint by construction: fixed values and every
+    // one-byte ASCII string have dedicated slots, and the pool only admits
+    // remaining nonempty strings. Do not hide collisions by deduplicating.
     #[cfg(debug_assertions)]
     {
+        let singleton_ptrs: Vec<_> = singleton_ptrs.into_iter().chain(ascii_ptrs).collect();
         for (index, &ptr) in singleton_ptrs.iter().enumerate() {
             if !ptr.is_null() {
                 assert!(!singleton_ptrs[index + 1..].contains(&ptr));
@@ -2139,6 +2172,7 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
     }
     for ptr in singleton_ptrs
         .into_iter()
+        .chain(ascii_ptrs)
         .chain(interned.into_values().map(|raw| raw as *mut u8))
     {
         if !ptr.is_null() {

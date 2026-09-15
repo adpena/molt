@@ -447,9 +447,8 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
             }
             let data_key = ptr as usize;
             if let Some(bits) =
-                const_data_literal_lookup(ConstDataLiteralKind::BigInt, data_key, len)
+                const_data_literal_lookup(_py, ConstDataLiteralKind::BigInt, data_key, len)
             {
-                inc_ref_bits(_py, bits);
                 return bits;
             }
             let bytes = std::slice::from_raw_parts(ptr, len);
