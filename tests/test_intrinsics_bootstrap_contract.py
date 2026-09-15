@@ -8,11 +8,30 @@ import types
 
 import pytest
 import builtins
+import ast
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_INTRINSICS_PATH = ROOT / "src" / "_intrinsics.py"
 STDLIB_INTRINSICS_PATH = ROOT / "src" / "molt" / "stdlib" / "_intrinsics.py"
+
+
+def test_builtins_publishes_bootstrap_callable_family_before_importing_sys() -> None:
+    tree = ast.parse((STDLIB_INTRINSICS_PATH.parent / "builtins.py").read_text())
+    published = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            published.update(
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            )
+        if isinstance(statement, ast.Import) and any(
+            alias.name == "sys" for alias in statement.names
+        ):
+            assert {"globals", "locals", "__import__"} <= published
+            return
+    pytest.fail("expected the builtins sys dependency to remain explicit")
 
 
 def _load_intrinsics(path: Path, module_name: str) -> types.ModuleType:

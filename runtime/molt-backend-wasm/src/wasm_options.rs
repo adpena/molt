@@ -14,6 +14,12 @@ pub enum WasmProfile {
     Auto,
 }
 
+impl WasmProfile {
+    pub(crate) fn allows_runtime_import(self, import: crate::wasm_abi::WasmRuntimeImport) -> bool {
+        self != Self::Pure || !crate::wasm_abi_generated::pure_profile_skips_import(import.name())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WasmCompileOptions {
     pub reloc_enabled: bool,

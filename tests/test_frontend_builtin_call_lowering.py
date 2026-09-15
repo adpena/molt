@@ -105,7 +105,8 @@ def test_deferred_builtin_lookup_preserves_mutable_global_binding(name: str) -> 
         for op in ops
     )
     assert not any(
-        op["kind"] == "builtin_func" and op.get("s_value") == BUILTIN_FUNC_SPECS[name].runtime
+        op["kind"] == "builtin_func"
+        and op.get("s_value") == BUILTIN_FUNC_SPECS[name].runtime
         for op in ops
     )
 
@@ -942,6 +943,36 @@ def test_intrinsic_require_lowers_to_public_runtime_symbol() -> None:
     assert not _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
     assert _has_builtin_func(source, "molt_async_sleep")
     assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
+
+
+@pytest.mark.parametrize("name", ["globals", "locals", "vars", "__import__"])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_invalidated_builtin_acquisition_keeps_mutable_lookup_name(
+    name: str, chunked: bool
+) -> None:
+    gen = SimpleTIRGenerator(
+        module_name="builtin_lookup_probe",
+        module_chunking=chunked,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse(f"import unknown_module\nvalue = {name}\n"))
+    ir = gen.to_json()
+    lookups = []
+    for function in ir["functions"]:
+        ops = function["ops"]
+        constants = {
+            op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"
+        }
+        lookups.extend(
+            op
+            for op in ops
+            if op["kind"] == "module_get_global"
+            and constants.get(op["args"][1]) == name
+        )
+    assert lookups
+    assert all("runtime_symbol" not in op for op in lookups), (
+        "possible fallback is not exact callable provenance"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2285,7 +2316,9 @@ def test_stable_user_class_ctor_lowers_to_structural_allocation() -> None:
 
     assert any(op.get("kind") == "object_new_bound" for op in make_ops)
     assert any(op.get("kind") == "store" for op in make_ops)
-    assert all(op.get("kind") not in {"store_init", "guarded_field_init"} for op in make_ops)
+    assert all(
+        op.get("kind") not in {"store_init", "guarded_field_init"} for op in make_ops
+    )
     assert all(op.get("kind") != "call_bind" for op in make_ops)
     assert all(op.get("kind") != "callargs_new" for op in make_ops)
 

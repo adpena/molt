@@ -3510,6 +3510,75 @@ mod tests {
             assert!(!module_ptr.is_null());
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
+            for builtin_name in ["globals", "locals", "vars", "__import__"] {
+                let name_ptr = alloc_string(_py, builtin_name.as_bytes());
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let builtin_bits = molt_module_get_global(module_bits, name_bits);
+                assert!(
+                    !exception_pending(_py),
+                    "absent builtins cache must materialize {builtin_name}"
+                );
+                let builtin_ptr = obj_from_bits(builtin_bits)
+                    .as_ptr()
+                    .unwrap_or_else(|| panic!("{builtin_name} must be a function object"));
+                assert_eq!(
+                    unsafe { object_type_id(builtin_ptr) },
+                    crate::TYPE_ID_FUNCTION
+                );
+                assert_eq!(
+                    unsafe { crate::object_class_bits(builtin_ptr) },
+                    builtin_classes(_py).builtin_function_or_method
+                );
+
+                let builtin_bits_again = molt_module_get_global(module_bits, name_bits);
+                assert!(!exception_pending(_py));
+                assert_eq!(
+                    builtin_bits_again, builtin_bits,
+                    "lazy builtin lookup must cache {builtin_name}"
+                );
+
+                if builtin_name == "__import__" {
+                    let defaults_attr_bits =
+                        attr_name_bits_from_bytes(_py, b"__defaults__").unwrap();
+                    let defaults_bits =
+                        unsafe { crate::function_attr_bits(_py, builtin_ptr, defaults_attr_bits) }
+                            .expect("__import__ must publish generated defaults");
+                    let defaults_ptr = obj_from_bits(defaults_bits)
+                        .as_ptr()
+                        .expect("__import__.__defaults__ must be a tuple");
+                    assert_eq!(unsafe { object_type_id(defaults_ptr) }, TYPE_ID_TUPLE);
+                    unsafe {
+                        crate::object::seq_access::with_immutable_tuple_slice(
+                            defaults_ptr,
+                            |defaults| {
+                                assert_eq!(defaults.len(), 4);
+                                assert!(obj_from_bits(defaults[0]).is_none());
+                                assert!(obj_from_bits(defaults[1]).is_none());
+                                let fromlist_ptr = obj_from_bits(defaults[2])
+                                    .as_ptr()
+                                    .expect("__import__ fromlist default must be a tuple");
+                                assert_eq!(object_type_id(fromlist_ptr), TYPE_ID_TUPLE);
+                                assert_eq!(
+                                    crate::object::seq_access::with_immutable_tuple_slice(
+                                        fromlist_ptr,
+                                        |fromlist| fromlist.len(),
+                                    ),
+                                    Some(0)
+                                );
+                                assert_eq!(to_i64(obj_from_bits(defaults[3])), Some(0));
+                            },
+                        )
+                    }
+                    .expect("__import__ defaults tuple payload");
+                    dec_ref_bits(_py, defaults_attr_bits);
+                }
+
+                dec_ref_bits(_py, builtin_bits_again);
+                dec_ref_bits(_py, builtin_bits);
+                dec_ref_bits(_py, name_bits);
+            }
+
             let len_name_ptr = alloc_string(_py, b"len");
             assert!(!len_name_ptr.is_null());
             let len_name_bits = MoltObject::from_ptr(len_name_ptr).bits();
@@ -3618,17 +3687,46 @@ mod tests {
             assert!(!module_ptr.is_null());
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-            let len_name_ptr = alloc_string(_py, b"len");
-            assert!(!len_name_ptr.is_null());
-            let len_name_bits = MoltObject::from_ptr(len_name_ptr).bits();
-            let len_bits = molt_module_get_global(module_bits, len_name_bits);
-            assert!(
-                obj_from_bits(len_bits).is_none(),
-                "LOAD_GLOBAL miss through a present builtins dict must not synthesize len"
-            );
-            assert_pending_exception_class(_py, "NameError");
+            let builtins_dict_bits = unsafe { module_dict_bits(builtins_module_ptr) };
+            let builtins_dict_ptr = obj_from_bits(builtins_dict_bits)
+                .as_ptr()
+                .expect("builtins module dictionary");
+            assert_eq!(unsafe { object_type_id(builtins_dict_ptr) }, TYPE_ID_DICT);
 
-            dec_ref_bits(_py, len_name_bits);
+            for (index, builtin_name) in ["len", "globals", "locals", "vars", "__import__"]
+                .into_iter()
+                .enumerate()
+            {
+                let name_ptr = alloc_string(_py, builtin_name.as_bytes());
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let published_bits = MoltObject::from_int(index as i64 + 1).bits();
+                unsafe {
+                    dict_set_in_place(_py, builtins_dict_ptr, name_bits, published_bits);
+                }
+                assert!(!exception_pending(_py));
+
+                let loaded_bits = molt_module_get_global(module_bits, name_bits);
+                assert_eq!(
+                    loaded_bits, published_bits,
+                    "published builtins.{builtin_name} must win over runtime synthesis"
+                );
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, loaded_bits);
+
+                assert!(unsafe {
+                    crate::object::ops::dict_del_in_place(_py, builtins_dict_ptr, name_bits)
+                });
+                assert!(!exception_pending(_py));
+                let missing_bits = molt_module_get_global(module_bits, name_bits);
+                assert!(
+                    obj_from_bits(missing_bits).is_none(),
+                    "deleting builtins.{builtin_name} from a published dictionary must be authoritative"
+                );
+                assert_pending_exception_class(_py, "NameError");
+                dec_ref_bits(_py, name_bits);
+            }
+
             dec_ref_bits(_py, module_bits);
             dec_ref_bits(_py, builtins_module_bits);
         });

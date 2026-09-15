@@ -29,7 +29,8 @@ mod unbound_checks;
 mod tests;
 
 pub use self::app_callable_manifest::{
-    compute_app_callable_manifest, compute_app_callable_manifest_checked,
+    AppCallableRequirements, collect_app_callable_requirements, compute_app_callable_manifest,
+    compute_app_callable_manifest_checked,
 };
 pub use self::constant_fold::{fold_constants, fold_constants_cross_block};
 pub use self::dead_functions::{eliminate_dead_functions, eliminate_dead_functions_with_roots};

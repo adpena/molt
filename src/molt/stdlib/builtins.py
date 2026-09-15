@@ -7,7 +7,6 @@ compiled code without introducing dynamic indirection.
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-import sys as _sys
 
 _MOLT_SYS_MODULES = _require_intrinsic("molt_sys_modules")
 
@@ -68,6 +67,11 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 __import__ = _intrinsic_import
+
+# Publish the bootstrap callable family before entering sys: sys initialization
+# itself uses these names. A partial builtins namespace must not be treated as
+# permission to resurrect a deleted binding in another executing module.
+import sys as _sys
 
 if False:  # TYPE_CHECKING
     from typing import Callable, Optional  # noqa: F401
