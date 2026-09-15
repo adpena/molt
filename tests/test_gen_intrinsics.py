@@ -50,9 +50,10 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     assert "defaults: &[IntrinsicDefaultValue::Int(0)]," in generated
 
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text()
-    assert "fn attach_function_defaults" in registry
-    assert 'b"__defaults__"' in registry
-    assert "function_set_attr_bits(_py, ptr, defaults_name, defaults_bits)" in registry
+    assert "let defaults = materialize_intrinsic_defaults(_py, default_values)?;" in registry
+    assert "build_runtime_function(_py, fn_ptr, arity, &defaults)" in registry
+    assert "crate::builtins::methods::alloc_builtin_function_with_defaults(" in registry
+    assert "fn attach_function_defaults" not in registry
     assert (
         registry.count("build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)")
         == 2
@@ -107,6 +108,61 @@ def test_intrinsic_target_availability_is_toml_owned() -> None:
     assert '#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]' in generated
 
 
+def test_exact_builtin_category_precedes_feature_and_target_prefixes(
+    tmp_path: Path,
+) -> None:
+    module = _load_gen_intrinsics_module()
+    categories = tmp_path / "categories.toml"
+    categories.write_text(
+        """
+[builtin]
+functions = ["molt_hash_builtin", "molt_hash_new_builtin"]
+type_constructors = ["molt_hash_builtin"]
+
+[stdlib.crypto]
+prefixes = ["hash_"]
+feature = "stdlib_crypto"
+unsupported_target_arches = ["wasm32"]
+""".strip()
+    )
+
+    availability = module.load_intrinsic_availability(categories)
+
+    assert availability.builtin_symbols == (
+        "molt_hash_builtin",
+        "molt_hash_new_builtin",
+    )
+    for symbol in availability.builtin_symbols:
+        assert availability.feature_gate_for_symbol(symbol) is None
+        assert availability.target_arch_exclusions_for_symbol(symbol) == ()
+        assert availability.symbol_available_on_target_arch(symbol, "wasm32")
+    assert availability.feature_gate_for_symbol("molt_hash_new") == "stdlib_crypto"
+    assert availability.target_arch_exclusions_for_symbol("molt_hash_new") == (
+        "wasm32",
+    )
+
+
+def test_all_canonical_builtin_symbols_are_ungated() -> None:
+    module = _load_gen_intrinsics_module()
+    builtin_symbols, _internal_prefixes, _stdlib_modules = module._load_categories()
+
+    assert builtin_symbols
+    assert set(builtin_symbols) == set(module._RUNTIME_AVAILABILITY.builtin_symbols)
+    for symbol in builtin_symbols:
+        assert module._feature_gate_for_symbol(symbol) is None
+        assert module._target_arch_exclusions_for_symbol(symbol) == ()
+
+    assert module._feature_gate_for_symbol("molt_hash_builtin") is None
+    for symbol in (
+        "molt_hash_new",
+        "molt_hash_update",
+        "molt_hash_copy",
+        "molt_hash_digest",
+        "molt_hash_drop",
+    ):
+        assert module._feature_gate_for_symbol(symbol) == "stdlib_crypto"
+
+
 def test_runtime_feature_gates_are_generated_from_categories() -> None:
     module = _load_gen_intrinsics_module()
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
@@ -119,6 +175,9 @@ def test_runtime_feature_gates_are_generated_from_categories() -> None:
     spec.loader.exec_module(gates_module)
 
     expected_gates = module._load_runtime_feature_gates_from_categories()
+    assert gates_module.RUNTIME_BUILTIN_SYMBOLS == frozenset(
+        module._RUNTIME_AVAILABILITY.builtin_symbols
+    )
     assert list(gates_module.RUNTIME_FEATURE_GATES) == expected_gates
     assert tuple(sorted(gates_module.LINK_AFFECTING_FEATURES)) == (
         module._mechanically_derived_link_affecting_features(expected_gates)

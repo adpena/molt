@@ -19,9 +19,25 @@ FeatureTargetArchExclusions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 
 @dataclass(frozen=True)
 class IntrinsicAvailability:
+    builtin_symbols: tuple[str, ...]
     feature_gates: FeatureGates
     target_arch_exclusions: TargetArchExclusions
     feature_target_arch_exclusions: FeatureTargetArchExclusions
+
+    def feature_gate_for_symbol(self, symbol: str) -> str | None:
+        """Return the feature owning *symbol*, with exact categories first."""
+        if symbol in self.builtin_symbols:
+            return None
+        return longest_prefix_value(symbol, self.feature_gates)
+
+    def target_arch_exclusions_for_symbol(self, symbol: str) -> tuple[str, ...]:
+        """Return excluded arches, with exact always-available symbols first."""
+        if symbol in self.builtin_symbols:
+            return ()
+        return longest_prefix_value(symbol, self.target_arch_exclusions) or ()
+
+    def symbol_available_on_target_arch(self, symbol: str, target_arch: str) -> bool:
+        return target_arch not in self.target_arch_exclusions_for_symbol(symbol)
 
 
 def _string_list(value: object, *, field: str) -> tuple[str, ...]:
@@ -32,14 +48,44 @@ def _string_list(value: object, *, field: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value))
 
 
+def _append_prefix_rule[T](
+    rules: list[tuple[str, T]],
+    owners: dict[str, T],
+    *,
+    prefix: str,
+    value: T,
+    field: str,
+) -> None:
+    """Append one prefix fact while rejecting ambiguous sibling ownership."""
+    previous = owners.setdefault(prefix, value)
+    if previous != value:
+        raise TypeError(
+            f"{field} conflicts with another category for prefix {prefix!r}: "
+            f"{previous!r} != {value!r}"
+        )
+    if (prefix, value) not in rules:
+        rules.append((prefix, value))
+
+
 def load_intrinsic_availability(
     categories_path: Path,
 ) -> IntrinsicAvailability:
-    """Load canonical prefix feature/target facts from *categories_path*."""
+    """Load canonical exact and prefix availability facts from *categories_path*."""
     data = tomllib.loads(categories_path.read_bytes().decode())
+    builtin_symbols: list[str] = []
     feature_gates: list[tuple[str, str]] = []
     target_exclusions: list[tuple[str, tuple[str, ...]]] = []
     feature_target_exclusions: dict[str, set[str]] = {}
+    feature_prefix_owners: dict[str, str] = {}
+    target_prefix_owners: dict[str, tuple[str, ...]] = {}
+
+    builtin = data.get("builtin", {})
+    if not isinstance(builtin, dict):
+        raise TypeError("builtin must be a table")
+    for category, raw_symbols in builtin.items():
+        builtin_symbols.extend(
+            _string_list(raw_symbols, field=f"builtin.{category}")
+        )
 
     for mod_name, mod_data in data.get("stdlib", {}).items():
         if not isinstance(mod_data, dict):
@@ -56,9 +102,14 @@ def load_intrinsic_availability(
                 mod_data.get("feature_prefixes", list(prefixes)),
                 field=f"stdlib.{mod_name}.feature_prefixes",
             )
-            feature_gates.extend(
-                (f"molt_{prefix}", feature) for prefix in feature_prefixes
-            )
+            for prefix in feature_prefixes:
+                _append_prefix_rule(
+                    feature_gates,
+                    feature_prefix_owners,
+                    prefix=f"molt_{prefix}",
+                    value=feature,
+                    field=f"stdlib.{mod_name}.feature_prefixes",
+                )
 
         raw_arches = mod_data.get("unsupported_target_arches", [])
         if raw_arches:
@@ -69,9 +120,14 @@ def load_intrinsic_availability(
                 mod_data.get("target_prefixes", list(prefixes)),
                 field=f"stdlib.{mod_name}.target_prefixes",
             )
-            target_exclusions.extend(
-                (f"molt_{prefix}", arches) for prefix in target_prefixes
-            )
+            for prefix in target_prefixes:
+                _append_prefix_rule(
+                    target_exclusions,
+                    target_prefix_owners,
+                    prefix=f"molt_{prefix}",
+                    value=arches,
+                    field=f"stdlib.{mod_name}.target_prefixes",
+                )
             # A Cargo feature is target-unavailable only when every symbol
             # prefix it gates is covered by this module's target exclusion.
             # This derives profile construction without a second feature list.
@@ -79,6 +135,7 @@ def load_intrinsic_availability(
                 feature_target_exclusions.setdefault(feature, set()).update(arches)
 
     return IntrinsicAvailability(
+        builtin_symbols=tuple(dict.fromkeys(builtin_symbols)),
         feature_gates=tuple(feature_gates),
         target_arch_exclusions=tuple(target_exclusions),
         feature_target_arch_exclusions=tuple(
@@ -97,12 +154,3 @@ def longest_prefix_value[T](symbol: str, rules: tuple[tuple[str, T], ...]) -> T 
             if best is None or prefix_len > best[0]:
                 best = (prefix_len, value)
     return best[1] if best is not None else None
-
-
-def symbol_available_on_target_arch(
-    symbol: str,
-    target_arch: str,
-    target_exclusions: TargetArchExclusions,
-) -> bool:
-    arches = longest_prefix_value(symbol, target_exclusions) or ()
-    return target_arch not in arches

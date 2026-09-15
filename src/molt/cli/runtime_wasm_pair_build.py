@@ -71,7 +71,9 @@ from molt.cli.runtime_wasm_cache import (
     publish_runtime_wasm_pair_to_shared_cache,
 )
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmGeneration,
     RuntimeWasmExpectedPair,
+    bind_runtime_wasm_codegen,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_path,
@@ -442,7 +444,9 @@ class _RuntimeWasmPairBuild:
             details=self.failure_details(),
         )
 
-    def accept_generation(self) -> bool:
+    def accept_generation(
+        self, *, expected_generation: RuntimeWasmGeneration | None = None
+    ) -> bool:
         identity = self.pre_identity
         if identity is None:
             return False
@@ -452,6 +456,11 @@ class _RuntimeWasmPairBuild:
             expected_reloc_identity=identity.reloc,
         )
         if generation is None:
+            return False
+        if expected_generation is not None and (
+            generation.shared != expected_generation.shared
+            or generation.reloc != expected_generation.reloc
+        ):
             return False
         try:
             rejected = (
@@ -611,6 +620,7 @@ def _prepare_runtime_wasm_pair_build(
     resolved_modules: set[str] | frozenset[str] | None,
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
+    full_export_surface: bool = False,
 ) -> _RuntimeWasmPairBuild | None:
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
@@ -636,6 +646,7 @@ def _prepare_runtime_wasm_pair_build(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
+            full_export_surface=full_export_surface,
         )
 
     shared_spec = spec(runtime_wasm, reloc=False)
@@ -828,8 +839,16 @@ def _ensure_runtime_wasm_both(
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
+    bind_for_codegen: bool = False,
 ) -> bool:
     runtime_state.runtime_wasm_build_failure = None
+    binding = runtime_state.runtime_wasm_codegen_binding
+    # Once app layout is emitted, imports are admission obligations, not a new
+    # runtime build plan. Recapture current source/toolchain identity using the
+    # original plan; never rebuild or switch physical members beneath the app.
+    planned_exports = (
+        binding.required_exports if binding is not None else required_exports
+    )
     ctx = _prepare_runtime_wasm_pair_build(
         runtime_state,
         json_output=json_output,
@@ -841,16 +860,58 @@ def _ensure_runtime_wasm_both(
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
         required_link_features=required_link_features,
-        required_exports=required_exports,
+        required_exports=planned_exports,
+        full_export_surface=bind_for_codegen or binding is not None,
     )
     if ctx is None:
         return False
     try:
+        if binding is not None:
+            generation = binding.generation
+            if ctx.pre_identity is None or (
+                ctx.pre_identity.shared != generation.shared_identity
+                or ctx.pre_identity.reloc != generation.reloc_identity
+            ):
+                return ctx.fail(
+                    "codegen-identity-stability",
+                    "Runtime WASM build inputs changed after app layout was bound; "
+                    "refusing runtime reselection beneath compiled code.",
+                )
+            ctx.generation_manifest = generation.manifest
+            ctx.required_exports = required_exports
+            if ctx.accept_generation(expected_generation=generation):
+                return True
+            return ctx.fail(
+                "codegen-generation-admission",
+                "The runtime WASM pair bound before app code generation no longer "
+                "satisfies its emitted import contract: "
+                + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
+            )
         outcome = _materialize_runtime_wasm_pair(ctx)
-        if outcome is _PairBuildOutcome.ACCEPTED:
-            return True
         if outcome is _PairBuildOutcome.FAILED:
             return False
-        return _publish_runtime_wasm_pair(ctx)
+        if outcome is _PairBuildOutcome.BUILT and not _publish_runtime_wasm_pair(ctx):
+            return False
+        if bind_for_codegen:
+            assert ctx.pre_identity is not None
+            generation = read_runtime_wasm_generation(
+                ctx.generation_manifest,
+                expected_shared_identity=ctx.pre_identity.shared,
+                expected_reloc_identity=ctx.pre_identity.reloc,
+            )
+            if generation is None:
+                return ctx.fail(
+                    "codegen-binding",
+                    "Runtime WASM pair lost admission before code generation.",
+                )
+            try:
+                binding = bind_runtime_wasm_codegen(generation, planned_exports)
+            except (OSError, ValueError) as exc:
+                return ctx.fail(
+                    "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
+                )
+            runtime_state.runtime_wasm_codegen_binding = binding
+            runtime_state.runtime_wasm_generation = binding.generation.manifest
+        return True
     finally:
         ctx.cleanup_staging()

@@ -230,6 +230,7 @@ def _build_cache_variant(
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
     runtime_callable_symbols_digest: str = "",
+    runtime_wasm_codegen_digest: str = "",
     capability_config_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
@@ -262,6 +263,11 @@ def _build_cache_variant(
     resolver's relocation set is computed against the linked runtime staticlib's
     exact `molt_*` symbol authority; a stale app object emitted against a
     different set can either miss required callables or reference absent ones.
+
+    ``runtime_wasm_codegen_digest`` binds every WASM cache tier to the physical
+    runtime pair whose memory and table addresses code generation consumed.
+    Runtime source exclusion from the compiler fingerprint is not permission
+    to reuse app bytes against another runtime generation.
     """
     parts = [
         f"profile={profile}",
@@ -283,6 +289,8 @@ def _build_cache_variant(
         parts.append(f"external_static_packages={external_static_packages_digest}")
     if runtime_callable_symbols_digest:
         parts.append(f"runtime_callables={runtime_callable_symbols_digest}")
+    if runtime_wasm_codegen_digest:
+        parts.append(f"wasm_runtime={runtime_wasm_codegen_digest}")
     if capability_config_digest:
         parts.append(f"capability_config={capability_config_digest}")
     return ";".join(parts)
@@ -312,6 +320,7 @@ def _prepare_backend_cache_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     runtime_callable_symbols_digest: str = "",
+    runtime_wasm_codegen_digest: str = "",
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
     stage_timings_ms: dict[str, float] | None = None,
@@ -418,6 +427,7 @@ def _prepare_backend_cache_setup(
         backend_binary_identity=backend_binary_identity,
         external_static_packages_digest=native_artifact_plan.digest(),
         runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+        runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
         capability_config_digest=capability_config_digest,
     )
     _record_backend_cache_stage_ms(

@@ -124,6 +124,21 @@ without requiring a real browser GPU in CI.
 
 ## Artifact Distribution
 
+App code generation binds one admitted shared/reloc runtime pair before reading
+its memory and callable-table layout. The pair exposes the generated public ABI
+plus the planned native-extension obligations, without enabling unrelated
+feature domains. Final emitted imports are checked against that same pair; they
+must not trigger an app-dependent runtime rebuild. Current build inputs are
+recaptured under the original plan and any source/toolchain drift fails closed.
+A content-named generation receipt keeps the app's selected members independent
+of later cache-pointer publication. Linking and deployment retain those members
+and the expected pair identity; table overlap rejection remains mandatory.
+
+Feature attribution honors the exact builtin category before stdlib prefixes.
+In particular Python's builtin hash is core, not a cryptographic-library
+obligation. Intrinsic resolver generation, WASM callable metadata, and CLI
+feature selection consume the same category precedence.
+
 Current source builds publish `molt_runtime.wasm`, `molt_runtime_reloc.wasm`,
 and `molt_runtime.generation.json` as one atomic runtime generation. A
 downstream no-source-build deployment needs a release artifact, wheel payload,
